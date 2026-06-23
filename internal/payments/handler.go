@@ -24,7 +24,7 @@ func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
 
 // Register mounts the routes. Top-up and onboarding require a USER (dashboard)
 // token — an agent credential can never move real money. The webhook is public
-// but authenticated by its Stripe signature.
+// but authenticated by its Stripe signature. Dev routes are for testing only.
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
@@ -32,6 +32,8 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(user).Get("/v1/wallet/packs", h.packs)
 		r.With(user).Post("/v1/wallet/topup", h.topup)
 		r.With(user).Post("/v1/payouts/onboard", h.onboard)
+		// Dev-only: manually confirm a dev checkout (useful for testing error handling)
+		r.With(user).Post("/v1/admin/dev/confirm-checkout", h.devConfirmCheckout)
 	})
 	r.Post("/v1/webhooks/stripe", h.webhook) // public; verified by signature
 }
@@ -81,4 +83,40 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"received": true})
+}
+
+// devConfirmCheckout is a testing-only endpoint to manually confirm a checkout.
+// In production this is not available; real purchases are confirmed via Stripe webhooks.
+// This endpoint is useful for testing error handling when webhooks are delayed/lost.
+func (h *Handler) devConfirmCheckout(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		SessionID string `json:"session_id"`
+		Agent     string `json:"agent"`
+		Coins     int64  `json:"coins"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.SessionID == "" || in.Agent == "" || in.Coins <= 0 {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid_input", "session_id, agent, and coins are required"))
+		return
+	}
+	// Verify user owns the agent
+	owner, err := h.svc.Repo.OwnerOfAgent(r.Context(), in.Agent)
+	if err != nil {
+		httpx.Error(w, httpx.ErrNotFound)
+		return
+	}
+	if owner != p.UserPublicID {
+		httpx.Error(w, httpx.NewError(http.StatusForbidden, "forbidden", "You do not own this agent"))
+		return
+	}
+	// Simulate webhook: credit coins using session-based idempotency key
+	if err := h.svc.Coiner.Topup(r.Context(), in.Agent, in.Coins, "topup:"+in.SessionID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"confirmed": true, "session_id": in.SessionID, "coins": in.Coins})
 }

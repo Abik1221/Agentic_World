@@ -197,12 +197,13 @@ func run() error {
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
-	// gateway; otherwise the offline DevGateway runs the whole flow locally.
-	var gateway payments.Gateway = payments.DevGateway{}
+	// gateway; otherwise the offline DevGateway runs the whole flow locally,
+	// immediately crediting coins to simulate webhook receipt (tests full flow offline).
+	var gateway payments.Gateway = payments.NewDevGateway(walletSvc)
 	if cfg.StripeSecretKey != "" {
 		gateway = payments.NewStripeGateway(cfg.StripeSecretKey)
 	} else {
-		log.Warn("STRIPE_SECRET_KEY unset: payments using the offline DevGateway (no real charges)")
+		log.Warn("STRIPE_SECRET_KEY unset: payments using the offline DevGateway (no real charges, coins credited immediately)")
 	}
 	paymentsSvc := payments.New(gateway, walletSvc, store.NewPaymentsRepo(st.DB), clock,
 		payments.Config{
