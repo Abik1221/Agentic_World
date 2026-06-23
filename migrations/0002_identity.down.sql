@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS agent_timing_samples;
+DROP TABLE IF EXISTS claims;
+DROP TABLE IF EXISTS agent_keys;
+DROP TABLE IF EXISTS agents;
+DROP TABLE IF EXISTS users;

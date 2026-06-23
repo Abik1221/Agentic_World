@@ -1,0 +1,141 @@
+package social
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+// Config tunes the notification worker pool.
+type Config struct {
+	Workers   int
+	QueueSize int
+}
+
+// Service handles follows and, on match finalize, the notification fan-out to
+// owners and followers. Enqueue is non-blocking (drops + counts on overflow), so
+// it never delays match finalize.
+type Service struct {
+	repo  Repo
+	log   *slog.Logger
+	m     *metrics
+	queue chan string
+	cfg   Config
+}
+
+func New(repo Repo, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
+	if cfg.Workers <= 0 {
+		cfg.Workers = 2
+	}
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = 256
+	}
+	return &Service{repo: repo, log: log, m: newMetrics(reg), queue: make(chan string, cfg.QueueSize), cfg: cfg}
+}
+
+// Follow / Unfollow are the user-facing follow operations.
+func (s *Service) Follow(ctx context.Context, userPublicID, agentPublicID string) error {
+	return s.repo.Follow(ctx, userPublicID, agentPublicID)
+}
+
+func (s *Service) Unfollow(ctx context.Context, userPublicID, agentPublicID string) error {
+	return s.repo.Unfollow(ctx, userPublicID, agentPublicID)
+}
+
+// Enqueue schedules notification fan-out for a finished match. Non-blocking.
+func (s *Service) Enqueue(matchPublicID string) {
+	select {
+	case s.queue <- matchPublicID:
+	default:
+		s.m.dropped.Inc()
+		s.log.Warn("notification queue full; dropping match", "match", matchPublicID)
+	}
+}
+
+// Run starts the worker pool and blocks until ctx is cancelled.
+func (s *Service) Run(ctx context.Context) {
+	s.log.Info("notification workers started", "workers", s.cfg.Workers)
+	done := make(chan struct{})
+	for i := 0; i < s.cfg.Workers; i++ {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					done <- struct{}{}
+					return
+				case id := <-s.queue:
+					s.process(ctx, id)
+				}
+			}
+		}()
+	}
+	for i := 0; i < s.cfg.Workers; i++ {
+		<-done
+	}
+	s.log.Info("notification workers stopped")
+}
+
+func (s *Service) process(ctx context.Context, matchPublicID string) {
+	parts, err := s.repo.MatchParticipants(ctx, matchPublicID)
+	if err != nil {
+		s.log.Error("notify: load participants failed", "match", matchPublicID, "error", err)
+		return
+	}
+	for _, p := range parts {
+		ref := "match:" + matchPublicID + ":" + p.AgentPublicID
+		payload, _ := json.Marshal(map[string]any{
+			"match": matchPublicID, "agent": p.AgentPublicID,
+			"result": resultOf(p.CoinsDelta), "coins_delta": p.CoinsDelta,
+		})
+
+		// Owner gets a match-result notification.
+		if ins, err := s.repo.InsertNotification(ctx, p.OwnerPublicID, "match_result", ref, payload); err != nil {
+			s.log.Error("notify: owner insert failed", "match", matchPublicID, "error", err)
+		} else if ins {
+			s.m.sent.Inc()
+		}
+
+		// Followers of this agent get an agent-match notification.
+		followers, err := s.repo.FollowerUserIDs(ctx, p.AgentPublicID)
+		if err != nil {
+			s.log.Error("notify: followers load failed", "agent", p.AgentPublicID, "error", err)
+			continue
+		}
+		for _, f := range followers {
+			if ins, err := s.repo.InsertNotification(ctx, f, "agent_match", ref, payload); err != nil {
+				s.log.Error("notify: follower insert failed", "recipient", f, "error", err)
+			} else if ins {
+				s.m.sent.Inc()
+			}
+		}
+	}
+}
+
+func resultOf(coinsDelta int64) string {
+	switch {
+	case coinsDelta > 0:
+		return "win"
+	case coinsDelta < 0:
+		return "loss"
+	default:
+		return "tie"
+	}
+}
+
+// ── metrics ──────────────────────────────────────────────────────────────────
+
+type metrics struct {
+	sent    prometheus.Counter
+	dropped prometheus.Counter
+}
+
+func newMetrics(reg *prometheus.Registry) *metrics {
+	m := &metrics{
+		sent:    prometheus.NewCounter(prometheus.CounterOpts{Name: "notifications_sent_total", Help: "Notifications written."}),
+		dropped: prometheus.NewCounter(prometheus.CounterOpts{Name: "notification_enqueue_dropped_total", Help: "Match notification jobs dropped (queue full)."}),
+	}
+	reg.MustRegister(m.sent, m.dropped)
+	return m
+}

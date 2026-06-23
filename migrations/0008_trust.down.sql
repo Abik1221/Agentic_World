@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS disputes;
+DROP TABLE IF EXISTS payout_holds;
+DROP TABLE IF EXISTS fraud_flags;

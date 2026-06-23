@@ -1,0 +1,117 @@
+package payout
+
+import (
+	"net/http"
+
+	"github.com/agent-arena/arena/internal/auth"
+	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/go-chi/chi/v5"
+)
+
+// Handler exposes the cash-out surface: withdrawable quote + request (user) and
+// approve/reject (admin allowlist).
+type Handler struct {
+	svc    *Service
+	authn  *auth.Authenticator
+	admins map[string]bool
+}
+
+func NewHandler(svc *Service, authn *auth.Authenticator, adminUserIDs []string) *Handler {
+	admins := make(map[string]bool, len(adminUserIDs))
+	for _, id := range adminUserIDs {
+		admins[id] = true
+	}
+	return &Handler{svc: svc, authn: authn, admins: admins}
+}
+
+func (h *Handler) Register(r chi.Router) {
+	r.Group(func(r chi.Router) {
+		r.Use(h.authn.Middleware)
+		user := auth.RequireScope(auth.ScopeUser)
+		r.With(user).Get("/v1/wallet/withdrawable", h.withdrawable)
+		r.With(user).Post("/v1/withdrawals", h.request)
+		r.With(user).Get("/v1/withdrawals/{id}", h.get)
+		r.With(user).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
+		r.With(user).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
+	})
+}
+
+func (h *Handler) withdrawable(w http.ResponseWriter, r *http.Request) {
+	agent := r.URL.Query().Get("agent")
+	if agent == "" {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "agent_required", "Specify ?agent="))
+		return
+	}
+	coins, quote, err := h.svc.Available(r.Context(), agent)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"withdrawable_coins": coins, "quote": quote})
+}
+
+func (h *Handler) request(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Agent string `json:"agent"`
+		Coins int64  `json:"coins"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	wd, err := h.svc.Request(r.Context(), p.UserPublicID, in.Agent, in.Coins)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, wd)
+}
+
+func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	wd, err := h.svc.Get(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if wd.Owner != p.UserPublicID && !h.admins[p.UserPublicID] {
+		httpx.Error(w, httpx.ErrForbidden)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, wd)
+}
+
+func (h *Handler) approve(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	if !h.isAdmin(p) {
+		httpx.Error(w, httpx.ErrForbidden)
+		return
+	}
+	if err := h.svc.Approve(r.Context(), p.UserPublicID, chi.URLParam(r, "id")); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "paid"})
+}
+
+func (h *Handler) reject(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	if !h.isAdmin(p) {
+		httpx.Error(w, httpx.ErrForbidden)
+		return
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	_ = httpx.DecodeJSON(w, r, &in)
+	if err := h.svc.Reject(r.Context(), p.UserPublicID, chi.URLParam(r, "id"), in.Reason); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "rejected"})
+}
+
+func (h *Handler) isAdmin(p *auth.Principal) bool {
+	return p != nil && h.admins[p.UserPublicID]
+}

@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS rating_updates;
+DROP TABLE IF EXISTS ratings;
