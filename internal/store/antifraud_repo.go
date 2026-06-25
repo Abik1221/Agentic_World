@@ -211,3 +211,40 @@ func (r *AntifraudRepo) Audit(ctx context.Context, actor, action, target string,
 		actor, action, nullString(target), string(detail))
 	return err
 }
+
+// PairMoves returns the per-round revealed bids of every finished match between
+// agentA and agentB since `since`, oriented so CardA is always agentA's card
+// regardless of the seat it held in each match. Reads the round_revealed events
+// (payload.cards = [seat0, seat1]). Used for action-correlation detection.
+func (r *AntifraudRepo) PairMoves(ctx context.Context, agentA, agentB string, since time.Time) ([]antifraud.MoveSample, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT mpa.seat,
+		        (e.payload->'cards'->>0)::int AS c0,
+		        (e.payload->'cards'->>1)::int AS c1,
+		        m.total_rounds
+		 FROM matches m
+		 JOIN agents aa ON aa.public_id = $1
+		 JOIN agents ab ON ab.public_id = $2
+		 JOIN match_players mpa ON mpa.match_id = m.id AND mpa.agent_id = aa.id
+		 JOIN match_players mpb ON mpb.match_id = m.id AND mpb.agent_id = ab.id
+		 JOIN match_events  e   ON e.match_id   = m.id AND e.type = 'round_revealed'
+		 WHERE m.status = 'finished' AND m.finished_at >= $3`,
+		agentA, agentB, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []antifraud.MoveSample
+	for rows.Next() {
+		var seatA, c0, c1, deck int
+		if err := rows.Scan(&seatA, &c0, &c1, &deck); err != nil {
+			return nil, err
+		}
+		s := antifraud.MoveSample{CardA: c0, CardB: c1, Deck: deck}
+		if seatA == 1 { // agentA actually sat at seat 1 → swap so CardA is agentA's
+			s.CardA, s.CardB = c1, c0
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
