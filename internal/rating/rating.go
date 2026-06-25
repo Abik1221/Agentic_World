@@ -73,14 +73,13 @@ func (s *Service) Elo(ctx context.Context, agentPublicID string) (int, error) {
 // per match. Implements (via an adapter) match.Rater.
 func (s *Service) Rate(ctx context.Context, res MatchResult) error {
 	scoreA := ScoreForSeat0(res.WinnerSeat)
-	k := s.cfg.K
 	applied, err := s.repo.ApplyMatch(ctx, ApplyInput{
 		MatchPublicID: res.MatchPublicID,
 		Season:        s.CurrentSeason(),
 		Agents:        res.Agents,
 		CoinsDelta:    res.CoinsDelta,
 		WinnerSeat:    res.WinnerSeat,
-		Compute:       func(a, b int) (int, int) { return Update(a, b, scoreA, k) },
+		Compute:       func(a, b PlayerRating) (PlayerRating, PlayerRating) { return Glicko2(a, b, scoreA) },
 	})
 	if err != nil {
 		return err

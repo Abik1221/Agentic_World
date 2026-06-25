@@ -18,14 +18,16 @@ type Repo interface {
 }
 
 // ApplyInput is the resolved rating update for one finished match. Index 0/1 are
-// seats A/B. Compute keeps the ELO formula in this package, out of the store.
+// seats A/B. Compute keeps the Glicko-2 formula in this package, out of the store:
+// the store reads both agents' current (rating, RD, volatility), hands them in,
+// and writes back what Compute returns.
 type ApplyInput struct {
 	MatchPublicID string
 	Season        int
 	Agents        [2]string
 	CoinsDelta    [2]int64
 	WinnerSeat    int
-	Compute       func(eloA, eloB int) (int, int)
+	Compute       func(a, b PlayerRating) (PlayerRating, PlayerRating)
 }
 
 // LeaderRow is one leaderboard entry (Rank is filled in by the service).
