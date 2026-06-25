@@ -27,6 +27,12 @@ type Repo interface {
 	// deadline, and appends the Init events. Returns ErrNotWaiting if it was taken.
 	Activate(ctx context.Context, matchPublicID string, joiner Player, state gs.State, deadline time.Time, events []gs.Event) error
 
+	// CreatePairedActive creates an ACTIVE match seating both agents at once (the
+	// matchmaking path) in one transaction — the match row, both players, the
+	// initial snapshot + deadline, and the Init events — with no waiting window, so
+	// a server-paired match never surfaces in the open lobby.
+	CreatePairedActive(ctx context.Context, in CreatePairedInput) error
+
 	// Advance appends events and updates the snapshot + next deadline for an
 	// in-progress match (one transaction).
 	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error
@@ -81,6 +87,26 @@ type CreateMatchInput struct {
 	FairnessMode  string
 	Seed          []byte
 	Creator       Player // seat 0
+}
+
+// CreatePairedInput is the data needed to open an already-active, two-seat match
+// (matchmaking). Unlike CreateMatchInput it carries both players plus the dealt
+// initial snapshot/deadline/events, since there is no separate join step.
+type CreatePairedInput struct {
+	PublicID      string
+	Game          string
+	Bid           int64
+	RakePct       int
+	TotalRounds   int
+	EngineVersion string
+	Commit        string
+	FairnessMode  string
+	Seed          []byte
+	SeatA         Player // seat 0
+	SeatB         Player // seat 1
+	State         gs.State
+	Deadline      time.Time
+	Events        []gs.Event
 }
 
 // LobbyItem is a summary of an open match.

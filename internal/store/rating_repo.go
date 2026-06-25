@@ -142,3 +142,21 @@ func updateRating(ctx context.Context, tx pgx.Tx, agentID int64, season, seat, w
 		agentID, season, newElo, w, l, t, coins, streak)
 	return err
 }
+
+// AgentElo returns the agent's ELO for the season, defaulting to the 1200 baseline
+// when the agent has not yet been rated this season (so unrated agents matchmake
+// from the baseline rather than failing).
+func (r *RatingRepo) AgentElo(ctx context.Context, agentPublicID string, season int) (int, error) {
+	var elo int
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(
+		     (SELECT rt.elo FROM ratings rt
+		      JOIN agents a ON a.id = rt.agent_id
+		      WHERE a.public_id = $1 AND rt.season = $2),
+		     1200)`,
+		agentPublicID, season).Scan(&elo)
+	if err != nil {
+		return 1200, err
+	}
+	return elo, nil
+}

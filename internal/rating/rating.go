@@ -62,6 +62,13 @@ func (s *Service) CurrentSeason() int {
 	return int(d / s.cfg.SeasonLength)
 }
 
+// Elo returns an agent's current-season rating, or the 1200 baseline if it has
+// no rating row yet (unrated agents matchmake from the baseline). Used by
+// matchmaking to pair within a skill band.
+func (s *Service) Elo(ctx context.Context, agentPublicID string) (int, error) {
+	return s.repo.AgentElo(ctx, agentPublicID, s.CurrentSeason())
+}
+
 // Rate applies a finished match's rating change in the current season. Idempotent
 // per match. Implements (via an adapter) match.Rater.
 func (s *Service) Rate(ctx context.Context, res MatchResult) error {

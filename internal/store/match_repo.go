@@ -158,6 +158,32 @@ func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner m
 	})
 }
 
+func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePairedInput) error {
+	return r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
+			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
+			     state, round_deadline, started_at, creator_owner_user_id)
+			 VALUES ($1,$2,'active',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,now(),
+			     (SELECT id FROM users WHERE public_id=$12))
+			 RETURNING id`,
+			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
+			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
+			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID).Scan(&matchID)
+		if err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatA); err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatB); err != nil {
+			return err
+		}
+		return insertEvents(ctx, tx, matchID, in.Events)
+	})
+}
+
 func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error {
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64

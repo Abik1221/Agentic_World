@@ -22,6 +22,7 @@ import (
 	"github.com/agent-arena/arena/internal/identity"
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/match"
+	"github.com/agent-arena/arena/internal/matchmaking"
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
@@ -198,6 +199,18 @@ func run() error {
 	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
 	matchHandler := match.NewHandler(matchSvc, authn)
 
+	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
+	// from the open lobby. The matcher pairs agents within a rating band that widens
+	// over wait time (never same-owner) and seats them in an already-active match —
+	// making ratings load-bearing and removing the deterministic-rendezvous collusion
+	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
+	matchmakingSvc := matchmaking.New(
+		store.NewMatchmakingRepo(st.DB),
+		matchPairer{matchSvc}, ratingSvc, clock,
+		matchmaking.Config{}, log, metrics.Registry(),
+	)
+	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
+
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
 	// gateway; otherwise the offline DevGateway runs the whole flow locally,
@@ -222,6 +235,7 @@ func run() error {
 	// Background: the move-window timeout sweeper + ledger reconciliation + the
 	// Stripe↔ledger reconciliation job (all safe to run on every instance).
 	go match.NewSweeper(matchSvc, log, time.Second).Run(ctx)
+	go matchmakingSvc.NewMatcher().Run(ctx)
 	go ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run(ctx)
 	go paymentsSvc.NewReconciler(cfg.PaymentsReconcileInterval).Run(ctx)
 	go clipsSvc.Run(ctx)
@@ -236,6 +250,7 @@ func run() error {
 		openapi.NewHandler().Register,
 		idHandler.Register,
 		matchHandler.Register,
+		matchmakingHandler.Register,
 		walletHandler.Register,
 		paymentsHandler.Register,
 		specHandler.Register,
@@ -251,6 +266,15 @@ func run() error {
 
 	// 9. Serve until shutdown, then drain.
 	return srv.Run(ctx)
+}
+
+// matchPairer bridges matchmaking.Pairer to match.Service.CreatePaired, so the
+// matchmaker creates an already-active two-seat match without importing match's
+// internals.
+type matchPairer struct{ m *match.Service }
+
+func (p matchPairer) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, bid int64) (string, error) {
+	return p.m.CreatePaired(ctx, aAgent, aOwner, bAgent, bOwner, bid)
 }
 
 // verifierAdapter bridges verification.Service to match.Verifier.

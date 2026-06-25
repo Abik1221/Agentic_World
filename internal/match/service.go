@@ -123,6 +123,61 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 	return m.PublicID, nil
 }
 
+// CreatePaired opens an already-active match between two server-matched agents
+// (the matchmaking path): it runs both agents' join checks, escrows both stakes,
+// deals the match, and persists it active in one step — no waiting window, so it
+// never appears in the open lobby. Returns the new match's public id.
+func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, bid int64) (string, error) {
+	if bid <= 0 {
+		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
+	}
+	// Both seats must clear the spending limits and verification gate.
+	if err := s.limits.CheckJoin(ctx, aAgent, bid); err != nil {
+		return "", err
+	}
+	if err := s.limits.CheckJoin(ctx, bAgent, bid); err != nil {
+		return "", err
+	}
+	if err := s.ver.CheckEligible(ctx, aAgent); err != nil {
+		return "", err
+	}
+	if err := s.ver.CheckEligible(ctx, bAgent); err != nil {
+		return "", err
+	}
+
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return "", err
+	}
+	cfg := gs.DefaultConfig()
+	cfg.Rounds = s.cfg.Rounds
+	cfg.FairnessMode = gs.FairnessShuffled
+	eng := gs.New(cfg)
+	state, events := eng.Init(seed)
+
+	publicID := platform.NewID(platform.PrefixMatch)
+	// Escrow both stakes atomically before persisting the match (mirrors Join).
+	if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
+		return "", err
+	}
+	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	in := CreatePairedInput{
+		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.cfg.RakePct,
+		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
+		FairnessMode: gs.FairnessShuffled, Seed: seed,
+		SeatA:    Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
+		SeatB:    Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
+		State:    state, Deadline: deadline, Events: events,
+	}
+	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
+		// Persisting failed after staking — return both bids so no coins are stuck.
+		_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
+		return "", err
+	}
+	s.publish(publicID, events)
+	return publicID, nil
+}
+
 // Join seats the caller at seat B, deals the match, and starts round 1.
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
