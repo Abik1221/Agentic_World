@@ -22,6 +22,10 @@ build: ## Build the server binary
 run: ## Run the server (expects deps via `make compose-up`)
 	go run ./cmd/server
 
+.PHONY: sim
+sim: ## Offline match simulator, e.g. make sim ARGS="-a highest -b random -n 100"
+	go run ./cmd/arena-sim $(ARGS)
+
 .PHONY: test
 test: ## Unit + integration tests with the race detector
 	go test -race -count=1 $(PKG)
