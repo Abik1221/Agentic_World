@@ -1,10 +1,19 @@
 package match
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/httpx"
 )
+
+// ErrConcurrentUpdate is an internal sentinel: a state write lost an
+// optimistic-concurrency race (another writer advanced the match first, caught
+// by the UNIQUE(match_id, seq) event-log constraint). It never reaches a client —
+// the service re-reads and retries, and only a retry-exhausted call surfaces as
+// ErrBusy. This is what lets the Redis lock be a pure fast-path optimization:
+// correctness holds even if the lock was never acquired (e.g. Redis down).
+var ErrConcurrentUpdate = errors.New("match: concurrent update conflict")
 
 // Domain errors as *httpx.APIError for direct handler return (httpx does not
 // import match, so no cycle).

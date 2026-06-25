@@ -193,6 +193,9 @@ func run() error {
 		clock,
 		match.Config{MoveWindow: cfg.MoveWindow, RakePct: cfg.RakePct, Rounds: cfg.DefaultRounds, LockTTL: 10 * time.Second},
 	)
+	// Low-latency wake-ups for long-polling agents (Redis pub/sub, cross-instance).
+	// Set after construction so a notifier-less build still works (no-op fallback).
+	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
 	matchHandler := match.NewHandler(matchSvc, authn)
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook

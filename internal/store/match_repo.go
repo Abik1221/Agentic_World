@@ -159,7 +159,7 @@ func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner m
 }
 
 func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error {
-	return r.tx(ctx, func(tx pgx.Tx) error {
+	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
 			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, updated_at=now()
@@ -173,9 +173,24 @@ func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.
 		}
 		return insertEvents(ctx, tx, matchID, events)
 	})
+	// A UNIQUE(match_id, seq) collision means another writer advanced this match
+	// first: optimistic-concurrency conflict, not a hard error. The service re-reads
+	// and retries (so correctness no longer depends on holding the Redis lock).
+	if isUniqueViolation(err) {
+		return match.ErrConcurrentUpdate
+	}
+	return err
 }
 
 func (r *MatchRepo) Finish(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event) error {
+	err := r.finishTx(ctx, matchPublicID, state, winnerAgentPublicID, replayHash, players, events)
+	if isUniqueViolation(err) {
+		return match.ErrConcurrentUpdate
+	}
+	return err
+}
+
+func (r *MatchRepo) finishTx(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,

@@ -94,6 +94,16 @@ type Broadcaster interface {
 	Broadcast(matchPublicID string, events []gs.Event)
 }
 
+// Notifier is a low-latency wake-up channel for waiting agents. When a match's
+// state advances, Notify wakes any agent long-polling that match's state so it
+// returns on the actual state change rather than a fixed timer. Subscribe returns
+// a channel that receives once per wake-up plus a cancel to release it. Backed by
+// Redis pub/sub (cross-instance); NoopNotifier degrades long-poll to timeout-only.
+type Notifier interface {
+	Notify(matchPublicID string)
+	Subscribe(matchPublicID string) (events <-chan struct{}, cancel func())
+}
+
 // Verifier records action timing and gates eligibility (anti human-play).
 // Satisfied by an adapter over verification.Service.
 type Verifier interface {
@@ -148,6 +158,15 @@ func (NoopWallet) RefundStakes(context.Context, string, string, string, int64) e
 type NoopBroadcaster struct{}
 
 func (NoopBroadcaster) Broadcast(string, []gs.Event) {}
+
+// NoopNotifier never wakes a waiter; long-poll falls back to its timeout. Used in
+// tests and whenever no real notifier is wired.
+type NoopNotifier struct{}
+
+func (NoopNotifier) Notify(string) {}
+func (NoopNotifier) Subscribe(string) (<-chan struct{}, func()) {
+	return make(chan struct{}), func() {}
+}
 
 type AllowAllVerifier struct{}
 
