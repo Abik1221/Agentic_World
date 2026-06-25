@@ -442,7 +442,7 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	var events []gs.Event
 	for seat := 0; seat < 2; seat++ {
 		if state.Sealed[seat] == nil {
-			ns, evs, terr := eng.ForceTimeout(state, seat, gs.NewTimeoutRand(m.Seed, state.Round, seat))
+			ns, evs, terr := eng.ForceTimeout(state, seat)
 			if terr != nil {
 				return terr
 			}

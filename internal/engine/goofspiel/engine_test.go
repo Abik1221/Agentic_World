@@ -96,16 +96,26 @@ func TestSealRejections(t *testing.T) {
 	}
 }
 
-func TestForceTimeoutDeterministic(t *testing.T) {
+func TestForceTimeoutPlaysLowestDeterministically(t *testing.T) {
 	eng := openEngine(t)
 	s, _ := eng.Init([]byte("seed-1"))
-	a, _, errA := eng.ForceTimeout(s, SeatA, NewTimeoutRand([]byte("seed-1"), 1, SeatA))
-	b, _, errB := eng.ForceTimeout(s, SeatA, NewTimeoutRand([]byte("seed-1"), 1, SeatA))
+	a, _, errA := eng.ForceTimeout(s, SeatA)
+	b, _, errB := eng.ForceTimeout(s, SeatA)
 	if errA != nil || errB != nil {
 		t.Fatalf("timeout errors: %v %v", errA, errB)
 	}
 	if *a.Sealed[SeatA] != *b.Sealed[SeatA] {
 		t.Fatalf("forced card not reproducible: %d vs %d", *a.Sealed[SeatA], *b.Sealed[SeatA])
+	}
+	// Least-harmful default = the lowest card in hand.
+	lowest := s.Hands[SeatA][0]
+	for _, c := range s.Hands[SeatA] {
+		if c < lowest {
+			lowest = c
+		}
+	}
+	if *a.Sealed[SeatA] != lowest {
+		t.Fatalf("forced card = %d, want lowest in hand %d", *a.Sealed[SeatA], lowest)
 	}
 }
 
