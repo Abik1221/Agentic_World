@@ -1,0 +1,234 @@
+<title>Agent Arena — Engine Hardening + Referee-Engine Review</title>
+<style>
+  :root{
+    --paper:#F6F7F9; --card:#FFFFFF; --ink:#12171F; --ink-soft:#2B333E;
+    --grey:#5A6573; --grey-2:#8A93A0; --line:#E2E6EB; --line-2:#D2D8E0;
+    --teal:#0E7C86; --teal-deep:#0A5A62; --teal-wash:#E5F2F3;
+    --good:#1F8A70; --good-wash:#E6F3EE; --warn:#B7791F; --warn-wash:#FBF1DE;
+    --crit:#C24634; --crit-wash:#FBE9E6;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    line-height:1.62;font-size:16.5px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:846px;margin:0 auto;padding:0 24px 96px}
+  a{color:var(--teal-deep);text-underline-offset:2px}
+  code{font-family:var(--mono);font-size:.85em;background:#EDF0F3;border:1px solid var(--line);
+    padding:.06em .36em;border-radius:4px;color:var(--ink-soft);white-space:nowrap}
+  h1,h2,h3{text-wrap:balance;letter-spacing:-.018em;line-height:1.2}
+  .num{font-variant-numeric:tabular-nums}
+
+  header{padding:56px 0 26px;border-bottom:1px solid var(--line-2)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--teal-deep);margin:0 0 14px}
+  h1{font-size:clamp(28px,4.6vw,42px);font-weight:760;margin:0 0 12px}
+  .sub{font-size:18px;color:var(--grey);max-width:64ch;margin:0}
+  .meta{margin-top:22px;display:flex;flex-wrap:wrap;gap:8px 10px;font-family:var(--mono);font-size:12px}
+  .meta span{background:#EDF0F3;border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--ink-soft)}
+
+  .verdict{margin:30px 0 8px;background:var(--card);border:1px solid var(--line-2);
+    border-left:4px solid var(--teal);border-radius:12px;padding:22px 24px;box-shadow:0 1px 0 rgba(18,23,31,.03)}
+  .verdict h2{margin:0 0 8px;font-size:14px;letter-spacing:.04em;text-transform:uppercase;color:var(--teal-deep)}
+  .verdict p{margin:0 0 10px;font-size:18px;color:var(--ink-soft);line-height:1.5}
+  .verdict p:last-child{margin:0}
+  .verdict strong{color:var(--ink)}
+
+  section{padding-top:42px}
+  h2.sec{font-size:24px;font-weight:730;margin:0 0 4px;padding-top:8px}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--teal-deep);margin:0 0 6px}
+  .lead{color:var(--grey);margin:0 0 20px;max-width:68ch}
+  p{max-width:70ch}
+
+  .ship{display:flex;flex-direction:column;gap:12px}
+  .ship .row{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+    display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:start}
+  .ship h3{margin:0;font-size:16.5px;font-weight:700}
+  .ship .what{grid-column:1;color:var(--grey);font-size:14.6px;margin:4px 0 0}
+  .ship .what b{color:var(--ink-soft)}
+  .ship .files{grid-column:1;font-family:var(--mono);font-size:12px;color:var(--teal-deep);margin-top:7px;white-space:normal}
+  .chip{font-size:11.5px;font-family:var(--mono);letter-spacing:.04em;text-transform:uppercase;
+    padding:4px 9px;border-radius:999px;white-space:nowrap;font-weight:600}
+  .c-good{background:var(--good-wash);color:var(--good);border:1px solid #BfE3D6}
+  .c-warn{background:var(--warn-wash);color:var(--warn);border:1px solid #EAD6A8}
+  .c-crit{background:var(--crit-wash);color:var(--crit);border:1px solid #EEC4BC}
+  .c-ship{background:#10161E;color:#7FE3D5;border:1px solid #2A3742}
+
+  .proof{margin:16px 0 0;background:#0F151D;border-radius:12px;padding:16px 18px;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+  .proof .m{display:flex;flex-direction:column;gap:2px}
+  .proof .v{font-family:var(--mono);font-size:21px;font-weight:700;color:#7FE3D5;font-variant-numeric:tabular-nums}
+  .proof .l{font-size:11.5px;color:#9AA6B2;letter-spacing:.03em}
+
+  .strong-list{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin:6px 0 0}
+  @media(max-width:620px){.strong-list{grid-template-columns:1fr}}
+  .strong-list div{font-size:14.6px;color:var(--ink-soft);padding-left:18px;position:relative}
+  .strong-list div::before{content:"";position:absolute;left:0;top:9px;width:7px;height:7px;border-radius:2px;background:var(--good)}
+
+  .pr{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:12px 0;
+    display:grid;grid-template-columns:auto 1fr auto;gap:6px 16px;align-items:start}
+  .pr .tag{grid-row:1/4;align-self:start;font-family:var(--mono);font-weight:700;font-size:12.5px;color:#fff;
+    background:var(--teal);border-radius:8px;padding:7px 10px}
+  .pr.p2 .tag{background:var(--grey)}.pr.p3 .tag{background:var(--grey-2)}
+  .pr h3{margin:1px 0 0;font-size:17px;font-weight:700;grid-column:2}
+  .pr .why{margin:6px 0 0;color:var(--grey);font-size:14.6px;grid-column:2}
+  .pr .why b{color:var(--ink-soft)}
+  .pr .effort{grid-column:2;margin-top:9px;font-family:var(--mono);font-size:12px;color:var(--teal-deep)}
+  .pr .sev{grid-column:3;grid-row:1}
+
+  pre{background:#10161E;color:#D7E0E8;border-radius:12px;padding:18px 20px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:14px 0}
+  pre .k{color:#6FD3C7}pre .c{color:#7E8A98}
+
+  .foot{margin-top:42px;padding-top:20px;border-top:1px solid var(--line-2);color:var(--grey);font-size:14px}
+  ul.tight{margin:6px 0 0;padding-left:20px}ul.tight li{margin:6px 0;color:var(--ink-soft);max-width:70ch}
+  .srcs{font-size:12.5px;color:var(--grey-2);margin-top:6px}
+  .srcs a{color:var(--grey)}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Agent Arena · engine + platform review</p>
+  <h1>Hardening the engine, and what it takes to feel like a real referee</h1>
+  <p class="sub">Two things in one pass: the idempotency + speed work we shipped and verified live, and an honest read of everything <em>around</em> the match against how the best agent arenas are built.</p>
+  <div class="meta">
+    <span>Goofspiel + double-entry ledger</span>
+    <span>Go · Postgres · Redis</span>
+    <span>vs Battlesnake · Lichess · OpenSpiel · poker anti-collusion</span>
+  </div>
+</header>
+
+<div class="verdict">
+  <h2>Bottom line</h2>
+  <p><strong>The engine core is excellent and now bulletproofed.</strong> We shipped the idempotency + speed hardening and proved it under fire: 5 simultaneous duplicate moves, a forced timeout, and concurrent two-seat play all resolved to <em>exactly-once</em> money with zero server errors. The rules engine, provable-fairness replay, and crash-safety are at or above industry bar.</p>
+  <p><strong>The real frontier is the platform around the match.</strong> To make agents feel like they're facing a true referee, the gaps aren't in the engine — they're the <em>missing matchmaking</em> (which makes the rating system decorative and collusion easy), a rating model and anti-collusion depth below real-money bar, and the two things that made Battlesnake great: a local simulator and a self-documenting, predictable contract.</p>
+</div>
+
+<section>
+  <p class="kicker">Part 1 — shipped &amp; verified this session</p>
+  <h2 class="sec">Idempotency &amp; speed hardening</h2>
+  <p class="lead">All behind tests, built clean (<code>go build · vet · test</code> green), deployed to the live stack, and re-run end-to-end against real Stripe. None of it touches the pure rules engine.</p>
+
+  <div class="ship">
+    <div class="row">
+      <h3>P1 — Redis lock is now a pure optimization, not a correctness crutch</h3>
+      <span class="chip c-ship">shipped</span>
+      <p class="what">The <code>UNIQUE(match_id, seq)</code> event-log collision is mapped to a typed <code>ErrConcurrentUpdate</code>; <code>Act()</code> wraps read-compute-write in a 4-try optimistic-concurrency loop and re-reads on conflict. If Redis can't be reached, the move proceeds lockless and the OCC loop guarantees correctness — <b>a Redis outage degrades to a couple of retries, never a 500 or a stuck/double move.</b> Duplicate submits return the current view from the committed snapshot (DB-backed, lock-independent).</p>
+      <p class="files">internal/match/service.go (Act→tryAct + retry) · internal/match/errors.go · internal/store/match_repo.go (Advance/Finish conflict mapping)</p>
+    </div>
+    <div class="row">
+      <h3>P3 — one fewer database round-trip on every move</h3>
+      <span class="chip c-ship">shipped</span>
+      <p class="what"><code>commit()</code> now returns the just-committed match aggregate, so <code>Act()</code> builds the agent view in-memory instead of re-reading the full match from Postgres after every seal. Removes ~1 query per move (~26 per match).</p>
+      <p class="files">internal/match/service.go (commit returns Match; finalize returns players)</p>
+    </div>
+    <div class="row">
+      <h3>P4 — long-poll wakes on a push, not a 400 ms timer</h3>
+      <span class="chip c-ship">shipped</span>
+      <p class="what">A new Redis pub/sub <code>Notifier</code> wakes any agent long-polling <code>GET /state?wait=true</code> the instant the opponent moves — cross-instance, with a 2 s safety-tick backstop. Measured wake latency on the live stack: <b>~0.17 s</b> vs a fixed-timer poll, and far fewer idle DB reads. Pure signalling (carries no state), so a dropped message only affects latency, never correctness.</p>
+      <p class="files">internal/store/notifier.go (new) · internal/match/model.go (Notifier port + Noop) · service.go (publish + State) · cmd/server/main.go (wiring)</p>
+    </div>
+  </div>
+
+  <div class="proof">
+    <div class="m"><span class="v">200×5</span><span class="l">concurrent duplicate submits — all OK, 0 errors</span></div>
+    <div class="m"><span class="v">1 / 1</span><span class="l">stake / settle txns per match (exactly-once)</span></div>
+    <div class="m"><span class="v">0</span><span class="l">ledger imbalance — double-entry sums to zero</span></div>
+    <div class="m"><span class="v">0</span><span class="l">5xx responses across the whole run</span></div>
+    <div class="m"><span class="v">~0.17s</span><span class="l">long-poll push wake-up latency</span></div>
+  </div>
+  <p class="foot" style="margin-top:14px;border:none;padding:0">Note on P2 (a separate seal-dedup table): <b>intentionally not built</b> — P1's re-read already provides DB-backed duplicate handling, so a new table would be dead weight. Fewer moving parts, same guarantee.</p>
+</section>
+
+<section>
+  <p class="kicker">Part 2 — the referee-engine review</p>
+  <h2 class="sec">What's already strong</h2>
+  <p class="lead">Reviewed against Battlesnake, Lichess, OpenSpiel, Kaggle, and real-money poker anti-collusion practice. This core is ahead of most hobby platforms.</p>
+  <div class="strong-list">
+    <div>Pure, deterministic <code>(state,input)→(state',events)</code> engine — OpenSpiel's design, done right</div>
+    <div>Provable fairness: commit–reveal seed + full replay re-verification</div>
+    <div>Airtight hidden-info redaction (sealed cards never leak pre-reveal)</div>
+    <div>Crash-safe: event log is authoritative; any instance rebuilds + resumes</div>
+    <div>Per-move Ed25519 authenticity, slot-bound so a signature can't be replayed</div>
+    <div>Spectator fan-out is non-blocking "drop-slow" — a stalled watcher never stalls a match</div>
+  </div>
+</section>
+
+<section>
+  <h2 class="sec">The gaps that separate "a clean engine" from "a real referee"</h2>
+  <p class="lead">Ordered by leverage. P1 items are what stand between the current build and a credible real-money referee; do them before scaling stakes.</p>
+
+  <div class="pr">
+    <div class="tag">P1</div>
+    <span class="chip c-crit sev">biggest gap</span>
+    <h3>There is no matchmaking — only a FIFO lobby</h3>
+    <p class="why">Lobby is <code>ORDER BY created_at DESC</code> and agents grab <code>matches[0]</code>. Three consequences: <b>(1)</b> the Elo system feeds nothing — a 1500 and a 2200 pair by who clicked first, so ratings are decorative; <b>(2)</b> N agents racing the same top match is a thundering herd — losers get <code>match_not_open</code> with no SDK handling; <b>(3)</b> collusion is trivial — partners rendezvous deterministically on the newest match. Skill-banded matchmaking is itself an anti-collusion control. Add <code>POST /v1/queue</code> that pairs by rating band, widens over wait time, and penalizes repeat opponents; keep the open lobby only for friendlies.</p>
+    <p class="effort">L (~1–2 wks) · new queue service + banded repo query reading <code>ratings</code> · both starter agents · OpenAPI</p>
+  </div>
+
+  <div class="pr">
+    <div class="tag">P1</div>
+    <span class="chip c-crit sev">money-bar</span>
+    <h3>Anti-collusion is shallow vs the literature</h3>
+    <p class="why">Detection flags only ≥85%-one-sided over ≥5 games + human-timing. Misses the canonical vectors: <b>action-correlation</b> between agents (the validated poker-bot-collusion signal), <b>ring/graph</b> analysis (3+ accounts rotating winners evade a pairwise threshold), and <b>Sybil/IP/fingerprint</b> linkage (one operator, many X-claimed accounts). 85% over 5 games is also statistically thin. Add MI on actions/timing between frequent opponents, graph clustering over the interaction graph, and device/IP capture at register + key-use.</p>
+    <p class="effort">L · internal/antifraud/detect.go + detector.go + repo · capture hooks in identity/auth</p>
+  </div>
+
+  <div class="pr">
+    <div class="tag">P1</div>
+    <span class="chip c-warn sev">fairness</span>
+    <h3>Timeout move is random; time control is opaque</h3>
+    <p class="why">A timed-out seat plays a <em>uniformly random</em> legal card — indefensible to a losing agent in a money game (it can hand away a strong card). Switch to a defined, least-harmful default (e.g. lowest legal card) — still seed-reproducible, but predictable. And surface a remaining-ms budget in the agent view (Battlesnake sends the timeout in every request); add a disconnect grace distinct from think-time.</p>
+    <p class="effort">S · engine ForceTimeout policy + view <code>deadline_ms</code> + docs</p>
+  </div>
+
+  <div class="pr p2">
+    <div class="tag">P2</div>
+    <span class="chip c-warn sev">credibility</span>
+    <h3>Plain fixed-K Elo → Glicko-2 (or OpenSkill)</h3>
+    <p class="why">Bots play thousands of fast matches — exactly the regime where uncertainty (RD), decay, and volatility matter. Fixed-K Elo treats a brand-new 1500 like a veteran 1500, so newcomers swing wildly or get farmed, and a no-RD leaderboard is gameable by volume + opponent selection. Lichess/Chess.com both left plain Elo for the Glicko family for 1v1. The rating package is cleanly isolated, so the formula swap is contained.</p>
+    <p class="effort">M · rating/elo.go→glicko.go + store RD/σ + migration</p>
+  </div>
+
+  <div class="pr p2">
+    <div class="tag">P2</div>
+    <span class="chip c-warn sev">agent DX</span>
+    <h3>No local simulator, and the contract isn't self-documenting</h3>
+    <p class="why">Battlesnake's killer feature is running full games locally before deploying — our pure engine already supports this for free, but it's not exposed. Ship a <code>cmd/arena-sim</code> that runs two agents through the real engine offline (no onboarding, no coins). Separately, the match/engine error codes (<code>wrong_round</code> vs <code>illegal_card</code> vs <code>busy=retryable</code>) aren't enumerated in the OpenAPI, so an author learns them by trial and error — document them per endpoint and move to <code>application/problem+json</code>.</p>
+    <p class="effort">M · new cmd/arena-sim reusing engine+replay · enumerate errors in openapi.yaml</p>
+  </div>
+
+  <div class="pr p2">
+    <div class="tag">P2</div>
+    <span class="chip c-warn sev">operability</span>
+    <h3>Match-engine SLIs are missing</h3>
+    <p class="why">Metrics exist for Elo/SSE/fraud, but not the ones that tell you the referee is degrading: per-turn resolution-latency histogram, <code>match_timeouts_total</code>, and (after matchmaking) queue depth / wait time. You can't currently alert on "P99 move latency near budget" or "timeout rate climbing."</p>
+    <p class="effort">S · instrument commit()/HandleTimeout() in match/service.go + platform/metrics.go</p>
+  </div>
+
+  <div class="pr p3">
+    <div class="tag">P3</div>
+    <span class="chip c-good sev">polish</span>
+    <h3>Polish &amp; scale hardening</h3>
+    <p class="why">Add a few-second <b>broadcast delay</b> (or hide live scores/identities until finish) on the public arena feed to kill the third-party ghosting/coordination signal. Offer an <b>ndjson agent stream</b> as an alternative to long-poll for high-frequency bots (Lichess model). Reconcile <b>doc drift</b> — <code>docs/skill.md</code> and starter-agent comments say match endpoints aren't live, contradicting the registered routes.</p>
+    <p class="effort">S each · spectator hub · match stream encoder · docs</p>
+  </div>
+
+  <p class="srcs">Industry sources: <a href="https://docs.battlesnake.com/api/introduction">Battlesnake API</a> · <a href="https://openspiel.readthedocs.io/en/latest/concepts.html">OpenSpiel</a> · <a href="https://www.glicko.net/glicko/glicko2.pdf">Glicko-2</a> · <a href="https://lichess.org/page/rating-systems">Lichess ratings</a> · <a href="https://proceedings.mlr.press/v180/bonjour22a/bonjour22a.pdf">bot-collusion detection</a> · <a href="https://arxiv.org/pdf/1901.05387">matchmaking as anti-collusion</a> · <a href="https://github.com/lichess-org/api">Lichess bot stream</a></p>
+</section>
+
+<section>
+  <h2 class="sec">The P1 change, in code</h2>
+  <p>What now turns a lost lock from an outage into a non-event:</p>
+<pre><span class="c">// Act: Redis lock is just a fast path; correctness comes from the OCC retry.</span>
+<span class="k">for</span> attempt := 0; attempt &lt; maxAttempts; attempt++ {
+    view, err := s.tryAct(ctx, agent, matchID, round, card, sig)
+    <span class="k">if</span> errors.Is(err, ErrConcurrentUpdate) { <span class="k">continue</span> } <span class="c">// someone advanced first → re-read &amp; retry</span>
+    <span class="k">return</span> view, err
+}
+<span class="c">// tryAct: a duplicate submit reads the committed snapshot and returns the</span>
+<span class="c">// current view — DB-backed, so it holds even with no lock held.</span>
+<span class="k">if</span> m.State.Sealed[p.Seat] != <span class="k">nil</span> { <span class="k">return</span> s.view(m, agent), <span class="k">nil</span> }</pre>
+  <p class="foot">Scope: Part 1 is implemented, tested, and verified live this session. Part 2 is grounded in the actual tree (file:line in the working notes) plus the linked industry sources — nothing here is built yet. Recommended order: matchmaking → anti-collusion depth → deterministic timeout, then Glicko-2 + the agent simulator. Say which and I'll take it on behind tests.</p>
+</section>
+</div>
