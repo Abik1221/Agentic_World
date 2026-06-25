@@ -89,7 +89,7 @@ func (r *fakeRepo) StripeConnectID(_ context.Context, _ string) (string, error) 
 func (r *fakeRepo) SetStripeConnectID(_ context.Context, _, id string) error    { r.connectID = id; return nil }
 
 func newSvc(coiner payments.Coiner, repo payments.Repo) *payments.Service {
-	return payments.New(payments.DevGateway{}, coiner, repo,
+	return payments.New(payments.NewDevGateway(coiner), coiner, repo,
 		platform.FixedClock{T: clockT},
 		payments.Config{
 			Packs:         payments.DefaultPacks(),

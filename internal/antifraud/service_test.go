@@ -63,6 +63,9 @@ func (r *fakeRepo) RecentPairs(context.Context, time.Time, int) ([]antifraud.Pai
 	return nil, nil
 }
 func (r *fakeRepo) AgentsWithSamples(context.Context, int) ([]string, error) { return nil, nil }
+func (r *fakeRepo) PairMoves(context.Context, string, string, time.Time) ([]antifraud.MoveSample, error) {
+	return nil, nil
+}
 func (r *fakeRepo) AgentTiming(context.Context, string) (antifraud.TimingStat, error) {
 	return antifraud.TimingStat{}, nil
 }

@@ -4,7 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
 )
 
 // hashRand is a deterministic pseudo-random stream keyed by (seed, label). The
@@ -38,15 +37,6 @@ func (r *hashRand) Intn(n int) int {
 		return 0
 	}
 	return int(r.next() % uint64(n))
-}
-
-// Rand is the minimal randomness the engine consumes (only for forced timeouts).
-type Rand interface{ Intn(n int) int }
-
-// NewTimeoutRand returns a deterministic Rand for a (seed, round, seat) timeout,
-// so a forced move is identical every time the match is replayed from its seed.
-func NewTimeoutRand(seed []byte, round, seat int) Rand {
-	return newHashRand(seed, fmt.Sprintf("timeout:%d:%d", round, seat))
 }
 
 // derivePrizeOrder returns the prize sequence. Open mode uses the fixed Cards

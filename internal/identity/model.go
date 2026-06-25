@@ -23,7 +23,7 @@ type Limits struct {
 func DefaultLimits() Limits {
 	return Limits{
 		CoinLimitPerMatch: 100, DailyLossLimit: 500, SessionLossLimit: 1000,
-		MinWalletBalance: 50, MaxBid: 200, MaxConcurrentMatches: 1,
+		MinWalletBalance: 50, MaxBid: 100, MaxConcurrentMatches: 1,
 		CooldownLosses: 3, CooldownSeconds: 300, AutoJoin: false,
 	}
 }

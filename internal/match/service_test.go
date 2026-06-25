@@ -75,6 +75,20 @@ func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, s
 	return nil
 }
 
+func (r *fakeRepo) CreatePairedActive(_ context.Context, in match.CreatePairedInput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d := in.Deadline
+	r.matches[in.PublicID] = match.Match{
+		PublicID: in.PublicID, Game: in.Game, Status: match.StatusActive, Bid: in.Bid,
+		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
+		Commit: in.Commit, FairnessMode: in.FairnessMode, Seed: in.Seed,
+		Players: []match.Player{in.SeatA, in.SeatB}, State: in.State, RoundDeadline: &d,
+	}
+	r.events[in.PublicID] = append(r.events[in.PublicID], in.Events...)
+	return nil
+}
+
 func (r *fakeRepo) Advance(_ context.Context, id string, state gs.State, deadline *time.Time, events []gs.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

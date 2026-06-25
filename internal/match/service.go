@@ -29,11 +29,22 @@ type Service struct {
 	limits Limits
 	wallet Wallet
 	bcast  Broadcaster
+	notify Notifier
 	ver    Verifier
 	rater  Rater
 	finish FinishHook
 	clock  platform.Clock
 	cfg    Config
+}
+
+// SetNotifier installs the low-latency wake-up channel for long-polling agents
+// after construction (mirrors wallet.SetPayoutGate). Nil keeps the no-op default,
+// so tests and notifier-less deployments still work (long-poll falls back to its
+// timeout). Wired in main once Redis is available.
+func (s *Service) SetNotifier(n Notifier) {
+	if n != nil {
+		s.notify = n
+	}
 }
 
 func New(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, rater Rater, finish FinishHook, clock platform.Clock, cfg Config) *Service {
@@ -52,10 +63,17 @@ func New(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster
 	if finish == nil {
 		finish = NoopFinishHook{}
 	}
-	return &Service{repo: repo, lock: lock, limits: limits, wallet: wallet, bcast: bcast, ver: ver, rater: rater, finish: finish, clock: clock, cfg: cfg}
+	return &Service{repo: repo, lock: lock, limits: limits, wallet: wallet, bcast: bcast, notify: NoopNotifier{}, ver: ver, rater: rater, finish: finish, clock: clock, cfg: cfg}
 }
 
 func lockKey(matchPublicID string) string { return "match:lock:" + matchPublicID }
+
+// publish fans new events to spectators (SSE) and wakes any agent long-polling
+// this match. Both are best-effort and off the correctness path.
+func (s *Service) publish(matchPublicID string, events []gs.Event) {
+	s.bcast.Broadcast(matchPublicID, events)
+	s.notify.Notify(matchPublicID)
+}
 
 func (s *Service) engine(m Match) *gs.Engine {
 	cfg := gs.DefaultConfig()
@@ -103,6 +121,61 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 		return "", err
 	}
 	return m.PublicID, nil
+}
+
+// CreatePaired opens an already-active match between two server-matched agents
+// (the matchmaking path): it runs both agents' join checks, escrows both stakes,
+// deals the match, and persists it active in one step — no waiting window, so it
+// never appears in the open lobby. Returns the new match's public id.
+func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, bid int64) (string, error) {
+	if bid <= 0 {
+		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
+	}
+	// Both seats must clear the spending limits and verification gate.
+	if err := s.limits.CheckJoin(ctx, aAgent, bid); err != nil {
+		return "", err
+	}
+	if err := s.limits.CheckJoin(ctx, bAgent, bid); err != nil {
+		return "", err
+	}
+	if err := s.ver.CheckEligible(ctx, aAgent); err != nil {
+		return "", err
+	}
+	if err := s.ver.CheckEligible(ctx, bAgent); err != nil {
+		return "", err
+	}
+
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return "", err
+	}
+	cfg := gs.DefaultConfig()
+	cfg.Rounds = s.cfg.Rounds
+	cfg.FairnessMode = gs.FairnessShuffled
+	eng := gs.New(cfg)
+	state, events := eng.Init(seed)
+
+	publicID := platform.NewID(platform.PrefixMatch)
+	// Escrow both stakes atomically before persisting the match (mirrors Join).
+	if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
+		return "", err
+	}
+	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	in := CreatePairedInput{
+		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.cfg.RakePct,
+		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
+		FairnessMode: gs.FairnessShuffled, Seed: seed,
+		SeatA:    Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
+		SeatB:    Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
+		State:    state, Deadline: deadline, Events: events,
+	}
+	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
+		// Persisting failed after staking — return both bids so no coins are stuck.
+		_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
+		return "", err
+	}
+	s.publish(publicID, events)
+	return publicID, nil
 }
 
 // Join seats the caller at seat B, deals the match, and starts round 1.
@@ -153,7 +226,7 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		_ = s.wallet.RefundStakes(ctx, matchPublicID, creator, agentPublicID, m.Bid)
 		return AgentView{}, err
 	}
-	s.bcast.Broadcast(matchPublicID, events)
+	s.publish(matchPublicID, events)
 
 	updated, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -162,19 +235,38 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	return s.view(updated, agentPublicID), nil
 }
 
-// Act applies an agent's card for the current round. Idempotent per (match,round,seat).
-// If the agent has registered a signing key, `signature` is REQUIRED and verified
+// Act applies an agent's card for the current round. Idempotent per (match,round,
+// seat). If the agent registered a signing key, `signature` is REQUIRED and verified
 // (proving the agent authored this exact move); the proof is persisted for replay.
+//
+// Concurrency model: the Redis lock is a FAST PATH that avoids wasted retries when
+// it's held. Correctness comes from optimistic concurrency — the UNIQUE(match_id,
+// seq) event-log constraint rejects a racing writer, surfacing as ErrConcurrentUpdate,
+// and we re-read + retry. So a Redis outage degrades to a few extra retries, never a
+// stuck, lost, or double-applied move.
 func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string) (AgentView, error) {
-	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
-	if err != nil {
-		return AgentView{}, err
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
 	}
-	if !ok {
-		return AgentView{}, ErrBusy
-	}
-	defer release()
+	// (lerr != nil — Redis unreachable: proceed lockless, relying on the OCC retry.)
 
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, round, card, signature)
+		if errors.Is(err, ErrConcurrentUpdate) {
+			continue // another writer advanced first; re-read and retry
+		}
+		return view, err
+	}
+	return AgentView{}, ErrBusy // retries exhausted under heavy contention
+}
+
+// tryAct is one optimistic-concurrency attempt: read the current snapshot, validate,
+// seal, and commit. A lost race returns ErrConcurrentUpdate for Act to retry.
+func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
@@ -189,7 +281,8 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 	if round != m.State.Round {
 		return AgentView{}, ErrWrongRound
 	}
-	// Idempotent: this seat already sealed this round → return current view.
+	// DB-backed idempotent replay: this seat already sealed this round → current
+	// view, no error. Reads the committed snapshot, so it holds even with no lock.
 	if m.State.Sealed[p.Seat] != nil {
 		return s.view(m, agentPublicID), nil
 	}
@@ -228,51 +321,62 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 		_ = s.repo.RecordMoveSignature(ctx, matchPublicID, round, p.Seat, card, signature, pubkey)
 	}
 
-	if err := s.commit(ctx, m, eng, state, events); err != nil {
-		return AgentView{}, err
-	}
-
-	updated, err := s.repo.Get(ctx, matchPublicID)
+	updated, err := s.commit(ctx, m, eng, state, events)
 	if err != nil {
-		return AgentView{}, err
+		return AgentView{}, err // ErrConcurrentUpdate bubbles to Act's retry loop
 	}
+	// P3: build the view from the just-committed state instead of re-reading the
+	// full aggregate from Postgres — one fewer round trip on every move.
 	return s.view(updated, agentPublicID), nil
 }
 
-// commit resolves the round if both seats have sealed, persists, and broadcasts.
-func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.State, events []gs.Event) error {
+// commit resolves the round if both seats have sealed, persists, broadcasts, and
+// returns the updated match aggregate (so callers avoid a redundant re-read). A
+// lost optimistic-concurrency race propagates as ErrConcurrentUpdate.
+func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.State, events []gs.Event) (Match, error) {
 	if state.Sealed[gs.SeatA] == nil || state.Sealed[gs.SeatB] == nil {
 		// Still waiting on the opponent; same round, deadline unchanged.
 		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
-			return err
+			return Match{}, err
 		}
-		s.bcast.Broadcast(m.PublicID, events)
-		return nil
+		s.publish(m.PublicID, events)
+		m.State = state
+		return m, nil
 	}
 
 	resolved, resolveEvents, err := eng.Resolve(state)
 	if err != nil {
-		return err // both seats are sealed here, so this is unreachable in practice — but never advance on a failed resolve
+		return Match{}, err // both seats sealed here, so unreachable in practice — but never advance on a failed resolve
 	}
 	all := append(events, resolveEvents...)
 
 	if resolved.Finished {
-		if err := s.finalize(ctx, m, resolved, all); err != nil {
-			return err
+		players, err := s.finalize(ctx, m, resolved, all)
+		if err != nil {
+			return Match{}, err
 		}
-	} else {
-		next := s.clock.Now().Add(s.cfg.MoveWindow)
-		if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, all); err != nil {
-			return err
-		}
+		s.publish(m.PublicID, all)
+		m.State = resolved
+		m.Players = players
+		m.Status = StatusFinished
+		m.RoundDeadline = nil
+		return m, nil
 	}
-	s.bcast.Broadcast(m.PublicID, all)
-	return nil
+
+	next := s.clock.Now().Add(s.cfg.MoveWindow)
+	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, all); err != nil {
+		return Match{}, err
+	}
+	s.publish(m.PublicID, all)
+	m.State = resolved
+	m.RoundDeadline = &next
+	return m, nil
 }
 
 // finalize settles the match: compute winner + per-player deltas, settle coins,
-// hash the full log, and persist the terminal state.
-func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEvents []gs.Event) error {
+// hash the full log, and persist the terminal state. Returns the players with their
+// final scores + coin deltas so the caller can render the result without re-reading.
+func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEvents []gs.Event) ([]Player, error) {
 	winnerAgent := ""
 	if state.Winner != gs.Tie {
 		if wp := m.playerBySeat(state.Winner); wp != nil {
@@ -281,22 +385,22 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	}
 	pool := m.Bid * 2
 	if err := s.wallet.Settle(ctx, m.PublicID, winnerAgent, pool, m.RakePct); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Compute the replay hash over the COMPLETE log (prior + new events).
 	prior, err := s.repo.LoadEvents(ctx, m.PublicID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	hash, err := replay.ReplayHash(append(prior, newEvents...))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	players := finalizePlayers(m.Players, state, pool, m.Bid, m.RakePct)
 	if err := s.repo.Finish(ctx, m.PublicID, state, winnerAgent, hash, players, newEvents); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Update skill ratings. Idempotent on the match id (a finalize retry after a
@@ -307,13 +411,13 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
 	}
 	if err := s.rater.Rate(ctx, rr); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Fire engagement hooks (clips, notifications) off the hot path. The contract
 	// is non-blocking, so a failure or backlog here never affects the match.
 	s.finish.MatchFinished(ctx, m.PublicID)
-	return nil
+	return players, nil
 }
 
 // HandleTimeout forces a missing seat to play (deterministically) once its window
@@ -338,7 +442,7 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	var events []gs.Event
 	for seat := 0; seat < 2; seat++ {
 		if state.Sealed[seat] == nil {
-			ns, evs, terr := eng.ForceTimeout(state, seat, gs.NewTimeoutRand(m.Seed, state.Round, seat))
+			ns, evs, terr := eng.ForceTimeout(state, seat)
 			if terr != nil {
 				return terr
 			}
@@ -346,7 +450,8 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 			events = append(events, evs...)
 		}
 	}
-	return s.commit(ctx, m, eng, state, events)
+	_, err = s.commit(ctx, m, eng, state, events)
+	return err
 }
 
 // SweepExpired processes all matches whose move window has lapsed.
@@ -364,8 +469,16 @@ func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
 	return len(ids), nil
 }
 
+// pollSafetyTick bounds the long-poll wait if a push wake-up is ever missed
+// (e.g. a Redis blip). On the happy path the notifier wakes the waiter the moment
+// the state changes, so this timer almost never fires — it's a backstop, not the
+// mechanism. Far fewer idle reads than the old fixed 400ms poll.
+const pollSafetyTick = 2 * time.Second
+
 // State returns the redacted agent view; with wait it long-polls until the state
-// advances (opponent acts / round resolves) or the timeout elapses.
+// advances (opponent acts / round resolves) or the timeout elapses. The wait is
+// driven by the Notifier (Redis pub/sub) so it returns on the actual state change
+// rather than a fixed timer — low latency without hammering Postgres.
 func (s *Service) State(ctx context.Context, matchPublicID, viewerAgentPublicID string, wait bool, timeout time.Duration) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -375,12 +488,27 @@ func (s *Service) State(ctx context.Context, matchPublicID, viewerAgentPublicID 
 		return s.view(m, viewerAgentPublicID), nil
 	}
 	startSeq := m.State.NextSeq
+
+	// Subscribe BEFORE the recheck below so a change landing between them can't be
+	// missed (it either bumps NextSeq on the recheck or delivers on the channel).
+	wake, cancel := s.notify.Subscribe(matchPublicID)
+	defer cancel()
+
 	deadline := s.clock.Now().Add(timeout)
-	for s.clock.Now().Before(deadline) {
+	for {
+		remaining := deadline.Sub(s.clock.Now())
+		if remaining <= 0 {
+			break
+		}
+		tick := remaining
+		if tick > pollSafetyTick {
+			tick = pollSafetyTick
+		}
 		select {
 		case <-ctx.Done():
 			return s.view(m, viewerAgentPublicID), nil
-		case <-time.After(400 * time.Millisecond):
+		case <-wake: // a real state change was published
+		case <-time.After(tick): // backstop in case a wake-up was missed
 		}
 		m, err = s.repo.Get(ctx, matchPublicID)
 		if err != nil {

@@ -1,0 +1,64 @@
+# Standalone E2E stack (run WITHOUT the base compose to avoid host-port clashes
+# with other local projects). Postgres/Redis are NOT published to the host — the
+# server reaches them over the compose network. Only the API (8080) is exposed.
+#
+#   docker compose -f deploy/docker-compose.e2e.yml up --build -d
+#
+# Feeds the real (TEST-mode) Stripe keys from ../.env into the server and shortens
+# the cash-out clearing window so build-credit -> play -> withdraw runs in one go.
+name: arena-e2e
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: arena
+      POSTGRES_DB: arena
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arena -d arena"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.17.1
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes: ["../migrations:/migrations:ro"]
+    command:
+      [ "-path", "/migrations",
+        "-database", "postgres://arena:arena@postgres:5432/arena?sslmode=disable",
+        "up" ]
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args: { VERSION: e2e }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://arena:arena@postgres:5432/arena?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      BASE_URL: http://localhost:8080
+      ENV: local
+      PORT: "8080"
+      ALLOW_MINT: "true"
+      WITHDRAW_CLEARING: "2s"
+      WITHDRAW_MIN_COINS: "100"
+      DETECT_INTERVAL: "5s"
+      MOVE_WINDOW_SECONDS: "3"
+      ADMIN_USER_IDS: "${ADMIN_USER_IDS:-}"
+    ports: ["8080:8080"]

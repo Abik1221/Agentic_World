@@ -35,7 +35,7 @@ CREATE TABLE agents (
     max_concurrent_matches INT    NOT NULL DEFAULT 1,
     cooldown_losses        INT    NOT NULL DEFAULT 3,
     cooldown_seconds       INT    NOT NULL DEFAULT 300,
-    max_bid                BIGINT NOT NULL DEFAULT 200,
+    max_bid                BIGINT NOT NULL DEFAULT 100,
     auto_join              BOOLEAN NOT NULL DEFAULT false,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
