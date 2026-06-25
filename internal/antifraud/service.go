@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/platform"
@@ -161,6 +162,18 @@ func (s *Service) RunDetection(ctx context.Context) error {
 			s.m.flags.WithLabelValues("collusion").Inc()
 			s.audit(ctx, "system", "flag_collusion", p.A+"|"+p.B, map[string]any{"games": p.Games, "score": CollusionScore(p)})
 		}
+	}
+
+	// Ring detection: 3+ account funnels that each stay under the pairwise ban
+	// threshold. Conservative (2-core guard excludes a strong player's star), and
+	// like every flag here it drives a payout hold + human review, not an auto-ban.
+	for _, ring := range DetectRings(pairs) {
+		for _, ag := range ring.Agents {
+			_ = s.repo.RecordFlag(ctx, ag, "", "collusion_ring", "coin-funnel ring detected")
+		}
+		s.m.flags.WithLabelValues("collusion_ring").Inc()
+		s.audit(ctx, "system", "flag_collusion_ring", strings.Join(ring.Agents, "|"),
+			map[string]any{"sink": ring.Sink, "score": ring.Score, "size": len(ring.Agents)})
 	}
 
 	agents, err := s.repo.AgentsWithSamples(ctx, minTimingSamples)
