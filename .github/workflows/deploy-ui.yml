@@ -22,6 +22,9 @@ env:
   SERVER_USER: "root"
   IMAGE: "agent-arena-ui:latest"
   CONTAINER: "agent-arena-ui"
+  # Port 80 on this server is taken by the live Mega Hub site, so the Agent
+  # Arena demo runs on its own port to coexist without disrupting production.
+  UI_PORT: "8090"
 
 jobs:
   deploy:
@@ -52,10 +55,10 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
             "$SERVER_USER@$SERVER_HOST" \
-            "IMAGE='$IMAGE' CONTAINER='$CONTAINER' bash -s" <<'ENDSSH'
+            "IMAGE='$IMAGE' CONTAINER='$CONTAINER' UI_PORT='$UI_PORT' bash -s" <<'ENDSSH'
           set -e
 
-          # Ensure Docker is present on a bare VPS (no-op if already installed).
+          # Ensure Docker is present (no-op if already installed).
           if ! command -v docker >/dev/null 2>&1; then
             echo "Installing Docker..."
             curl -fsSL https://get.docker.com | sh
@@ -64,21 +67,21 @@ jobs:
           echo "Loading image..."
           docker load < /tmp/agent-arena-ui.tar.gz
 
-          echo "Restarting container on port 80..."
+          echo "Restarting container on port ${UI_PORT} (port 80 is the live Mega Hub site)..."
           docker rm -f "$CONTAINER" 2>/dev/null || true
           docker run -d \
             --name "$CONTAINER" \
             --restart unless-stopped \
-            -p 80:80 \
+            -p "${UI_PORT}:80" \
             "$IMAGE"
 
           rm -f /tmp/agent-arena-ui.tar.gz
           docker image prune -f >/dev/null 2>&1 || true
 
-          echo "Waiting for the UI to answer locally..."
+          echo "Waiting for the UI to answer on port ${UI_PORT}..."
           for i in $(seq 1 20); do
-            if curl -fsS http://localhost/healthz >/dev/null 2>&1; then
-              echo "✅ UI is up on the server (http://localhost/healthz = ok)."
+            if curl -fsS "http://localhost:${UI_PORT}/healthz" >/dev/null 2>&1; then
+              echo "✅ Agent Arena UI is up on the server (http://localhost:${UI_PORT}/healthz = ok)."
               break
             fi
             [ "$i" -eq 20 ] && { echo "❌ UI did not become healthy."; docker logs --tail=50 "$CONTAINER" || true; exit 1; }
@@ -87,7 +90,7 @@ jobs:
           ENDSSH
 
       - name: Done
-        run: echo "🌍 Deployed. Open http://${SERVER_HOST}/ (ensure port 80 is open in the VPS firewall)."
+        run: echo "🌍 Deployed. Open http://${SERVER_HOST}:${UI_PORT}/ (ensure port ${UI_PORT} is open in the VPS firewall)."
 
       - name: Cleanup local key
         if: always()
