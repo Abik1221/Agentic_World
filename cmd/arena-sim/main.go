@@ -196,7 +196,7 @@ func simulate(eng *gs.Engine, seed []byte, polA, polB Policy, trace bool) (outco
 		}
 	}
 
-	hash, err := replay.ReplayHash(events)
+	hash, err := replay.Hash(events)
 	if err != nil {
 		return outcome{}, err
 	}

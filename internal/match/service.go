@@ -348,7 +348,9 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 	if err != nil {
 		return Match{}, err // both seats sealed here, so unreachable in practice — but never advance on a failed resolve
 	}
-	all := append(events, resolveEvents...)
+	all := make([]gs.Event, 0, len(events)+len(resolveEvents))
+	all = append(all, events...)
+	all = append(all, resolveEvents...)
 
 	if resolved.Finished {
 		players, err := s.finalize(ctx, m, resolved, all)
@@ -393,7 +395,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	if err != nil {
 		return nil, err
 	}
-	hash, err := replay.ReplayHash(append(prior, newEvents...))
+	hash, err := replay.Hash(append(prior, newEvents...))
 	if err != nil {
 		return nil, err
 	}

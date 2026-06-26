@@ -120,7 +120,7 @@ func TestVerifyDetectsReorderedLog(t *testing.T) {
 
 func TestReplayHashStableAcrossRepresentations(t *testing.T) {
 	_, evs := driveMatch(t, []byte("seed-H"))
-	h1, err := replay.ReplayHash(evs)
+	h1, err := replay.Hash(evs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestReplayHashStableAcrossRepresentations(t *testing.T) {
 	if err := json.Unmarshal(b, &roundtrip); err != nil {
 		t.Fatal(err)
 	}
-	h2, err := replay.ReplayHash(roundtrip)
+	h2, err := replay.Hash(roundtrip)
 	if err != nil {
 		t.Fatal(err)
 	}

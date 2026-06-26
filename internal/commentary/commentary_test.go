@@ -9,8 +9,10 @@ import (
 
 func TestLineIsDeterministic(t *testing.T) {
 	r := commentary.Round{Round: 5, TotalRounds: 13, Prize: 7, PrizePool: 7, CardA: 9, CardB: 4, Winner: 0, ScoreA: 20, ScoreB: 11}
-	if commentary.Line(r) != commentary.Line(r) {
-		t.Fatal("Line must be deterministic for the same round")
+	first := commentary.Line(r)
+	second := commentary.Line(r)
+	if first != second {
+		t.Fatalf("Line must be deterministic for the same round: %q != %q", first, second)
 	}
 }
 
