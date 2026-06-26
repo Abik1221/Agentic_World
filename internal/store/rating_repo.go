@@ -98,7 +98,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int)
 	rows, err := r.db.Query(ctx,
 		`SELECT a.public_id, a.slug, a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE r.season = $1
+		 WHERE r.season = $1 AND a.kind <> 'house'
 		 ORDER BY r.elo DESC, r.agent_id ASC
 		 LIMIT $2 OFFSET $3`, season, limit, offset)
 	if err != nil {

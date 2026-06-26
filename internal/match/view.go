@@ -12,6 +12,7 @@ type AgentView struct {
 	MatchID          string      `json:"match_id"`
 	Game             string      `json:"game"`
 	Status           string      `json:"status"`
+	Mode             string      `json:"mode"` // "competitive" | "sandbox"
 	Round            int         `json:"round"`
 	TotalRounds      int         `json:"total_rounds"`
 	CurrentPrize     int         `json:"current_prize"`
@@ -85,8 +86,12 @@ func (s *Service) view(m Match, viewerAgentPublicID string) AgentView {
 	}
 	st := m.State
 
+	mode := m.Mode
+	if mode == "" {
+		mode = ModeCompetitive
+	}
 	v := AgentView{
-		MatchID: m.PublicID, Game: m.Game, Status: m.Status,
+		MatchID: m.PublicID, Game: m.Game, Status: m.Status, Mode: mode,
 		Round: st.Round, TotalRounds: m.TotalRounds,
 		CurrentPrize: st.CurrentPrize(), PrizePool: st.PrizePool,
 		PrizeOrderCommit: m.Commit,

@@ -95,6 +95,8 @@ type CreateMatchInput struct {
 type CreatePairedInput struct {
 	PublicID      string
 	Game          string
+	Mode          string // ModeCompetitive (default) | ModeSandbox
+	BotPolicy     string // house strategy when Mode == ModeSandbox; "" otherwise
 	Bid           int64
 	RakePct       int
 	TotalRounds   int

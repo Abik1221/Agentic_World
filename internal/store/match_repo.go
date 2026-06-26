@@ -87,14 +87,14 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 	var stateBytes []byte
 	var deadline *time.Time
 	err := r.db.QueryRow(ctx,
-		`SELECT m.public_id, m.game, m.status, m.bid, m.rake_pct, m.total_rounds,
+		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
 		        COALESCE(m.state, '{}'::jsonb), m.round_deadline,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
-		Scan(&m.PublicID, &m.Game, &m.Status, &m.Bid, &m.RakePct, &m.TotalRounds,
+		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
 			&stateBytes, &deadline, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
@@ -162,15 +162,15 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
+			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
 			     state, round_deadline, started_at, creator_owner_user_id)
-			 VALUES ($1,$2,'active',$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,now(),
+			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,now(),
 			     (SELECT id FROM users WHERE public_id=$12))
 			 RETURNING id`,
 			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
 			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
-			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID).Scan(&matchID)
+			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy).Scan(&matchID)
 		if err != nil {
 			return err
 		}

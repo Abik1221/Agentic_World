@@ -33,6 +33,7 @@ type Service struct {
 	ver    Verifier
 	rater  Rater
 	finish FinishHook
+	bot    Bot
 	clock  platform.Clock
 	cfg    Config
 }
@@ -44,6 +45,15 @@ type Service struct {
 func (s *Service) SetNotifier(n Notifier) {
 	if n != nil {
 		s.notify = n
+	}
+}
+
+// SetBot installs the house-agent move picker used by sandbox matches, after
+// construction (mirrors SetNotifier). Nil keeps the NoopBot default, so existing
+// callers and tests that don't use sandbox mode are unaffected.
+func (s *Service) SetBot(b Bot) {
+	if b != nil {
+		s.bot = b
 	}
 }
 
@@ -63,7 +73,7 @@ func New(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster
 	if finish == nil {
 		finish = NoopFinishHook{}
 	}
-	return &Service{repo: repo, lock: lock, limits: limits, wallet: wallet, bcast: bcast, notify: NoopNotifier{}, ver: ver, rater: rater, finish: finish, clock: clock, cfg: cfg}
+	return &Service{repo: repo, lock: lock, limits: limits, wallet: wallet, bcast: bcast, notify: NoopNotifier{}, ver: ver, rater: rater, finish: finish, bot: NoopBot{}, clock: clock, cfg: cfg}
 }
 
 func lockKey(matchPublicID string) string { return "match:lock:" + matchPublicID }
@@ -165,14 +175,49 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.cfg.RakePct,
 		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
 		FairnessMode: gs.FairnessShuffled, Seed: seed,
-		SeatA:    Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
-		SeatB:    Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
-		State:    state, Deadline: deadline, Events: events,
+		SeatA: Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
+		SeatB: Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
+		State: state, Deadline: deadline, Events: events,
 	}
 	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
 		// Persisting failed after staking — return both bids so no coins are stuck.
 		_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
 		return "", err
+	}
+	s.publish(publicID, events)
+	return publicID, nil
+}
+
+// CreateSandbox opens an ACTIVE, risk-free practice match: the developer's agent
+// at seat A versus a platform house agent at seat B, playing the given bot policy.
+// Unlike the competitive paths it stakes NO coins, enforces NO spending limits,
+// runs NO eligibility gate, and (on finish) updates NO rating — yet it deals,
+// persists, broadcasts, and replays through the very same machinery, so the dev's
+// client exercises the real wire contract. The house plays automatically (see
+// commit). Returns the new match's public id.
+func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, houseAgent, houseOwner, policy string) (string, error) {
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return "", err
+	}
+	cfg := gs.DefaultConfig()
+	cfg.Rounds = s.cfg.Rounds
+	cfg.FairnessMode = gs.FairnessShuffled
+	eng := gs.New(cfg)
+	state, events := eng.Init(seed)
+
+	publicID := platform.NewID(platform.PrefixMatch)
+	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	in := CreatePairedInput{
+		PublicID: publicID, Game: "goofspiel", Mode: ModeSandbox, BotPolicy: policy,
+		Bid: 0, RakePct: 0, TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version,
+		Commit: gs.Commit(seed), FairnessMode: gs.FairnessShuffled, Seed: seed,
+		SeatA: Player{AgentPublicID: humanAgent, OwnerPublicID: humanOwner, Seat: gs.SeatA},
+		SeatB: Player{AgentPublicID: houseAgent, OwnerPublicID: houseOwner, Seat: HouseSeat},
+		State: state, Deadline: deadline, Events: events,
+	}
+	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
+		return "", err // no stake was taken, so nothing to unwind
 	}
 	s.publish(publicID, events)
 	return publicID, nil
@@ -334,6 +379,16 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 // returns the updated match aggregate (so callers avoid a redundant re-read). A
 // lost optimistic-concurrency race propagates as ErrConcurrentUpdate.
 func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.State, events []gs.Event) (Match, error) {
+	// Sandbox: the house agent auto-plays the instant the developer has sealed, so
+	// the round resolves immediately and the dev always gets a complete round back
+	// (no "waiting for opponent" stall). The house move is recorded in the event log
+	// like any other, so the replay still verifies as a unit.
+	if m.Mode == ModeSandbox {
+		if hev, ok := s.playHouse(eng, m.BotPolicy, &state); ok {
+			events = append(events, hev...)
+		}
+	}
+
 	if state.Sealed[gs.SeatA] == nil || state.Sealed[gs.SeatB] == nil {
 		// Still waiting on the opponent; same round, deadline unchanged.
 		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
@@ -375,6 +430,27 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 	return m, nil
 }
 
+// playHouse seals the house agent's card for the current round in a sandbox match.
+// It no-ops (ok=false) if the match is finished or the house seat is already
+// sealed (e.g. a timeout sweep forced both seats). If the bot somehow returns an
+// illegal card, it falls back to the engine's deterministic timeout move so the
+// match can never wedge on a buggy strategy.
+func (s *Service) playHouse(eng *gs.Engine, policy string, state *gs.State) ([]gs.Event, bool) {
+	if state.Finished || state.Sealed[HouseSeat] != nil {
+		return nil, false
+	}
+	card := s.bot.Pick(*state, HouseSeat, policy)
+	ns, ev, err := eng.Seal(*state, HouseSeat, card)
+	if err != nil {
+		ns, ev, err = eng.ForceTimeout(*state, HouseSeat)
+		if err != nil {
+			return nil, false
+		}
+	}
+	*state = ns
+	return ev, true
+}
+
 // finalize settles the match: compute winner + per-player deltas, settle coins,
 // hash the full log, and persist the terminal state. Returns the players with their
 // final scores + coin deltas so the caller can render the result without re-reading.
@@ -386,8 +462,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		}
 	}
 	pool := m.Bid * 2
-	if err := s.wallet.Settle(ctx, m.PublicID, winnerAgent, pool, m.RakePct); err != nil {
-		return nil, err
+	// Sandbox matches move no coins: skip settlement entirely (bid is 0 anyway, so
+	// this is also a belt-and-suspenders guard against any future money path).
+	if m.Mode != ModeSandbox {
+		if err := s.wallet.Settle(ctx, m.PublicID, winnerAgent, pool, m.RakePct); err != nil {
+			return nil, err
+		}
 	}
 
 	// Compute the replay hash over the COMPLETE log (prior + new events).
@@ -405,20 +485,20 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		return nil, err
 	}
 
-	// Update skill ratings. Idempotent on the match id (a finalize retry after a
-	// crash here re-applies safely), so settlement and ELO converge to a single
-	// consistent outcome.
-	rr := RatingResult{MatchPublicID: m.PublicID, WinnerSeat: state.Winner}
-	for _, p := range players {
-		rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
+	// Sandbox is unrated and off the growth path: skip ratings, clips, and
+	// notifications. Competitive matches update skill ratings (idempotent on the
+	// match id, so a finalize retry after a crash re-applies safely) and fire the
+	// engagement hooks off the hot path.
+	if m.Mode != ModeSandbox {
+		rr := RatingResult{MatchPublicID: m.PublicID, WinnerSeat: state.Winner}
+		for _, p := range players {
+			rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
+		}
+		if err := s.rater.Rate(ctx, rr); err != nil {
+			return nil, err
+		}
+		s.finish.MatchFinished(ctx, m.PublicID)
 	}
-	if err := s.rater.Rate(ctx, rr); err != nil {
-		return nil, err
-	}
-
-	// Fire engagement hooks (clips, notifications) off the hot path. The contract
-	// is non-blocking, so a failure or backlog here never affects the match.
-	s.finish.MatchFinished(ctx, m.PublicID)
 	return players, nil
 }
 
@@ -444,6 +524,12 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	var events []gs.Event
 	for seat := 0; seat < 2; seat++ {
 		if state.Sealed[seat] == nil {
+			// In sandbox, the house seat is never force-timed-out: commit lets it
+			// play its real policy, so even an abandoned practice round resolves
+			// with a genuine house move rather than a deterministic forfeit.
+			if m.Mode == ModeSandbox && seat == HouseSeat {
+				continue
+			}
 			ns, evs, terr := eng.ForceTimeout(state, seat)
 			if terr != nil {
 				return terr
