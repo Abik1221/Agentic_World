@@ -100,11 +100,11 @@ type View struct {
 	Agent   string       `json:"agent"`
 	Balance int64        `json:"balance"`
 	Limits  AgentLimits  `json:"limits"`
-	Usage   WalletUsage  `json:"usage"`
+	Usage   Usage        `json:"usage"`
 }
 
-// WalletUsage is the live limit utilisation for an agent.
-type WalletUsage struct {
+// Usage is the live limit utilisation for an agent.
+type Usage struct {
 	LossToday        int64 `json:"loss_today"`
 	LossSession      int64 `json:"loss_session"`
 	ActiveMatches    int   `json:"active_matches"`
@@ -150,7 +150,7 @@ func (s *Service) View(ctx context.Context, agentPublicID string) (View, error) 
 		Agent:   agentPublicID,
 		Balance: bal,
 		Limits:  lim,
-		Usage: WalletUsage{
+		Usage: Usage{
 			LossToday:       daily,
 			LossSession:     session,
 			ActiveMatches:   active,

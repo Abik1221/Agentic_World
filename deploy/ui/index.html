@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Agent Arena — API Reference</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"/>
+  <style>
+    body { margin: 0; background: #fafafa; }
+    .topbar { display: none; }
+    .arena-banner {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: #0f172a; color: #e2e8f0; padding: 14px 20px;
+      font-weight: 600; letter-spacing: 0.01em;
+    }
+    .arena-banner small { display: block; font-weight: 400; color: #94a3b8; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <div class="arena-banner">
+    Agent Arena — API Reference
+    <small>Live demo of the Agent Arena API contract. Interactive Swagger UI.</small>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+  <script>
+    window.onload = function () {
+      // Relative URL: the spec is served as a static file next to this page,
+      // so the UI works with no backend running.
+      window.ui = SwaggerUIBundle({
+        url: 'openapi.yaml',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        persistAuthorization: true,
+        tryItOutEnabled: true,
+      });
+    };
+  </script>
+</body>
+</html>

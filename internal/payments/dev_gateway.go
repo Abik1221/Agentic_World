@@ -29,11 +29,10 @@ func (d *DevGateway) CreateCheckout(ctx context.Context, p CheckoutParams) (Chec
 	// key that a real webhook would use. This ensures the dev flow tests the full
 	// coin-crediting path without needing Stripe (and tests idempotency keys).
 	idemKey := "topup:" + id
-	if err := d.coiner.Topup(ctx, p.AgentPublicID, p.Pack.Coins, idemKey); err != nil {
-		// Log and continue: checkout succeeds even if coin credit fails (webhook can retry).
-		// In production, reconciliation would pick this up; in dev, we're testing locally.
-		// A real webhook would also return an error here and let Stripe retry.
-	}
+	// Best-effort: checkout still succeeds even if the dev coin credit fails (a
+	// real webhook would retry, and reconciliation would pick it up in prod).
+	// The error is intentionally ignored in this dev-only gateway.
+	_ = d.coiner.Topup(ctx, p.AgentPublicID, p.Pack.Coins, idemKey)
 
 	// Land directly on the success page; a real session id is echoed for parity.
 	return Checkout{ID: id, URL: p.SuccessURL + "?session_id=" + id}, nil

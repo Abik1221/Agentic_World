@@ -1,0 +1,94 @@
+name: deploy-ui
+
+# Deploys the static Agent Arena UI (Swagger reference page + OpenAPI spec) to the
+# Hostinger VPS on every push to main. The page is served by nginx on port 80, so
+# it is reachable at http://76.13.48.131 with no domain required.
+#
+# One-time setup: add a GitHub repo secret named DEPLOY_SSH_KEY containing the
+# PRIVATE SSH key whose public half is in /root/.ssh/authorized_keys on the server.
+# The host/user are hard-coded below (root@76.13.48.131) as requested.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ui
+  cancel-in-progress: true
+
+env:
+  SERVER_HOST: "76.13.48.131"
+  SERVER_USER: "root"
+  IMAGE: "agent-arena-ui:latest"
+  CONTAINER: "agent-arena-ui"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build static UI image
+        run: docker build -f deploy/ui/Dockerfile -t "$IMAGE" .
+
+      - name: Save image to a tarball
+        run: docker save "$IMAGE" | gzip > /tmp/agent-arena-ui.tar.gz
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Copy image to server
+        run: |
+          scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
+            /tmp/agent-arena-ui.tar.gz "$SERVER_USER@$SERVER_HOST:/tmp/agent-arena-ui.tar.gz"
+
+      - name: Load and (re)start the container
+        run: |
+          ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=no \
+            "$SERVER_USER@$SERVER_HOST" \
+            "IMAGE='$IMAGE' CONTAINER='$CONTAINER' bash -s" <<'ENDSSH'
+          set -e
+
+          # Ensure Docker is present on a bare VPS (no-op if already installed).
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Installing Docker..."
+            curl -fsSL https://get.docker.com | sh
+          fi
+
+          echo "Loading image..."
+          docker load < /tmp/agent-arena-ui.tar.gz
+
+          echo "Restarting container on port 80..."
+          docker rm -f "$CONTAINER" 2>/dev/null || true
+          docker run -d \
+            --name "$CONTAINER" \
+            --restart unless-stopped \
+            -p 80:80 \
+            "$IMAGE"
+
+          rm -f /tmp/agent-arena-ui.tar.gz
+          docker image prune -f >/dev/null 2>&1 || true
+
+          echo "Waiting for the UI to answer locally..."
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost/healthz >/dev/null 2>&1; then
+              echo "✅ UI is up on the server (http://localhost/healthz = ok)."
+              break
+            fi
+            [ "$i" -eq 20 ] && { echo "❌ UI did not become healthy."; docker logs --tail=50 "$CONTAINER" || true; exit 1; }
+            sleep 2
+          done
+          ENDSSH
+
+      - name: Done
+        run: echo "🌍 Deployed. Open http://${SERVER_HOST}/ (ensure port 80 is open in the VPS firewall)."
+
+      - name: Cleanup local key
+        if: always()
+        run: rm -f ~/.ssh/id_deploy

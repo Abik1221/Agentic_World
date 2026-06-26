@@ -1,35 +1,52 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
   enable:
-    - govet
-    - staticcheck
-    - errcheck
-    - ineffassign
-    - unused
-    - gosimple
-    - revive
-    - gosec
-    - sqlclosecheck
     - bodyclose
-    - misspell
     - gocritic
-
-linters-settings:
-  revive:
+    - gosec
+    - misspell
+    - revive
+    - sqlclosecheck
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer overflow conversions are reviewed at money boundaries explicitly
+        - G704 # SSRF false positive: the Stripe base URL is trusted config, not user input
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        disabled: false
-  gosec:
-    excludes:
-      - G115 # integer overflow conversions are reviewed at money boundaries explicitly
-
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+      # QF* are staticcheck "quickfix" style suggestions (tagged switch, De Morgan)
+      # that golangci-lint v2 turns on by default; they were not part of the v1
+      # lint scope and are stylistic only.
+      - linters:
+          - staticcheck
+        text: "QF100[12]"
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Test files may use less strict patterns.
-    - path: _test\.go
-      linters: [gosec, errcheck]
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
