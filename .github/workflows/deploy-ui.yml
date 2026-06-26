@@ -78,6 +78,15 @@ jobs:
           rm -f /tmp/agent-arena-ui.tar.gz
           docker image prune -f >/dev/null 2>&1 || true
 
+          # Open the demo port on the host firewall (best-effort). If a Hostinger
+          # cloud/panel firewall sits in front of the VPS, also open 8090 there.
+          echo "Opening port ${UI_PORT} on the host firewall (best-effort)..."
+          if command -v ufw >/dev/null 2>&1; then ufw allow "${UI_PORT}"/tcp || true; fi
+          if command -v iptables >/dev/null 2>&1; then
+            iptables -C INPUT -p tcp --dport "${UI_PORT}" -j ACCEPT 2>/dev/null \
+              || iptables -I INPUT -p tcp --dport "${UI_PORT}" -j ACCEPT || true
+          fi
+
           echo "Waiting for the UI to answer on port ${UI_PORT}..."
           for i in $(seq 1 20); do
             if curl -fsS "http://localhost:${UI_PORT}/healthz" >/dev/null 2>&1; then
