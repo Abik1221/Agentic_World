@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/agent-arena/arena/internal/bot"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/replay"
 )
@@ -29,54 +30,15 @@ import (
 // Policy chooses a card to play from the seat's current view of the game. It MUST
 // return a card still in hand (s.Hands[seat]); returning an illegal card is
 // reported as an error, which is exactly the kind of bug this tool exists to
-// surface before you deploy. Goofspiel is open-information, so a policy may also
-// read the opponent's remaining hand (s.Hands[1-seat]) and the full history.
-type Policy func(s gs.State, seat int, rng *mrand.Rand) int
+// surface before you deploy. The strategies live in internal/bot so the offline
+// simulator and the live sandbox house agent share one implementation; fork them
+// there (or add your own here) to try new logic.
+type Policy = bot.Policy
 
-func highest(s gs.State, seat int, _ *mrand.Rand) int { return pick(s.Hands[seat], true) }
-func lowest(s gs.State, seat int, _ *mrand.Rand) int  { return pick(s.Hands[seat], false) }
-
-func randomPlay(s gs.State, seat int, rng *mrand.Rand) int {
-	h := s.Hands[seat]
-	return h[rng.Intn(len(h))]
-}
-
-// proportional bids the card closest to the current prize's value — "pay what
-// it's worth". A reasonable baseline to test a smarter strategy against.
-func proportional(s gs.State, seat int, _ *mrand.Rand) int {
-	prize, h := s.CurrentPrize(), s.Hands[seat]
-	best, bestD := h[0], 1<<30
-	for _, c := range h {
-		d := c - prize
-		if d < 0 {
-			d = -d
-		}
-		if d < bestD {
-			best, bestD = c, d
-		}
-	}
-	return best
-}
-
-var strategies = map[string]Policy{
-	"highest":      highest,
-	"lowest":       lowest,
-	"random":       randomPlay,
-	"proportional": proportional,
-}
-
-func pick(hand []int, max bool) int {
-	v := hand[0]
-	for _, c := range hand[1:] {
-		if (max && c > v) || (!max && c < v) {
-			v = c
-		}
-	}
-	return v
-}
+var strategies = bot.Strategies
 
 type outcome struct {
-	Winner   int    // gs.SeatA | gs.SeatB | gs.Tie
+	Winner   int // gs.SeatA | gs.SeatB | gs.Tie
 	ScoreA   int
 	ScoreB   int
 	Seed     string

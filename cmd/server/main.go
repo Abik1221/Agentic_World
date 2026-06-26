@@ -15,6 +15,7 @@ import (
 
 	"github.com/agent-arena/arena/internal/antifraud"
 	"github.com/agent-arena/arena/internal/auth"
+	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/health"
@@ -30,6 +31,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/profiles"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/sandbox"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/spectator"
 	"github.com/agent-arena/arena/internal/store"
@@ -197,7 +199,13 @@ func run() error {
 	// Low-latency wake-ups for long-polling agents (Redis pub/sub, cross-instance).
 	// Set after construction so a notifier-less build still works (no-op fallback).
 	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
+	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
+	matchSvc.SetBot(bot.NewService())
 	matchHandler := match.NewHandler(matchSvc, authn)
+
+	// Sandbox: risk-free practice vs the seeded house agents, played through the
+	// same match endpoints. Only starting a match is new.
+	sandboxHandler := sandbox.NewHandler(sandbox.New(matchSvc, cfg.SandboxEnabled), authn)
 
 	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
 	// from the open lobby. The matcher pairs agents within a rating band that widens
@@ -251,6 +259,7 @@ func run() error {
 		idHandler.Register,
 		matchHandler.Register,
 		matchmakingHandler.Register,
+		sandboxHandler.Register,
 		walletHandler.Register,
 		paymentsHandler.Register,
 		specHandler.Register,

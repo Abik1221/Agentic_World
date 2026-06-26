@@ -80,7 +80,8 @@ func (r *fakeRepo) CreatePairedActive(_ context.Context, in match.CreatePairedIn
 	defer r.mu.Unlock()
 	d := in.Deadline
 	r.matches[in.PublicID] = match.Match{
-		PublicID: in.PublicID, Game: in.Game, Status: match.StatusActive, Bid: in.Bid,
+		PublicID: in.PublicID, Game: in.Game, Status: match.StatusActive,
+		Mode: in.Mode, BotPolicy: in.BotPolicy, Bid: in.Bid,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
 		Commit: in.Commit, FairnessMode: in.FairnessMode, Seed: in.Seed,
 		Players: []match.Player{in.SeatA, in.SeatB}, State: in.State, RoundDeadline: &d,
