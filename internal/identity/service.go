@@ -118,6 +118,97 @@ func (s *Service) VerifyClaim(ctx context.Context, token, captchaToken, remoteIP
 	return VerifyResult{APIKey: key.Raw, AgentID: agent.PublicID, DashboardToken: dash}, nil
 }
 
+// SignUpResult is returned when a new email+password account is created. The API
+// key is shown exactly once, mirroring the X-claim VerifyResult.
+type SignUpResult struct {
+	APIKey         string
+	AgentID        string
+	AgentName      string
+	DashboardToken string
+}
+
+// SignUp creates an owner from an email + password plus their first agent, in one
+// atomic call, and returns a fresh dashboard session and one-time API key. This
+// is the "normal" account-creation path that sits beside X-claim onboarding.
+func (s *Service) SignUp(ctx context.Context, email, password, agentName, description string) (SignUpResult, error) {
+	normEmail, ok := normalizeEmail(email)
+	if !ok {
+		return SignUpResult{}, errInvalid("a valid email is required")
+	}
+	if err := validatePassword(password); err != nil {
+		return SignUpResult{}, err
+	}
+	agentName = strings.TrimSpace(agentName)
+	if !validAgentName(agentName) {
+		return SignUpResult{}, errInvalid("agent name must be 3–32 characters: letters, digits, _ or -")
+	}
+
+	pwHash, err := hashPassword(password, s.pepper)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	key, err := generateKey(s.pepper)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+
+	agent, owner, err := s.repo.CreateAccount(ctx, CreateAccountInput{
+		Email:         normEmail,
+		PasswordHash:  pwHash,
+		UserPublicID:  platform.NewID(platform.PrefixUser),
+		AgentPublicID: platform.NewID(platform.PrefixAgent),
+		AgentName:     agentName,
+		AgentSlug:     slugify(agentName),
+		Description:   strings.TrimSpace(description),
+		KeyPrefix:     key.Prefix,
+		KeyHash:       key.Hash,
+		Limits:        DefaultLimits(),
+	})
+	if err != nil {
+		return SignUpResult{}, err
+	}
+
+	dash, err := s.jwt.Issue(owner.PublicID)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	return SignUpResult{APIKey: key.Raw, AgentID: agent.PublicID, AgentName: agent.Name, DashboardToken: dash}, nil
+}
+
+// LoginResult is returned on a successful email + password login. No API key is
+// returned (it is shown only once, at sign-up); the owner rotates it from the
+// dashboard if they need it again.
+type LoginResult struct {
+	DashboardToken string
+	AgentID        string
+	AgentName      string
+}
+
+// LogIn authenticates an email + password and mints a fresh dashboard session.
+// Unknown email and wrong password collapse to the same opaque error, and the
+// unknown-email path still pays the bcrypt cost so response time does not reveal
+// which emails are registered.
+func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResult, error) {
+	normEmail, ok := normalizeEmail(email)
+	if !ok {
+		equalizeTiming(password, s.pepper)
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	rec, err := s.repo.CredentialsByEmail(ctx, normEmail)
+	if err != nil {
+		equalizeTiming(password, s.pepper)
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if !verifyPassword(rec.PasswordHash, password, s.pepper) {
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	dash, err := s.jwt.Issue(rec.UserPublicID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{DashboardToken: dash, AgentID: rec.AgentPublicID, AgentName: rec.AgentName}, nil
+}
+
 // RotateKey issues a fresh API key for an agent the caller owns. The raw key is
 // returned once; existing keys remain valid until explicitly revoked.
 func (s *Service) RotateKey(ctx context.Context, ownerPublicID, agentPublicID string) (string, error) {

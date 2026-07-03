@@ -25,7 +25,11 @@ func (f *fakeLedger) Post(_ context.Context, t ledger.Txn) (ledger.ApplyResult, 
 	return ledger.ApplyResult{PublicID: "txn_x", Applied: true}, nil
 }
 func (f *fakeLedger) Balance(context.Context, string) (int64, error) { return f.balance, nil }
+func (f *fakeLedger) UserBalance(context.Context, string) (int64, error) { return f.balance, nil }
 func (f *fakeLedger) History(context.Context, string, int) ([]ledger.Line, error) {
+	return nil, nil
+}
+func (f *fakeLedger) UserHistory(context.Context, string, int) ([]ledger.Line, error) {
 	return nil, nil
 }
 
@@ -66,6 +70,13 @@ func (f *fakeRepo) RepayDebt(_ context.Context, _ string, coins int64) error {
 	}
 	return nil
 }
+func (f *fakeRepo) UserLifetimeStats(context.Context, string) (wallet.LifetimeStats, error) {
+	return wallet.LifetimeStats{}, nil
+}
+func (f *fakeRepo) OwnerAgents(context.Context, string) ([]wallet.AgentRow, error) { return nil, nil }
+func (f *fakeRepo) StakedInActiveMatches(context.Context, string) (int64, error)    { return 0, nil }
+func (f *fakeRepo) PendingWithdrawalCoins(context.Context, string) (int64, error) { return 0, nil }
+func (f *fakeRepo) WithdrawableCoins(context.Context, string) (int64, error)      { return 0, nil }
 
 func newSvc(l *fakeLedger, r *fakeRepo) *wallet.Service {
 	return wallet.New(l, r, platform.FixedClock{T: time.Unix(1_700_000_000, 0).UTC()},
@@ -174,32 +185,25 @@ func TestRefundReturnsEveryStake(t *testing.T) {
 // ── chargeback debt ──────────────────────────────────────────────────────────
 
 func TestReversePartialClawbackBooksDebt(t *testing.T) {
-	fl := &fakeLedger{balance: 30} // agent only has 30 of the 100 charged back
-	repo := &fakeRepo{}
-	if err := newSvc(fl, repo).Reverse(context.Background(), "ag_a", 100, "reversal:evt_1"); err != nil {
+	fl := &fakeLedger{balance: 30}
+	if err := newSvc(fl, &fakeRepo{}).Reverse(context.Background(), "usr_a", 100, "reversal:evt_1"); err != nil {
 		t.Fatalf("Reverse: %v", err)
 	}
 	txn := fl.posts[0]
 	assertBalanced(t, txn)
-	if got := amountFor(txn, ledger.SystemWallet(ledger.SysStripeClearing)); got != 100 {
-		t.Fatalf("clearing = %d, want 100", got)
-	}
-	if got := amountFor(txn, ledger.AgentWallet("ag_a")); got != -30 {
-		t.Fatalf("clawback = %d, want -30 (all the agent had)", got)
+	if got := amountFor(txn, ledger.UserWallet("usr_a")); got != -30 {
+		t.Fatalf("clawback = %d, want -30 (all the user had)", got)
 	}
 	if got := amountFor(txn, ledger.SystemWallet(ledger.SysBadDebt)); got != -70 {
 		t.Fatalf("bad debt = %d, want -70", got)
-	}
-	if repo.debt != 70 {
-		t.Fatalf("recorded debt = %d, want 70", repo.debt)
 	}
 }
 
 func TestCreditRepaysDebtBeforeWallet(t *testing.T) {
 	fl := &fakeLedger{}
 	repo := &fakeRepo{debt: 70}
-	if err := newSvc(fl, repo).Topup(context.Background(), "ag_a", 100, "topup:sess_1"); err != nil {
-		t.Fatalf("Topup: %v", err)
+	if err := newSvc(fl, repo).Mint(context.Background(), "ag_a", 100, "mint:1"); err != nil {
+		t.Fatalf("Mint: %v", err)
 	}
 	txn := fl.posts[0]
 	assertBalanced(t, txn)
@@ -211,6 +215,17 @@ func TestCreditRepaysDebtBeforeWallet(t *testing.T) {
 	}
 	if repo.repaid != 70 || repo.debt != 0 {
 		t.Fatalf("repaid=%d debt=%d, want 70 and 0", repo.repaid, repo.debt)
+	}
+}
+
+func TestTopupCreditsUserTreasury(t *testing.T) {
+	fl := &fakeLedger{}
+	if err := newSvc(fl, &fakeRepo{}).Topup(context.Background(), "usr_a", 2400, "topup:sess_1"); err != nil {
+		t.Fatalf("Topup: %v", err)
+	}
+	txn := fl.posts[0]
+	if got := amountFor(txn, ledger.UserWallet("usr_a")); got != 2400 {
+		t.Fatalf("user credit = %d, want 2400", got)
 	}
 }
 

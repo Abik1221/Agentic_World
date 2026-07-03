@@ -105,6 +105,31 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 	return m.PublicID, nil
 }
 
+// Cancel aborts a waiting lobby entry created by the caller. No stakes are locked
+// until a second player joins, so cancellation is always safe.
+func (s *Service) Cancel(ctx context.Context, agentPublicID, matchPublicID string) error {
+	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrBusy
+	}
+	defer release()
+
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return ErrNotFound
+	}
+	if m.Status != StatusWaiting {
+		return ErrNotWaiting
+	}
+	if len(m.Players) == 0 || m.Players[0].AgentPublicID != agentPublicID {
+		return ErrNotCreator
+	}
+	return s.repo.CancelWaiting(ctx, matchPublicID, agentPublicID)
+}
+
 // Join seats the caller at seat B, deals the match, and starts round 1.
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)

@@ -29,11 +29,23 @@ const (
 	FairnessOpen = "open"
 )
 
+// TieRule controls how a tied round's contested pool is settled. The spec frames
+// this as a configured, consistently-applied rule.
+const (
+	// TieCarry carries the whole pool (stacked) into the next round (the classic
+	// Goofspiel rule and the default).
+	TieCarry = "carry"
+	// TieSplit awards each seat half the pool; an odd remainder carries forward so
+	// no points are ever lost.
+	TieSplit = "split"
+)
+
 // Config defines a match's parameters. Defaults model standard Goofspiel.
 type Config struct {
 	Cards        []int  `json:"cards"`         // identical hand + prize deck values, e.g. 1..13
 	Rounds       int    `json:"rounds"`        // number of rounds (== len(Cards) for standard play)
 	FairnessMode string `json:"fairness_mode"` // FairnessShuffled | FairnessOpen
+	TieRule      string `json:"tie_rule"`      // TieCarry (default) | TieSplit
 }
 
 // DefaultConfig returns standard 13-card shuffled Goofspiel.
@@ -42,7 +54,7 @@ func DefaultConfig() Config {
 	for i := range cards {
 		cards[i] = i + 1
 	}
-	return Config{Cards: cards, Rounds: 13, FairnessMode: FairnessShuffled}
+	return Config{Cards: cards, Rounds: 13, FairnessMode: FairnessShuffled, TieRule: TieCarry}
 }
 
 // RoundResult is the immutable outcome of one resolved round.

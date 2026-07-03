@@ -17,28 +17,35 @@ const (
 
 // Transaction kinds.
 const (
-	KindTopup    = "topup"    // real money (or test mint) in → agent wallet
+	KindTopup    = "topup"    // real money (or test mint) in → user wallet
+	KindAllocate = "allocate" // user wallet → agent wallet (owner funding)
 	KindStake    = "stake"    // agent → escrow at match start
 	KindSettle   = "settle"   // escrow → winner (+rake) / tie split at match end
 	KindRefund   = "refund"   // escrow → players on abort
 	KindReversal = "reversal" // claw back a top-up on a Stripe refund/chargeback
 )
 
-// WalletRef names a wallet either by its owning agent's public id or by a system
-// kind. Exactly one field is set.
+// WalletRef names a wallet by agent, user, or system kind. Exactly one field is set.
 type WalletRef struct {
 	Agent  string // agent public id
+	User   string // owner user public id (treasury wallet)
 	System string // system wallet kind
 }
 
 // AgentWallet refers to an agent's wallet by public id.
 func AgentWallet(agentPublicID string) WalletRef { return WalletRef{Agent: agentPublicID} }
 
+// UserWallet refers to an owner's treasury wallet by user public id.
+func UserWallet(userPublicID string) WalletRef { return WalletRef{User: userPublicID} }
+
 // SystemWallet refers to a system counter-account by kind.
 func SystemWallet(kind string) WalletRef { return WalletRef{System: kind} }
 
 // IsSystem reports whether the ref targets a system wallet.
 func (w WalletRef) IsSystem() bool { return w.System != "" }
+
+// IsUser reports whether the ref targets an owner's treasury wallet.
+func (w WalletRef) IsUser() bool { return w.User != "" }
 
 // Posting is one signed leg of a transaction: +credit, -debit.
 type Posting struct {

@@ -57,6 +57,7 @@ type resultView struct {
 	YourScore  int    `json:"your_score"`
 	OppScore   int    `json:"opp_score"`
 	CoinsDelta int64  `json:"coins_delta"`
+	YourCoins  int64  `json:"your_coins"` // net coin change for the viewer (alias of coins_delta)
 }
 
 // ReplayDoc is the public, verifiable match record. Seed is populated only once
@@ -120,7 +121,7 @@ func (s *Service) view(m Match, viewerAgentPublicID string) AgentView {
 			}
 			v.Result = &resultView{
 				Winner: winnerLabel(st.Winner, seat), YourScore: st.Scores[seat],
-				OppScore: st.Scores[opp], CoinsDelta: cd,
+				OppScore: st.Scores[opp], CoinsDelta: cd, YourCoins: cd,
 			}
 		}
 	}

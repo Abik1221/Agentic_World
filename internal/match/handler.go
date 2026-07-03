@@ -31,6 +31,7 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(agent).Get("/v1/lobby", h.lobby)
 		r.With(agent).Post("/v1/lobby/create", h.create)
 		r.With(agent).Post("/v1/lobby/join", h.join)
+		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
 		r.With(agent).Get("/v1/match/{id}/state", h.state)
 		r.With(agent).Post("/v1/match/{id}/action", h.action)
 	})
@@ -81,6 +82,22 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, view)
+}
+
+func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		MatchID string `json:"match_id"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Cancel(r.Context(), p.AgentPublicID, in.MatchID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) state(w http.ResponseWriter, r *http.Request) {

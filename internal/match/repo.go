@@ -51,6 +51,9 @@ type Repo interface {
 
 	// LoadMoveSignatures returns all recorded move signatures for a match (replay).
 	LoadMoveSignatures(ctx context.Context, matchPublicID string) ([]MoveSignature, error)
+
+	// CancelWaiting aborts an open lobby entry before activation (no stakes locked).
+	CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error
 }
 
 // MoveSignature is one agent-authored move proof.
@@ -85,7 +88,7 @@ type CreateMatchInput struct {
 
 // LobbyItem is a summary of an open match.
 type LobbyItem struct {
-	PublicID             string    `json:"id"`
+	PublicID             string    `json:"match_id"`
 	Game                 string    `json:"game"`
 	Bid                  int64     `json:"bid"`
 	CreatorAgentPublicID string    `json:"creator_agent"`

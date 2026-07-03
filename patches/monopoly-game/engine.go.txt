@@ -1,0 +1,137 @@
+// patches/monopoly-game/engine.go  (rename .go.txt → .go when wiring)
+//
+// REVIEWABLE PATCH — shipped as .txt so it never breaks `go build ./...` until
+// you move it into internal/monopoly/ and wire it. Follows the same patterns as
+// internal/mafia (hub + handler + director) and internal/match (lifecycle).
+//
+// Deterministic Monopoly engine. The board, dice and resolution are pure
+// functions of (board_seed, action sequence) so matches are replayable and
+// server-validated. The frontend already renders this exact model — see
+// Frontend/lib/monopoly.ts (board + simulator) and Frontend/app/monopoly/.
+
+package monopoly
+
+import "time"
+
+// ── Board ───────────────────────────────────────────────────────────────────
+
+type TileType string
+
+const (
+	TileStart    TileType = "start"
+	TileProperty TileType = "property"
+	TileRail     TileType = "rail"
+	TileUtility  TileType = "utility"
+	TileEvent    TileType = "event"   // Chance
+	TileMystery  TileType = "mystery" // Community Chest
+	TileTax      TileType = "tax"
+	TileJail     TileType = "jail"
+	TileParking  TileType = "parking"
+	TileGoToJail TileType = "gotojail"
+)
+
+type Tile struct {
+	ID    int
+	Name  string
+	Type  TileType
+	Group string // color group for properties
+	Price int
+}
+
+// Board is the canonical 40-tile layout. Keep in sync with
+// Frontend/lib/monopoly.ts MONO_BOARD (same ids, names, prices, groups).
+var Board = [40]Tile{ /* 0 GO … 39 Boardwalk — fill from the frontend board */ }
+
+// ── State ───────────────────────────────────────────────────────────────────
+
+type Team struct {
+	ID        int64
+	Name      string
+	Color     string
+	Cash      int
+	Position  int
+	InJail    bool
+	Bankrupt  bool
+	Props     map[int]bool // tile id -> owned
+	Houses    map[int]int  // tile id -> house count
+}
+
+func (t *Team) NetWorth() int {
+	nw := t.Cash
+	for id := range t.Props {
+		nw += Board[id].Price
+		nw += t.Houses[id] * 50
+	}
+	return nw
+}
+
+type State struct {
+	Seed      int64
+	Round     int
+	Phase     string
+	TurnSeat  int
+	Teams     []*Team
+	Seq       int64
+	Deadline  time.Time
+	Winner    *int64
+}
+
+// ── Agent actions (server-validated) ────────────────────────────────────────
+
+type ActionKind string
+
+const (
+	RollDice    ActionKind = "ROLL_DICE"
+	BuyProperty ActionKind = "BUY_PROPERTY"
+	Build       ActionKind = "BUILD"
+	Sell        ActionKind = "SELL"
+	Mortgage    ActionKind = "MORTGAGE"
+	Unmortgage  ActionKind = "UNMORTGAGE"
+	Trade       ActionKind = "TRADE"
+	AcceptTrade ActionKind = "ACCEPT_TRADE"
+	RejectTrade ActionKind = "REJECT_TRADE"
+	UseCard     ActionKind = "USE_CARD"
+	EndTurn     ActionKind = "END_TURN"
+)
+
+type Action struct {
+	Kind    ActionKind     `json:"kind"`
+	TileID  int            `json:"tile_id,omitempty"`
+	Target  int64          `json:"target_team_id,omitempty"`
+	Offer   map[string]any `json:"offer,omitempty"`
+}
+
+type Event struct {
+	Seq    int64
+	TeamID int64
+	Action ActionKind
+	Kind   string // Buy|Rent|Build|Trade|Tax|Move|Card|Jail
+	Detail map[string]any
+	Round  int
+}
+
+// Apply validates and applies one agent action to the state, returning the
+// resulting events (append to monopoly_events + fan out over SSE). It MUST:
+//   - reject out-of-turn / illegal actions (return an error; no state change)
+//   - be deterministic given (state, action) — dice come from a seeded RNG
+//     advanced by Seq so replays reproduce exactly
+//   - enforce the economy: buy only if unowned & affordable; pay rent on
+//     landing; collect 200 on passing GO; jail handling; bankruptcy when cash<0
+//
+// Suggested rent rules (match the frontend demo):
+//   property: round(price*0.1*(1+houses*0.8))
+//   rail:     25 * (rails owned by the owner)
+//   utility:  diceSum * 4
+func (s *State) Apply(teamID int64, a Action) ([]Event, error) {
+	// TODO: implement per the rules above; see Frontend/lib/monopoly.ts for a
+	// faithful reference implementation of roll/move/resolve/build.
+	return nil, nil
+}
+
+// Settle is called when one team remains solvent OR the timer expires. Winner =
+// last solvent team, else highest NetWorth(). Distribute the escrowed pool via
+// internal/ledger exactly once (idempotent), mirroring Goofspiel/Mafia.
+func (s *State) Settle() (winnerTeamID int64, payouts map[int64]int) {
+	// TODO: net-worth ranking + ledger settlement.
+	return 0, nil
+}

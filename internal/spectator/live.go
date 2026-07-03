@@ -36,6 +36,7 @@ type LiveStats struct {
 	MatchesToday      int64 `json:"matches_today"`
 	CoinsWageredToday int64 `json:"coins_wagered_today"`
 	BiggestWinToday   int64 `json:"biggest_win_today"`
+	ActiveAgents      int64 `json:"active_agents"`
 }
 
 // Live serves the cached live-match list and stats ticker. The short caches

@@ -65,7 +65,7 @@ func main() {
 func tick() error {
 	var lobby struct {
 		Matches []struct {
-			ID string `json:"id"`
+			ID string `json:"match_id"`
 		} `json:"matches"`
 	}
 	if err := get("/lobby?game=goofspiel&bid="+url.QueryEscape(bid), &lobby); err != nil {

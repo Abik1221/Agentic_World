@@ -129,6 +129,20 @@ func (r *fakeRepo) RecordMoveSignature(context.Context, string, int, int, int, s
 func (r *fakeRepo) LoadMoveSignatures(context.Context, string) ([]match.MoveSignature, error) {
 	return nil, nil
 }
+func (r *fakeRepo) CancelWaiting(_ context.Context, matchPublicID, creatorAgentPublicID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.matches[matchPublicID]
+	if !ok || m.Status != match.StatusWaiting {
+		return match.ErrNotWaiting
+	}
+	if len(m.Players) == 0 || m.Players[0].AgentPublicID != creatorAgentPublicID {
+		return match.ErrNotCreator
+	}
+	m.Status = match.StatusAborted
+	r.matches[matchPublicID] = m
+	return nil
+}
 
 type fakeLocker struct{}
 

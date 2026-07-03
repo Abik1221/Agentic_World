@@ -27,6 +27,9 @@ func New(cfg Config) *Engine {
 	if cfg.FairnessMode == "" {
 		cfg.FairnessMode = FairnessShuffled
 	}
+	if cfg.TieRule == "" {
+		cfg.TieRule = TieCarry
+	}
 	return &Engine{cfg: cfg}
 }
 
@@ -47,7 +50,7 @@ func (e *Engine) Init(seed []byte) (State, []Event) {
 	evs := []Event{
 		e.emit(&s, EvMatchCreated, MatchCreatedPayload{
 			Version: Version, Cards: append([]int(nil), e.cfg.Cards...),
-			Rounds: e.cfg.Rounds, FairnessMode: e.cfg.FairnessMode, Commit: Commit(seed),
+			Rounds: e.cfg.Rounds, FairnessMode: e.cfg.FairnessMode, TieRule: e.cfg.TieRule, Commit: Commit(seed),
 		}),
 		e.emit(&s, EvPrizeRevealed, PrizeRevealedPayload{Round: 1, Prize: order[0], PrizePool: s.PrizePool}),
 	}
@@ -110,8 +113,19 @@ func (e *Engine) Resolve(s State) (State, []Event, error) {
 	case c1 > c0:
 		winner = SeatB
 	}
-	if winner != Tie {
+	// carry is the amount that rolls into the next round's pool (0 for a decisive
+	// round; the whole pool under TieCarry; only the odd remainder under TieSplit).
+	carry := 0
+	switch {
+	case winner != Tie:
 		ns.Scores[winner] += pool
+	case e.cfg.TieRule == TieSplit:
+		half := pool / 2
+		ns.Scores[SeatA] += half
+		ns.Scores[SeatB] += half
+		carry = pool - 2*half // 0 or 1; never lose a point
+	default: // TieCarry
+		carry = pool
 	}
 
 	rr := RoundResult{Round: ns.Round, Prize: prize, PrizePool: pool, Cards: [2]int{c0, c1}, Winner: winner, Scores: ns.Scores}
@@ -130,11 +144,7 @@ func (e *Engine) Resolve(s State) (State, []Event, error) {
 		evs = append(evs, e.emit(&ns, EvMatchFinished, MatchFinishedPayload{Scores: ns.Scores, Winner: ns.Winner}))
 	} else {
 		nextPrize := ns.PrizeOrder[ns.Round-1]
-		if winner == Tie {
-			ns.PrizePool = pool + nextPrize // tie carries & stacks
-		} else {
-			ns.PrizePool = nextPrize
-		}
+		ns.PrizePool = nextPrize + carry // carry == pool (TieCarry), remainder (TieSplit), or 0
 		evs = append(evs, e.emit(&ns, EvPrizeRevealed, PrizeRevealedPayload{Round: ns.Round, Prize: nextPrize, PrizePool: ns.PrizePool}))
 	}
 	return ns, evs, nil

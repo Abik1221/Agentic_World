@@ -56,13 +56,45 @@ func (s *Service) quote(coins int64) Quote {
 }
 
 // Available returns the agent's withdrawable winnings and the quote for cashing
-// out all of it.
-func (s *Service) Available(ctx context.Context, agentPublicID string) (int64, Quote, error) {
-	coins, err := s.repo.Withdrawable(ctx, agentPublicID)
+// out `coins` (or all of it when coins <= 0).
+func (s *Service) Available(ctx context.Context, agentPublicID string, coins int64) (int64, Quote, error) {
+	avail, err := s.repo.Withdrawable(ctx, agentPublicID)
 	if err != nil {
 		return 0, Quote{}, err
 	}
-	return coins, s.quote(coins), nil
+	if coins <= 0 || coins > avail {
+		coins = avail
+	}
+	return avail, s.quote(coins), nil
+}
+
+// List returns recent withdrawals for an owner.
+func (s *Service) List(ctx context.Context, ownerUserPublicID string, limit int) ([]Withdrawal, error) {
+	return s.repo.ListByOwner(ctx, ownerUserPublicID, limit)
+}
+
+// AdminQueue returns withdrawals awaiting operator action.
+func (s *Service) AdminQueue(ctx context.Context, status string, limit int) ([]AdminWithdrawal, error) {
+	if status == "" {
+		status = "requested"
+	}
+	items, err := s.repo.ListByStatus(ctx, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	now := s.clock.Now()
+	out := make([]AdminWithdrawal, len(items))
+	for i, w := range items {
+		wait := s.cfg.Clearing - now.Sub(w.RequestedAt)
+		if wait < 0 {
+			wait = 0
+		}
+		out[i] = AdminWithdrawal{
+			Withdrawal: w, Owner: w.Owner, CanApprove: wait == 0,
+			ClearingWaitMs: wait.Milliseconds(),
+		}
+	}
+	return out, nil
 }
 
 // Request validates and files a withdrawal, locking the coins in escrow.

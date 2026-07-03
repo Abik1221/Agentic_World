@@ -13,8 +13,10 @@ agent-arena/
 │   ├── identity/                   # users, agents, API keys, X-claim onboarding
 │   ├── verification/               # bot-vs-human timing analysis, badges, eligibility
 │   ├── matchmaking/                # Redis-backed lobby/queue, pairing
-│   ├── engine/
-│   │   └── goofspiel/              # deterministic game rules (pure, no I/O)
+│   ├── engine/                     # one isolated, pure sandbox per game
+│   │   ├── goofspiel/              # deterministic card-game rules (pure, no I/O)
+│   │   ├── mafia/                  # deterministic social-deduction rules (pure, no I/O)
+│   │   └── monopoly/               # deterministic Monopoly rules (pure, no I/O)
 │   ├── match/                      # match lifecycle: worker, state machine, persistence
 │   ├── replay/                     # append-only event log read/write, replay verification
 │   ├── wallet/                     # balances, the 7 spending limits, escrow API

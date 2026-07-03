@@ -146,3 +146,78 @@ func (r *WalletRepo) RepayDebt(ctx context.Context, agentPublicID string, coins 
 		agentPublicID, coins)
 	return err
 }
+
+func (r *WalletRepo) UserLifetimeStats(ctx context.Context, userPublicID string) (wallet.LifetimeStats, error) {
+	var s wallet.LifetimeStats
+	err := r.db.QueryRow(ctx,
+		`WITH uw AS (SELECT w.id FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.public_id = $1)
+		 SELECT
+		   COALESCE((SELECT SUM(e.amount) FROM ledger_entries e JOIN ledger_transactions t ON t.id = e.txn_id
+		             WHERE e.wallet_id = (SELECT id FROM uw) AND t.kind = 'topup' AND e.amount > 0), 0),
+		   COALESCE((SELECT SUM(wd.coins) FROM withdrawals wd JOIN users u ON u.id = wd.user_id
+		             WHERE u.public_id = $1 AND wd.status = 'paid'), 0),
+		   COALESCE((SELECT SUM(mp.coins_delta) FROM match_players mp
+		             JOIN matches m ON m.id = mp.match_id JOIN agents a ON a.id = mp.agent_id
+		             JOIN users u ON u.id = a.owner_user_id
+		             WHERE u.public_id = $1 AND m.status = 'finished' AND mp.coins_delta > 0), 0)`,
+		userPublicID).Scan(&s.Deposits, &s.Withdrawals, &s.Winnings)
+	return s, err
+}
+
+func (r *WalletRepo) OwnerAgents(ctx context.Context, userPublicID string) ([]wallet.AgentRow, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id, a.name FROM agents a
+		 JOIN users u ON u.id = a.owner_user_id WHERE u.public_id = $1 ORDER BY a.created_at`,
+		userPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []wallet.AgentRow
+	for rows.Next() {
+		var row wallet.AgentRow
+		if err := rows.Scan(&row.PublicID, &row.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (r *WalletRepo) StakedInActiveMatches(ctx context.Context, agentPublicID string) (int64, error) {
+	var staked int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(m.bid), 0)
+		 FROM match_players mp JOIN matches m ON m.id = mp.match_id
+		 JOIN agents a ON a.id = mp.agent_id
+		 WHERE a.public_id = $1 AND m.status = 'active'`, agentPublicID).Scan(&staked)
+	return staked, err
+}
+
+func (r *WalletRepo) PendingWithdrawalCoins(ctx context.Context, agentPublicID string) (int64, error) {
+	var pending int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(w.coins), 0)
+		 FROM withdrawals w JOIN agents a ON a.id = w.agent_id
+		 WHERE a.public_id = $1 AND w.status = 'requested'`, agentPublicID).Scan(&pending)
+	return pending, err
+}
+
+func (r *WalletRepo) WithdrawableCoins(ctx context.Context, agentPublicID string) (int64, error) {
+	var avail int64
+	err := r.db.QueryRow(ctx,
+		`WITH winnings AS (
+		   SELECT COALESCE(SUM(mp.coins_delta), 0) AS net
+		   FROM match_players mp JOIN matches m ON m.id = mp.match_id
+		   JOIN agents a ON a.id = mp.agent_id WHERE a.public_id = $1 AND m.status = 'finished'
+		 ), committed AS (
+		   SELECT COALESCE(SUM(w.coins), 0) AS c
+		   FROM withdrawals w JOIN agents a ON a.id = w.agent_id
+		   WHERE a.public_id = $1 AND w.status IN ('requested','approved','paid')
+		 ), bal AS (
+		   SELECT COALESCE(wl.balance, 0) AS b FROM wallets wl JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1
+		 )
+		 SELECT GREATEST(0, LEAST((SELECT net FROM winnings) - (SELECT c FROM committed), (SELECT b FROM bal)))`,
+		agentPublicID).Scan(&avail)
+	return avail, err
+}

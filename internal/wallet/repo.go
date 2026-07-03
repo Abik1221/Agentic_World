@@ -17,7 +17,9 @@ import (
 type ledgerPort interface {
 	Post(ctx context.Context, t ledger.Txn) (ledger.ApplyResult, error)
 	Balance(ctx context.Context, agentPublicID string) (int64, error)
+	UserBalance(ctx context.Context, userPublicID string) (int64, error)
 	History(ctx context.Context, agentPublicID string, limit int) ([]ledger.Line, error)
+	UserHistory(ctx context.Context, userPublicID string, limit int) ([]ledger.Line, error)
 }
 
 // Repo supplies the read-side facts the wallet/limit logic needs. All queries
@@ -45,6 +47,13 @@ type Repo interface {
 	RecordDebt(ctx context.Context, agentPublicID string, coins int64) error
 	// RepayDebt reduces outstanding debt by up to coins.
 	RepayDebt(ctx context.Context, agentPublicID string, coins int64) error
+
+	// ── owner treasury dashboard ──
+	UserLifetimeStats(ctx context.Context, userPublicID string) (LifetimeStats, error)
+	OwnerAgents(ctx context.Context, userPublicID string) ([]AgentRow, error)
+	StakedInActiveMatches(ctx context.Context, agentPublicID string) (int64, error)
+	PendingWithdrawalCoins(ctx context.Context, agentPublicID string) (int64, error)
+	WithdrawableCoins(ctx context.Context, agentPublicID string) (int64, error)
 }
 
 // Settlement is the staking shape of a match (used for tie splits, refunds, and
@@ -68,9 +77,10 @@ type AgentLimits struct {
 	MaxBid               int64
 }
 
-// Config tunes the limit engine.
+// Config tunes the limit engine and API-facing coin economics.
 type Config struct {
 	// SessionWindow is the trailing window that defines a "session" for the
 	// session-loss limit (the MVP interpretation; no login state required).
 	SessionWindow time.Duration
+	CoinCents     int64 // face value of one coin in cents (default 1)
 }

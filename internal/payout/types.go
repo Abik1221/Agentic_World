@@ -32,6 +32,8 @@ type Repo interface {
 	// was not in `from`. Optionally records a transfer id / reason.
 	SetStatus(ctx context.Context, publicID, from, to, transferID, reason string) (changed bool, err error)
 	Audit(ctx context.Context, actor, action, target string, detail []byte) error
+	ListByOwner(ctx context.Context, ownerUserPublicID string, limit int) ([]Withdrawal, error)
+	ListByStatus(ctx context.Context, status string, limit int) ([]Withdrawal, error)
 }
 
 // Bank moves coins through the ledger. Satisfied by an adapter over ledger.Service.
@@ -63,6 +65,15 @@ type Withdrawal struct {
 	Status         string    `json:"status"`
 	TransferID     string    `json:"transfer_id,omitempty"`
 	RequestedAt    time.Time `json:"requested_at"`
+}
+
+// AdminWithdrawal adds operator context for the approval queue.
+type AdminWithdrawal struct {
+	Withdrawal
+	Owner          string `json:"owner"`
+	AgentName      string `json:"agent_name"`
+	CanApprove     bool   `json:"can_approve"`
+	ClearingWaitMs int64  `json:"clearing_wait_ms"`
 }
 
 // Quote is the fee breakdown for a prospective withdrawal (shown before confirm).

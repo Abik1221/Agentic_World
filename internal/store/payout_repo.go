@@ -129,3 +129,60 @@ func (r *PayoutRepo) Audit(ctx context.Context, actor, action, target string, de
 		actor, action, nullString(target), string(detail))
 	return err
 }
+
+func (r *PayoutRepo) ListByOwner(ctx context.Context, ownerUserPublicID string, limit int) ([]payout.Withdrawal, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT w.public_id, ag.public_id, w.coins, w.fee_coins, w.gross_cents,
+		        w.stripe_fee_cents, w.net_cents, w.status, COALESCE(w.transfer_id, ''), w.requested_at
+		 FROM withdrawals w
+		 JOIN agents ag ON ag.id = w.agent_id
+		 JOIN users  u  ON u.id  = w.user_id
+		 WHERE u.public_id = $1
+		 ORDER BY w.requested_at DESC LIMIT $2`, ownerUserPublicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []payout.Withdrawal
+	for rows.Next() {
+		var w payout.Withdrawal
+		if err := rows.Scan(&w.PublicID, &w.Agent, &w.Coins, &w.FeeCoins, &w.GrossCents,
+			&w.StripeFeeCents, &w.NetCents, &w.Status, &w.TransferID, &w.RequestedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (r *PayoutRepo) ListByStatus(ctx context.Context, status string, limit int) ([]payout.Withdrawal, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT w.public_id, ag.public_id, u.public_id, w.coins, w.fee_coins, w.gross_cents,
+		        w.stripe_fee_cents, w.net_cents, COALESCE(w.connect_account_id, ''), w.status,
+		        COALESCE(w.transfer_id, ''), w.requested_at
+		 FROM withdrawals w
+		 JOIN agents ag ON ag.id = w.agent_id
+		 JOIN users  u  ON u.id  = w.user_id
+		 WHERE w.status = $1
+		 ORDER BY w.requested_at ASC LIMIT $2`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []payout.Withdrawal
+	for rows.Next() {
+		var w payout.Withdrawal
+		if err := rows.Scan(&w.PublicID, &w.Agent, &w.Owner, &w.Coins, &w.FeeCoins, &w.GrossCents,
+			&w.StripeFeeCents, &w.NetCents, &w.ConnectAccount, &w.Status, &w.TransferID, &w.RequestedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}

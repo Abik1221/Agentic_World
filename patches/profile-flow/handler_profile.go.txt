@@ -1,0 +1,273 @@
+//go:build ignore
+
+// patches/profile-flow/handler_profile.go
+//
+// REVIEWABLE PATCH — NOT compiled by `go build ./...` (build tag `ignore`).
+// Move this into `internal/identity/` (or a new `internal/profile/` package),
+// remove the build tag, wire the repo to your store, and register the handler
+// in cmd/server/main.go. See README.md in this directory for exact steps.
+//
+// Implements the endpoints the frontend (Frontend/lib/api.ts) already calls:
+//   POST /v1/agent/profile          (user)   display name, bio, avatar
+//   POST /v1/agent/game-config      (user)   per-game behaviour
+//   GET  /v1/agent/game-config      (user)   read per-game behaviour
+//   GET  /v1/notifications          (user)   profile-completion prompts
+//   POST /v1/auth/magic-link        (public) request a passwordless sign-in link
+//   GET  /v1/auth/magic-link/verify (public) consume a link → fresh session
+//
+// It also shows how to extend GET /v1/me with a completion snapshot.
+
+package identity
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/your-org/agent-arena/internal/auth" // adjust import path to your module
+)
+
+// ── Domain types ────────────────────────────────────────────────────────────
+
+type GameBehavior struct {
+	Aggression int `json:"aggression"`
+	Risk       int `json:"risk"`
+	Bluff      int `json:"bluff"`
+	Chattiness int `json:"chattiness"`
+}
+
+type AgentProfile struct {
+	AgentID     string `json:"agent_id"`
+	DisplayName string `json:"display_name"`
+	Bio         string `json:"bio"`
+	AvatarURL   string `json:"avatar_url"`
+}
+
+// ProfileRepo is the persistence boundary. Implement against your sqlc store.
+type ProfileRepo interface {
+	AgentIDForUser(ctx contextT, userID int64) (agentID int64, publicID string, err error)
+	UpdateProfile(ctx contextT, agentID int64, p AgentProfile) error
+	SetGameConfig(ctx contextT, agentID int64, game string, b GameBehavior) error
+	GetGameConfig(ctx contextT, agentID int64) (map[string]GameBehavior, error)
+	ProfileCompletion(ctx contextT, userID int64) (Completion, error)
+
+	// Magic-link recovery
+	UserIDByEmail(ctx contextT, email string) (int64, error)
+	CreateMagicLink(ctx contextT, userID int64, email, tokenHash string, expires time.Time) error
+	ConsumeMagicLink(ctx contextT, tokenHash string) (userID int64, err error)
+	IssueSession(ctx contextT, userID int64) (dashboardToken string, apiKey string, agentPublicID string, err error)
+}
+
+// Alias so this file is copy-paste friendly; replace with context.Context.
+type contextT = interface {
+	Deadline() (deadline time.Time, ok bool)
+	Done() <-chan struct{}
+	Err() error
+	Value(key any) any
+}
+
+type Completion struct {
+	Percent              int      `json:"completion_percent"`
+	Verified             bool     `json:"verified"`
+	HasName              bool     `json:"has_name"`
+	HasAvatar            bool     `json:"has_avatar"`
+	HasBehavior          bool     `json:"has_behavior"`
+	LimitsConfigured     bool     `json:"limits_configured"`
+	WithdrawalConfigured bool     `json:"withdrawal_configured"`
+	MissingSteps         []string `json:"missing_steps"`
+}
+
+// Mailer sends the recovery email (SES/Sendgrid/etc.). Stub for dev.
+type Mailer interface {
+	SendMagicLink(email, link string) error
+}
+
+// ── Handler ─────────────────────────────────────────────────────────────────
+
+type ProfileHandler struct {
+	Repo    ProfileRepo
+	Mailer  Mailer
+	BaseURL string // frontend origin, e.g. https://arena.example.com
+	TTL     time.Duration
+}
+
+func NewProfileHandler(repo ProfileRepo, mailer Mailer, baseURL string) *ProfileHandler {
+	return &ProfileHandler{Repo: repo, Mailer: mailer, BaseURL: baseURL, TTL: 15 * time.Minute}
+}
+
+// Register mounts the routes. Call from cmd/server/main.go alongside the others.
+func (h *ProfileHandler) Register(r chi.Router) {
+	r.Group(func(r chi.Router) {
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/profile", h.updateProfile)
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/game-config", h.setGameConfig)
+		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agent/game-config", h.getGameConfig)
+		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/notifications", h.notifications)
+	})
+	// Public passwordless recovery.
+	r.Post("/v1/auth/magic-link", h.requestMagicLink)
+	r.Get("/v1/auth/magic-link/verify", h.verifyMagicLink)
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// userID extracts the authenticated user id from context (your auth middleware
+// already puts it there for ScopeUser routes — adjust the accessor name).
+func userID(r *http.Request) int64 { return auth.UserID(r.Context()) }
+
+func (h *ProfileHandler) updateProfile(w http.ResponseWriter, r *http.Request) {
+	var in AgentProfile
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid body"})
+		return
+	}
+	agentID, _, err := h.Repo.AgentIDForUser(r.Context(), userID(r))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no agent for user"})
+		return
+	}
+	// NOTE: validate/að avatar_url — if you accept uploads, store to S3/R2 and
+	// persist the CDN URL here. Reject data: URLs over a sane size in prod.
+	if err := h.Repo.UpdateProfile(r.Context(), agentID, in); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "update failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *ProfileHandler) setGameConfig(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Game     string       `json:"game"`
+		Behavior GameBehavior `json:"behavior"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || (in.Game != "mafia" && in.Game != "goofspiel") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid body"})
+		return
+	}
+	agentID, _, err := h.Repo.AgentIDForUser(r.Context(), userID(r))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no agent for user"})
+		return
+	}
+	if err := h.Repo.SetGameConfig(r.Context(), agentID, in.Game, in.Behavior); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "save failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *ProfileHandler) getGameConfig(w http.ResponseWriter, r *http.Request) {
+	agentID, _, err := h.Repo.AgentIDForUser(r.Context(), userID(r))
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "no agent for user"})
+		return
+	}
+	cfg, err := h.Repo.GetGameConfig(r.Context(), agentID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "read failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"config": cfg})
+}
+
+func (h *ProfileHandler) notifications(w http.ResponseWriter, r *http.Request) {
+	c, err := h.Repo.ProfileCompletion(r.Context(), userID(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "read failed"})
+		return
+	}
+	type notif struct {
+		ID, Kind, Title, Detail, Href, CTA string
+	}
+	var out []notif
+	add := func(key, title, href, cta string) {
+		out = append(out, notif{ID: "profile-" + key, Kind: "profile", Title: title, Href: href, CTA: cta,
+			Detail: "Complete this step to finish setting up your agent."})
+	}
+	for _, step := range c.MissingSteps {
+		switch step {
+		case "name":
+			add("name", "Name your agent", "/profile", "Add name")
+		case "avatar":
+			add("avatar", "Upload an agent photo", "/profile", "Upload")
+		case "behavior":
+			add("behavior", "Tune per-game behaviour", "/profile", "Tune")
+		case "limits":
+			add("limits", "Set spending limits", "/guardrails", "Set limits")
+		case "withdrawal":
+			out = append(out, notif{ID: "profile-withdrawal", Kind: "withdrawal", Title: "Set up withdrawals",
+				Href: "/withdrawals", CTA: "Set up", Detail: "Add a payout method to cash out winnings."})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": out})
+}
+
+// ── Magic-link recovery ─────────────────────────────────────────────────────
+
+func newToken() (raw, hash string) {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	raw = hex.EncodeToString(b)
+	sum := sha256.Sum256([]byte(raw))
+	return raw, hex.EncodeToString(sum[:])
+}
+
+func (h *ProfileHandler) requestMagicLink(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"email"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	// Always return 200 (don't leak which emails exist).
+	if in.Email == "" {
+		writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+		return
+	}
+	uid, err := h.Repo.UserIDByEmail(r.Context(), in.Email)
+	if err == nil {
+		raw, hash := newToken()
+		if err := h.Repo.CreateMagicLink(r.Context(), uid, in.Email, hash, time.Now().Add(h.TTL)); err == nil {
+			link := h.BaseURL + "/auth/verify?token=" + raw
+			if h.Mailer != nil {
+				_ = h.Mailer.SendMagicLink(in.Email, link)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+}
+
+func (h *ProfileHandler) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("token")
+	if raw == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "missing token"})
+		return
+	}
+	sum := sha256.Sum256([]byte(raw))
+	uid, err := h.Repo.ConsumeMagicLink(r.Context(), hex.EncodeToString(sum[:]))
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "invalid or expired link"})
+		return
+	}
+	dash, key, agentPub, err := h.Repo.IssueSession(r.Context(), uid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "session mint failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"dashboard_token": dash,
+		"api_key":         key,
+		"agent_id":        agentPub,
+	})
+}
+
+var errNotImplemented = errors.New("not implemented")
+
+// _ = chi.NewRouter // keep chi import referenced when adapting

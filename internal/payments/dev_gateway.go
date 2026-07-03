@@ -2,20 +2,26 @@ package payments
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/agent-arena/arena/internal/platform"
 )
 
 // DevGateway implements Gateway without touching Stripe, so the full top-up and
-// onboarding flow runs offline in local/test. It mints synthetic ids and points
-// the client straight at the success page. NEVER used in prod (main selects
-// StripeGateway whenever a secret key is configured).
-type DevGateway struct{}
+// onboarding flow runs offline in local/test. NEVER used in prod.
+type DevGateway struct {
+	mu      sync.Mutex
+	sessions []CheckoutRecord
+}
 
-func (DevGateway) CreateCheckout(_ context.Context, p CheckoutParams) (Checkout, error) {
+func (g *DevGateway) CreateCheckout(_ context.Context, p CheckoutParams) (Checkout, error) {
 	id := platform.NewID("cs_dev")
-	// Land directly on the success page; a real session id is echoed for parity.
+	g.mu.Lock()
+	g.sessions = append(g.sessions, CheckoutRecord{
+		SessionID: id, UserPublicID: p.UserPublicID, AgentPublicID: p.AgentPublicID, Coins: p.Pack.Coins,
+	})
+	g.mu.Unlock()
 	return Checkout{ID: id, URL: p.SuccessURL + "?session_id=" + id}, nil
 }
 
@@ -30,6 +36,13 @@ func (DevGateway) CreateOnboardingLink(_ context.Context, accountID, returnURL, 
 	return returnURL + "?onboarded=dev&account=" + accountID, nil
 }
 
-func (DevGateway) ListRecentCheckouts(context.Context, time.Time) ([]CheckoutRecord, error) {
-	return nil, nil // nothing to reconcile against in dev
+func (g *DevGateway) ListRecentCheckouts(_ context.Context, since time.Time) ([]CheckoutRecord, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []CheckoutRecord
+	for _, s := range g.sessions {
+		out = append(out, s)
+	}
+	_ = since
+	return out, nil
 }

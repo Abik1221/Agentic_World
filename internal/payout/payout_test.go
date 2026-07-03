@@ -60,6 +60,12 @@ func (r *fakeRepo) SetStatus(_ context.Context, id, from, to, transferID, _ stri
 	return true, nil
 }
 func (r *fakeRepo) Audit(context.Context, string, string, string, []byte) error { return nil }
+func (r *fakeRepo) ListByOwner(context.Context, string, int) ([]payout.Withdrawal, error) {
+	return nil, nil
+}
+func (r *fakeRepo) ListByStatus(context.Context, string, int) ([]payout.Withdrawal, error) {
+	return nil, nil
+}
 
 type fakeBank struct{ held, released, paid map[string]int64 }
 
@@ -98,7 +104,7 @@ func newSvc(repo payout.Repo, bank payout.Bank, xfer payout.Transferrer) *payout
 func TestQuoteAppliesFeesAndStripeFee(t *testing.T) {
 	repo := newRepo()
 	repo.withdrawable = 1000
-	_, q, err := newSvc(repo, newBank(), &fakeXfer{}).Available(context.Background(), "ag_a")
+	_, q, err := newSvc(repo, newBank(), &fakeXfer{}).Available(context.Background(), "ag_a", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
