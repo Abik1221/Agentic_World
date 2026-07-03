@@ -15,6 +15,14 @@ type Repo interface {
 	Leaderboard(ctx context.Context, season, offset, limit int) ([]LeaderRow, error)
 	// AgentElo returns the agent's ELO for the season, or 1200 if it has no row yet.
 	AgentElo(ctx context.Context, agentPublicID string, season int) (int, error)
+
+	// LastRolledSeason returns the highest finalised season, or -1 if none.
+	LastRolledSeason(ctx context.Context) (int, error)
+
+	// RollSeason finalises a completed season exactly once (idempotent on season):
+	// it records the roll and, iff newly rolled, emits a season.rolled event in the
+	// same transaction. champion may be "" (no matches). Returns whether it rolled.
+	RollSeason(ctx context.Context, season int, champion string) (rolled bool, err error)
 }
 
 // ApplyInput is the resolved rating update for one finished match. Index 0/1 are

@@ -62,6 +62,69 @@ func (s *Service) CurrentSeason() int {
 	return int(d / s.cfg.SeasonLength)
 }
 
+// SeasonInfo describes a season's fixed window.
+type SeasonInfo struct {
+	Season    int       `json:"season"`
+	StartsAt  time.Time `json:"starts_at"`
+	EndsAt    time.Time `json:"ends_at"`
+	Now       time.Time `json:"now"`
+	Remaining string    `json:"remaining"` // human duration until the season ends
+}
+
+// SeasonBounds returns the [start, end) window for a season number.
+func (s *Service) SeasonBounds(season int) (start, end time.Time) {
+	start = seasonEpoch.Add(time.Duration(season) * s.cfg.SeasonLength)
+	end = start.Add(s.cfg.SeasonLength)
+	return start, end
+}
+
+// CurrentSeasonInfo describes the ongoing season and how long is left in it.
+func (s *Service) CurrentSeasonInfo() SeasonInfo {
+	season := s.CurrentSeason()
+	start, end := s.SeasonBounds(season)
+	now := s.clock.Now()
+	return SeasonInfo{
+		Season: season, StartsAt: start, EndsAt: end, Now: now,
+		Remaining: end.Sub(now).Round(time.Second).String(),
+	}
+}
+
+// RollCompleted finalises every season that has ended but not yet been rolled:
+// it records the roll (idempotently) and emits season.rolled with the champion
+// (the top of that season's leaderboard, or empty if the season had no matches).
+// Safe to call repeatedly and on every instance — the DB roll row is the guard.
+func (s *Service) RollCompleted(ctx context.Context) error {
+	last, err := s.repo.LastRolledSeason(ctx)
+	if err != nil {
+		return err
+	}
+	cur := s.CurrentSeason()
+	for season := last + 1; season < cur; season++ {
+		champion, err := s.championOf(ctx, season)
+		if err != nil {
+			return err
+		}
+		if _, err := s.repo.RollSeason(ctx, season, champion); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// championOf returns the top-ranked agent of a season, or "" if none played. It
+// queries the repo directly with the exact season (Service.Leaderboard treats
+// season 0 as "current", which would misresolve season 0 here).
+func (s *Service) championOf(ctx context.Context, season int) (string, error) {
+	rows, err := s.repo.Leaderboard(ctx, season, 0, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return rows[0].AgentPublicID, nil
+}
+
 // Elo returns an agent's current-season rating, or the 1200 baseline if it has
 // no rating row yet (unrated agents matchmake from the baseline). Used by
 // matchmaking to pair within a skill band.

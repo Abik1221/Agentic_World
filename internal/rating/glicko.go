@@ -23,10 +23,10 @@ const Tie = -1
 const (
 	glickoCenter = 1500.0
 	glickoScale  = 173.7178
-	defaultRD    = 350.0  // a brand-new agent: maximally uncertain
-	defaultVol   = 0.06   // standard starting volatility
-	glickoTau    = 0.5    // system constant (volatility change constraint)
-	glickoEps    = 1e-6   // convergence tolerance for the volatility solver
+	defaultRD    = 350.0 // a brand-new agent: maximally uncertain
+	defaultVol   = 0.06  // standard starting volatility
+	glickoTau    = 0.5   // system constant (volatility change constraint)
+	glickoEps    = 1e-6  // convergence tolerance for the volatility solver
 )
 
 // PlayerRating is an agent's full Glicko-2 state. Elo is the displayed rating

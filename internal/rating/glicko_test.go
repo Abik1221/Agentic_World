@@ -6,8 +6,8 @@ import (
 	"github.com/agent-arena/arena/internal/rating"
 )
 
-func newAgent() rating.PlayerRating  { return rating.PlayerRating{Elo: 1500, RD: 350, Vol: 0.06} }
-func settled() rating.PlayerRating   { return rating.PlayerRating{Elo: 1500, RD: 50, Vol: 0.06} }
+func newAgent() rating.PlayerRating { return rating.PlayerRating{Elo: 1500, RD: 350, Vol: 0.06} }
+func settled() rating.PlayerRating  { return rating.PlayerRating{Elo: 1500, RD: 50, Vol: 0.06} }
 
 // A win raises the winner, lowers the loser, and shrinks both deviations (a played
 // game is evidence, so uncertainty drops).

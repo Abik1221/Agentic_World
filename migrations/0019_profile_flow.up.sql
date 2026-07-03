@@ -1,8 +1,11 @@
--- 0016_profile_flow — single-agent profile (display name, bio, avatar), per-game
+-- 0019_profile_flow — agent profile (display name, bio, avatar), per-game
 -- behaviour config, and passwordless email magic-link recovery.
 --
 -- Product rules encoded here:
---   * One user owns at most one agent  → unique index on agents(owner_user_id).
+--   * A user owns one OR MORE agents (see identity: one human → N agents; the
+--     platform also seeds several house agents under one system owner). Owner
+--     lookups use the existing non-unique idx_agents_owner (migration 0002); we
+--     intentionally do NOT add a unique index here.
 --   * An agent has a public identity    → display_name, bio, avatar_url columns.
 --   * Same agent, per-game instincts     → agent_game_config(agent, game_type).
 --   * Passwordless recovery              → magic_links(token → user, single use).
@@ -14,9 +17,6 @@ ALTER TABLE agents
     ADD COLUMN IF NOT EXISTS display_name TEXT,
     ADD COLUMN IF NOT EXISTS bio          TEXT,
     ADD COLUMN IF NOT EXISTS avatar_url   TEXT;
-
--- Enforce one agent per user. (If existing data violates this, dedupe first.)
-CREATE UNIQUE INDEX IF NOT EXISTS uq_agents_owner ON agents(owner_user_id);
 
 -- ── Per-game behaviour ──────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_game_config (

@@ -19,17 +19,60 @@ func NewProfilesRepo(db *pgxpool.Pool) *ProfilesRepo { return &ProfilesRepo{db: 
 
 var _ profiles.Repo = (*ProfilesRepo)(nil)
 
-func (r *ProfilesRepo) AgentInfo(ctx context.Context, slug string) (profiles.Agent, error) {
+func (r *ProfilesRepo) AgentInfo(ctx context.Context, slugOrID string) (profiles.Agent, error) {
 	var a profiles.Agent
 	err := r.db.QueryRow(ctx,
 		`SELECT a.public_id, a.name, a.slug, COALESCE(u.x_handle, ''), a.status, a.verification_level
 		 FROM agents a JOIN users u ON u.id = a.owner_user_id
-		 WHERE a.slug = $1`, slug).
+		 WHERE a.slug = $1 OR a.public_id = $1`, slugOrID).
 		Scan(&a.PublicID, &a.Name, &a.Slug, &a.XHandle, &a.Status, &a.VerificationLevel)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return profiles.Agent{}, httpx.ErrNotFound
 	}
 	return a, err
+}
+
+// Badges returns the agent's earned achievements, oldest first.
+func (r *ProfilesRepo) Badges(ctx context.Context, agentPublicID string) ([]profiles.Badge, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT code, awarded_at FROM agent_badges WHERE agent_public_id = $1 ORDER BY awarded_at`,
+		agentPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []profiles.Badge
+	for rows.Next() {
+		var b profiles.Badge
+		if err := rows.Scan(&b.Code, &b.AwardedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// SeasonHistory returns the agent's per-season standings, newest season first.
+func (r *ProfilesRepo) SeasonHistory(ctx context.Context, agentPublicID string) ([]profiles.SeasonElo, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT r.season, r.elo, r.wins, r.losses, r.ties
+		 FROM ratings r JOIN agents a ON a.id = r.agent_id
+		 WHERE a.public_id = $1
+		 ORDER BY r.season DESC
+		 LIMIT 24`, agentPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []profiles.SeasonElo
+	for rows.Next() {
+		var s profiles.SeasonElo
+		if err := rows.Scan(&s.Season, &s.Elo, &s.Wins, &s.Losses, &s.Ties); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func (r *ProfilesRepo) Stats(ctx context.Context, agentPublicID string, season int) (profiles.Stats, error) {

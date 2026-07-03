@@ -7,6 +7,7 @@ import (
 	"time"
 
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
+	eventbus "github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -208,15 +209,15 @@ func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.
 	return err
 }
 
-func (r *MatchRepo) Finish(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event) error {
-	err := r.finishTx(ctx, matchPublicID, state, winnerAgentPublicID, replayHash, players, events)
+func (r *MatchRepo) Finish(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event, finishedEvent []byte) error {
+	err := r.finishTx(ctx, matchPublicID, state, winnerAgentPublicID, replayHash, players, events, finishedEvent)
 	if isUniqueViolation(err) {
 		return match.ErrConcurrentUpdate
 	}
 	return err
 }
 
-func (r *MatchRepo) finishTx(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event) error {
+func (r *MatchRepo) finishTx(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event, finishedEvent []byte) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
@@ -238,7 +239,17 @@ func (r *MatchRepo) finishTx(ctx context.Context, matchPublicID string, state gs
 				return err
 			}
 		}
-		return insertEvents(ctx, tx, matchID, events)
+		if err := insertEvents(ctx, tx, matchID, events); err != nil {
+			return err
+		}
+		// Domain event outbox (transactional): emit match.finished in the same tx
+		// as the match becoming finished, iff the caller supplied a payload.
+		if finishedEvent != nil {
+			if _, err := InsertEventTx(ctx, tx, eventbus.TypeMatchFinished, finishedEvent); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

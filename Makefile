@@ -30,6 +30,13 @@ sim: ## Offline match simulator, e.g. make sim ARGS="-a highest -b random -n 100
 test: ## Unit + integration tests with the race detector
 	go test -race -count=1 $(PKG)
 
+.PHONY: test-e2e
+BASE_URL ?= http://localhost:8080
+test-e2e: ## Black-box e2e against a running server (BASE_URL). Run the server on
+	## the HOST with AGENT_VERIFY_ALLOW_PRIVATE=true so manifest verification can
+	## reach the in-test stub agent on loopback.
+	BASE_URL=$(BASE_URL) go test -tags=integration -count=1 ./tests/integration/...
+
 .PHONY: lint
 lint: ## Static analysis (golangci-lint must be installed)
 	golangci-lint run

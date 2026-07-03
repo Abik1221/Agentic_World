@@ -3,6 +3,7 @@ package match
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -12,6 +13,14 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/replay"
 )
+
+// matchFinishedPayload is the match.finished event body (competitive matches).
+// WinnerAgent is empty on a tie.
+type matchFinishedPayload struct {
+	MatchID     string `json:"match_id"`
+	Game        string `json:"game"`
+	WinnerAgent string `json:"winner_agent"`
+}
 
 // Config tunes the match loop.
 type Config struct {
@@ -506,7 +515,20 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	}
 
 	players := finalizePlayers(m.Players, state, pool, m.Bid, m.RakePct)
-	if err := s.repo.Finish(ctx, m.PublicID, state, winnerAgent, hash, players, newEvents); err != nil {
+
+	// Competitive matches emit a transactional match.finished fact (badges,
+	// notifications, analytics project off it). Sandbox is off the growth path:
+	// nil payload => no event.
+	var finishedEvent []byte
+	if m.Mode != ModeSandbox {
+		finishedEvent, err = json.Marshal(matchFinishedPayload{
+			MatchID: m.PublicID, Game: m.Game, WinnerAgent: winnerAgent,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := s.repo.Finish(ctx, m.PublicID, state, winnerAgent, hash, players, newEvents, finishedEvent); err != nil {
 		return nil, err
 	}
 

@@ -47,8 +47,24 @@ type Config struct {
 	RakePct       int
 	DefaultRounds int
 
+	// AutoMigrate applies pending DB migrations in-process on startup (safe for
+	// multi-instance: golang-migrate takes an advisory lock). Default true.
+	AutoMigrate bool
+
 	// Sandbox practice mode — risk-free matches vs the house agents.
 	SandboxEnabled bool
+
+	// Agent manifest / endpoint verification. AgentVerifyAllowPrivate permits
+	// http:// and private/loopback endpoint hosts (dev/e2e against a local
+	// starter agent only).
+	AgentVerifyAllowPrivate bool
+	AgentVerifyTimeout      time.Duration // per-attempt deadline
+	AgentVerifyMaxTimeout   time.Duration // hard ceiling
+	AgentVerifyRetries      int           // retries after the first attempt
+	AgentVerifyMaxBodyBytes int64         // response body cap
+	// AgentEndpointSecretKey encrypts the endpoint bearer token at rest. Falls
+	// back to APIKeyPepper when unset so a key always exists.
+	AgentEndpointSecretKey string
 
 	// Ratings (Stage 7)
 	RatingK      int           // ELO volatility factor
@@ -135,7 +151,15 @@ func Load() (*Config, error) {
 		MoveWindow:     time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
 		RakePct:        l.intVal("RAKE_PCT", 5),
 		DefaultRounds:  l.intVal("DEFAULT_ROUNDS", 13),
+		AutoMigrate:    l.boolVal("AUTO_MIGRATE", true),
 		SandboxEnabled: l.boolVal("SANDBOX_ENABLED", true),
+
+		AgentVerifyAllowPrivate: l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
+		AgentVerifyTimeout:      l.dur("AGENT_VERIFY_TIMEOUT", 5*time.Second),
+		AgentVerifyMaxTimeout:   l.dur("AGENT_VERIFY_MAX_TIMEOUT", 15*time.Second),
+		AgentVerifyRetries:      l.intVal("AGENT_VERIFY_RETRIES", 2),
+		AgentVerifyMaxBodyBytes: int64(l.intVal("AGENT_VERIFY_MAX_BODY_BYTES", 65536)),
+		AgentEndpointSecretKey:  l.str("AGENT_ENDPOINT_SECRET_KEY", ""),
 
 		RatingK:      l.intVal("RATING_K", 32),
 		SeasonLength: l.dur("SEASON_LENGTH", 30*24*time.Hour),
