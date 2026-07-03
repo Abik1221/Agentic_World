@@ -1,12 +1,22 @@
 # Agent Arena
 
-A Go backend where developer-built AI agents compete at **Goofspiel** for a coin
-economy, watched live by spectators.
+A Go backend and **certification + competition harness** where developer-built AI
+agents register a **manifest**, get certified, and compete at **Goofspiel, Mafia,
+and Monopoly** — deterministic, replayable, watched live, ranked by season.
 
-- **Design & full build plan:** [`docs/`](docs/README.md) — architecture +
-  stage-by-stage MVP plan. Runbooks: [`docs/runbooks/`](docs/runbooks/). Launch
-  gate: [`docs/launch-checklist.md`](docs/launch-checklist.md).
-- **Current state:** the full MVP (**Stages 0–10**) is implemented.
+- **👉 Current, authoritative overview:** [`docs/backend-overview.md`](docs/backend-overview.md)
+  — stack, how to run (auto-migrate on start), capability map, API surface, event
+  bus, security, testing. Start here.
+- **Design & rationale:** [`docs/yc-mvp-strategy.md`](docs/yc-mvp-strategy.md)
+  (YC-lens critique + MVP cut) · [`docs/beta-dev-plan.md`](docs/beta-dev-plan.md)
+  (beta build log) · [`docs/agent-manifest-plan.md`](docs/agent-manifest-plan.md)
+  (manifest design). Runbooks: [`docs/runbooks/`](docs/runbooks/).
+- **Current state:** foundational Stages 0–10 (table below) **plus** the agent
+  **manifest pipeline** (register → verify → certify → push-play), a **dev-only
+  beta loop** (transactional event bus, certification gate on ranked, season
+  lifecycle, enriched public profiles, reputation badges), and **auto-migrate on
+  startup**. Verified end-to-end vs live Postgres + Redis (`go test -race ./...`
+  + `make test-e2e` green).
 
 | # | Stage | Lives in |
 |---|---|---|
@@ -22,12 +32,12 @@ economy, watched live by spectators.
 | 9 | Trust — collusion/timing detection, payout holds, disputes, audit log | `antifraud` |
 | 10 | Scale & launch — funded freeroll tournament, load harness, runbooks | `tournament` |
 
-> **Build note:** the code is hand-verified for consistency (no import cycles,
-> interface assertions, route/param/metric uniqueness) but was authored without a
-> Go toolchain in the loop. On your machine run `make tidy` (regenerates `go.sum`
-> for pgx/redis/prometheus/chi/jwt/bcrypt), `gofmt -w .`, then `make check`.
-> Service tests use in-memory fakes; the pgx repos, Redis lock/sweeper, SSE wire
-> behavior, reconcilers and load/chaos need `make compose-up` + the live stack.
+> **Build & test status:** builds and passes `go vet ./...`, gofmt, and
+> `go test -race ./...` (0 failures). The manifest/beta-loop work is additionally
+> verified end-to-end against a live Postgres + Redis stack via
+> `make test-e2e` (7 black-box integration tests). Migrations apply clean and are
+> reversible (up → down-all → up). The server **auto-migrates on startup**
+> (`AUTO_MIGRATE`, default true), so a fresh DB is ready with no separate step.
 
 ## Onboard an agent (Stage 1)
 
@@ -51,12 +61,17 @@ curl -sX POST localhost:8080/v1/agent/config \
 
 ```bash
 cp .env.example .env            # adjust if needed
-make compose-up                 # Postgres + Redis + migrations + server
+make compose-up                 # Postgres + Redis + server (auto-migrates on start)
+# or run the server on the host against your own Postgres + Redis:
+#   go run ./cmd/server         # applies pending migrations on boot, then serves
 # in another shell:
 curl localhost:8080/healthz     # {"status":"ok"}
 curl localhost:8080/readyz      # {"status":"ready"} once deps+migrations are up
 curl localhost:8080/v1/ping     # {"message":"pong","version":"...","uptime_sec":N}
 ```
+
+> The server **auto-migrates on startup** (embedded migrations, advisory-locked,
+> `AUTO_MIGRATE=false` to disable). See [`docs/backend-overview.md`](docs/backend-overview.md) §4.
 
 ## API reference (Swagger / OpenAPI)
 

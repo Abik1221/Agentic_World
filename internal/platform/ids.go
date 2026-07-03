@@ -9,14 +9,16 @@ import (
 // Public ID prefixes. Internal DB primary keys are never exposed; every
 // externally visible identifier is a prefixed, random, URL-safe token.
 const (
-	PrefixUser  = "usr"
-	PrefixAgent = "ag"
-	PrefixMatch = "m"
-	PrefixMafia = "mf"
+	PrefixUser     = "usr"
+	PrefixAgent    = "ag"
+	PrefixMatch    = "m"
+	PrefixMafia    = "mf"
 	PrefixMonopoly = "mp"
-	PrefixKey   = "sk_arena"
-	PrefixClip  = "clip"
-	PrefixTxn   = "txn"
+	PrefixKey      = "sk_arena"
+	PrefixClip     = "clip"
+	PrefixTxn      = "txn"
+	PrefixManifest = "man" // agent manifest version ("mf" is taken by Mafia)
+	PrefixEvent    = "evt" // domain event (outbox)
 )
 
 var idEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)

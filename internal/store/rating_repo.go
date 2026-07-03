@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 
+	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/rating"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -162,4 +164,48 @@ func (r *RatingRepo) AgentElo(ctx context.Context, agentPublicID string, season 
 		return 1500, err
 	}
 	return elo, nil
+}
+
+func (r *RatingRepo) LastRolledSeason(ctx context.Context) (int, error) {
+	var season *int
+	if err := r.db.QueryRow(ctx, `SELECT MAX(season) FROM season_rolls`).Scan(&season); err != nil {
+		return -1, err
+	}
+	if season == nil {
+		return -1, nil
+	}
+	return *season, nil
+}
+
+func (r *RatingRepo) RollSeason(ctx context.Context, season int, champion string) (bool, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after commit
+
+	ct, err := tx.Exec(ctx,
+		`INSERT INTO season_rolls (season, champion_agent_public_id) VALUES ($1, $2)
+		 ON CONFLICT (season) DO NOTHING`,
+		season, nullString(champion))
+	if err != nil {
+		return false, err
+	}
+	if ct.RowsAffected() == 0 {
+		return false, nil // already rolled
+	}
+
+	// Emit season.rolled in the SAME tx (transactional outbox): champion badges +
+	// "new season" notifications project off this.
+	payload, err := json.Marshal(map[string]any{"season": season, "champion_agent_id": champion})
+	if err != nil {
+		return false, err
+	}
+	if _, err := InsertEventTx(ctx, tx, events.TypeSeasonRolled, payload); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }

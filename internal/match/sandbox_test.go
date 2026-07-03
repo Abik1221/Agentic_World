@@ -47,14 +47,46 @@ func (lowestBot) Pick(state gs.State, seat int, _ string) int {
 }
 
 func newSpySvc(w match.Wallet, rt match.Rater, bot match.Bot) *match.Service {
-	svc := match.New(newFakeRepo(), fakeLocker{}, match.NoopLimits{}, w,
+	svc, _ := newSpySvcWithRepo(w, rt, bot)
+	return svc
+}
+
+func newSpySvcWithRepo(w match.Wallet, rt match.Rater, bot match.Bot) (*match.Service, *fakeRepo) {
+	repo := newFakeRepo()
+	svc := match.New(repo, fakeLocker{}, match.NoopLimits{}, w,
 		match.NoopBroadcaster{}, match.AllowAllVerifier{}, rt, match.NoopFinishHook{},
 		platform.FixedClock{T: time.Unix(1_700_000_000, 0).UTC()},
 		match.Config{MoveWindow: 20 * time.Second, RakePct: 5, Rounds: 13, LockTTL: 5 * time.Second})
 	if bot != nil {
 		svc.SetBot(bot)
 	}
-	return svc
+	return svc, repo
+}
+
+// TestSandboxEmitsNoFinishedEvent proves sandbox matches are off the growth path:
+// finalize passes a nil match.finished payload (no event, no first-win badge).
+func TestSandboxEmitsNoFinishedEvent(t *testing.T) {
+	svc, repo := newSpySvcWithRepo(&spyWallet{}, &spyRater{}, lowestBot{})
+	ctx := context.Background()
+	id, err := svc.CreateSandbox(ctx, "ag_dev", "usr_dev", "ag_house_master", "usr_system", "lowest")
+	if err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		v, _ := svc.State(ctx, id, "ag_dev", false, 0)
+		if v.Status == match.StatusFinished {
+			break
+		}
+		if v.YourTurn && len(v.You.Hand) > 0 {
+			_, _ = svc.Act(ctx, "ag_dev", id, v.Round, v.You.Hand[0], "")
+		}
+	}
+	if repo.finishCalls == 0 {
+		t.Fatal("Finish was never called")
+	}
+	if repo.finishedEvent != nil {
+		t.Fatalf("sandbox match must NOT emit a match.finished event, got %s", repo.finishedEvent)
+	}
 }
 
 func TestSandboxFinishesWithoutMoneyOrRating(t *testing.T) {

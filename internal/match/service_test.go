@@ -2,6 +2,7 @@ package match_test
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -14,9 +15,11 @@ import (
 // ── in-memory fakes (no DB / Redis) ──────────────────────────────────────────
 
 type fakeRepo struct {
-	mu      sync.Mutex
-	matches map[string]match.Match
-	events  map[string][]gs.Event
+	mu            sync.Mutex
+	matches       map[string]match.Match
+	events        map[string][]gs.Event
+	finishedEvent []byte // last match.finished payload passed to Finish (nil = none)
+	finishCalls   int
 }
 
 func newFakeRepo() *fakeRepo {
@@ -104,7 +107,7 @@ func (r *fakeRepo) Advance(_ context.Context, id string, state gs.State, deadlin
 	return nil
 }
 
-func (r *fakeRepo) Finish(_ context.Context, id string, state gs.State, winner, hash string, players []match.Player, events []gs.Event) error {
+func (r *fakeRepo) Finish(_ context.Context, id string, state gs.State, winner, hash string, players []match.Player, events []gs.Event, finishedEvent []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m := r.matches[id]
@@ -116,6 +119,8 @@ func (r *fakeRepo) Finish(_ context.Context, id string, state gs.State, winner, 
 	m.RoundDeadline = nil
 	r.matches[id] = m
 	r.events[id] = append(r.events[id], events...)
+	r.finishedEvent = finishedEvent // captured for the match.finished emission assertion
+	r.finishCalls++
 	return nil
 }
 
@@ -166,10 +171,69 @@ func (fakeLocker) Lock(context.Context, string, time.Duration) (func(), bool, er
 }
 
 func newSvc() *match.Service {
-	return match.New(newFakeRepo(), fakeLocker{}, match.NoopLimits{}, match.NoopWallet{},
+	svc, _ := newSvcWithRepo()
+	return svc
+}
+
+// newSvcWithRepo exposes the fake repo so tests can assert on captured writes
+// (e.g. the transactional match.finished payload).
+func newSvcWithRepo() (*match.Service, *fakeRepo) {
+	repo := newFakeRepo()
+	svc := match.New(repo, fakeLocker{}, match.NoopLimits{}, match.NoopWallet{},
 		match.NoopBroadcaster{}, match.AllowAllVerifier{}, match.NoopRater{}, match.NoopFinishHook{},
 		platform.FixedClock{T: time.Unix(1_700_000_000, 0).UTC()},
 		match.Config{MoveWindow: 20 * time.Second, RakePct: 5, Rounds: 13, LockTTL: 5 * time.Second})
+	return svc, repo
+}
+
+// TestCompetitiveMatchEmitsFinishedEvent proves a competitive match hands a
+// non-nil match.finished payload (carrying the winner) to repo.Finish — the
+// transactional-outbox emission that drives the first-win badge + notifications.
+func TestCompetitiveMatchEmitsFinishedEvent(t *testing.T) {
+	svc, repo := newSvcWithRepo()
+	ctx := context.Background()
+
+	id, err := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if err != nil {
+		t.Fatalf("CreateOpen: %v", err)
+	}
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		v, _ := svc.State(ctx, id, "ag_a", false, 0)
+		if v.Status == match.StatusFinished {
+			break
+		}
+		for _, ag := range []string{"ag_a", "ag_b"} {
+			cur, _ := svc.State(ctx, id, ag, false, 0)
+			if cur.YourTurn && len(cur.You.Hand) > 0 {
+				_, _ = svc.Act(ctx, ag, id, cur.Round, cur.You.Hand[0], "")
+			}
+		}
+	}
+
+	if repo.finishCalls == 0 {
+		t.Fatal("Finish was never called")
+	}
+	if repo.finishedEvent == nil {
+		t.Fatal("competitive match must emit a match.finished payload")
+	}
+	var p struct {
+		MatchID     string `json:"match_id"`
+		Game        string `json:"game"`
+		WinnerAgent string `json:"winner_agent"`
+	}
+	if err := json.Unmarshal(repo.finishedEvent, &p); err != nil {
+		t.Fatalf("payload not valid JSON: %v", err)
+	}
+	if p.MatchID != id || p.Game == "" {
+		t.Fatalf("unexpected payload: %+v", p)
+	}
+	// Winner is one of the two seats (deterministic play rarely ties here).
+	if p.WinnerAgent != "ag_a" && p.WinnerAgent != "ag_b" && p.WinnerAgent != "" {
+		t.Fatalf("winner should be a seat or empty (tie), got %q", p.WinnerAgent)
+	}
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────

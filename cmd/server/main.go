@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,21 +14,25 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/antifraud"
 	"github.com/agent-arena/arena/internal/auth"
+	"github.com/agent-arena/arena/internal/badges"
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
+	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/mafia"
+	"github.com/agent-arena/arena/internal/manifest"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/matchmaking"
-	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/middleware"
+	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
 	"github.com/agent-arena/arena/internal/payout"
@@ -35,6 +40,7 @@ import (
 	"github.com/agent-arena/arena/internal/profiles"
 	"github.com/agent-arena/arena/internal/rating"
 	"github.com/agent-arena/arena/internal/sandbox"
+	"github.com/agent-arena/arena/internal/secretbox"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/spectator"
 	"github.com/agent-arena/arena/internal/store"
@@ -96,6 +102,16 @@ func run() error {
 	defer st.Close()
 	log.Info("data layer connected")
 
+	// Auto-migrate on startup: apply any pending schema migrations in-process
+	// before serving. Safe for multi-instance (advisory-locked); disable with
+	// AUTO_MIGRATE=false to manage migrations out-of-band.
+	if cfg.AutoMigrate {
+		if err := store.Migrate(cfg.DatabaseURL); err != nil {
+			return err
+		}
+		log.Info("database migrations applied", "auto_migrate", true)
+	}
+
 	// 7. Modules.
 	healthH := health.New(st, clock, version)
 
@@ -121,6 +137,48 @@ func run() error {
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
 	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
 	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL)
+
+	// Agent manifests: the metadata contract a developer submits per agent
+	// version (info, supported games, hosted endpoint, runtime, model, SDK). The
+	// hardened agentclient (SSRF-guarded) performs endpoint verification, and the
+	// endpoint bearer token is sealed at rest with AES-256-GCM.
+	manifest.AllowInsecureEndpoint = cfg.AgentVerifyAllowPrivate
+	endpointSecretKey := cfg.AgentEndpointSecretKey
+	if endpointSecretKey == "" {
+		endpointSecretKey = cfg.APIKeyPepper // always-present fallback
+	}
+	manifestSealer, err := secretbox.New(endpointSecretKey)
+	if err != nil {
+		return err
+	}
+	manifestProbe := agentclient.New(agentclient.Config{
+		Timeout:      cfg.AgentVerifyTimeout,
+		MaxTimeout:   cfg.AgentVerifyMaxTimeout,
+		Retries:      cfg.AgentVerifyRetries,
+		MaxBodyBytes: cfg.AgentVerifyMaxBodyBytes,
+		AllowPrivate: cfg.AgentVerifyAllowPrivate,
+	})
+	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
+	manifestHandler := manifest.NewHandler(manifestSvc, authn)
+
+	// Domain event bus (transactional outbox): producers emit facts in their own
+	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone
+	// for notifications, badges, and analytics (P1). Handlers registered here.
+	eventBus := events.New(store.NewEventsRepo(st.DB), log, time.Second)
+	eventBus.On(events.TypeAgentCertified, func(_ context.Context, e events.Event) error {
+		log.Info("agent certified", "event", e.ID, "payload", string(e.Payload))
+		return nil
+	})
+	eventBus.On(events.TypeSeasonRolled, func(_ context.Context, e events.Event) error {
+		log.Info("season rolled", "event", e.ID, "payload", string(e.Payload))
+		return nil
+	})
+	// Badges (reputation) are awarded off the event bus, idempotently.
+	badgeSvc := badges.New(store.NewBadgesRepo(st.DB), log)
+	eventBus.On(events.TypeAgentCertified, badgeSvc.OnAgentCertified)
+	eventBus.On(events.TypeSeasonRolled, badgeSvc.OnSeasonRolled)
+	eventBus.On(events.TypeMatchFinished, badgeSvc.OnMatchFinished)
+	go eventBus.Run(ctx)
 
 	// Verification (built in Stage 1) is wired into the match flow now.
 	verSvc := verification.New(store.NewVerificationRepo(st.DB))
@@ -161,7 +219,9 @@ func run() error {
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
 		rating.Config{K: cfg.RatingK, SeasonLength: cfg.SeasonLength}, metrics.Registry())
 	ratingHandler := rating.NewHandler(ratingSvc)
+	go rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run(ctx) // finalise ended seasons + emit season.rolled
 	profilesSvc := profiles.New(store.NewProfilesRepo(st.DB), ratingSvc.CurrentSeason)
+	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
 	profilesHandler := profiles.NewHandler(profilesSvc, authn)
 
 	// Engagement: clips (dramatic-moment detection + async asset render) and social
@@ -179,7 +239,7 @@ func run() error {
 		walletSvc,
 		wallet.NewMafiaWallet(walletSvc),
 		mafiaHub,
-		verifierAdapter{verSvc},
+		verifierAdapter{v: verSvc, cert: manifestSvc},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
 		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
@@ -234,7 +294,7 @@ func run() error {
 		matchRepo,
 		store.NewLocker(st.Redis),
 		walletSvc, walletSvc, hub,
-		verifierAdapter{verSvc},
+		verifierAdapter{v: verSvc, cert: manifestSvc},
 		raterAdapter{ratingSvc},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
@@ -261,6 +321,7 @@ func run() error {
 		matchPairer{matchSvc}, ratingSvc, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
+	matchmakingSvc.SetEligibility(manifestSvc) // ranked queue requires a certified agent
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
@@ -334,6 +395,7 @@ func run() error {
 		healthH.Register,
 		openapi.NewHandler().Register,
 		idHandler.Register,
+		manifestHandler.Register,
 		matchHandler.Register,
 		matchmakingHandler.Register,
 		sandboxHandler.Register,
@@ -366,14 +428,52 @@ func (p matchPairer) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, b
 	return p.m.CreatePaired(ctx, aAgent, aOwner, bAgent, bOwner, bid)
 }
 
-// verifierAdapter bridges verification.Service to match.Verifier.
-type verifierAdapter struct{ v *verification.Service }
+// profileManifest adapts manifest.Service to profiles.Manifest: it maps the
+// agent's public active manifest into the profile's certification card, or nil
+// when the agent has no public/verified manifest.
+type profileManifest struct{ svc *manifest.Service }
+
+func (p profileManifest) Card(ctx context.Context, agentPublicID string) (*profiles.ManifestCard, error) {
+	m, err := p.svc.PublicActive(ctx, agentPublicID)
+	if errors.Is(err, manifest.ErrNoManifest) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	card := &profiles.ManifestCard{
+		Certified:    m.Status == manifest.StatusVerified,
+		AgentVersion: m.AgentVersion,
+		Games:        m.Games,
+	}
+	if m.Model != nil {
+		card.Model = &profiles.ModelInfo{
+			Provider: m.Model.Provider, Model: m.Model.Model,
+			Declared: true, Reasoning: m.Model.Reasoning,
+		}
+	}
+	return card, nil
+}
+
+// verifierAdapter bridges verification.Service to match.Verifier and adds the
+// certification gate: an agent must have an active, endpoint-verified manifest to
+// enter ranked play. cert may be nil (gate disabled).
+type verifierAdapter struct {
+	v    *verification.Service
+	cert *manifest.Service
+}
 
 func (a verifierAdapter) Record(ctx context.Context, agentPublicID string, matchPublicID *string, responseMs int) {
 	_ = a.v.Record(ctx, agentPublicID, matchPublicID, responseMs)
 }
 
 func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string) error {
+	// Certification gate first (the wedge): no ranked play without a verified agent.
+	if a.cert != nil {
+		if err := a.cert.RequireCertified(ctx, agentPublicID); err != nil {
+			return err
+		}
+	}
 	e, err := a.v.CheckEligibility(ctx, agentPublicID)
 	if err != nil {
 		return err

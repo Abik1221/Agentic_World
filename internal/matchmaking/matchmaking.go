@@ -99,7 +99,18 @@ type Service struct {
 	cfg    Config
 	log    *slog.Logger
 	m      *metrics
+	elig   Eligibility // optional ranked-entry gate (nil = open)
 }
+
+// Eligibility gates who may enter the ranked queue — e.g. the certification gate
+// (agent must have an active, endpoint-verified manifest). Satisfied by
+// manifest.Service. Injected via SetEligibility so New stays unchanged.
+type Eligibility interface {
+	RequireCertified(ctx context.Context, agentPublicID string) error
+}
+
+// SetEligibility installs the ranked-entry gate (call once during wiring).
+func (s *Service) SetEligibility(e Eligibility) { s.elig = e }
 
 // clock is the minimal time port (matches platform.Clock structurally).
 type clock interface{ Now() time.Time }
@@ -115,6 +126,13 @@ func New(repo Repo, pairer Pairer, rating RatingSource, clk clock, cfg Config, l
 func (s *Service) Enqueue(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (Entry, error) {
 	if bid <= 0 {
 		return Entry{}, httpx.NewError(http.StatusBadRequest, "invalid_request", "bid must be > 0")
+	}
+	// Certification gate: only verified agents enter the ranked queue (fail fast so
+	// uncertified agents never pollute pairing).
+	if s.elig != nil {
+		if err := s.elig.RequireCertified(ctx, agentPublicID); err != nil {
+			return Entry{}, err
+		}
 	}
 	elo, err := s.rating.Elo(ctx, agentPublicID)
 	if err != nil {

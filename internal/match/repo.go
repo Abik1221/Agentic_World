@@ -38,8 +38,11 @@ type Repo interface {
 	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error
 
 	// Finish appends the final events, writes the terminal snapshot, sets status,
-	// winner, per-player results, and the replay hash (one transaction).
-	Finish(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []Player, events []gs.Event) error
+	// winner, per-player results, and the replay hash (one transaction). When
+	// finishedEvent is non-nil it is also written to the domain event outbox in the
+	// SAME transaction (the match.finished fact); pass nil to emit no event (e.g.
+	// sandbox matches, which are off the growth path).
+	Finish(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []Player, events []gs.Event, finishedEvent []byte) error
 
 	// ListActiveExpired returns public ids of active matches whose round deadline
 	// has passed (drives the timeout sweeper).

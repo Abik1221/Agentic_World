@@ -18,6 +18,10 @@ type Repo interface {
 	Stats(ctx context.Context, agentPublicID string, season int) (Stats, error)
 	// RecentMatches returns the agent's most recent finished matches, newest first.
 	RecentMatches(ctx context.Context, agentPublicID string, season, limit int) ([]RecentMatch, error)
+	// SeasonHistory returns the agent's per-season standings, newest season first.
+	SeasonHistory(ctx context.Context, agentPublicID string) ([]SeasonElo, error)
+	// Badges returns the agent's earned achievements, oldest first.
+	Badges(ctx context.Context, agentPublicID string) ([]Badge, error)
 }
 
 // Agent is the public identity shown on a profile.
