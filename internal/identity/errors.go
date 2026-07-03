@@ -17,6 +17,8 @@ var (
 	ErrInvalidAPIKey     = httpx.NewError(http.StatusUnauthorized, "unauthenticated", "Invalid API key.")
 	ErrForbiddenOwner    = httpx.NewError(http.StatusForbidden, "forbidden", "You do not own this agent.")
 	ErrInvalidPubKey     = httpx.NewError(http.StatusBadRequest, "invalid_pubkey", "Signing key must be a base64-encoded Ed25519 public key.")
+	ErrEmailTaken         = httpx.NewError(http.StatusConflict, "email_taken", "That email is already registered. Try signing in instead.")
+	ErrInvalidCredentials = httpx.NewError(http.StatusUnauthorized, "invalid_credentials", "Incorrect email or password.")
 )
 
 func errInvalid(msg string) *httpx.APIError {

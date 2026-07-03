@@ -146,11 +146,25 @@ func (s *Service) Mint(ctx context.Context, agentPublicID string, amount int64, 
 	return s.credit(ctx, agentPublicID, amount, idemKey, "mint")
 }
 
-// Topup credits coins to an agent from stripe_clearing after a settled Stripe
-// payment. Idempotency key topup:{stripe_event_id} makes webhook redelivery a
-// no-op. Implements payments.Coiner.
-func (s *Service) Topup(ctx context.Context, agentPublicID string, coins int64, idemKey string) error {
-	return s.credit(ctx, agentPublicID, coins, idemKey, "stripe")
+// Topup credits coins to the owner's treasury after a settled Stripe payment.
+// Idempotency key topup:{session_id} makes webhook redelivery a no-op.
+func (s *Service) Topup(ctx context.Context, userPublicID string, coins int64, idemKey string) error {
+	return s.creditUser(ctx, userPublicID, coins, idemKey, "stripe")
+}
+
+// creditUser applies incoming coins to the owner's treasury wallet.
+func (s *Service) creditUser(ctx context.Context, userPublicID string, coins int64, idemKey, source string) error {
+	postings := []ledger.Posting{
+		{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: -coins},
+		{Wallet: ledger.UserWallet(userPublicID), Amount: coins},
+	}
+	_, err := s.ledger.Post(ctx, ledger.Txn{
+		Kind:     ledger.KindTopup,
+		Key:      idemKey,
+		Metadata: map[string]any{"user": userPublicID, "coins": coins, "source": source},
+		Postings: postings,
+	})
+	return err
 }
 
 // credit applies incoming coins, repaying any outstanding chargeback debt FIRST:
@@ -194,11 +208,8 @@ func (s *Service) credit(ctx context.Context, agentPublicID string, coins int64,
 }
 
 // Reverse claws back a previously credited top-up on a Stripe refund/chargeback.
-// A wallet may never go negative, so it recovers what the agent still holds and
-// records the SHORTFALL as bad debt (a balanced double-entry into bad_debt + a
-// per-agent receivable). Idempotency key reversal:{event}. Implements payments.Coiner.
-func (s *Service) Reverse(ctx context.Context, agentPublicID string, coins int64, idemKey string) error {
-	bal, err := s.ledger.Balance(ctx, agentPublicID)
+func (s *Service) Reverse(ctx context.Context, userPublicID string, coins int64, idemKey string) error {
+	bal, err := s.ledger.UserBalance(ctx, userPublicID)
 	if err != nil {
 		return err
 	}
@@ -211,10 +222,9 @@ func (s *Service) Reverse(ctx context.Context, agentPublicID string, coins int64
 	}
 	shortfall := coins - recovered
 
-	// coins removed from circulation; recovered from the agent; the rest booked as debt.
 	postings := []ledger.Posting{{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: coins}}
 	if recovered > 0 {
-		postings = append(postings, ledger.Posting{Wallet: ledger.AgentWallet(agentPublicID), Amount: -recovered})
+		postings = append(postings, ledger.Posting{Wallet: ledger.UserWallet(userPublicID), Amount: -recovered})
 	}
 	if shortfall > 0 {
 		postings = append(postings, ledger.Posting{Wallet: ledger.SystemWallet(ledger.SysBadDebt), Amount: -shortfall})
@@ -223,14 +233,13 @@ func (s *Service) Reverse(ctx context.Context, agentPublicID string, coins int64
 	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindReversal,
 		Key:      idemKey,
-		Metadata: map[string]any{"agent": agentPublicID, "coins": coins, "recovered": recovered, "debt": shortfall},
+		Metadata: map[string]any{"user": userPublicID, "coins": coins, "recovered": recovered, "debt": shortfall},
 		Postings: postings,
 	})
 	if err != nil {
 		return err
 	}
 	if res.Applied && shortfall > 0 {
-		_ = s.repo.RecordDebt(ctx, agentPublicID, shortfall)
 		s.m.chargebackDebt.Add(float64(shortfall))
 	}
 	return nil

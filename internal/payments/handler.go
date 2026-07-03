@@ -30,34 +30,63 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		user := auth.RequireScope(auth.ScopeUser)
 		r.With(user).Get("/v1/wallet/packs", h.packs)
+		r.With(user).Get("/v1/wallet/packs/{key}/quote", h.quote)
 		r.With(user).Post("/v1/wallet/topup", h.topup)
+		r.With(user).Post("/v1/wallet/topup/confirm", h.confirm)
 		r.With(user).Post("/v1/payouts/onboard", h.onboard)
 		// Dev-only: manually confirm a dev checkout (useful for testing error handling)
 		r.With(user).Post("/v1/admin/dev/confirm-checkout", h.devConfirmCheckout)
 	})
-	r.Post("/v1/webhooks/stripe", h.webhook) // public; verified by signature
+	r.Post("/v1/webhooks/stripe", h.webhook)
 }
 
 func (h *Handler) packs(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"packs": h.svc.Packs()})
 }
 
+func (h *Handler) quote(w http.ResponseWriter, r *http.Request) {
+	method := r.URL.Query().Get("payment_method")
+	q, err := h.svc.QuotePack(chi.URLParam(r, "key"), method)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, q)
+}
+
 func (h *Handler) topup(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		Pack  string `json:"pack"`
-		Agent string `json:"agent"`
+		Pack          string `json:"pack"`
+		Agent         string `json:"agent"`
+		PaymentMethod string `json:"payment_method"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	checkout, err := h.svc.Topup(r.Context(), p.UserPublicID, in.Agent, in.Pack)
+	checkout, err := h.svc.Topup(r.Context(), p.UserPublicID, in.Agent, in.Pack, in.PaymentMethod)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"checkout_url": checkout.URL, "session_id": checkout.ID})
+}
+
+func (h *Handler) confirm(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.ConfirmDevCheckout(r.Context(), p.UserPublicID, in.SessionID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"status": "credited"})
 }
 
 func (h *Handler) onboard(w http.ResponseWriter, r *http.Request) {
@@ -70,8 +99,6 @@ func (h *Handler) onboard(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"onboarding_url": link})
 }
 
-// webhook verifies and processes an inbound Stripe event. A 4xx (bad signature/
-// body) tells Stripe not to retry; a 5xx (processing/DB failure) asks it to.
 func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxWebhookBody))
 	if err != nil {

@@ -89,7 +89,7 @@ func (r *LedgerRepo) Apply(ctx context.Context, in ledger.ApplyInput) (ledger.Ap
 	for id, info := range deltas {
 		if balances[id]+info.delta < 0 {
 			switch info.kind {
-			case "agent":
+			case "agent", "user":
 				return ledger.ApplyResult{}, ledger.ErrInsufficient
 			case ledger.SysEscrow:
 				return ledger.ApplyResult{}, ledger.ErrInvariant
@@ -153,6 +153,17 @@ func (r *LedgerRepo) Balance(ctx context.Context, agentPublicID string) (int64, 
 	return bal, err
 }
 
+func (r *LedgerRepo) UserBalance(ctx context.Context, userPublicID string) (int64, error) {
+	var bal int64
+	err := r.db.QueryRow(ctx,
+		`SELECT w.balance FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.public_id = $1`,
+		userPublicID).Scan(&bal)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ledger.ErrWalletNotFound
+	}
+	return bal, err
+}
+
 func (r *LedgerRepo) History(ctx context.Context, agentPublicID string, limit int) ([]ledger.Line, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT t.public_id, t.kind, e.amount, t.created_at
@@ -163,6 +174,31 @@ func (r *LedgerRepo) History(ctx context.Context, agentPublicID string, limit in
 		 WHERE a.public_id = $1
 		 ORDER BY e.id DESC
 		 LIMIT $2`, agentPublicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ledger.Line
+	for rows.Next() {
+		var l ledger.Line
+		if err := rows.Scan(&l.TxnPublicID, &l.Kind, &l.Amount, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (r *LedgerRepo) UserHistory(ctx context.Context, userPublicID string, limit int) ([]ledger.Line, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT t.public_id, t.kind, e.amount, t.created_at
+		 FROM ledger_entries e
+		 JOIN ledger_transactions t ON t.id = e.txn_id
+		 JOIN wallets w ON w.id = e.wallet_id
+		 JOIN users  u ON u.id = w.user_id
+		 WHERE u.public_id = $1
+		 ORDER BY e.id DESC
+		 LIMIT $2`, userPublicID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -216,12 +252,13 @@ func (r *LedgerRepo) existingTxn(ctx context.Context, key string) (string, bool,
 }
 
 // resolveWallet maps a WalletRef to its wallet id and kind. System wallets match
-// on (kind, agent_id IS NULL); agent wallets join through the agent's public id.
+// on (kind, agent_id IS NULL, user_id IS NULL); user wallets join through users;
+// agent wallets join through agents.
 func resolveWallet(ctx context.Context, tx pgx.Tx, ref ledger.WalletRef) (int64, string, error) {
 	var id int64
 	if ref.IsSystem() {
 		err := tx.QueryRow(ctx,
-			`SELECT id FROM wallets WHERE kind = $1 AND agent_id IS NULL`, ref.System).Scan(&id)
+			`SELECT id FROM wallets WHERE kind = $1 AND agent_id IS NULL AND user_id IS NULL`, ref.System).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, "", ledger.ErrWalletNotFound
 		}
@@ -229,6 +266,18 @@ func resolveWallet(ctx context.Context, tx pgx.Tx, ref ledger.WalletRef) (int64,
 			return 0, "", err
 		}
 		return id, ref.System, nil
+	}
+	if ref.IsUser() {
+		err := tx.QueryRow(ctx,
+			`SELECT w.id FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.public_id = $1`,
+			ref.User).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, "", ledger.ErrWalletNotFound
+		}
+		if err != nil {
+			return 0, "", err
+		}
+		return id, "user", nil
 	}
 	err := tx.QueryRow(ctx,
 		`SELECT w.id FROM wallets w JOIN agents a ON a.id = w.agent_id WHERE a.public_id = $1`,

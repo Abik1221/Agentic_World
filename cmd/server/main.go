@@ -18,12 +18,15 @@ import (
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
+	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
 	"github.com/agent-arena/arena/internal/ledger"
+	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/matchmaking"
+	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
@@ -35,6 +38,7 @@ import (
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/spectator"
 	"github.com/agent-arena/arena/internal/store"
+	"github.com/agent-arena/arena/internal/subscription"
 	"github.com/agent-arena/arena/internal/tournament"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
@@ -115,7 +119,8 @@ func run() error {
 
 	limiter := store.NewRateLimiter(st.Redis)
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
-	idHandler := identity.NewHandler(idSvc, authn, registerRL)
+	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
+	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL)
 
 	// Verification (built in Stage 1) is wired into the match flow now.
 	verSvc := verification.New(store.NewVerificationRepo(st.DB))
@@ -126,7 +131,7 @@ func run() error {
 	// Limits and Wallet ports stubbed in Stage 3.
 	ledgerSvc := ledger.New(store.NewLedgerRepo(st.DB), metrics.Registry())
 	walletSvc := wallet.New(ledgerSvc, store.NewWalletRepo(st.DB), clock,
-		wallet.Config{SessionWindow: cfg.SessionWindow}, metrics.Registry())
+		wallet.Config{SessionWindow: cfg.SessionWindow, CoinCents: cfg.CoinCents}, metrics.Registry())
 	walletHandler := wallet.NewHandler(walletSvc, authn, cfg.AllowMint)
 
 	// Trust & anti-fraud: the payout gate holds suspect settlements (escrow kept),
@@ -146,6 +151,11 @@ func run() error {
 	hub := spectator.NewHub(matchRepo, cfg.DefaultRounds, log, metrics.Registry())
 	specHandler := spectator.NewHandler(hub, spectator.NewLive(store.NewSpectatorRepo(st.DB), clock))
 
+	// Mafia hub (demo loop + DB-backed SSE). Service wired after engagement hooks.
+	mafiaRepo := store.NewMafiaRepo(st.DB)
+	mafiaHub := mafia.NewHub(mafiaRepo, log, metrics.Registry())
+	go mafiaHub.Run(ctx)
+
 	// Ratings & profiles: ELO is applied at match finalize (idempotently, keyed by
 	// match id) and powers the leaderboard + agent profiles + /v1/agent/stats.
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
@@ -162,6 +172,40 @@ func run() error {
 	clipsHandler := clips.NewHandler(clipsSvc)
 	socialSvc := social.New(store.NewSocialRepo(st.DB), social.Config{}, log, metrics.Registry())
 	socialHandler := social.NewHandler(socialSvc, authn)
+
+	mafiaSvc := mafia.NewService(
+		mafiaRepo,
+		store.NewLocker(st.Redis),
+		walletSvc,
+		wallet.NewMafiaWallet(walletSvc),
+		mafiaHub,
+		verifierAdapter{verSvc},
+		finishHook{clips: clipsSvc, social: socialSvc},
+		clock,
+		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
+	)
+	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
+	go mafia.NewSweeper(mafiaSvc, log, time.Second).Run(ctx)
+
+	// Monopoly (turn-based property game) on the same patterns as Mafia: pure
+	// engine → match service → SSE spectator stream → agent action API. The
+	// service seats the creator and fills the rest of the table with deterministic
+	// server bots, auto-advancing bot turns after each agent move. Wallet is nil
+	// for now (practice tables, entry fee 0); wire a MonopolyWallet adapter to
+	// pool stakes once staked matchmaking lands.
+	monopolyRepo := store.NewMonopolyRepo(st.DB)
+	monopolyHub := monopoly.NewHub(monopolyRepo, log)
+	monopolySvc := monopoly.NewService(
+		monopolyRepo,
+		store.NewLocker(st.Redis),
+		nil, // Wallet: practice tables until staked matchmaking is added
+		monopolyHub,
+		nil, // FinishHook
+		clock,
+		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
+	)
+	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
+	go monopoly.NewSweeper(monopolySvc, log, time.Second).Run(ctx)
 
 	// Funded freeroll (Stage 10): the prize pool moves through the ledger via the
 	// Bank adapter; entry is gated on the tournament_ready badge + no fraud flags.
@@ -221,23 +265,46 @@ func run() error {
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
-	// gateway; otherwise the offline DevGateway runs the whole flow locally,
-	// immediately crediting coins to simulate webhook receipt (tests full flow offline).
-	var gateway payments.Gateway = payments.NewDevGateway(walletSvc)
+	// gateway; otherwise the offline DevGateway runs the whole flow locally.
+	var gateway payments.Gateway = &payments.DevGateway{}
+	devPayments := true
 	if cfg.StripeSecretKey != "" {
 		gateway = payments.NewStripeGateway(cfg.StripeSecretKey)
+		devPayments = false
 	} else {
 		log.Warn("STRIPE_SECRET_KEY unset: payments using the offline DevGateway (no real charges, coins credited immediately)")
 	}
 	paymentsSvc := payments.New(gateway, walletSvc, store.NewPaymentsRepo(st.DB), clock,
 		payments.Config{
 			Packs:             payments.DefaultPacks(),
+			FeeSchedules:      payments.DefaultFeeSchedules(),
 			SuccessURL:        cfg.CheckoutSuccessURL,
 			CancelURL:         cfg.CheckoutCancelURL,
 			ConnectReturnURL:  cfg.ConnectReturnURL,
 			ConnectRefreshURL: cfg.ConnectRefreshURL,
 			WebhookSecret:     cfg.StripeWebhookSecret,
+			DevMode:           devPayments,
 		}, log, metrics.Registry())
+
+	var billingGW subscription.BillingGateway = subscription.DevBillingGateway{}
+	if cfg.StripeSecretKey != "" {
+		billingGW = subscription.NewStripeBillingGateway(cfg.StripeSecretKey)
+	}
+	subscriptionSvc := subscription.New(billingGW, walletSvc, store.NewSubscriptionRepo(st.DB),
+		subscription.Config{
+			Plan: subscription.Plan{
+				Key: subscription.PlanArenaPass, Label: "Arena Pass",
+				PriceCents: cfg.StripeArenaPassPriceCents, MonthlyCoins: cfg.ArenaPassMonthlyCoins,
+				Currency: "usd",
+			},
+			StripePriceID:   cfg.StripeArenaPassPriceID,
+			SuccessURL:      cfg.SubscriptionSuccessURL,
+			CancelURL:       cfg.SubscriptionCancelURL,
+			PortalReturnURL: cfg.SubscriptionPortalURL,
+			DevMode:         devPayments,
+		}, log)
+	paymentsSvc.SetStripeHook(subscriptionSvc)
+	subscriptionHandler := subscription.NewHandler(subscriptionSvc, authn)
 	paymentsHandler := payments.NewHandler(paymentsSvc, authn)
 
 	// Background: the move-window timeout sweeper + ledger reconciliation + the
@@ -250,8 +317,18 @@ func run() error {
 	go socialSvc.Run(ctx)
 	go antifraudSvc.NewDetector(cfg.DetectInterval).Run(ctx)
 
-	// 8. HTTP server with the standard middleware chain. Modules attach their
-	//    routes via registrars (httpx stays decoupled from every module).
+	// Dev/demo: rule-based bots fill Goofspiel + Mafia tables (no LLM). Real users
+	// bring their own agents via API keys; disable with DEMO_BOTS=false.
+	if cfg.DemoBots {
+		if agents, err := demo.EnsureAgents(ctx, idRepo, walletSvc, log); err != nil {
+			log.Warn("demo agent seed failed", "error", err)
+		} else {
+			log.Info("demo bots enabled (rules engine, not LLM)", "count", len(agents))
+			go bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run(ctx)
+		}
+	}
+
+	// 8. HTTP server with the standard middleware chain.
 	router := httpx.NewRouter(
 		httpx.Deps{Config: cfg, Logger: log, Metrics: metrics},
 		healthH.Register,
@@ -262,7 +339,10 @@ func run() error {
 		sandboxHandler.Register,
 		walletHandler.Register,
 		paymentsHandler.Register,
+		subscriptionHandler.Register,
 		specHandler.Register,
+		mafiaHandler.Register,
+		monopolyHandler.Register,
 		ratingHandler.Register,
 		profilesHandler.Register,
 		clipsHandler.Register,

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEO RECORDS · Round Table — Theme Inspiration Board</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+  body {
+    background: #0d0f14;
+    color: #e7e9ee;
+    padding: 40px 32px 80px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page-head { max-width: 1400px; margin: 0 auto 28px; }
+  .page-head h1 { font-size: 26px; letter-spacing: 1px; font-weight: 700; }
+  .page-head h1 span { color: #7c9bff; }
+  .page-head p { color: #9aa0ac; margin-top: 8px; font-size: 14px; max-width: 760px; line-height: 1.5; }
+  .section-label {
+    max-width: 1400px; margin: 40px auto 18px; display: flex; align-items: center; gap: 14px;
+    font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: #cfd3db; font-weight: 600;
+  }
+  .section-label::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,0.1); }
+  .grid {
+    max-width: 1400px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 24px;
+  }
+  .card {
+    border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .card-topbar {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 12px 16px; font-size: 12px;
+  }
+  .card-topbar .name { font-weight: 700; letter-spacing: 0.5px; }
+  .card-topbar .tag { opacity: 0.7; font-size: 10.5px; }
+  /* ---- mini dashboard ---- */
+  .mini { padding: 14px 16px 16px; position: relative; }
+  .mini-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .mini-title { font-size: 11px; letter-spacing: 1.5px; font-weight: 700; }
+  .live { display: inline-flex; align-items: center; gap: 5px; font-size: 9px; font-weight: 700; letter-spacing: 0.5px; padding: 3px 8px; border-radius: 20px; }
+  .live .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .stage {
+    position: relative; height: 168px; border-radius: 12px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .rings { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; }
+  .ring { position: absolute; border-radius: 50%; }
+  .r1 { width: 150px; height: 150px; }
+  .r2 { width: 108px; height: 108px; }
+  .r3 { width: 66px; height: 66px; }
+  .center { position: relative; text-align: center; z-index: 2; }
+  .center .rnd-label { font-size: 7px; letter-spacing: 1.5px; }
+  .center .rnd-num { font-size: 26px; font-weight: 800; line-height: 1; margin: 1px 0; }
+  .center .rnd-alive { font-size: 6.5px; letter-spacing: 1px; font-weight: 700; }
+  .node { position: absolute; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .avatar { width: 26px; height: 26px; border-radius: 8px; display:flex; align-items:center; justify-content:center; font-size: 12px; border: 2px solid; position: relative; }
+  .avatar .status { position: absolute; top: -2px; right: -2px; width: 6px; height: 6px; border-radius: 50%; border: 1.5px solid; }
+  .node .nlabel { font-size: 6.5px; font-weight: 700; letter-spacing: 0.3px; }
+  /* node positions around the stage */
+  .p-top    { top: 4px;  left: 50%; transform: translateX(-50%); }
+  .p-tl     { top: 24px; left: 20px; }
+  .p-tr     { top: 24px; right: 20px; }
+  .p-l      { top: 50%; left: 6px;  transform: translateY(-50%); }
+  .p-r      { top: 50%; right: 6px; transform: translateY(-50%); }
+  .p-bl     { bottom: 20px; left: 26px; }
+  .p-br     { bottom: 20px; right: 26px; }
+  .p-bottom { bottom: 4px; left: 50%; transform: translateX(-50%); }
+  /* speech bubble */
+  .bubble {
+    position: absolute; z-index: 4; right: 14px; top: 40px; width: 118px;
+    font-size: 7px; line-height: 1.35; padding: 6px 8px; border-radius: 8px;
+  }
+  .bubble b { font-weight: 800; }
+  /* feed */
+  .feed { margin-top: 12px; border-radius: 10px; overflow: hidden; }
+  .feed-row { display: flex; align-items: center; gap: 8px; padding: 6px 9px; font-size: 8px; }
+  .feed-row .t { opacity: 0.55; width: 34px; flex-shrink: 0; }
+  .feed-row .who { font-weight: 700; width: 40px; flex-shrink: 0; }
+  .feed-row .msg { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; opacity: 0.85; }
+  .chip { font-size: 6.5px; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }
+  /* bottom bar: swatches + button */
+  .mini-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+  .swatches { display: flex; gap: 5px; }
+  .swatch { width: 16px; height: 16px; border-radius: 5px; border: 1px solid rgba(0,0,0,0.12); }
+  .btn { font-size: 8.5px; font-weight: 700; padding: 6px 12px; border-radius: 8px; letter-spacing: 0.4px; }
+  .footer-note { max-width: 1400px; margin: 48px auto 0; color: #71767f; font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="page-head">
+    <h1><span>NEO RECORDS</span> · Round Table — Theme Inspiration Board</h1>
+    <p>20 color directions for the live agent dashboard. Top row: 10 light themes with premium accent colors (gold is just one of them — also emerald, sapphire, bronze, amethyst, rose, amber). Bottom: 10 dark themes. Each tile is a faithful mini of the round-table view so you can judge accent, background, node rings, feed rows, and the primary button together.</p>
+  </div>
+
+  <div class="section-label">Light Mode · Premium Accents</div>
+  <div class="grid" id="lightGrid"></div>
+
+  <div class="section-label">Dark Mode</div>
+  <div class="grid" id="darkGrid"></div>
+
+  <div class="footer-note">Tap a favorite number and tell me which light + dark pair to lock in, and I'll produce the full-resolution version.</div>
+
+<script>
+/* Each theme:
+   bg      = app background
+   surface = panels / cards
+   ring    = ring outlines on stage
+   text    = primary text
+   muted   = secondary text
+   accent  = primary accent (button, highlights)
+   accent2 = secondary accent for speaking node / active
+   alive   = alive status color
+   danger  = flagged/eliminated color
+   chipBg/chipTx = feed chip colors
+*/
+const light = [
+  { name:"01 · Champagne Gold", tag:"warm cream + gold", bg:"#f7f4ec", surface:"#ffffff", ring:"#e9e1cf", text:"#2b2621", muted:"#8a8172", accent:"#b8933f", accent2:"#c9a94e", alive:"#4a9d6a", danger:"#c15b4c", chipBg:"#f2ead6", chipTx:"#9a7a2e" },
+  { name:"02 · Royal Emerald", tag:"white + deep emerald", bg:"#f4f7f4", surface:"#ffffff", ring:"#dbe8df", text:"#1e2a24", muted:"#7c8a82", accent:"#1f9d63", accent2:"#2bbd7a", alive:"#1f9d63", danger:"#c15b4c", chipBg:"#e2f2e9", chipTx:"#157a4a" },
+  { name:"03 · Sapphire Ink", tag:"cool gray + sapphire", bg:"#f2f4f8", surface:"#ffffff", ring:"#dde3ee", text:"#1c2330", muted:"#79808f", accent:"#2f5fd0", accent2:"#5b82e6", alive:"#2f9d6a", danger:"#d05252", chipBg:"#e3ebfb", chipTx:"#2a4fb0" },
+  { name:"04 · Bronze Ember", tag:"off-white + copper", bg:"#f6f2ee", surface:"#fffdfb", ring:"#e8ddd2", text:"#2c241d", muted:"#8c7f70", accent:"#b06b3a", accent2:"#cd854f", alive:"#4f9968", danger:"#c1503f", chipBg:"#f1e2d5", chipTx:"#98572c" },
+  { name:"05 · Amethyst", tag:"soft white + violet", bg:"#f6f4f9", surface:"#ffffff", ring:"#e6e0ef", text:"#26202e", muted:"#847c90", accent:"#7d4fd0", accent2:"#9a6ee8", alive:"#4a9d6a", danger:"#c85874", chipBg:"#ede4f8", chipTx:"#6a3fbb" },
+  { name:"06 · Rose Quartz", tag:"blush + rose gold", bg:"#faf3f3", surface:"#ffffff", ring:"#f0dfe0", text:"#2e2224", muted:"#96828a", accent:"#c76b7f", accent2:"#dd8b9d", alive:"#4f9d76", danger:"#cf5252", chipBg:"#f8e3e7", chipTx:"#b0546a" },
+  { name:"07 · Teal Porcelain", tag:"white + teal", bg:"#f1f6f6", surface:"#ffffff", ring:"#d9e7e7", text:"#1d2a2a", muted:"#788989", accent:"#128a8a", accent2:"#22adad", alive:"#2f9d6a", danger:"#cf5a4c", chipBg:"#dcefef", chipTx:"#0d6d6d" },
+  { name:"08 · Crimson Ivory", tag:"ivory + crimson", bg:"#f8f4f1", surface:"#fffdfb", ring:"#ece0da", text:"#2b211f", muted:"#8b7d76", accent:"#c0392b", accent2:"#dc5646", alive:"#4f996a", danger:"#c0392b", chipBg:"#f4e1dc", chipTx:"#a52d21" },
+  { name:"09 · Slate Indigo", tag:"cool slate + indigo", bg:"#f3f4f7", surface:"#ffffff", ring:"#dfe2ea", text:"#20242e", muted:"#787d8a", accent:"#4b4fd6", accent2:"#6f72ec", alive:"#2f9d6a", danger:"#d05858", chipBg:"#e6e7fb", chipTx:"#3d40b6" },
+  { name:"10 · Amber Honey", tag:"warm cream + amber", bg:"#faf6ee", surface:"#fffdf8", ring:"#eee2cd", text:"#2c2519", muted:"#8d8168", accent:"#d99414", accent2:"#eeaa2e", alive:"#4f9d68", danger:"#c85a45", chipBg:"#f6e8cd", chipTx:"#a86f0c" },
+];
+const dark = [
+  { name:"11 · Obsidian Gold", tag:"near-black + gold", bg:"#111014", surface:"#1b1a20", ring:"#2c2a33", text:"#eceae4", muted:"#8f8b82", accent:"#d4af37", accent2:"#e6c65a", alive:"#5cc98a", danger:"#e0685a", chipBg:"#33301f", chipTx:"#e6c65a" },
+  { name:"12 · Cyber Teal", tag:"navy + cyan (original feel)", bg:"#0c1118", surface:"#141b24", ring:"#22303c", text:"#e5edf2", muted:"#7f909d", accent:"#22c7c7", accent2:"#3ddede", alive:"#37d39a", danger:"#f0715f", chipBg:"#123033", chipTx:"#3ddede" },
+  { name:"13 · Neon Violet", tag:"black + violet", bg:"#0f0c16", surface:"#191424", ring:"#2c2340", text:"#ece7f5", muted:"#8d84a0", accent:"#8b5cf6", accent2:"#a988ff", alive:"#54cf94", danger:"#ef6b7f", chipBg:"#271d3d", chipTx:"#b99cff" },
+  { name:"14 · Matrix Green", tag:"black + phosphor", bg:"#0a0f0b", surface:"#111a13", ring:"#1e3323", text:"#dbeede", muted:"#7d9683", accent:"#35d96a", accent2:"#5cf58c", alive:"#35d96a", danger:"#ef6b5f", chipBg:"#122e1a", chipTx:"#5cf58c" },
+  { name:"15 · Crimson Void", tag:"charcoal + red", bg:"#120d0e", surface:"#1d1517", ring:"#332326", text:"#f0e5e6", muted:"#9c8488", accent:"#e0455a", accent2:"#f56b7e", alive:"#54cf94", danger:"#e0455a", chipBg:"#361a20", chipTx:"#f56b7e" },
+  { name:"16 · Midnight Sapphire", tag:"deep navy + electric blue", bg:"#0a0e1a", surface:"#121728", ring:"#212a44", text:"#e4e9f5", muted:"#7f889f", accent:"#3b82f6", accent2:"#6aa4ff", alive:"#42cf90", danger:"#ef6b7f", chipBg:"#182votes042", chipTx:"#6aa4ff" },
+  { name:"17 · Amber Noir", tag:"charcoal + amber", bg:"#131110", surface:"#1e1a17", ring:"#332b23", text:"#f0eae2", muted:"#998f80", accent:"#f0a028", accent2:"#ffbb4d", alive:"#5cc98a", danger:"#ef6b5f", chipBg:"#382a16", chipTx:"#ffbb4d" },
+  { name:"18 · Ice Cyan", tag:"slate + ice cyan", bg:"#0d1114", surface:"#161c21", ring:"#243038", text:"#e6eef2", muted:"#83929c", accent:"#38bdf8", accent2:"#67d3ff", alive:"#42cf90", danger:"#f0715f", chipBg:"#123038", chipTx:"#67d3ff" },
+  { name:"19 · Magenta Pulse", tag:"black + magenta", bg:"#120b11", surface:"#1d131b", ring:"#33222f", text:"#f2e6ef", muted:"#9c8494", accent:"#e0459a", accent2:"#f56bb8", alive:"#54cf94", danger:"#ef6b5f", chipBg:"#36192b", chipTx:"#f56bb8" },
+  { name:"20 · Aurora", tag:"dark + teal→violet", bg:"#0b0f16", surface:"#141a26", ring:"#243044", text:"#e6ecf5", muted:"#8494a4", accent:"#3ad6c0", accent2:"#8b5cf6", alive:"#3ad6a0", danger:"#f0715f", chipBg:"#15303a", chipTx:"#5ce0d0" },
+];
+// fix a typo'd hex safely
+dark[5].chipBg = "#182042";
+
+const NODES = [
+  { cls:"p-top",    label:"ATLAS", state:"alive" },
+  { cls:"p-tl",     label:"PRISM", state:"danger" },
+  { cls:"p-tr",     label:"ORACLE",state:"alive" },
+  { cls:"p-l",      label:"NULL",  state:"active" },
+  { cls:"p-r",      label:"VOID",  state:"speaking" },
+  { cls:"p-bl",     label:"HEX",   state:"active" },
+  { cls:"p-br",     label:"SHIVA", state:"danger" },
+  { cls:"p-bottom", label:"GHOST", state:"alive" },
+];
+const FEED = [
+  { t:"02:34", who:"VOID",  msg:"NEO_RECORDS was the one pushing…", chip:"Chat" },
+  { t:"02:33", who:"SHIVA", msg:"Voted: PRISM", chip:"Vote" },
+  { t:"02:33", who:"ORACLE",msg:"Patterns don't lie. Round 8.", chip:"Chat" },
+];
+
+function ringColorFor(state, th){
+  if(state==="speaking") return th.accent2;
+  if(state==="danger")   return th.danger;
+  if(state==="active")   return th.accent;
+  return th.alive;
+}
+
+function card(th){
+  const nodes = NODES.map(n=>{
+    const rc = ringColorFor(n.state, th);
+    const statusColor = n.state==="danger" ? th.danger : th.alive;
+    return `<div class="node ${n.cls}">
+      <div class="avatar" style="background:${th.surface};border-color:${rc};color:${th.muted}">
+        🤖<span class="status" style="background:${statusColor};border-color:${th.surface}"></span>
+      </div>
+      <div class="nlabel" style="color:${th.muted}">${n.label}</div>
+    </div>`;
+  }).join("");
+
+  const feed = FEED.map(f=>`
+    <div class="feed-row" style="border-top:1px solid ${th.ring}">
+      <span class="t" style="color:${th.text}">${f.t}</span>
+      <span class="who" style="color:${th.accent}">${f.who}</span>
+      <span class="msg" style="color:${th.text}">${f.msg}</span>
+      <span class="chip" style="background:${th.chipBg};color:${th.chipTx}">${f.chip}</span>
+    </div>`).join("");
+
+  const swatches = [th.bg, th.surface, th.accent, th.accent2, th.alive, th.danger]
+    .map(c=>`<div class="swatch" style="background:${c}"></div>`).join("");
+
+  return `
+  <div class="card" style="background:${th.surface}">
+    <div class="card-topbar" style="background:${th.bg};color:${th.text}">
+      <span class="name">${th.name}</span>
+      <span class="tag" style="color:${th.muted}">${th.tag}</span>
+    </div>
+    <div class="mini" style="background:${th.bg}">
+      <div class="mini-head">
+        <span class="mini-title" style="color:${th.text}">ROUND TABLE</span>
+        <span class="live" style="background:${th.chipBg};color:${th.accent}">
+          <span class="dot" style="background:${th.alive}"></span>LIVE
+        </span>
+      </div>
+      <div class="stage" style="background:${th.surface};border:1px solid ${th.ring}">
+        <div class="rings">
+          <div class="ring r1" style="border:1px dashed ${th.ring}"></div>
+          <div class="ring r2" style="border:1px dashed ${th.ring}"></div>
+          <div class="ring r3" style="border:1px solid ${th.ring}"></div>
+        </div>
+        ${nodes}
+        <div class="center">
+          <div class="rnd-label" style="color:${th.muted}">ROUND</div>
+          <div class="rnd-num" style="color:${th.text}">11</div>
+          <div class="rnd-alive" style="color:${th.accent}">AGENTS ALIVE</div>
+        </div>
+        <div class="bubble" style="background:${th.chipBg};color:${th.text};border:1px solid ${th.ring}">
+          <b style="color:${th.accent2}">VOID:</b> That kill wasn't random. Someone feared their reads.
+        </div>
+      </div>
+      <div class="feed" style="background:${th.surface};border:1px solid ${th.ring}">
+        ${feed}
+      </div>
+      <div class="mini-foot">
+        <div class="swatches">${swatches}</div>
+        <span class="btn" style="background:${th.accent};color:${th.bg}">End Round</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+document.getElementById("lightGrid").innerHTML = light.map(card).join("");
+document.getElementById("darkGrid").innerHTML  = dark.map(card).join("");
+</script>
+</body>
+</html>

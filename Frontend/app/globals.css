@@ -1,0 +1,1218 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --glow-teal: rgba(99, 102, 241, 0.20);
+  --glow-amber: rgba(245, 158, 11, 0.16);
+  --cream-ink: #181b20;
+  --cream-ink-dim: #5b616b;
+  --font-grotesk: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-inter: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Warm Cream palette — channel triplets consumed by Tailwind tokens */
+  --c-surface: 245 246 248;
+  --c-surface-bright: 255 255 255;
+  --c-surface-lowest: 237 239 242;
+  --c-surface-low: 250 251 252;
+  --c-surface-container: 255 255 255;
+  --c-surface-high: 255 255 255;
+  --c-surface-highest: 255 255 255;
+  --c-on-surface: 24 27 32;
+  --c-on-surface-variant: 91 97 107;
+  --c-outline: 199 204 211;
+  --c-outline-variant: 226 229 234;
+  --c-primary: 99 102 241;
+  --c-primary-container: 99 102 241;
+  --c-primary-dim: 79 70 229;
+  --c-on-primary: 255 255 255;
+  --c-on-primary-container: 67 56 202;
+  --c-secondary: 245 158 11;
+  --c-secondary-dim: 251 191 36;
+  --c-on-secondary: 255 255 255;
+  --c-secondary-container: 253 230 138;
+  --c-tertiary: 59 130 246;
+  --c-tertiary-container: 96 165 250;
+  --c-on-tertiary: 255 255 255;
+  --c-error: 239 68 68;
+  --c-status-error: 239 68 68;
+  --c-bg-deep: 226 229 234;
+  --c-surface-slate: 255 255 255;
+  --c-panel-navy: 250 251 252;
+  --c-panel-accent: 244 246 248;
+  --c-ink-primary: 24 27 32;
+  --c-ink-dim: 91 97 107;    /* secondary text ~6.5:1 on white */
+  --c-ink-faint: 118 125 137; /* muted labels ~4.6:1 on white */
+  --c-border-strong: 224 227 232; /* crisp card edges on the cool white bg */
+  --c-border-soft: 236 238 241;
+}
+
+/* ── Dark broadcast scope — esports graphite for match views ───────────────── */
+.broadcast {
+  --c-surface: 20 20 20;
+  --c-surface-bright: 30 30 30;
+  --c-surface-lowest: 13 13 13;
+  --c-surface-low: 24 24 24;
+  --c-surface-container: 22 22 22;
+  --c-surface-high: 32 32 32;
+  --c-surface-highest: 36 36 36;
+  --c-on-surface: 236 236 236;
+  --c-on-surface-variant: 168 174 184;
+  --c-outline: 70 70 70;
+  --c-outline-variant: 42 42 42;
+  --c-primary: 52 211 153;          /* emerald */
+  --c-primary-container: 16 185 129; /* emerald (actions) */
+  --c-primary-dim: 5 150 105;
+  --c-on-primary: 6 14 16;
+  --c-on-primary-container: 200 255 250;
+  --c-secondary: 247 183 51;        /* gold */
+  --c-secondary-dim: 255 200 80;
+  --c-on-secondary: 40 28 0;
+  --c-secondary-container: 90 66 12;
+  --c-tertiary: 120 170 255;
+  --c-tertiary-container: 90 140 230;
+  --c-on-tertiary: 8 14 30;
+  --c-error: 255 90 95;             /* danger */
+  --c-status-error: 255 90 95;
+  --c-bg-deep: 9 9 9;
+  --c-surface-slate: 22 22 22;
+  --c-panel-navy: 24 24 24;
+  --c-panel-accent: 28 28 28;
+  --c-ink-primary: 236 236 236;
+  --c-ink-dim: 168 174 184;  /* secondary text — brighter for legibility on graphite */
+  --c-ink-faint: 130 136 146; /* muted labels — was 106/110/118 (dim); now clearer */
+  --c-border-strong: 58 58 58;
+  --c-border-soft: 38 38 38;
+
+  color: rgb(236 236 236);
+  background-color: #0b0b0b;
+  background-image:
+    radial-gradient(1100px 600px at 82% -8%, rgba(0, 229, 255, 0.07), transparent 60%),
+    radial-gradient(900px 520px at 0% 8%, rgba(34, 211, 166, 0.06), transparent 55%),
+    radial-gradient(900px 700px at 50% 120%, rgba(247, 183, 51, 0.045), transparent 60%);
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background-color: #f5f6f8;
+  color: #181b20;
+  background-image:
+    radial-gradient(1200px 600px at 80% -10%, rgba(99, 102, 241, 0.06), transparent 60%),
+    radial-gradient(900px 500px at 0% 0%, rgba(59, 130, 246, 0.05), transparent 55%),
+    radial-gradient(1000px 800px at 50% 120%, rgba(226, 230, 238, 0.7), transparent 60%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  /* Monospace caps label used above inputs and on chips */
+  .label-caps {
+    @apply font-mono text-[12px] font-medium uppercase tracking-caps text-ink-faint;
+  }
+
+  .technical-data {
+    @apply font-mono text-[13px] leading-5;
+  }
+
+  /* Glass panel — soft cream with hairline border + top highlight */
+  .glass {
+    @apply relative rounded-lg border border-border-strong bg-surface-slate/75 bg-panel-grad backdrop-blur-md;
+  }
+  .glass::before {
+    content: "";
+    @apply pointer-events-none absolute inset-x-0 top-0 h-px rounded-t-lg;
+    background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.32), transparent);
+  }
+
+  .panel {
+    @apply rounded-lg border border-border-soft bg-surface-slate/70;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-sm px-5 py-3 font-mono text-[12px] font-semibold uppercase tracking-caps transition-all duration-150;
+  }
+  .btn-primary {
+    @apply btn bg-primary-container text-on-primary hover:shadow-glow-teal hover:bg-primary;
+  }
+  .btn-ghost {
+    @apply btn border border-primary-container/60 text-primary hover:bg-primary-container/10 hover:shadow-glow-teal;
+  }
+  .btn-amber {
+    @apply btn bg-secondary text-on-secondary hover:shadow-glow-amber;
+  }
+  .btn-neutral {
+    @apply btn border border-border-strong text-ink-dim hover:border-outline hover:text-ink-primary;
+  }
+
+  .input {
+    @apply w-full rounded-sm border border-border-soft bg-surface-bright px-3 py-2.5 font-mono text-sm text-ink-primary placeholder:text-ink-faint outline-none transition focus:border-primary-container focus:shadow-[inset_0_0_0_1px_rgba(99,102,241,0.5)];
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] font-medium uppercase tracking-caps;
+  }
+
+  .divider {
+    @apply border-border-soft;
+  }
+}
+
+/* thin custom scrollbars to match the cream aesthetic */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #d3d7de; border-radius: 9999px; }
+*::-webkit-scrollbar-thumb:hover { background: #c0c5ce; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.live-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+.duel-stage {
+  position: relative;
+  min-height: 520px;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, rgba(255, 252, 246, 0.9), rgba(244, 237, 225, 0.6) 38%, rgba(237, 228, 214, 0.95)),
+    radial-gradient(circle at 46% 35%, rgba(200, 151, 31, 0.16), transparent 34%),
+    radial-gradient(circle at 78% 18%, rgba(63, 108, 181, 0.12), transparent 30%),
+    #f3ece0;
+}
+
+.duel-sky {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  background:
+    linear-gradient(90deg, transparent, rgba(120, 96, 60, 0.06), transparent),
+    repeating-linear-gradient(100deg, rgba(120, 96, 60, 0.05) 0 1px, transparent 1px 24px);
+  animation: duel-shimmer 7s ease-in-out infinite;
+}
+
+.duel-grid {
+  position: absolute;
+  inset: auto -10% 0;
+  height: 44%;
+  transform: perspective(420px) rotateX(66deg);
+  transform-origin: bottom;
+  background:
+    linear-gradient(rgba(15, 156, 134, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 156, 134, 0.2) 1px, transparent 1px);
+  background-size: 52px 52px;
+  opacity: 0.18;
+}
+
+.duel-landscape {
+  position: absolute;
+  inset: 9% 0 auto;
+  height: 34%;
+  opacity: 0.62;
+}
+
+.duel-landscape span {
+  position: absolute;
+  bottom: 0;
+  width: 34%;
+  height: 58%;
+  border-radius: 48% 52% 0 0;
+  border: 1px solid rgba(63, 108, 181, 0.18);
+  background: linear-gradient(180deg, rgba(120, 96, 60, 0.1), rgba(244, 237, 225, 0));
+}
+
+.duel-landscape span:nth-child(1) {
+  left: -3%;
+}
+
+.duel-landscape span:nth-child(2) {
+  left: 29%;
+  height: 72%;
+}
+
+.duel-landscape span:nth-child(3) {
+  right: -4%;
+  height: 64%;
+}
+
+.duel-player {
+  position: absolute;
+  bottom: 98px;
+  width: 145px;
+  height: 250px;
+  color: rgba(70, 62, 50, 0.62);
+  filter: drop-shadow(0 18px 28px rgba(120, 96, 60, 0.22));
+}
+
+.duel-human {
+  left: clamp(16px, 8vw, 86px);
+}
+
+.duel-android {
+  right: clamp(16px, 8vw, 86px);
+  color: rgba(63, 108, 181, 0.66);
+}
+
+.duel-head {
+  position: absolute;
+  left: 42px;
+  top: 6px;
+  width: 58px;
+  height: 66px;
+  border: 1px solid currentColor;
+  border-radius: 46% 46% 42% 42%;
+  background:
+    radial-gradient(circle at 38% 35%, rgba(255, 255, 255, 0.5), transparent 16%),
+    rgba(120, 96, 60, 0.06);
+}
+
+.duel-human .duel-head::before {
+  content: "";
+  position: absolute;
+  inset: -9px 4px auto;
+  height: 20px;
+  border-radius: 50%;
+  background: repeating-radial-gradient(circle, rgba(200, 151, 31, 0.5) 0 3px, transparent 3px 7px);
+}
+
+.duel-android .duel-head {
+  border-radius: 42% 42% 36% 36%;
+  background:
+    linear-gradient(90deg, transparent 48%, rgba(15, 156, 134, 0.32) 49% 51%, transparent 52%),
+    radial-gradient(circle at 34% 40%, rgba(15, 156, 134, 0.95) 0 3px, transparent 4px),
+    radial-gradient(circle at 66% 40%, rgba(15, 156, 134, 0.95) 0 3px, transparent 4px),
+    rgba(63, 108, 181, 0.08);
+}
+
+.duel-android .duel-head span {
+  position: absolute;
+  left: 50%;
+  top: -18px;
+  width: 1px;
+  height: 16px;
+  background: currentColor;
+}
+
+.duel-android .duel-head span::after {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: -6px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #0f9c86;
+  box-shadow: 0 0 12px rgba(15, 156, 134, 0.7);
+}
+
+.duel-torso {
+  position: absolute;
+  left: 31px;
+  top: 76px;
+  width: 86px;
+  height: 132px;
+  border: 1px solid currentColor;
+  border-radius: 42px 42px 18px 18px;
+  background:
+    linear-gradient(110deg, rgba(255, 255, 255, 0.35), transparent 45%),
+    rgba(120, 96, 60, 0.05);
+}
+
+.duel-human .duel-torso::after {
+  content: "";
+  position: absolute;
+  inset: 18px -14px auto 44px;
+  height: 104px;
+  border-radius: 999px 999px 10px 999px;
+  border: 1px solid rgba(200, 151, 31, 0.34);
+  transform: rotate(16deg);
+}
+
+.duel-arm {
+  position: absolute;
+  left: 83px;
+  top: 108px;
+  width: 98px;
+  height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  transform: rotate(24deg);
+  transform-origin: left center;
+  background: rgba(120, 96, 60, 0.05);
+  animation: duel-hand 3.4s ease-in-out infinite;
+}
+
+.duel-android .duel-arm {
+  left: -35px;
+  transform: rotate(156deg);
+  animation-delay: 1.4s;
+}
+
+.duel-hand-card {
+  position: absolute;
+  top: 139px;
+  width: 22px;
+  height: 31px;
+  border: 1px solid rgba(200, 151, 31, 0.72);
+  border-radius: 3px;
+  background: rgba(255, 250, 240, 0.7);
+}
+
+.duel-human .card-a { left: 155px; transform: rotate(19deg); }
+.duel-human .card-b { left: 171px; transform: rotate(28deg); }
+.duel-android .card-a { left: -39px; transform: rotate(-21deg); }
+.duel-android .card-b { left: -55px; transform: rotate(-30deg); }
+
+.duel-table {
+  position: absolute;
+  left: 50%;
+  bottom: 74px;
+  width: min(58%, 430px);
+  aspect-ratio: 2.55 / 1;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  border: 1px solid rgba(200, 151, 31, 0.42);
+  background:
+    radial-gradient(circle at 50% 44%, rgba(200, 151, 31, 0.18), transparent 55%),
+    linear-gradient(180deg, rgba(255, 250, 240, 0.7), rgba(231, 220, 203, 0.5));
+  box-shadow:
+    inset 0 0 42px rgba(200, 151, 31, 0.12),
+    0 24px 70px rgba(120, 96, 60, 0.22);
+}
+
+.duel-table::after {
+  content: "";
+  position: absolute;
+  left: 45%;
+  top: 76%;
+  width: 10%;
+  height: 96px;
+  border-radius: 0 0 18px 18px;
+  background: linear-gradient(180deg, rgba(200, 151, 31, 0.24), rgba(231, 220, 203, 0.3));
+}
+
+.duel-table-rim {
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(120, 96, 60, 0.14);
+}
+
+.duel-card {
+  position: absolute;
+  top: 36%;
+  width: 38px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  border: 1px solid rgba(120, 96, 60, 0.32);
+  background: #fffaf0;
+  color: #2b2620;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 8px 22px rgba(120, 96, 60, 0.2);
+  animation: duel-card-flip 5.6s ease-in-out infinite;
+}
+
+.duel-card.card-1 { left: 33%; transform: rotate(-8deg); animation-delay: 0.2s; }
+.duel-card.card-2 { left: 43%; transform: rotate(-2deg); animation-delay: 0.9s; }
+.duel-card.card-3 { left: 53%; transform: rotate(3deg); animation-delay: 1.6s; }
+.duel-card.card-4 { left: 63%; transform: rotate(9deg); animation-delay: 2.3s; }
+
+.duel-chip {
+  position: absolute;
+  top: 58%;
+  width: 34px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px dashed rgba(120, 96, 60, 0.5);
+  animation: duel-chip-pulse 2.8s ease-in-out infinite;
+}
+
+.chip-left {
+  left: 22%;
+  background: rgba(200, 151, 31, 0.36);
+}
+
+.chip-right {
+  right: 22%;
+  background: rgba(15, 156, 134, 0.34);
+  animation-delay: 1.4s;
+}
+
+.duel-caption {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 20px;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.duel-caption p {
+  max-width: 250px;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #6e6456;
+}
+
+@keyframes duel-shimmer {
+  0%, 100% { opacity: 0.42; transform: translateX(-1%); }
+  50% { opacity: 0.72; transform: translateX(1%); }
+}
+
+@keyframes duel-hand {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 8px -4px; }
+}
+
+@keyframes duel-card-flip {
+  0%, 76%, 100% { translate: 0 0; filter: brightness(1); }
+  84% { translate: 0 -14px; filter: brightness(1.08); }
+}
+
+@keyframes duel-chip-pulse {
+  0%, 100% { scale: 1; box-shadow: 0 0 0 rgba(200, 151, 31, 0); }
+  50% { scale: 1.12; box-shadow: 0 0 18px rgba(15, 156, 134, 0.22); }
+}
+
+@media (max-width: 640px) {
+  .duel-stage {
+    min-height: 420px;
+  }
+
+  .duel-player {
+    bottom: 92px;
+    scale: 0.72;
+  }
+
+  .duel-human {
+    left: -20px;
+  }
+
+  .duel-android {
+    right: -20px;
+  }
+
+  .duel-table {
+    width: 78%;
+    bottom: 78px;
+  }
+
+  .duel-card {
+    width: 28px;
+    height: 40px;
+    font-size: 11px;
+  }
+
+  .duel-caption {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .duel-caption p {
+    text-align: left;
+  }
+}
+
+/* ── Mafia AI Arena — night/day spectator stage ──────────────────────────── */
+.mafia-stage {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  transition: background 900ms ease;
+}
+
+.mafia-stage.is-night {
+  background:
+    radial-gradient(900px 300px at 82% -40%, rgba(99, 102, 241, 0.12), transparent 60%),
+    linear-gradient(180deg, #eef0f4 0%, #f5f6f8 70%);
+}
+
+.mafia-stage.is-day {
+  background:
+    radial-gradient(900px 320px at 16% -40%, rgba(245, 158, 11, 0.14), transparent 60%),
+    linear-gradient(180deg, #f7f8fa 0%, #f5f6f8 72%);
+}
+
+.mafia-stage.is-result {
+  background:
+    radial-gradient(900px 380px at 50% -30%, rgba(16, 185, 129, 0.16), transparent 62%),
+    linear-gradient(180deg, #eef4f1 0%, #f5f6f8 72%);
+}
+
+/* Drifting celestial orb (moon at night, sun by day). */
+.mafia-orb {
+  position: absolute;
+  top: 14px;
+  height: 64px;
+  width: 64px;
+  border-radius: 50%;
+  animation: mafia-orb-float 9s ease-in-out infinite;
+  z-index: -1;
+}
+
+.is-night .mafia-orb {
+  right: 7%;
+  background: radial-gradient(circle at 38% 35%, #f4f7ff, #b6c4e6 70%);
+  box-shadow: 0 0 40px rgba(63, 108, 181, 0.4);
+}
+
+.is-day .mafia-orb {
+  left: 7%;
+  background: radial-gradient(circle at 40% 38%, #ffe6a3, #e2b23f 72%);
+  box-shadow: 0 0 50px rgba(200, 151, 31, 0.45);
+}
+
+.is-result .mafia-orb {
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle at 42% 38%, #c9fff2, #15b49c 72%);
+  box-shadow: 0 0 56px rgba(15, 156, 134, 0.45);
+}
+
+/* Soft motes layer (subtle on cream). */
+.mafia-stars {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.35;
+  background-image:
+    radial-gradient(1px 1px at 12% 30%, rgba(100, 116, 139, 0.45), transparent),
+    radial-gradient(1px 1px at 28% 18%, rgba(100, 116, 139, 0.38), transparent),
+    radial-gradient(1px 1px at 47% 40%, rgba(100, 116, 139, 0.42), transparent),
+    radial-gradient(1px 1px at 63% 22%, rgba(100, 116, 139, 0.32), transparent),
+    radial-gradient(1px 1px at 78% 36%, rgba(100, 116, 139, 0.42), transparent),
+    radial-gradient(1px 1px at 90% 16%, rgba(100, 116, 139, 0.38), transparent);
+  animation: mafia-twinkle 4s ease-in-out infinite;
+}
+
+.is-day .mafia-stars,
+.is-result .mafia-stars {
+  opacity: 0.12;
+}
+
+/* Soft scan to read as a live broadcast. */
+.mafia-scan {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: repeating-linear-gradient(0deg, rgba(100, 116, 139, 0.03) 0 1px, transparent 1px 5px);
+  mix-blend-mode: multiply;
+  opacity: 0.4;
+}
+
+/* Player seat pulse when freshly eliminated / spotlighted. */
+.mafia-pulse {
+  animation: mafia-card-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes mafia-orb-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.is-result .mafia-orb {
+  animation: mafia-orb-float-c 9s ease-in-out infinite;
+}
+
+@keyframes mafia-orb-float-c {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(-10px); }
+}
+
+@keyframes mafia-twinkle {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes mafia-card-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(207, 75, 73, 0); }
+  50% { box-shadow: 0 0 16px rgba(207, 75, 73, 0.3); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mafia-orb,
+  .mafia-stars,
+  .mafia-pulse {
+    animation: none;
+  }
+}
+
+/* ── Goofspiel AI Arena — strategy-table spectator stage ─────────────────── */
+.goof-stage {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(820px 360px at 50% -30%, rgba(15, 156, 134, 0.16), transparent 62%),
+    radial-gradient(620px 300px at 50% 130%, rgba(200, 151, 31, 0.12), transparent 60%),
+    linear-gradient(180deg, #f1ece0 0%, #f3ece0 72%);
+}
+
+/* Faint blueprint grid that reads as the "table". */
+.goof-grid {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(120, 96, 60, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 96, 60, 0.08) 1px, transparent 1px);
+  background-size: 38px 38px;
+  mask-image: radial-gradient(circle at 50% 35%, #000 0%, transparent 78%);
+  -webkit-mask-image: radial-gradient(circle at 50% 35%, #000 0%, transparent 78%);
+}
+
+/* Halo behind the active prize card. */
+.goof-halo {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  height: 220px;
+  width: 220px;
+  transform: translateX(-50%) translateY(-30%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(15, 156, 134, 0.22), transparent 68%);
+  z-index: -1;
+  animation: goof-halo-pulse 5s ease-in-out infinite;
+}
+
+.goof-stage.is-pot .goof-halo {
+  background: radial-gradient(circle, rgba(200, 151, 31, 0.28), transparent 68%);
+}
+
+/* Bid card snapping face-up at showdown. */
+.goof-flip {
+  animation: goof-flip 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/* Carried-pot emphasis. */
+.goof-pot-hot {
+  animation: goof-pot-hot 1.5s ease-in-out infinite;
+}
+
+@keyframes goof-halo-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+@keyframes goof-flip {
+  0% { opacity: 0; transform: rotateY(-90deg) scale(0.92); }
+  100% { opacity: 1; transform: rotateY(0) scale(1); }
+}
+
+@keyframes goof-pot-hot {
+  0%, 100% { box-shadow: 0 0 0 rgba(200, 151, 31, 0); }
+  50% { box-shadow: 0 0 18px rgba(200, 151, 31, 0.4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .goof-halo,
+  .goof-flip,
+  .goof-pot-hot,
+  .animate-vote-pulse,
+  .vote-line,
+  .vote-target-pulse,
+  .animate-death-fade,
+  .animate-card-flip,
+  .goof-prize-hero.is-live {
+    animation: none;
+  }
+}
+
+/* ── Spectator broadcast (PDF design system) ───────────────────────────────── */
+.broadcast-shell {
+  background:
+    linear-gradient(180deg, rgba(251, 246, 238, 0.96) 0%, rgba(244, 237, 225, 0.98) 100%);
+  box-shadow: 0 24px 80px rgba(120, 96, 60, 0.18);
+}
+
+.broadcast-top {
+  background: linear-gradient(90deg, rgba(15, 156, 134, 0.08), transparent 40%, rgba(200, 151, 31, 0.06));
+}
+
+.broadcast-main {
+  background:
+    radial-gradient(800px 400px at 50% 0%, rgba(15, 156, 134, 0.06), transparent 55%);
+}
+
+.animate-vote-pulse {
+  animation: vote-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes vote-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+
+.vote-line {
+  animation: vote-draw 0.6s ease-out forwards;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+}
+
+@keyframes vote-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+.vote-target-pulse {
+  animation: target-pulse 1s ease-in-out infinite;
+}
+
+@keyframes target-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.animate-death-fade {
+  animation: death-fade 1.2s ease-out forwards;
+}
+
+@keyframes death-fade {
+  from { opacity: 1; filter: grayscale(0); }
+  to { opacity: 0.45; filter: grayscale(1); }
+}
+
+.animate-card-flip {
+  animation: card-flip-reveal 0.8s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes card-flip-reveal {
+  0% { transform: rotateY(90deg) scale(0.8); opacity: 0; }
+  100% { transform: rotateY(0) scale(1); opacity: 1; }
+}
+
+.goof-prize-hero.is-live {
+  animation: prize-glow 2s ease-in-out infinite;
+}
+
+@keyframes prize-glow {
+  0%, 100% { filter: drop-shadow(0 0 12px rgba(15, 156, 134, 0.3)); }
+  50% { filter: drop-shadow(0 0 28px rgba(200, 151, 31, 0.5)); }
+}
+
+.mafia-round-table {
+  filter: drop-shadow(0 8px 32px rgba(120, 96, 60, 0.22));
+}
+
+.goof-agent-row {
+  scrollbar-width: thin;
+}
+
+.goof-duel-stage {
+  position: relative;
+}
+
+.goof-agent-panel {
+  min-height: 280px;
+  justify-content: center;
+}
+
+@media (max-width: 767px) {
+  .goof-duel-stage {
+    grid-template-columns: 1fr;
+  }
+
+  .goof-agent-panel {
+    min-height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .goof-agent-panel.items-end {
+    flex-direction: row-reverse;
+  }
+}
+
+.hero-tagline {
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.agent-showcase-scroll {
+  display: flex;
+  gap: 1rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 0.5rem;
+}
+
+.agent-showcase-scroll > * {
+  scroll-snap-align: start;
+  flex-shrink: 0;
+}
+
+/* ── Mafia Spectator Experience (PDF) ─────────────────────────────────────── */
+.mafia-spectator.is-night {
+  background: linear-gradient(180deg, #eef0f4 0%, #f5f6f8 100%);
+}
+
+.mafia-spectator.is-day {
+  background: linear-gradient(180deg, #f7f8fa 0%, #f5f6f8 100%);
+}
+
+.mafia-spectator.is-result {
+  background: linear-gradient(180deg, #eef4f1 0%, #f5f6f8 100%);
+}
+
+.mafia-spectator.is-voting .mafia-spectator-main {
+  box-shadow: inset 0 0 0 2px rgba(207, 75, 73, 0.22);
+}
+
+.mafia-spectator-main {
+  height: min(860px, calc(100vh - 168px));
+  min-height: 560px;
+}
+
+.mafia-spectator-main > section {
+  min-height: 0;
+}
+
+.mafia-spectator-top {
+  background: linear-gradient(90deg, rgba(15, 156, 134, 0.08), transparent 40%, rgba(200, 151, 31, 0.06));
+}
+
+.mafia-seat-speaking {
+  z-index: 2;
+}
+
+.mafia-speaking-ring {
+  position: absolute;
+  inset: -6px;
+  border-radius: 20px;
+  border: 2px solid rgba(139, 92, 246, 0.55);
+  animation: mafia-speak-ring 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes mafia-speak-ring {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.08); opacity: 0.45; }
+}
+
+.mafia-thinking-dot {
+  animation: mafia-thinking-bounce 1s ease-in-out infinite;
+}
+
+@keyframes mafia-thinking-bounce {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(-3px); opacity: 1; }
+}
+
+.mafia-chat-active {
+  scroll-margin: 12px;
+}
+
+.animate-chat-in {
+  animation: chat-message-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes chat-message-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.mafia-chat-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #dccfbb transparent;
+}
+
+.mafia-chat-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.mafia-chat-scroll::-webkit-scrollbar-thumb {
+  background: #dccfbb;
+  border-radius: 9999px;
+}
+
+.mafia-chat-scroll::-webkit-scrollbar-thumb:hover {
+  background: #c9b99f;
+}
+
+.mafia-table-voting .vote-line {
+  stroke-width: 0.55;
+}
+
+.mafia-empty-seat {
+  min-width: 72px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mafia-speaking-ring,
+  .mafia-thinking-dot,
+  .animate-chat-in {
+    animation: none;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   BROADCAST MODE — cinematic AI-esports theming (scoped to .broadcast)
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* Ambient neural particle layer + content stacking */
+.broadcast { position: relative; isolation: isolate; }
+.broadcast::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 10% 20%, rgba(255, 255, 255, 0.10), transparent),
+    radial-gradient(1px 1px at 30% 70%, rgba(0, 229, 255, 0.14), transparent),
+    radial-gradient(1.4px 1.4px at 60% 40%, rgba(34, 211, 166, 0.12), transparent),
+    radial-gradient(1px 1px at 80% 80%, rgba(255, 255, 255, 0.08), transparent),
+    radial-gradient(1.4px 1.4px at 90% 30%, rgba(247, 183, 51, 0.10), transparent),
+    radial-gradient(1px 1px at 45% 90%, rgba(0, 229, 255, 0.10), transparent);
+  background-size: 680px 680px;
+  opacity: 0.7;
+  animation: neural-drift 38s linear infinite;
+}
+.broadcast > * { position: relative; z-index: 1; }
+@keyframes neural-drift {
+  from { background-position: 0 0; }
+  to { background-position: 680px 340px; }
+}
+
+/* Dark glass */
+.broadcast .glass {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(0, 0, 0, 0.28));
+  border-color: rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  box-shadow: 0 22px 60px -22px rgba(0, 0, 0, 0.75);
+}
+.broadcast .glass::before {
+  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.45), transparent);
+}
+.broadcast *::-webkit-scrollbar-thumb { background: #2a2a2a; }
+.broadcast *::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+
+/* Stage / shell dark overrides */
+.broadcast .mafia-spectator { box-shadow: 0 30px 90px -30px rgba(0, 0, 0, 0.85); }
+.broadcast .mafia-spectator.is-night { background: linear-gradient(180deg, #0c1018 0%, #090909 100%); }
+.broadcast .mafia-spectator.is-day { background: linear-gradient(180deg, #14110c 0%, #090909 100%); }
+.broadcast .mafia-spectator.is-result { background: linear-gradient(180deg, #0a1413 0%, #090909 100%); }
+.broadcast .mafia-spectator-top {
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.08), transparent 42%, rgba(247, 183, 51, 0.06));
+}
+.broadcast .mafia-spectator.is-voting .mafia-spectator-main {
+  box-shadow: inset 0 0 0 2px rgba(255, 90, 95, 0.28);
+}
+.broadcast .mafia-stars {
+  opacity: 0.55;
+  background-image:
+    radial-gradient(1px 1px at 12% 30%, rgba(255, 255, 255, 0.9), transparent),
+    radial-gradient(1px 1px at 28% 18%, rgba(0, 229, 255, 0.7), transparent),
+    radial-gradient(1px 1px at 47% 40%, rgba(255, 255, 255, 0.8), transparent),
+    radial-gradient(1px 1px at 63% 22%, rgba(34, 211, 166, 0.7), transparent),
+    radial-gradient(1px 1px at 78% 36%, rgba(255, 255, 255, 0.85), transparent),
+    radial-gradient(1px 1px at 90% 16%, rgba(247, 183, 51, 0.6), transparent);
+}
+.broadcast .mafia-scan {
+  mix-blend-mode: overlay;
+  opacity: 0.25;
+  background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 5px);
+}
+.broadcast .mafia-speaking-ring { border-color: rgba(167, 139, 250, 0.6); }
+.broadcast .is-night .mafia-orb { background: radial-gradient(circle at 38% 35%, #eaf6ff, #9fb6d8 70%); box-shadow: 0 0 44px rgba(120, 170, 255, 0.45); }
+.broadcast .is-day .mafia-orb { background: radial-gradient(circle at 40% 38%, #ffe6a3, #f7b733 72%); box-shadow: 0 0 52px rgba(247, 183, 51, 0.5); }
+.broadcast .is-result .mafia-orb { background: radial-gradient(circle at 42% 38%, #c9fff2, #22d3a6 72%); box-shadow: 0 0 56px rgba(34, 211, 166, 0.55); }
+
+/* ── Round-table felt (themeable classes; cream default, dark in broadcast) ── */
+.mf-rim {
+  border: 1px solid rgb(var(--c-border-strong) / 0.9);
+  background: linear-gradient(160deg, #f1f3f6, #e3e7ed);
+  box-shadow: 0 26px 50px -24px rgba(30, 41, 59, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.mf-felt {
+  background: radial-gradient(circle at 50% 38%, #ffffff 0%, #f4f6f9 52%, #e9edf2 100%);
+  box-shadow: inset 0 2px 1px rgba(255, 255, 255, 0.85), inset 0 -10px 34px rgba(30, 41, 59, 0.06), inset 0 0 0 1px rgba(224, 227, 232, 0.7);
+}
+.mf-guide { border: 1px dashed rgb(var(--c-border-strong) / 0.6); }
+.mf-medal { background: radial-gradient(circle, rgba(99, 102, 241, 0.07), transparent 70%); }
+
+.broadcast .mf-rim {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(160deg, #1a1a1a, #111111);
+  box-shadow: 0 30px 60px -26px rgba(0, 0, 0, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 0 0 1px rgba(0, 229, 255, 0.08);
+}
+.broadcast .mf-felt {
+  background: radial-gradient(circle at 50% 36%, #131a17 0%, #0e1210 55%, #0a0a0a 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 -14px 40px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(52, 211, 153, 0.10), inset 0 0 80px rgba(52, 211, 153, 0.05);
+}
+.broadcast .mf-guide { border-color: rgba(52, 211, 153, 0.16); }
+.broadcast .mf-medal { background: radial-gradient(circle, rgba(52, 211, 153, 0.12), transparent 70%); }
+
+/* ── Vote lasers ─────────────────────────────────────────────────────────── */
+.mf-vote-glow { stroke: rgb(var(--c-status-error) / 0.16); }
+.mf-vote-laser {
+  stroke: rgb(var(--c-status-error) / 0.88);
+  stroke-dasharray: 120;
+  stroke-dashoffset: 120;
+  animation: mf-laser-draw 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+.broadcast .mf-vote-laser { filter: drop-shadow(0 0 1.4px rgba(255, 90, 95, 0.9)); }
+.broadcast .mf-vote-glow { stroke: rgb(255 90 95 / 0.22); }
+@keyframes mf-laser-draw { to { stroke-dashoffset: 0; } }
+.mf-vote-target { animation: mf-target-pulse 1s ease-in-out infinite; }
+@keyframes mf-target-pulse { 0%, 100% { opacity: 0.55; r: 1.5; } 50% { opacity: 1; r: 2.1; } }
+
+/* Seat hover micro-interaction handled via Tailwind; target reaction shake */
+.mf-target-react { animation: mf-shake 0.5s ease-in-out; }
+@keyframes mf-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-1.5px); }
+  40% { transform: translateX(1.5px); }
+  60% { transform: translateX(-1px); }
+  80% { transform: translateX(1px); }
+}
+
+/* ── Cinematic timeline log ──────────────────────────────────────────────── */
+.tl-entry { animation: tl-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@keyframes tl-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+.tl-stream { overflow: hidden; white-space: normal; animation: tl-stream 0.6s ease both; }
+@keyframes tl-stream { from { opacity: 0; } to { opacity: 1; } }
+.conf-fill { transition: width 0.9s cubic-bezier(0.2, 0.8, 0.2, 1); }
+
+/* ── Modal ───────────────────────────────────────────────────────────────── */
+.modal-backdrop-in { animation: fade-in 0.2s ease; }
+.modal-in { animation: modal-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(10px) scale(0.97); } to { opacity: 1; transform: none; } }
+
+/* Generic spring lift for floating cards / chips */
+.lift { transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.25s ease; }
+.lift:hover { transform: translateY(-2px); }
+
+/* Elevation utilities — soft layered shadows that read as depth on the cream
+   theme, deepened under .broadcast (dark). Use card-elev on panels, hover-lift
+   on interactive rows/tiles. */
+.card-elev {
+  box-shadow: 0 1px 2px rgba(30, 41, 59, 0.05), 0 12px 30px -14px rgba(30, 41, 59, 0.20);
+}
+.card-elev-lg {
+  box-shadow: 0 2px 6px rgba(30, 41, 59, 0.06), 0 24px 52px -20px rgba(30, 41, 59, 0.26);
+}
+.hover-lift {
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 3px 8px rgba(30, 41, 59, 0.07), 0 22px 46px -18px rgba(30, 41, 59, 0.30);
+}
+.broadcast .card-elev {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 18px 40px -20px rgba(0, 0, 0, 0.72);
+}
+.broadcast .card-elev-lg {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 30px 64px -24px rgba(0, 0, 0, 0.82);
+}
+.broadcast .hover-lift:hover {
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5), 0 26px 56px -20px rgba(0, 0, 0, 0.85);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .broadcast::before, .mf-vote-laser, .mf-vote-target, .mf-target-react,
+  .tl-entry, .tl-stream, .modal-in, .modal-backdrop-in { animation: none; }
+}
+
+.mf-arrowhead { fill: rgb(var(--c-status-error) / 0.92); }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SITE-WIDE DARK — override every remaining hardcoded stage so the whole app
+   is one consistent graphite esports palette (body carries .broadcast).
+   ════════════════════════════════════════════════════════════════════════════ */
+.broadcast .duel-stage {
+  background:
+    linear-gradient(180deg, #0e1016, #0a0a0a 60%, #090909),
+    radial-gradient(circle at 46% 35%, rgba(247, 183, 51, 0.10), transparent 34%),
+    radial-gradient(circle at 78% 18%, rgba(0, 229, 255, 0.10), transparent 30%),
+    #0a0a0a;
+}
+.broadcast .duel-grid {
+  background:
+    linear-gradient(rgba(0, 229, 255, 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 229, 255, 0.16) 1px, transparent 1px);
+  background-size: 52px 52px;
+  opacity: 0.2;
+}
+.broadcast .duel-caption p { color: #9aa0aa; }
+.broadcast .duel-card { background: #1a1a1a; color: #ececec; border-color: rgba(255, 255, 255, 0.18); }
+.broadcast .duel-player { color: rgba(180, 190, 205, 0.6); }
+.broadcast .duel-android { color: rgba(120, 170, 255, 0.7); }
+.broadcast .duel-table { border-color: rgba(0, 229, 255, 0.3); background: radial-gradient(circle at 50% 44%, rgba(0, 229, 255, 0.12), transparent 55%), linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(10, 10, 10, 0.6)); }
+
+.broadcast .goof-stage {
+  background:
+    radial-gradient(820px 360px at 50% -30%, rgba(0, 229, 255, 0.14), transparent 62%),
+    radial-gradient(620px 300px at 50% 130%, rgba(247, 183, 51, 0.08), transparent 60%),
+    linear-gradient(180deg, #0c1216 0%, #090909 72%);
+}
+.broadcast .goof-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+}
+.broadcast .goof-halo { background: radial-gradient(circle, rgba(0, 229, 255, 0.22), transparent 68%); }
+.broadcast .goof-stage.is-pot .goof-halo { background: radial-gradient(circle, rgba(247, 183, 51, 0.26), transparent 68%); }
+
+.broadcast .broadcast-shell {
+  background: linear-gradient(180deg, rgba(22, 22, 22, 0.96) 0%, rgba(11, 11, 11, 0.98) 100%);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+.broadcast .broadcast-top { background: linear-gradient(90deg, rgba(0, 229, 255, 0.08), transparent 40%, rgba(247, 183, 51, 0.06)); }
+.broadcast .broadcast-main { background: radial-gradient(800px 400px at 50% 0%, rgba(0, 229, 255, 0.06), transparent 55%); }
+
+.broadcast .mafia-stage.is-night { background: radial-gradient(900px 300px at 82% -40%, rgba(120, 170, 255, 0.16), transparent 60%), linear-gradient(180deg, #0c1018 0%, #090909 70%); }
+.broadcast .mafia-stage.is-day { background: radial-gradient(900px 320px at 16% -40%, rgba(247, 183, 51, 0.18), transparent 60%), linear-gradient(180deg, #14110c 0%, #090909 72%); }
+.broadcast .mafia-stage.is-result { background: radial-gradient(900px 380px at 50% -30%, rgba(34, 211, 166, 0.2), transparent 62%), linear-gradient(180deg, #0a1413 0%, #090909 72%); }
+
+/* ── Idle avatar life — breathing float + occasional blink (table seats) ───── */
+.mf-breathe { animation: mf-breathe 3.6s ease-in-out infinite; }
+@keyframes mf-breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+.mf-eyes { transform-box: fill-box; transform-origin: center; animation: mf-blink 6s ease-in-out infinite; }
+@keyframes mf-blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96% { transform: scaleY(0.1); }
+}
+
+/* ── Table speech bubble — agents discuss at the table ─────────────────────── */
+.mf-speech {
+  animation: mf-speech-in 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes mf-speech-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mf-breathe, .mf-eyes, .mf-speech { animation: none; }
+}
+
+/* ── Spectate hub — staggered card entrance ───────────────────────────────── */
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+.card-in { animation: cardIn 0.55s both cubic-bezier(0.2, 0.7, 0.2, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .card-in { animation: none; }
+}

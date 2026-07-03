@@ -44,11 +44,12 @@ func DefaultPacks() []Pack {
 
 // CheckoutParams is what the gateway needs to open a hosted Checkout session.
 type CheckoutParams struct {
-	Pack          Pack
-	UserPublicID  string
-	AgentPublicID string // which agent's wallet the coins credit on success
-	SuccessURL    string
-	CancelURL     string
+	Pack               Pack
+	UserPublicID       string
+	AgentPublicID      string // optional; for UI hint only after purchase
+	ProcessingFeeCents int64
+	SuccessURL         string
+	CancelURL          string
 }
 
 // Checkout is the created hosted session (the URL the client is redirected to).
@@ -94,8 +95,8 @@ type Gateway interface {
 
 // Coiner moves coins via the ledger. Satisfied by wallet.Service.
 type Coiner interface {
-	Topup(ctx context.Context, agentPublicID string, coins int64, idemKey string) error
-	Reverse(ctx context.Context, agentPublicID string, coins int64, idemKey string) error
+	Topup(ctx context.Context, userPublicID string, coins int64, idemKey string) error
+	Reverse(ctx context.Context, userPublicID string, coins int64, idemKey string) error
 }
 
 // Repo persists the idempotent webhook log and Stripe linkage on users.

@@ -28,6 +28,7 @@ var (
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	ErrSignatureRequired = httpx.NewError(http.StatusBadRequest, "signature_required", "This agent has a signing key; moves must be signed.")
 	ErrBadSignature      = httpx.NewError(http.StatusForbidden, "bad_signature", "Move signature is invalid for (match, round, seat, card).")
+	ErrNotCreator        = httpx.NewError(http.StatusForbidden, "not_creator", "Only the match creator can cancel a waiting lobby entry.")
 )
 
 func errIllegalCard(msg string) *httpx.APIError {

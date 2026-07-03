@@ -63,12 +63,25 @@ func (s *Service) Balance(ctx context.Context, agentPublicID string) (int64, err
 	return s.repo.Balance(ctx, agentPublicID)
 }
 
+// UserBalance returns an owner's treasury wallet balance.
+func (s *Service) UserBalance(ctx context.Context, userPublicID string) (int64, error) {
+	return s.repo.UserBalance(ctx, userPublicID)
+}
+
 // History returns an agent's ledger lines, newest first.
 func (s *Service) History(ctx context.Context, agentPublicID string, limit int) ([]Line, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	return s.repo.History(ctx, agentPublicID, limit)
+}
+
+// UserHistory returns an owner's treasury ledger lines, newest first.
+func (s *Service) UserHistory(ctx context.Context, userPublicID string, limit int) ([]Line, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return s.repo.UserHistory(ctx, userPublicID, limit)
 }
 
 // ── metrics ──────────────────────────────────────────────────────────────────

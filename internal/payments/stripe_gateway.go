@@ -34,19 +34,27 @@ func NewStripeGateway(secretKey string) *StripeGateway {
 func (g *StripeGateway) CreateCheckout(ctx context.Context, p CheckoutParams) (Checkout, error) {
 	form := url.Values{}
 	form.Set("mode", "payment")
-	form.Set("success_url", p.SuccessURL)
+	form.Set("success_url", p.SuccessURL+"?session_id={CHECKOUT_SESSION_ID}")
 	form.Set("cancel_url", p.CancelURL)
 	form.Set("client_reference_id", p.UserPublicID)
 	form.Set("line_items[0][quantity]", "1")
 	form.Set("line_items[0][price_data][currency]", "usd")
 	form.Set("line_items[0][price_data][unit_amount]", strconv.FormatInt(p.Pack.Cents, 10))
 	form.Set("line_items[0][price_data][product_data][name]", p.Pack.Label)
-	// Metadata is set on BOTH the session (read by checkout.session.completed) and
-	// the payment intent (so charge.refunded carries it for reversal).
+	if p.ProcessingFeeCents > 0 {
+		form.Set("line_items[1][quantity]", "1")
+		form.Set("line_items[1][price_data][currency]", "usd")
+		form.Set("line_items[1][price_data][unit_amount]", strconv.FormatInt(p.ProcessingFeeCents, 10))
+		form.Set("line_items[1][price_data][product_data][name]", "Payment processing fee")
+	}
 	for _, prefix := range []string{"metadata", "payment_intent_data[metadata]"} {
 		form.Set(prefix+"[user]", p.UserPublicID)
-		form.Set(prefix+"[agent]", p.AgentPublicID)
+		if p.AgentPublicID != "" {
+			form.Set(prefix+"[agent]", p.AgentPublicID)
+		}
 		form.Set(prefix+"[coins]", strconv.FormatInt(p.Pack.Coins, 10))
+		form.Set(prefix+"[pack_cents]", strconv.FormatInt(p.Pack.Cents, 10))
+		form.Set(prefix+"[processing_fee_cents]", strconv.FormatInt(p.ProcessingFeeCents, 10))
 	}
 
 	var out struct {

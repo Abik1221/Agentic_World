@@ -29,6 +29,9 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		r.Get("/v1/wallet", h.get)
 		r.Get("/v1/wallet/history", h.history)
+		r.Get("/v1/user/wallet", h.userSummary)
+		r.Get("/v1/user/wallet/history", h.userHistory)
+		r.Post("/v1/wallet/allocate", h.allocate)
 		if h.allowMint {
 			r.Post("/v1/admin/mint", h.mint)
 		}
@@ -62,6 +65,56 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"transactions": lines})
+}
+
+func (h *Handler) userSummary(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	if p == nil || p.UserPublicID == "" {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	sum, err := h.svc.UserSummary(r.Context(), p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, sum)
+}
+
+func (h *Handler) userHistory(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	if p == nil || p.UserPublicID == "" {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	lines, err := h.svc.UserHistory(r.Context(), p.UserPublicID, limit)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"transactions": lines})
+}
+
+func (h *Handler) allocate(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Agent  string `json:"agent"`
+		Amount int64  `json:"amount"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.authorizeFor(r, p, in.Agent); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Allocate(r.Context(), p.UserPublicID, in.Agent, in.Amount); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"agent": in.Agent, "allocated": in.Amount})
 }
 
 func (h *Handler) mint(w http.ResponseWriter, r *http.Request) {

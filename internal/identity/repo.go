@@ -39,6 +39,40 @@ type Repo interface {
 	// SetSigningKey registers the agent's Ed25519 move-signing public key iff
 	// ownerPublicID owns the agent.
 	SetSigningKey(ctx context.Context, agentPublicID, ownerPublicID, pubkey string) error
+
+	// CreateAccount atomically (in one DB transaction) creates an email+password
+	// owner, their first agent (default limits), the owner + agent wallets, and
+	// the agent's first API key. Returns ErrEmailTaken if the email already
+	// belongs to an account. This is the email/password analogue of CompleteClaim.
+	CreateAccount(ctx context.Context, in CreateAccountInput) (Agent, User, error)
+
+	// CredentialsByEmail returns the auth record for a password-enabled account,
+	// or ErrNotFound if the email is unknown or has no password set.
+	CredentialsByEmail(ctx context.Context, email string) (AuthRecord, error)
+}
+
+// CreateAccountInput carries everything CreateAccount needs in one atomic call.
+type CreateAccountInput struct {
+	Email         string
+	PasswordHash  string
+	UserPublicID  string
+	AgentPublicID string
+	AgentName     string
+	AgentSlug     string
+	Description   string
+	Framework     string
+	KeyPrefix     string
+	KeyHash       string
+	Limits        Limits
+}
+
+// AuthRecord is the row needed to authenticate an email+password login, plus the
+// owner's (single) agent so the session can be seeded with it.
+type AuthRecord struct {
+	UserPublicID  string
+	PasswordHash  string
+	AgentPublicID string // empty if the owner has no agent yet
+	AgentName     string
 }
 
 // CompleteClaimInput carries everything CompleteClaim needs in one atomic call.

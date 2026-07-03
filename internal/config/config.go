@@ -85,6 +85,17 @@ type Config struct {
 	ConnectRefreshURL         string
 	PaymentsReconcileInterval time.Duration
 
+	// Arena Pass subscription (Stripe Billing)
+	StripeArenaPassPriceID    string
+	SubscriptionSuccessURL    string
+	SubscriptionCancelURL     string
+	SubscriptionPortalURL     string
+	ArenaPassMonthlyCoins     int64
+	StripeArenaPassPriceCents int64
+
+	// Demo bots: rule-based agents that fill tables in local/dev (no LLM).
+	DemoBots bool
+
 	// Observability
 	OTLPEndpoint string
 }
@@ -150,18 +161,26 @@ func Load() (*Config, error) {
 		StripeWebhookSecret:       l.str("STRIPE_WEBHOOK_SECRET", ""),
 		PaymentsReconcileInterval: l.dur("PAYMENTS_RECONCILE_INTERVAL", time.Hour),
 
+		StripeArenaPassPriceID:    l.str("STRIPE_ARENA_PASS_PRICE_ID", ""),
+		SubscriptionSuccessURL:    l.str("SUBSCRIPTION_SUCCESS_URL", "http://localhost:3000/subscription/success"),
+		SubscriptionCancelURL:     l.str("SUBSCRIPTION_CANCEL_URL", "http://localhost:3000/subscription/cancel"),
+		SubscriptionPortalURL:     l.str("SUBSCRIPTION_PORTAL_URL", "http://localhost:3000/subscription"),
+		ArenaPassMonthlyCoins:     int64(l.intVal("ARENA_PASS_MONTHLY_COINS", 1000)),
+		StripeArenaPassPriceCents: int64(l.intVal("ARENA_PASS_PRICE_CENTS", 999)),
+
 		OTLPEndpoint: l.str("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
 
-	// Hosted return pages default to paths under BaseURL (we never render cards).
-	c.CheckoutSuccessURL = l.str("CHECKOUT_SUCCESS_URL", c.BaseURL+"/billing/success")
-	c.CheckoutCancelURL = l.str("CHECKOUT_CANCEL_URL", c.BaseURL+"/billing/cancel")
-	c.ConnectReturnURL = l.str("CONNECT_RETURN_URL", c.BaseURL+"/payouts/return")
-	c.ConnectRefreshURL = l.str("CONNECT_REFRESH_URL", c.BaseURL+"/payouts/refresh")
+	// Hosted return pages default to the frontend billing flow.
+	c.CheckoutSuccessURL = l.str("CHECKOUT_SUCCESS_URL", "http://localhost:3000/billing/success")
+	c.CheckoutCancelURL = l.str("CHECKOUT_CANCEL_URL", "http://localhost:3000/billing/cancel")
+	c.ConnectReturnURL = l.str("CONNECT_RETURN_URL", "http://localhost:3000/payouts/return")
+	c.ConnectRefreshURL = l.str("CONNECT_REFRESH_URL", "http://localhost:3000/payouts/refresh")
 
 	// Mint is a test affordance: on by default off prod, and never silently on in
 	// a prod-like env even if the env var is set true.
 	c.AllowMint = l.boolVal("ALLOW_MINT", !c.IsProd()) && !c.IsProd()
+	c.DemoBots = l.boolVal("DEMO_BOTS", !c.IsProd())
 
 	if err := l.err(); err != nil {
 		return nil, err

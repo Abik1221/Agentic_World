@@ -30,6 +30,7 @@ type MatchCreatedPayload struct {
 	Cards        []int  `json:"cards"`
 	Rounds       int    `json:"rounds"`
 	FairnessMode string `json:"fairness_mode"`
+	TieRule      string `json:"tie_rule"`
 	Commit       string `json:"commit"` // sha256(seed), published before any card is played
 }
 

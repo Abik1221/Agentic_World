@@ -2,6 +2,7 @@ package payout
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -29,8 +30,10 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		user := auth.RequireScope(auth.ScopeUser)
 		r.With(user).Get("/v1/wallet/withdrawable", h.withdrawable)
+		r.With(user).Get("/v1/withdrawals", h.list)
 		r.With(user).Post("/v1/withdrawals", h.request)
 		r.With(user).Get("/v1/withdrawals/{id}", h.get)
+		r.With(user).Get("/v1/admin/withdrawals", h.adminList)
 		r.With(user).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
 		r.With(user).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
 	})
@@ -42,12 +45,48 @@ func (h *Handler) withdrawable(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "agent_required", "Specify ?agent="))
 		return
 	}
-	coins, quote, err := h.svc.Available(r.Context(), agent)
+	var coins int64
+	if q := r.URL.Query().Get("coins"); q != "" {
+		if n, err := strconv.ParseInt(q, 10, 64); err == nil {
+			coins = n
+		}
+	}
+	avail, quote, err := h.svc.Available(r.Context(), agent, coins)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"withdrawable_coins": coins, "quote": quote})
+	httpx.JSON(w, http.StatusOK, map[string]any{"withdrawable_coins": avail, "quote": quote})
+}
+
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.svc.List(r.Context(), p.UserPublicID, limit)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"withdrawals": items})
+}
+
+func (h *Handler) adminList(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	if !h.isAdmin(p) {
+		httpx.Error(w, httpx.ErrForbidden)
+		return
+	}
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "requested"
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.svc.AdminQueue(r.Context(), status, limit)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"withdrawals": items})
 }
 
 func (h *Handler) request(w http.ResponseWriter, r *http.Request) {

@@ -89,7 +89,7 @@ func (r *fakeRepo) StripeConnectID(_ context.Context, _ string) (string, error) 
 func (r *fakeRepo) SetStripeConnectID(_ context.Context, _, id string) error    { r.connectID = id; return nil }
 
 func newSvc(coiner payments.Coiner, repo payments.Repo) *payments.Service {
-	return payments.New(payments.NewDevGateway(coiner), coiner, repo,
+	return payments.New(&payments.DevGateway{}, coiner, repo,
 		platform.FixedClock{T: clockT},
 		payments.Config{
 			Packs:         payments.DefaultPacks(),
@@ -200,7 +200,7 @@ func TestWebhookRefundReverses(t *testing.T) {
 
 func TestTopupRejectsUnknownPack(t *testing.T) {
 	svc := newSvc(newCoiner(), newRepo())
-	if _, err := svc.Topup(context.Background(), "usr_a", "ag_a", "nope"); err != payments.ErrUnknownPack {
+	if _, err := svc.Topup(context.Background(), "usr_a", "ag_a", "nope", "card"); err != payments.ErrUnknownPack {
 		t.Fatalf("unknown pack = %v, want ErrUnknownPack", err)
 	}
 }
@@ -209,14 +209,14 @@ func TestTopupRejectsNonOwner(t *testing.T) {
 	repo := newRepo()
 	repo.owner = "usr_someone_else"
 	svc := newSvc(newCoiner(), repo)
-	if _, err := svc.Topup(context.Background(), "usr_a", "ag_a", "plus"); err != payments.ErrForbiddenAgent {
+	if _, err := svc.Topup(context.Background(), "usr_a", "ag_a", "plus", "card"); err != payments.ErrForbiddenAgent {
 		t.Fatalf("non-owner topup = %v, want ErrForbiddenAgent", err)
 	}
 }
 
 func TestTopupHappyPathReturnsURL(t *testing.T) {
 	svc := newSvc(newCoiner(), newRepo()) // repo.owner defaults to usr_a
-	co, err := svc.Topup(context.Background(), "usr_a", "ag_a", "plus")
+	co, err := svc.Topup(context.Background(), "usr_a", "ag_a", "plus", "card")
 	if err != nil {
 		t.Fatalf("Topup: %v", err)
 	}

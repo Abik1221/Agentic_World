@@ -262,6 +262,24 @@ func (r *MatchRepo) ListActiveExpired(ctx context.Context, now time.Time, limit 
 	return ids, rows.Err()
 }
 
+func (r *MatchRepo) CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches SET status='aborted', updated_at=now()
+		 WHERE public_id=$1 AND status='waiting'
+		   AND EXISTS (
+		     SELECT 1 FROM match_players mp
+		     JOIN agents ag ON ag.id = mp.agent_id
+		     WHERE mp.match_id = matches.id AND mp.seat = 0 AND ag.public_id = $2
+		   )`, matchPublicID, creatorAgentPublicID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return match.ErrNotWaiting
+	}
+	return nil
+}
+
 func (r *MatchRepo) LoadEvents(ctx context.Context, matchPublicID string) ([]gs.Event, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT seq, type, payload FROM match_events

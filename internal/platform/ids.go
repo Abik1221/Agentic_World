@@ -12,6 +12,8 @@ const (
 	PrefixUser  = "usr"
 	PrefixAgent = "ag"
 	PrefixMatch = "m"
+	PrefixMafia = "mf"
+	PrefixMonopoly = "mp"
 	PrefixKey   = "sk_arena"
 	PrefixClip  = "clip"
 	PrefixTxn   = "txn"

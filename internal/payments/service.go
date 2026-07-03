@@ -15,6 +15,7 @@ import (
 // events; an empty secret means inbound webhooks are rejected (ErrNotConfigured).
 type Config struct {
 	Packs             []Pack
+	FeeSchedules      map[PaymentMethod]FeeSchedule
 	SuccessURL        string
 	CancelURL         string
 	ConnectReturnURL  string
@@ -22,6 +23,7 @@ type Config struct {
 	WebhookSecret     string
 	WebhookTolerance  time.Duration
 	ReconcileLookback time.Duration
+	DevMode           bool // offline gateway: allow confirm endpoint
 }
 
 // Service orchestrates the payment flows over the Gateway, Coiner and Repo ports.
@@ -29,12 +31,21 @@ type Service struct {
 	gw     Gateway
 	Coiner Coiner // exported for dev testing endpoints
 	Repo   Repo   // exported for dev testing endpoints
+	hook   StripeEventHook
 	clock  platform.Clock
 	cfg    Config
 	log    *slog.Logger
 	m      *metrics
 	packs  map[string]Pack
 }
+
+// StripeEventHook receives subscription and other Stripe events after verification.
+type StripeEventHook interface {
+	HandleStripeEvent(ctx context.Context, eventType string, payload []byte) error
+}
+
+// SetStripeHook wires subscription (or other) processors into the shared webhook.
+func (s *Service) SetStripeHook(h StripeEventHook) { s.hook = h }
 
 // New builds the payments service and registers its collectors on reg.
 func New(gw Gateway, coiner Coiner, repo Repo, clock platform.Clock, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
@@ -54,24 +65,58 @@ func New(gw Gateway, coiner Coiner, repo Repo, clock platform.Clock, cfg Config,
 // Packs returns the configured price list (for a public pack-listing endpoint).
 func (s *Service) Packs() []Pack { return s.cfg.Packs }
 
-// Topup opens a hosted Checkout session for `packKey` that will credit
-// `agentPublicID` on success. The caller must own the agent.
-func (s *Service) Topup(ctx context.Context, userPublicID, agentPublicID, packKey string) (Checkout, error) {
+// QuotePack returns the transparent deposit breakdown for a pack + payment method.
+func (s *Service) QuotePack(packKey, method string) (DepositQuote, error) {
+	pack, ok := s.packs[packKey]
+	if !ok {
+		return DepositQuote{}, ErrUnknownPack
+	}
+	return QuoteDeposit(pack, NormalizeMethod(method), s.cfg.FeeSchedules), nil
+}
+
+// Topup opens a hosted Checkout session for `packKey`. Coins credit the owner's
+// treasury wallet on webhook confirmation (never from client-side success alone).
+func (s *Service) Topup(ctx context.Context, userPublicID, agentPublicID, packKey, method string) (Checkout, error) {
 	pack, ok := s.packs[packKey]
 	if !ok {
 		return Checkout{}, ErrUnknownPack
 	}
-	owner, err := s.Repo.OwnerOfAgent(ctx, agentPublicID)
-	if err != nil {
-		return Checkout{}, httpx.ErrNotFound
+	if agentPublicID != "" {
+		owner, err := s.Repo.OwnerOfAgent(ctx, agentPublicID)
+		if err != nil {
+			return Checkout{}, httpx.ErrNotFound
+		}
+		if owner != userPublicID {
+			return Checkout{}, ErrForbiddenAgent
+		}
 	}
-	if owner != userPublicID {
-		return Checkout{}, ErrForbiddenAgent
-	}
+	q := QuoteDeposit(pack, NormalizeMethod(method), s.cfg.FeeSchedules)
 	return s.gw.CreateCheckout(ctx, CheckoutParams{
 		Pack: pack, UserPublicID: userPublicID, AgentPublicID: agentPublicID,
+		ProcessingFeeCents: q.ProcessingFeeCents,
 		SuccessURL: s.cfg.SuccessURL, CancelURL: s.cfg.CancelURL,
 	})
+}
+
+// ConfirmDevCheckout credits a dev checkout session (offline gateway only).
+func (s *Service) ConfirmDevCheckout(ctx context.Context, userPublicID, sessionID string) error {
+	if !s.cfg.DevMode {
+		return httpx.ErrForbidden
+	}
+	if sessionID == "" || len(sessionID) < 8 {
+		return httpx.ErrBadRequest
+	}
+	// Dev sessions carry pack metadata via reconciliation list or we re-fetch from session id pattern.
+	recs, err := s.gw.ListRecentCheckouts(ctx, s.clock.Now().Add(-time.Hour))
+	if err == nil {
+		for _, rec := range recs {
+			if rec.SessionID == sessionID && rec.UserPublicID == userPublicID {
+				return s.Coiner.Topup(ctx, userPublicID, rec.Coins, "topup:"+sessionID)
+			}
+		}
+	}
+	// Fallback: parse coins from default starter pack for cs_dev sessions in local dev.
+	return s.Coiner.Topup(ctx, userPublicID, 100, "topup:"+sessionID)
 }
 
 // Onboard returns a Stripe Connect Express KYC link for the user, creating and
@@ -119,6 +164,12 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 	if err := s.process(ctx, ev); err != nil {
 		return err
 	}
+	if s.hook != nil {
+		if err := s.hook.HandleStripeEvent(ctx, ev.Type, payload); err != nil {
+			s.log.Error("stripe hook failed", "event", ev.ID, "type", ev.Type, "error", err)
+			return err
+		}
+	}
 	return s.Repo.MarkProcessed(ctx, ev.ID)
 }
 
@@ -127,11 +178,11 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 func (s *Service) process(ctx context.Context, ev Event) error {
 	switch ev.Type {
 	case EventCheckoutCompleted:
-		if ev.AgentPublicID == "" || ev.Coins <= 0 {
+		if ev.UserPublicID == "" || ev.Coins <= 0 {
 			s.log.Warn("checkout completed without usable metadata; skipping", "event", ev.ID, "session", ev.ObjectID)
 			return nil
 		}
-		if err := s.Coiner.Topup(ctx, ev.AgentPublicID, ev.Coins, "topup:"+ev.ObjectID); err != nil {
+		if err := s.Coiner.Topup(ctx, ev.UserPublicID, ev.Coins, "topup:"+ev.ObjectID); err != nil {
 			return err
 		}
 		s.m.topups.Inc()
@@ -139,13 +190,13 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 		return nil
 
 	case EventChargeRefunded, EventDisputeCreated:
-		if ev.AgentPublicID == "" || ev.Coins <= 0 {
+		if ev.UserPublicID == "" || ev.Coins <= 0 {
 			return nil
 		}
-		// Reverse recovers what the agent still holds and books any shortfall as
+		// Reverse recovers what the user still holds and books any shortfall as
 		// chargeback debt (wallet never goes negative); it self-handles the
 		// can't-fully-claw-back case, so there's no special error to branch on.
-		return s.Coiner.Reverse(ctx, ev.AgentPublicID, ev.Coins, "reversal:"+ev.ID)
+		return s.Coiner.Reverse(ctx, ev.UserPublicID, ev.Coins, "reversal:"+ev.ID)
 
 	case EventPaymentSucceeded:
 		// Crediting happens on checkout.session.completed (same purchase, one key).
@@ -188,11 +239,11 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 		return reconciled, err
 	}
 	for _, rec := range recs {
-		if rec.AgentPublicID == "" || rec.Coins <= 0 {
+		if rec.UserPublicID == "" || rec.Coins <= 0 {
 			continue
 		}
 		// Idempotent: a no-op if the webhook already credited this session.
-		if err := s.Coiner.Topup(ctx, rec.AgentPublicID, rec.Coins, "topup:"+rec.SessionID); err != nil {
+		if err := s.Coiner.Topup(ctx, rec.UserPublicID, rec.Coins, "topup:"+rec.SessionID); err != nil {
 			s.m.reconcileUnmatched.Inc()
 			s.log.Error("reconcile: credit failed for Stripe session", "session", rec.SessionID, "error", err)
 			continue

@@ -61,7 +61,8 @@ func (r *SpectatorRepo) LiveStats(ctx context.Context) (spectator.LiveStats, err
 		        AND COALESCE(started_at, created_at) >= date_trunc('day', now())),
 		   (SELECT COALESCE(MAX(mp.coins_delta), 0) FROM match_players mp
 		      JOIN matches m ON m.id = mp.match_id
-		      WHERE m.finished_at >= date_trunc('day', now()) AND mp.coins_delta > 0)`).
-		Scan(&s.MatchesToday, &s.CoinsWageredToday, &s.BiggestWinToday)
+		      WHERE m.finished_at >= date_trunc('day', now()) AND mp.coins_delta > 0),
+		   (SELECT COUNT(*) FROM agents WHERE status = 'active')`).
+		Scan(&s.MatchesToday, &s.CoinsWageredToday, &s.BiggestWinToday, &s.ActiveAgents)
 	return s, err
 }

@@ -1,0 +1,1206 @@
+package monopoly
+
+import "errors"
+
+// Engine evaluates Monopoly rules. Like the goofspiel engine it is stateless
+// beyond its Config; all game state is passed in and returned, never held. Every
+// public method is a pure transition (state, input) -> (state', events, error).
+type Engine struct{ cfg Config }
+
+// Engine errors. They are stable so the match layer can map them to API codes.
+var (
+	ErrFinished          = errors.New("monopoly: match is finished")
+	ErrInvalidSeat       = errors.New("monopoly: invalid seat")
+	ErrNotYourTurn       = errors.New("monopoly: it is not this seat's decision")
+	ErrIllegalAction     = errors.New("monopoly: illegal action for the current phase")
+	ErrInsufficientFunds = errors.New("monopoly: insufficient cash")
+	ErrInvalidProperty   = errors.New("monopoly: invalid property")
+	ErrInvalidBid        = errors.New("monopoly: bid must exceed the current high bid")
+)
+
+// Action kinds — the verbs an agent submits via Step.
+const (
+	ActRoll        = "roll"          // PhaseRoll: roll the dice
+	ActBuy         = "buy"           // PhaseAcquire: buy the landed property at list price
+	ActDecline     = "decline"       // PhaseAcquire: decline (opens an auction if enabled)
+	ActBid         = "bid"           // PhaseAuction: raise the high bid (Action.Amount)
+	ActPass        = "pass"          // PhaseAuction: drop out of the auction
+	ActBuild       = "build"         // PhaseManage/Debt: build a house/hotel (Action.Property)
+	ActSellHouse   = "sell_house"    // PhaseManage/Debt: sell a house/hotel back to the bank
+	ActMortgage    = "mortgage"      // PhaseManage/Debt: mortgage a property
+	ActUnmortgage  = "unmortgage"    // PhaseManage: lift a mortgage (+10% interest)
+	ActPayJail     = "pay_jail"      // PhaseJail: pay $50 then roll
+	ActUseJailCard = "use_jail_card" // PhaseJail: spend a get-out-of-jail-free card then roll
+	ActRollJail    = "roll_jail"     // PhaseJail: try to roll doubles to escape
+	ActEndTurn     = "end_turn"      // PhaseManage: finish the turn (re-roll if doubles)
+	ActBankrupt    = "bankrupt"      // PhaseDebt: give up; liquidate to the creditor
+	ActProposeTrade = "propose_trade" // PhaseManage: offer a trade (Action.Trade) to another seat
+	ActAcceptTrade  = "accept_trade"  // PhaseTradeResponse: the target accepts
+	ActRejectTrade  = "reject_trade"  // PhaseTradeResponse: the target declines
+)
+
+// JailFine is the cost to buy out of jail.
+const JailFine = 50
+
+// Action is one agent submission. Property/Amount are used by the actions that
+// need them; others ignore them.
+type Action struct {
+	Kind     string `json:"kind"`
+	Property int    `json:"property,omitempty"`
+	Amount   int    `json:"amount,omitempty"`
+	Trade    *Trade `json:"trade,omitempty"` // only for propose_trade
+}
+
+// Config defines a match's parameters. Defaults model a standard 4-player game.
+type Config struct {
+	Players         int  `json:"players"`           // 2..8
+	StartingCash    int  `json:"starting_cash"`     // default 1500
+	MaxTurns        int  `json:"max_turns"`         // hard cap on dice rolls; guarantees termination
+	GoSalary        int  `json:"go_salary"`         // default 200
+	DisableAuctions bool `json:"disable_auctions"`  // declining sends property to auction unless this is set
+	FreeParkingPool bool `json:"free_parking_pool"` // house rule: taxes/fines fund a Free Parking jackpot
+}
+
+// DefaultMaxTurns bounds an unattended game so property tests always terminate.
+const DefaultMaxTurns = 1000
+
+// DefaultConfig returns a standard 4-player game.
+func DefaultConfig() Config {
+	return Config{Players: 4, StartingCash: 1500, MaxTurns: DefaultMaxTurns, GoSalary: 200}
+}
+
+// New builds an engine, normalizing the config (defaults + clamps) so callers
+// cannot construct an inconsistent game.
+func New(cfg Config) *Engine {
+	if cfg.Players == 0 {
+		cfg.Players = 4
+	}
+	if cfg.Players < 2 {
+		cfg.Players = 2
+	}
+	if cfg.Players > 8 {
+		cfg.Players = 8
+	}
+	if cfg.StartingCash <= 0 {
+		cfg.StartingCash = 1500
+	}
+	if cfg.MaxTurns <= 0 {
+		cfg.MaxTurns = DefaultMaxTurns
+	}
+	if cfg.GoSalary <= 0 {
+		cfg.GoSalary = 200
+	}
+	return &Engine{cfg: cfg}
+}
+
+// Config returns the engine's normalized configuration.
+func (e *Engine) Config() Config { return e.cfg }
+
+// Init builds the opening state, shuffles the card decks from the seed, and emits
+// match_created (with the commit) + the first turn_started.
+func (e *Engine) Init(seed []byte) (State, []Event) {
+	players := make([]Player, e.cfg.Players)
+	for i := range players {
+		players[i] = Player{Seat: i, Cash: e.cfg.StartingCash, Position: IdxGo}
+	}
+	holdings := make([]Holding, BoardSize)
+	for i := range holdings {
+		holdings[i] = Holding{Owner: Bank}
+	}
+	s := State{
+		Players:         players,
+		Holdings:        holdings,
+		Current:         0,
+		Phase:           PhaseRoll,
+		HousesRemaining: 32,
+		HotelsRemaining: 12,
+		ChanceOrder:     derivedDeckOrder(seed, "chance", len(chanceDeck)),
+		CCOrder:         derivedDeckOrder(seed, "community_chest", len(ccDeck)),
+		Winner:          Tie,
+	}
+	evs := []Event{
+		e.emit(&s, EvMatchCreated, MatchCreatedPayload{
+			Version: Version, Players: e.cfg.Players, StartingCash: e.cfg.StartingCash,
+			MaxTurns: e.cfg.MaxTurns, Commit: Commit(seed),
+		}),
+		e.emit(&s, EvTurnStarted, TurnStartedPayload{Seat: 0, TurnCount: 0}),
+	}
+	return s, evs
+}
+
+// pendingActor returns the seat whose decision the engine is waiting on.
+func (e *Engine) pendingActor(s State) int {
+	switch s.Phase {
+	case PhaseAuction:
+		if s.Auction != nil {
+			return s.Auction.Current
+		}
+	case PhaseResolveDebt:
+		if s.Debt != nil {
+			return s.Debt.Debtor
+		}
+	case PhaseTradeResponse:
+		if s.PendingTrade != nil {
+			return s.PendingTrade.Target
+		}
+	}
+	return s.Current
+}
+
+// LegalActions returns the action kinds the given seat may submit right now, or
+// nil if it is not that seat's decision (or the match is finished).
+func (e *Engine) LegalActions(s State, seat int) []string {
+	if s.Finished || seat < 0 || seat >= len(s.Players) {
+		return nil
+	}
+	if seat != e.pendingActor(s) {
+		return nil
+	}
+	switch s.Phase {
+	case PhaseRoll:
+		return []string{ActRoll}
+	case PhaseJail:
+		acts := []string{ActRollJail}
+		if s.Players[seat].JailCards > 0 {
+			acts = append(acts, ActUseJailCard)
+		}
+		if s.Players[seat].Cash >= JailFine {
+			acts = append(acts, ActPayJail)
+		}
+		return acts
+	case PhaseAcquire:
+		acts := []string{}
+		if s.Players[seat].Cash >= space(s.Players[seat].Position).Price {
+			acts = append(acts, ActBuy)
+		}
+		acts = append(acts, ActDecline)
+		return acts
+	case PhaseAuction:
+		return []string{ActBid, ActPass}
+	case PhaseResolveDebt:
+		return []string{ActMortgage, ActSellHouse, ActBankrupt}
+	case PhaseManage:
+		return []string{ActEndTurn, ActBuild, ActSellHouse, ActMortgage, ActUnmortgage, ActProposeTrade}
+	case PhaseTradeResponse:
+		return []string{ActAcceptTrade, ActRejectTrade}
+	}
+	return nil
+}
+
+// Step applies one action from `seat` and returns the next state + emitted events.
+// On any error the ORIGINAL state is returned unchanged (transactional).
+func (e *Engine) Step(s State, seat int, a Action, seed []byte) (State, []Event, error) {
+	if s.Finished {
+		return s, nil, ErrFinished
+	}
+	if seat < 0 || seat >= len(s.Players) {
+		return s, nil, ErrInvalidSeat
+	}
+	if seat != e.pendingActor(s) {
+		return s, nil, ErrNotYourTurn
+	}
+
+	ns := s.clone()
+	var evs []Event
+	var err error
+	switch ns.Phase {
+	case PhaseRoll:
+		evs, err = e.stepRoll(&ns, a, seed)
+	case PhaseJail:
+		evs, err = e.stepJail(&ns, a, seed)
+	case PhaseAcquire:
+		evs, err = e.stepAcquire(&ns, a)
+	case PhaseAuction:
+		evs, err = e.stepAuction(&ns, a)
+	case PhaseResolveDebt:
+		evs, err = e.stepResolveDebt(&ns, a, seed)
+	case PhaseManage:
+		evs, err = e.stepManage(&ns, a, seed)
+	case PhaseTradeResponse:
+		evs, err = e.stepTradeResponse(&ns, a)
+	default:
+		return s, nil, ErrIllegalAction
+	}
+	if err != nil {
+		return s, nil, err
+	}
+	return ns, evs, nil
+}
+
+// ForceTimeout submits a deterministic default action for whichever seat the
+// engine is waiting on, so a missed decision still advances the game and replays
+// identically. It is the impure shell's deadline handler.
+func (e *Engine) ForceTimeout(s State, seed []byte) (State, []Event, error) {
+	if s.Finished {
+		return s, nil, nil
+	}
+	actor := e.pendingActor(s)
+	return e.Step(s, actor, e.defaultAction(s), seed)
+}
+
+// defaultAction is the safe, deterministic fallback per phase.
+func (e *Engine) defaultAction(s State) Action {
+	switch s.Phase {
+	case PhaseRoll:
+		return Action{Kind: ActRoll}
+	case PhaseJail:
+		return Action{Kind: ActRollJail}
+	case PhaseAcquire:
+		return Action{Kind: ActDecline}
+	case PhaseAuction:
+		return Action{Kind: ActPass}
+	case PhaseResolveDebt:
+		return Action{Kind: ActBankrupt}
+	case PhaseTradeResponse:
+		return Action{Kind: ActRejectTrade} // never accept a trade on a timeout
+	default:
+		return Action{Kind: ActEndTurn}
+	}
+}
+
+// ── Phase handlers ─────────────────────────────────────────────────────────
+
+func (e *Engine) stepRoll(ns *State, a Action, seed []byte) ([]Event, error) {
+	if a.Kind != ActRoll {
+		return nil, ErrIllegalAction
+	}
+	return e.doRoll(ns, seed), nil
+}
+
+// doRoll performs a normal (non-jail) dice roll, moves the player, and resolves
+// the landing. Three consecutive doubles sends the player to jail without moving.
+func (e *Engine) doRoll(ns *State, seed []byte) []Event {
+	seat := ns.Current
+	d1, d2 := rollDice(seed, ns.RollSeq)
+	ns.RollSeq++
+	ns.TurnCount++
+	ns.LastRoll = [2]int{d1, d2}
+	doubles := d1 == d2
+	evs := []Event{e.emit(ns, EvDiceRolled, DiceRolledPayload{Seat: seat, Die1: d1, Die2: d2, Total: d1 + d2, Doubles: doubles})}
+
+	if doubles {
+		ns.Players[seat].Doubles++
+	} else {
+		ns.Players[seat].Doubles = 0
+	}
+	if doubles && ns.Players[seat].Doubles >= 3 {
+		evs = e.goToJail(ns, evs, seat, "three_doubles")
+		return e.endTurn(ns, evs, seed)
+	}
+
+	evs = e.moveBySteps(ns, evs, seat, d1+d2)
+	return e.resolveLanding(ns, evs, seed)
+}
+
+func (e *Engine) stepJail(ns *State, a Action, seed []byte) ([]Event, error) {
+	seat := ns.Current
+	p := &ns.Players[seat]
+	switch a.Kind {
+	case ActUseJailCard:
+		if p.JailCards <= 0 {
+			return nil, ErrIllegalAction
+		}
+		p.JailCards--
+		p.InJail = false
+		p.JailTurns = 0
+		evs := []Event{e.emit(ns, EvLeftJail, LeftJailPayload{Seat: seat, Method: "card"})}
+		evs = append(evs, e.doRoll(ns, seed)...)
+		ns.Players[seat].Doubles = 0 // buying out of jail does not grant a doubles re-roll
+		return evs, nil
+	case ActPayJail:
+		if p.Cash < JailFine {
+			return nil, ErrInsufficientFunds
+		}
+		_, cev := e.chargeBank(ns, seat, JailFine, "jail_fine")
+		p.InJail = false
+		p.JailTurns = 0
+		cev = append(cev, e.emit(ns, EvLeftJail, LeftJailPayload{Seat: seat, Method: "paid"}))
+		cev = append(cev, e.doRoll(ns, seed)...)
+		ns.Players[seat].Doubles = 0
+		return cev, nil
+	case ActRollJail:
+		return e.doJailRoll(ns, seed), nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+// doJailRoll attempts an escape by doubles. Failure increments the jail counter;
+// the third failure forces payment of the fine (or a debt) and then a move.
+func (e *Engine) doJailRoll(ns *State, seed []byte) []Event {
+	seat := ns.Current
+	p := &ns.Players[seat]
+	d1, d2 := rollDice(seed, ns.RollSeq)
+	ns.RollSeq++
+	ns.TurnCount++
+	ns.LastRoll = [2]int{d1, d2}
+	doubles := d1 == d2
+	evs := []Event{e.emit(ns, EvDiceRolled, DiceRolledPayload{Seat: seat, Die1: d1, Die2: d2, Total: d1 + d2, Doubles: doubles})}
+
+	if doubles {
+		p.InJail = false
+		p.JailTurns = 0
+		p.Doubles = 0
+		evs = append(evs, e.emit(ns, EvLeftJail, LeftJailPayload{Seat: seat, Method: "doubles"}))
+		evs = e.moveBySteps(ns, evs, seat, d1+d2)
+		evs = e.resolveLanding(ns, evs, seed)
+		ns.Players[seat].Doubles = 0 // escaping jail by doubles does not grant a re-roll
+		return evs
+	}
+
+	p.JailTurns++
+	if p.JailTurns < 3 {
+		ns.Phase = PhaseManage // may still manage property, then end the turn (still jailed)
+		return evs
+	}
+	// Third failed attempt: pay the fine, then move by the rolled total.
+	if p.Cash >= JailFine {
+		_, cev := e.chargeBank(ns, seat, JailFine, "jail_fine")
+		evs = append(evs, cev...)
+		p.InJail = false
+		p.JailTurns = 0
+		evs = append(evs, e.emit(ns, EvLeftJail, LeftJailPayload{Seat: seat, Method: "forced"}))
+		evs = e.moveBySteps(ns, evs, seat, d1+d2)
+		evs = e.resolveLanding(ns, evs, seed)
+		ns.Players[seat].Doubles = 0
+		return evs
+	}
+	// Cannot afford the fine: open a debt and remember to move once it settles.
+	ns.PendingJailMove = d1 + d2
+	ns.Debt = &Debt{Debtor: seat, Creditor: Bank, Amount: JailFine, Property: -1, Reason: "jail_fine"}
+	ns.Phase = PhaseResolveDebt
+	return evs
+}
+
+func (e *Engine) stepAcquire(ns *State, a Action) ([]Event, error) {
+	seat := ns.Current
+	pos := ns.Players[seat].Position
+	sp := space(pos)
+	switch a.Kind {
+	case ActBuy:
+		if ns.Players[seat].Cash < sp.Price {
+			return nil, ErrInsufficientFunds
+		}
+		ns.Players[seat].Cash -= sp.Price
+		ns.Holdings[pos] = Holding{Owner: seat}
+		ns.Phase = PhaseManage
+		return []Event{e.emit(ns, EvPropertyPurchased, PropertyPurchasedPayload{Seat: seat, Property: pos, Price: sp.Price})}, nil
+	case ActDecline:
+		if e.cfg.DisableAuctions {
+			ns.Phase = PhaseManage
+			return nil, nil
+		}
+		return e.startAuction(ns, pos), nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+func (e *Engine) startAuction(ns *State, pos int) []Event {
+	in := make([]bool, len(ns.Players))
+	for i := range ns.Players {
+		in[i] = !ns.Players[i].Bankrupt
+	}
+	ns.Auction = &AuctionState{Property: pos, HighBid: 0, HighBidder: Bank, InAuction: in, Current: ns.Current}
+	ns.Phase = PhaseAuction
+	return []Event{e.emit(ns, EvAuctionStarted, AuctionStartedPayload{Property: pos})}
+}
+
+func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
+	au := ns.Auction
+	seat := au.Current
+	switch a.Kind {
+	case ActBid:
+		if a.Amount <= au.HighBid {
+			return nil, ErrInvalidBid
+		}
+		if a.Amount > ns.Players[seat].Cash {
+			return nil, ErrInsufficientFunds
+		}
+		au.HighBid = a.Amount
+		au.HighBidder = seat
+		evs := []Event{e.emit(ns, EvBidPlaced, BidPayload{Seat: seat, Property: au.Property, Amount: a.Amount})}
+		e.advanceAuction(ns, &evs)
+		return evs, nil
+	case ActPass:
+		au.InAuction[seat] = false
+		evs := []Event{e.emit(ns, EvAuctionPassed, AuctionPassedPayload{Seat: seat, Property: au.Property})}
+		e.advanceAuction(ns, &evs)
+		return evs, nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+// advanceAuction moves to the next bidder, or closes the auction once at most one
+// bidder remains.
+func (e *Engine) advanceAuction(ns *State, evs *[]Event) {
+	au := ns.Auction
+	if countTrue(au.InAuction) <= 1 {
+		e.closeAuction(ns, evs)
+		return
+	}
+	n := len(ns.Players)
+	for step := 1; step <= n; step++ {
+		cand := (au.Current + step) % n
+		if au.InAuction[cand] {
+			au.Current = cand
+			return
+		}
+	}
+	e.closeAuction(ns, evs)
+}
+
+func (e *Engine) closeAuction(ns *State, evs *[]Event) {
+	au := ns.Auction
+	if au.HighBidder != Bank {
+		ns.Players[au.HighBidder].Cash -= au.HighBid
+		ns.Holdings[au.Property] = Holding{Owner: au.HighBidder}
+		*evs = append(*evs, e.emit(ns, EvAuctionWon, AuctionResultPayload{Seat: au.HighBidder, Property: au.Property, Amount: au.HighBid}))
+	} else {
+		*evs = append(*evs, e.emit(ns, EvAuctionUnsold, AuctionResultPayload{Seat: Bank, Property: au.Property, Amount: 0}))
+	}
+	ns.Auction = nil
+	ns.Phase = PhaseManage
+}
+
+func (e *Engine) stepResolveDebt(ns *State, a Action, seed []byte) ([]Event, error) {
+	if ns.Debt == nil {
+		return nil, ErrIllegalAction // defensive: never dereference a missing debt
+	}
+	switch a.Kind {
+	case ActMortgage:
+		evs, err := e.doMortgage(ns, a.Property)
+		if err != nil {
+			return nil, err
+		}
+		return e.afterRaise(ns, evs, seed), nil
+	case ActSellHouse:
+		evs, err := e.doSellHouse(ns, a.Property)
+		if err != nil {
+			return nil, err
+		}
+		return e.afterRaise(ns, evs, seed), nil
+	case ActBankrupt:
+		return e.declareBankrupt(ns, seed), nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+// afterRaise auto-settles the open debt if the debtor now has enough cash.
+func (e *Engine) afterRaise(ns *State, evs []Event, seed []byte) []Event {
+	d := ns.Debt
+	if d != nil && ns.Players[d.Debtor].Cash >= d.Amount {
+		return e.settleDebt(ns, evs, seed)
+	}
+	return evs
+}
+
+func (e *Engine) stepManage(ns *State, a Action, seed []byte) ([]Event, error) {
+	switch a.Kind {
+	case ActBuild:
+		return e.doBuild(ns, a.Property)
+	case ActSellHouse:
+		return e.doSellHouse(ns, a.Property)
+	case ActMortgage:
+		return e.doMortgage(ns, a.Property)
+	case ActUnmortgage:
+		return e.doUnmortgage(ns, a.Property)
+	case ActProposeTrade:
+		return e.proposeTrade(ns, a.Trade)
+	case ActEndTurn:
+		return e.endTurn(ns, nil, seed), nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+// proposeTrade validates an offer from the current player and, if sound, opens a
+// PhaseTradeResponse for the target to accept or reject.
+func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
+	if tr == nil {
+		return nil, ErrIllegalAction
+	}
+	t := *tr // copy; normalize proposer to the current player
+	t.Proposer = ns.Current
+	if err := e.validateTrade(ns, t); err != nil {
+		return nil, err
+	}
+	t.GiveProps = append([]int(nil), tr.GiveProps...)
+	t.WantProps = append([]int(nil), tr.WantProps...)
+	ns.PendingTrade = &t
+	ns.Phase = PhaseTradeResponse
+	return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
+}
+
+// validateTrade enforces the trade rules: distinct solvent parties, real ownership
+// of every offered property, no buildings on any traded group, and sufficient cash.
+func (e *Engine) validateTrade(ns *State, t Trade) error {
+	if t.Target < 0 || t.Target >= len(ns.Players) || t.Target == t.Proposer {
+		return ErrIllegalAction
+	}
+	if ns.Players[t.Proposer].Bankrupt || ns.Players[t.Target].Bankrupt {
+		return ErrIllegalAction
+	}
+	if len(t.GiveProps) == 0 && len(t.WantProps) == 0 && t.GiveCash == 0 && t.WantCash == 0 {
+		return ErrIllegalAction // empty trade
+	}
+	if t.GiveCash < 0 || t.WantCash < 0 {
+		return ErrIllegalAction
+	}
+	if err := e.checkTradeSide(ns, t.GiveProps, t.Proposer); err != nil {
+		return err
+	}
+	if err := e.checkTradeSide(ns, t.WantProps, t.Target); err != nil {
+		return err
+	}
+	if ns.Players[t.Proposer].Cash < t.GiveCash || ns.Players[t.Target].Cash < t.WantCash {
+		return ErrInsufficientFunds
+	}
+	return nil
+}
+
+// checkTradeSide verifies `owner` holds each property and that no property in any
+// involved color group carries buildings (you must sell houses before trading).
+func (e *Engine) checkTradeSide(ns *State, props []int, owner int) error {
+	seen := map[int]bool{}
+	for _, idx := range props {
+		if idx < 0 || idx >= BoardSize || seen[idx] {
+			return ErrInvalidProperty
+		}
+		seen[idx] = true
+		sp := space(idx)
+		if !sp.Ownable() || ns.Holdings[idx].Owner != owner {
+			return ErrInvalidProperty
+		}
+		for _, m := range groupMembers[sp.Group] {
+			if ns.Holdings[m].Houses > 0 {
+				return ErrIllegalAction // can't trade a property whose group has buildings
+			}
+		}
+	}
+	return nil
+}
+
+func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
+	t := ns.PendingTrade
+	if t == nil {
+		return nil, ErrIllegalAction
+	}
+	switch a.Kind {
+	case ActRejectTrade:
+		ns.PendingTrade = nil
+		ns.Phase = PhaseManage
+		return []Event{e.emit(ns, EvTradeRejected, tradePayload(*t))}, nil
+	case ActAcceptTrade:
+		// Re-validate at execution time (state may have shifted is impossible here,
+		// but this keeps acceptance self-contained and safe).
+		if err := e.validateTrade(ns, *t); err != nil {
+			ns.PendingTrade = nil
+			ns.Phase = PhaseManage
+			return nil, err
+		}
+		e.executeTrade(ns, *t)
+		ns.PendingTrade = nil
+		ns.Phase = PhaseManage // control returns to the proposer's turn
+		return []Event{e.emit(ns, EvTradeExecuted, tradePayload(*t))}, nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+// executeTrade swaps the agreed properties and nets the cash. Mortgaged properties
+// carry their mortgage to the new owner (standard rule; no immediate interest).
+func (e *Engine) executeTrade(ns *State, t Trade) {
+	for _, idx := range t.GiveProps {
+		ns.Holdings[idx].Owner = t.Target
+	}
+	for _, idx := range t.WantProps {
+		ns.Holdings[idx].Owner = t.Proposer
+	}
+	ns.Players[t.Proposer].Cash += t.WantCash - t.GiveCash
+	ns.Players[t.Target].Cash += t.GiveCash - t.WantCash
+}
+
+func tradePayload(t Trade) TradePayload {
+	return TradePayload{
+		Proposer: t.Proposer, Target: t.Target,
+		GiveProps: append([]int(nil), t.GiveProps...), GiveCash: t.GiveCash,
+		WantProps: append([]int(nil), t.WantProps...), WantCash: t.WantCash,
+	}
+}
+
+// ── Movement & landing ─────────────────────────────────────────────────────
+
+func (e *Engine) moveBySteps(ns *State, evs []Event, seat, steps int) []Event {
+	p := &ns.Players[seat]
+	from := p.Position
+	passed := from+steps >= BoardSize
+	p.Position = (from + steps) % BoardSize
+	evs = append(evs, e.emit(ns, EvMoved, MovedPayload{Seat: seat, From: from, To: p.Position, PassedGo: passed}))
+	if passed {
+		evs = append(evs, e.credit(ns, seat, e.cfg.GoSalary, "go_salary"))
+	}
+	return evs
+}
+
+func (e *Engine) moveToIndex(ns *State, evs []Event, seat, dest int, collectGo bool) []Event {
+	p := &ns.Players[seat]
+	from := p.Position
+	steps := (dest - from + BoardSize) % BoardSize
+	passed := collectGo && steps != 0 && from+steps >= BoardSize
+	p.Position = dest
+	evs = append(evs, e.emit(ns, EvMoved, MovedPayload{Seat: seat, From: from, To: dest, PassedGo: passed}))
+	if passed {
+		evs = append(evs, e.credit(ns, seat, e.cfg.GoSalary, "go_salary"))
+	}
+	return evs
+}
+
+// resolveLanding applies the rules of the square the current player now occupies.
+// It sets the next phase (PhaseManage, PhaseAcquire, or PhaseResolveDebt) or, for
+// "go to jail", jails the player.
+func (e *Engine) resolveLanding(ns *State, evs []Event, seed []byte) []Event {
+	seat := ns.Current
+	pos := ns.Players[seat].Position
+	sp := space(pos)
+	switch sp.Kind {
+	case KindGo, KindJail:
+		ns.Phase = PhaseManage
+		return evs
+	case KindFreeParking:
+		if e.cfg.FreeParkingPool && ns.FreeParkingPot > 0 {
+			amt := ns.FreeParkingPot
+			ns.FreeParkingPot = 0
+			evs = append(evs, e.credit(ns, seat, amt, "free_parking"))
+		}
+		ns.Phase = PhaseManage
+		return evs
+	case KindGoToJail:
+		return e.goToJail(ns, evs, seat, "go_to_jail_space")
+	case KindTax:
+		paid, cev := e.chargeBank(ns, seat, sp.Tax, "tax")
+		evs = append(evs, cev...)
+		if e.cfg.FreeParkingPool && paid {
+			ns.FreeParkingPot += sp.Tax
+		}
+		if ns.Phase != PhaseResolveDebt {
+			ns.Phase = PhaseManage
+		}
+		return evs
+	case KindChance:
+		ns.Phase = PhaseManage
+		return e.drawChance(ns, evs, seed)
+	case KindCommunityChest:
+		ns.Phase = PhaseManage
+		return e.drawCommunityChest(ns, evs, seed)
+	case KindStreet, KindRailroad, KindUtility:
+		return e.resolveProperty(ns, evs, seat, pos, ns.LastRoll[0]+ns.LastRoll[1])
+	}
+	ns.Phase = PhaseManage
+	return evs
+}
+
+func (e *Engine) resolveProperty(ns *State, evs []Event, seat, pos, diceTotal int) []Event {
+	h := ns.Holdings[pos]
+	if h.Owner == Bank {
+		ns.Phase = PhaseAcquire
+		return evs
+	}
+	if h.Owner == seat || h.Mortgaged {
+		ns.Phase = PhaseManage
+		return evs
+	}
+	rent := e.rentFor(ns, pos, diceTotal)
+	cev, _ := e.charge(ns, seat, h.Owner, rent, "rent", pos)
+	evs = append(evs, cev...)
+	if ns.Phase != PhaseResolveDebt {
+		ns.Phase = PhaseManage
+	}
+	return evs
+}
+
+// rentFor computes the rent owed for landing on an owned, unmortgaged square.
+func (e *Engine) rentFor(ns *State, pos, diceTotal int) int {
+	sp := space(pos)
+	h := ns.Holdings[pos]
+	switch sp.Kind {
+	case KindStreet:
+		if h.Houses == 0 {
+			if ns.ownsFullGroup(h.Owner, sp.Group) {
+				return sp.Rent[0] * 2
+			}
+			return sp.Rent[0]
+		}
+		return sp.Rent[h.Houses]
+	case KindRailroad:
+		return railroadRentTable[ns.railroadsOwned(h.Owner)]
+	case KindUtility:
+		mult := 4
+		if ns.utilitiesOwned(h.Owner) == 2 {
+			mult = 10
+		}
+		return mult * diceTotal
+	}
+	return 0
+}
+
+// resolveUtilityCard / resolveRailroadCard handle the special rents triggered by
+// the "advance to nearest ..." cards (10x a fresh roll; double railroad rent).
+func (e *Engine) resolveUtilityCard(ns *State, evs []Event, seed []byte) []Event {
+	seat := ns.Current
+	pos := ns.Players[seat].Position
+	h := ns.Holdings[pos]
+	if h.Owner == Bank {
+		ns.Phase = PhaseAcquire
+		return evs
+	}
+	if h.Owner == seat || h.Mortgaged {
+		ns.Phase = PhaseManage
+		return evs
+	}
+	d1, d2 := rollDice(seed, ns.RollSeq)
+	ns.RollSeq++
+	evs = append(evs, e.emit(ns, EvDiceRolled, DiceRolledPayload{Seat: seat, Die1: d1, Die2: d2, Total: d1 + d2, Doubles: d1 == d2}))
+	cev, _ := e.charge(ns, seat, h.Owner, 10*(d1+d2), "rent", pos)
+	evs = append(evs, cev...)
+	if ns.Phase != PhaseResolveDebt {
+		ns.Phase = PhaseManage
+	}
+	return evs
+}
+
+func (e *Engine) resolveRailroadCard(ns *State, evs []Event, seed []byte) []Event {
+	seat := ns.Current
+	pos := ns.Players[seat].Position
+	h := ns.Holdings[pos]
+	if h.Owner == Bank {
+		ns.Phase = PhaseAcquire
+		return evs
+	}
+	if h.Owner == seat || h.Mortgaged {
+		ns.Phase = PhaseManage
+		return evs
+	}
+	rent := 2 * railroadRentTable[ns.railroadsOwned(h.Owner)]
+	cev, _ := e.charge(ns, seat, h.Owner, rent, "rent", pos)
+	evs = append(evs, cev...)
+	if ns.Phase != PhaseResolveDebt {
+		ns.Phase = PhaseManage
+	}
+	return evs
+}
+
+func (e *Engine) goToJail(ns *State, evs []Event, seat int, reason string) []Event {
+	p := &ns.Players[seat]
+	p.Position = IdxJail
+	p.InJail = true
+	p.JailTurns = 0
+	p.Doubles = 0
+	ns.Phase = PhaseManage // turn ends from here (LegalActions still allows managing)
+	return append(evs, e.emit(ns, EvWentToJail, WentToJailPayload{Seat: seat, Reason: reason}))
+}
+
+// ── Money ──────────────────────────────────────────────────────────────────
+
+func (e *Engine) credit(ns *State, seat, amount int, reason string) Event {
+	ns.Players[seat].Cash += amount
+	return e.emit(ns, EvCashChanged, CashChangedPayload{Seat: seat, Delta: amount, Balance: ns.Players[seat].Cash, Reason: reason})
+}
+
+// charge moves `amount` from payer to creditor (Bank == the bank). If the payer
+// cannot cover it from cash, a Debt is opened and the engine enters
+// PhaseResolveDebt; the payment event is emitted later by settleDebt.
+func (e *Engine) charge(ns *State, payer, creditor, amount int, reason string, property int) ([]Event, bool) {
+	if amount <= 0 {
+		return nil, true
+	}
+	if ns.Players[payer].Cash >= amount {
+		ns.Players[payer].Cash -= amount
+		if creditor == Bank {
+			return []Event{e.emit(ns, EvCashChanged, CashChangedPayload{Seat: payer, Delta: -amount, Balance: ns.Players[payer].Cash, Reason: reason})}, true
+		}
+		ns.Players[creditor].Cash += amount
+		return []Event{e.emit(ns, EvRentPaid, RentPaidPayload{From: payer, To: creditor, Property: property, Amount: amount})}, true
+	}
+	ns.Debt = &Debt{Debtor: payer, Creditor: creditor, Amount: amount, Property: property, Reason: reason}
+	ns.Phase = PhaseResolveDebt
+	return nil, false
+}
+
+func (e *Engine) chargeBank(ns *State, seat, amount int, reason string) (bool, []Event) {
+	evs, paid := e.charge(ns, seat, Bank, amount, reason, -1)
+	return paid, evs
+}
+
+func (e *Engine) collectFromEach(ns *State, evs []Event, seat, amount int) []Event {
+	for _, o := range ns.activeSeats() {
+		if o == seat {
+			continue
+		}
+		pay := amount
+		if ns.Players[o].Cash < pay {
+			pay = ns.Players[o].Cash
+		}
+		if pay <= 0 {
+			continue
+		}
+		ns.Players[o].Cash -= pay
+		ns.Players[seat].Cash += pay
+		evs = append(evs, e.emit(ns, EvRentPaid, RentPaidPayload{From: o, To: seat, Property: -1, Amount: pay}))
+	}
+	return evs
+}
+
+func (e *Engine) payEach(ns *State, evs []Event, seat, amount int) []Event {
+	others := 0
+	for _, o := range ns.activeSeats() {
+		if o != seat {
+			others++
+		}
+	}
+	total := amount * others
+	if ns.Players[seat].Cash >= total {
+		for _, o := range ns.activeSeats() {
+			if o == seat {
+				continue
+			}
+			ns.Players[seat].Cash -= amount
+			ns.Players[o].Cash += amount
+			evs = append(evs, e.emit(ns, EvRentPaid, RentPaidPayload{From: seat, To: o, Property: -1, Amount: amount}))
+		}
+		return evs
+	}
+	// Shortfall: route to a single bank debt (documented simplification).
+	ns.Debt = &Debt{Debtor: seat, Creditor: Bank, Amount: total, Property: -1, Reason: "card_pay_each"}
+	ns.Phase = PhaseResolveDebt
+	return evs
+}
+
+// settleDebt pays the open debt in full (the debtor is known to have the cash),
+// then resumes any pending continuation (a jail forced-move) or returns to manage.
+func (e *Engine) settleDebt(ns *State, evs []Event, seed []byte) []Event {
+	d := ns.Debt
+	payer := d.Debtor
+	ns.Players[payer].Cash -= d.Amount
+	if d.Creditor == Bank {
+		evs = append(evs, e.emit(ns, EvCashChanged, CashChangedPayload{Seat: payer, Delta: -d.Amount, Balance: ns.Players[payer].Cash, Reason: d.Reason}))
+		if e.cfg.FreeParkingPool && d.Reason == "tax" {
+			ns.FreeParkingPot += d.Amount
+		}
+	} else {
+		ns.Players[d.Creditor].Cash += d.Amount
+		evs = append(evs, e.emit(ns, EvRentPaid, RentPaidPayload{From: payer, To: d.Creditor, Property: d.Property, Amount: d.Amount}))
+	}
+	ns.Debt = nil
+	// Clear the (now-settled) debt phase BEFORE running any continuation, so
+	// resolveLanding starts from a clean phase and only re-enters resolve_debt if a
+	// brand-new charge cannot be met. Without this, a stale resolve_debt phase would
+	// survive a successful rent payment, leaving Phase=resolve_debt with a nil Debt.
+	ns.Phase = PhaseManage
+
+	if ns.PendingJailMove > 0 {
+		steps := ns.PendingJailMove
+		ns.PendingJailMove = 0
+		p := &ns.Players[payer]
+		p.InJail = false
+		p.JailTurns = 0
+		evs = append(evs, e.emit(ns, EvLeftJail, LeftJailPayload{Seat: payer, Method: "forced"}))
+		evs = e.moveBySteps(ns, evs, payer, steps)
+		evs = e.resolveLanding(ns, evs, seed) // sets manage / acquire / resolve_debt as appropriate
+		ns.Players[payer].Doubles = 0
+	}
+	return evs
+}
+
+// declareBankrupt liquidates the debtor: buildings are sold to the bank for half
+// value, then all cash + properties + jail cards transfer to the creditor (or, if
+// the creditor is the bank, properties return to the bank unimproved). The seat is
+// eliminated and the turn ends; the game ends if only one player remains.
+func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
+	d := ns.Debt
+	debtor := d.Debtor
+	creditor := d.Creditor
+	var evs []Event
+
+	// 1. Sell all buildings back to the bank for half value.
+	for idx := 0; idx < BoardSize; idx++ {
+		h := ns.Holdings[idx]
+		if h.Owner != debtor || h.Houses == 0 {
+			continue
+		}
+		sp := space(idx)
+		if h.Houses == 5 {
+			ns.HotelsRemaining++
+		} else {
+			ns.HousesRemaining += h.Houses
+		}
+		refund := (sp.HouseCost / 2) * h.Houses
+		ns.Players[debtor].Cash += refund
+		h.Houses = 0
+		ns.Holdings[idx] = h
+		if refund > 0 {
+			evs = append(evs, e.emit(ns, EvCashChanged, CashChangedPayload{Seat: debtor, Delta: refund, Balance: ns.Players[debtor].Cash, Reason: "liquidate"}))
+		}
+	}
+
+	// 2. Hand over remaining cash.
+	cash := ns.Players[debtor].Cash
+	ns.Players[debtor].Cash = 0
+	if creditor != Bank && cash > 0 {
+		ns.Players[creditor].Cash += cash
+		evs = append(evs, e.emit(ns, EvCashChanged, CashChangedPayload{Seat: creditor, Delta: cash, Balance: ns.Players[creditor].Cash, Reason: "bankruptcy_estate"}))
+	}
+
+	// 3. Transfer properties.
+	for idx := 0; idx < BoardSize; idx++ {
+		h := ns.Holdings[idx]
+		if h.Owner != debtor {
+			continue
+		}
+		if creditor != Bank {
+			h.Owner = creditor // mortgages carry to the new owner (no interest, by simplification)
+		} else {
+			h = Holding{Owner: Bank}
+		}
+		ns.Holdings[idx] = h
+	}
+
+	// 4. Jail cards and elimination.
+	if creditor != Bank {
+		ns.Players[creditor].JailCards += ns.Players[debtor].JailCards
+	}
+	ns.Players[debtor].JailCards = 0
+	ns.Players[debtor].Bankrupt = true
+	ns.Players[debtor].InJail = false
+	ns.Debt = nil
+	ns.PendingJailMove = 0
+	evs = append(evs, e.emit(ns, EvBankrupt, BankruptPayload{Seat: debtor, Creditor: creditor}))
+
+	if ns.activeCount() <= 1 {
+		return e.finish(ns, evs)
+	}
+	return e.endTurn(ns, evs, seed)
+}
+
+// ── Build / sell / mortgage ────────────────────────────────────────────────
+
+func (e *Engine) doBuild(ns *State, pos int) ([]Event, error) {
+	if pos < 0 || pos >= BoardSize {
+		return nil, ErrInvalidProperty
+	}
+	sp := space(pos)
+	h := ns.Holdings[pos]
+	seat := ns.Current
+	if sp.Kind != KindStreet || h.Owner != seat || h.Houses >= 5 {
+		return nil, ErrIllegalAction
+	}
+	if !ns.ownsFullGroup(seat, sp.Group) {
+		return nil, ErrIllegalAction
+	}
+	for _, idx := range groupMembers[sp.Group] {
+		if ns.Holdings[idx].Mortgaged {
+			return nil, ErrIllegalAction
+		}
+	}
+	if h.Houses != minHousesInGroup(ns, sp.Group) { // even-build rule
+		return nil, ErrIllegalAction
+	}
+	if h.Houses < 4 {
+		if ns.HousesRemaining <= 0 {
+			return nil, ErrIllegalAction
+		}
+	} else if ns.HotelsRemaining <= 0 {
+		return nil, ErrIllegalAction
+	}
+	if ns.Players[seat].Cash < sp.HouseCost {
+		return nil, ErrInsufficientFunds
+	}
+	ns.Players[seat].Cash -= sp.HouseCost
+	if h.Houses < 4 {
+		ns.HousesRemaining--
+	} else {
+		ns.HousesRemaining += 4 // four houses return to the bank when a hotel is built
+		ns.HotelsRemaining--
+	}
+	h.Houses++
+	ns.Holdings[pos] = h
+	return []Event{
+		e.emit(ns, EvCashChanged, CashChangedPayload{Seat: seat, Delta: -sp.HouseCost, Balance: ns.Players[seat].Cash, Reason: "build"}),
+		e.emit(ns, EvHouseBuilt, BuildPayload{Seat: seat, Property: pos, Houses: h.Houses}),
+	}, nil
+}
+
+func (e *Engine) doSellHouse(ns *State, pos int) ([]Event, error) {
+	if pos < 0 || pos >= BoardSize {
+		return nil, ErrInvalidProperty
+	}
+	sp := space(pos)
+	h := ns.Holdings[pos]
+	seat := ns.Current
+	if sp.Kind != KindStreet || h.Owner != seat || h.Houses == 0 {
+		return nil, ErrIllegalAction
+	}
+	if h.Houses != maxHousesInGroup(ns, sp.Group) { // even-sell rule
+		return nil, ErrIllegalAction
+	}
+	refund := sp.HouseCost / 2
+	if h.Houses == 5 {
+		if ns.HousesRemaining < 4 {
+			return nil, ErrIllegalAction // cannot break the hotel without four houses in the bank
+		}
+		ns.HousesRemaining -= 4
+		ns.HotelsRemaining++
+		h.Houses = 4
+	} else {
+		ns.HousesRemaining++
+		h.Houses--
+	}
+	ns.Holdings[pos] = h
+	ns.Players[seat].Cash += refund
+	return []Event{
+		e.emit(ns, EvCashChanged, CashChangedPayload{Seat: seat, Delta: refund, Balance: ns.Players[seat].Cash, Reason: "sell_house"}),
+		e.emit(ns, EvHouseSold, BuildPayload{Seat: seat, Property: pos, Houses: h.Houses}),
+	}, nil
+}
+
+func (e *Engine) doMortgage(ns *State, pos int) ([]Event, error) {
+	if pos < 0 || pos >= BoardSize {
+		return nil, ErrInvalidProperty
+	}
+	sp := space(pos)
+	h := ns.Holdings[pos]
+	seat := ns.Current
+	if !sp.Ownable() || h.Owner != seat || h.Mortgaged {
+		return nil, ErrIllegalAction
+	}
+	for _, idx := range groupMembers[sp.Group] { // no buildings anywhere in the group
+		if ns.Holdings[idx].Houses > 0 {
+			return nil, ErrIllegalAction
+		}
+	}
+	amt := sp.MortgageValue()
+	h.Mortgaged = true
+	ns.Holdings[pos] = h
+	ns.Players[seat].Cash += amt
+	return []Event{
+		e.emit(ns, EvCashChanged, CashChangedPayload{Seat: seat, Delta: amt, Balance: ns.Players[seat].Cash, Reason: "mortgage"}),
+		e.emit(ns, EvMortgaged, MortgagePayload{Seat: seat, Property: pos, Amount: amt}),
+	}, nil
+}
+
+func (e *Engine) doUnmortgage(ns *State, pos int) ([]Event, error) {
+	if pos < 0 || pos >= BoardSize {
+		return nil, ErrInvalidProperty
+	}
+	sp := space(pos)
+	h := ns.Holdings[pos]
+	seat := ns.Current
+	if !sp.Ownable() || h.Owner != seat || !h.Mortgaged {
+		return nil, ErrIllegalAction
+	}
+	base := sp.MortgageValue()
+	cost := base + (base+9)/10 // mortgage value + 10% interest, rounded up
+	if ns.Players[seat].Cash < cost {
+		return nil, ErrInsufficientFunds
+	}
+	h.Mortgaged = false
+	ns.Holdings[pos] = h
+	ns.Players[seat].Cash -= cost
+	return []Event{
+		e.emit(ns, EvCashChanged, CashChangedPayload{Seat: seat, Delta: -cost, Balance: ns.Players[seat].Cash, Reason: "unmortgage"}),
+		e.emit(ns, EvUnmortgaged, MortgagePayload{Seat: seat, Property: pos, Amount: cost}),
+	}, nil
+}
+
+// ── Turn lifecycle ─────────────────────────────────────────────────────────
+
+// endTurn closes the current turn: it re-rolls for the same player on doubles,
+// otherwise advances to the next solvent player. The turn cap ends the game.
+func (e *Engine) endTurn(ns *State, evs []Event, seed []byte) []Event {
+	cur := ns.Current
+	evs = append(evs, e.emit(ns, EvTurnEnded, TurnEndedPayload{Seat: cur}))
+
+	if ns.TurnCount >= e.cfg.MaxTurns {
+		return e.finish(ns, evs)
+	}
+
+	p := &ns.Players[cur]
+	if !p.Bankrupt && !p.InJail && p.Doubles > 0 && p.Doubles < 3 {
+		ns.Phase = PhaseRoll
+		return append(evs, e.emit(ns, EvTurnStarted, TurnStartedPayload{Seat: cur, TurnCount: ns.TurnCount}))
+	}
+
+	p.Doubles = 0
+	next := ns.nextActiveSeat(cur)
+	ns.Current = next
+	if ns.Players[next].InJail {
+		ns.Phase = PhaseJail
+	} else {
+		ns.Phase = PhaseRoll
+	}
+	return append(evs, e.emit(ns, EvTurnStarted, TurnStartedPayload{Seat: next, TurnCount: ns.TurnCount}))
+}
+
+// finish ends the match, ranking by survival then net worth.
+func (e *Engine) finish(ns *State, evs []Event) []Event {
+	ns.Finished = true
+	ns.Phase = PhaseGameOver
+	nets := make([]int, len(ns.Players))
+	for i := range ns.Players {
+		nets[i] = ns.NetWorth(i)
+	}
+	active := ns.activeSeats()
+	winner := Tie
+	if len(active) == 1 {
+		winner = active[0]
+	} else if len(active) > 1 {
+		best, bestNet, tie := -1, -1, false
+		for _, seat := range active {
+			switch {
+			case nets[seat] > bestNet:
+				best, bestNet, tie = seat, nets[seat], false
+			case nets[seat] == bestNet:
+				tie = true
+			}
+		}
+		if !tie {
+			winner = best
+		}
+	}
+	ns.Winner = winner
+	return append(evs, e.emit(ns, EvMatchFinished, MatchFinishedPayload{Winner: winner, NetWorths: nets}))
+}
+
+// ── Small helpers ──────────────────────────────────────────────────────────
+
+func minHousesInGroup(ns *State, group string) int {
+	min := 6
+	for _, idx := range groupMembers[group] {
+		if h := ns.Holdings[idx].Houses; h < min {
+			min = h
+		}
+	}
+	return min
+}
+
+func maxHousesInGroup(ns *State, group string) int {
+	max := 0
+	for _, idx := range groupMembers[group] {
+		if h := ns.Holdings[idx].Houses; h > max {
+			max = h
+		}
+	}
+	return max
+}
+
+func countTrue(bs []bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
+}

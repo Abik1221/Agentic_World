@@ -38,6 +38,9 @@ func New(l ledgerPort, repo Repo, clock platform.Clock, cfg Config, reg *prometh
 	if cfg.SessionWindow <= 0 {
 		cfg.SessionWindow = 6 * time.Hour
 	}
+	if cfg.CoinCents <= 0 {
+		cfg.CoinCents = 1
+	}
 	return &Service{ledger: l, repo: repo, clock: clock, cfg: cfg, gate: AllowAllGate{}, m: newMetrics(reg)}
 }
 
