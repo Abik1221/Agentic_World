@@ -24,6 +24,10 @@ type Repo interface {
 	RecentPairs(ctx context.Context, since time.Time, minGames int) ([]Pair, error)
 	AgentsWithSamples(ctx context.Context, min int) ([]string, error)
 	AgentTiming(ctx context.Context, agentPublicID string) (TimingStat, error)
+	// PairMoves returns the per-round revealed bids of every finished match between
+	// the two agents since `since` (for action-correlation), oriented so CardA is
+	// always agentA's card regardless of which seat it held in each match.
+	PairMoves(ctx context.Context, agentA, agentB string, since time.Time) ([]MoveSample, error)
 
 	// ── audit (append-only) ──
 	Audit(ctx context.Context, actor, action, target string, detail []byte) error

@@ -87,14 +87,14 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 	var stateBytes []byte
 	var deadline *time.Time
 	err := r.db.QueryRow(ctx,
-		`SELECT m.public_id, m.game, m.status, m.bid, m.rake_pct, m.total_rounds,
+		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
 		        COALESCE(m.state, '{}'::jsonb), m.round_deadline,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
-		Scan(&m.PublicID, &m.Game, &m.Status, &m.Bid, &m.RakePct, &m.TotalRounds,
+		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
 			&stateBytes, &deadline, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
@@ -158,8 +158,34 @@ func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner m
 	})
 }
 
-func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error {
+func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePairedInput) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
+			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
+			     state, round_deadline, started_at, creator_owner_user_id)
+			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,now(),
+			     (SELECT id FROM users WHERE public_id=$12))
+			 RETURNING id`,
+			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
+			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
+			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy).Scan(&matchID)
+		if err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatA); err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatB); err != nil {
+			return err
+		}
+		return insertEvents(ctx, tx, matchID, in.Events)
+	})
+}
+
+func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error {
+	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
 			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, updated_at=now()
@@ -173,9 +199,24 @@ func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.
 		}
 		return insertEvents(ctx, tx, matchID, events)
 	})
+	// A UNIQUE(match_id, seq) collision means another writer advanced this match
+	// first: optimistic-concurrency conflict, not a hard error. The service re-reads
+	// and retries (so correctness no longer depends on holding the Redis lock).
+	if isUniqueViolation(err) {
+		return match.ErrConcurrentUpdate
+	}
+	return err
 }
 
 func (r *MatchRepo) Finish(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event) error {
+	err := r.finishTx(ctx, matchPublicID, state, winnerAgentPublicID, replayHash, players, events)
+	if isUniqueViolation(err) {
+		return match.ErrConcurrentUpdate
+	}
+	return err
+}
+
+func (r *MatchRepo) finishTx(ctx context.Context, matchPublicID string, state gs.State, winnerAgentPublicID, replayHash string, players []match.Player, events []gs.Event) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,

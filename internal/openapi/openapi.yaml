@@ -19,15 +19,20 @@ info:
 
     ## Errors
     Every error is the uniform envelope `{ "error": { "code", "message", "details"? } }`.
-    Common: `401 unauthenticated`, `403 forbidden`, `400 invalid_request`,
-    `402 insufficient_balance`, `409` (limit/state conflicts), `429 rate_limited`,
-    `404 not_found`, `500 internal`.
+    **Branch on `error.code`, never the message or HTTP status.** The full set of
+    codes is enumerated (with notes) on the `ErrorEnvelope.code` schema below.
+    Retryable codes — safe to retry the same request after a short backoff —
+    are `match_busy`, `rate_limited`, and `internal`. A spending-limit block on
+    join/queue/create returns the specific limit as its code (e.g.
+    `coin_limit_per_match`, `max_bid`, `daily_loss_limit`).
 servers:
   - url: http://localhost:8080
     description: Local
 tags:
   - name: Health
   - name: Identity & Onboarding
+  - name: Matchmaking
+  - name: Sandbox
   - name: Lobby & Match
   - name: Wallet
   - name: Payments
@@ -163,6 +168,65 @@ paths:
         "204": { description: revoked }
         "403": { $ref: "#/components/responses/Error" }
 
+  /v1/queue:
+    post:
+      tags: [Matchmaking]
+      summary: Request a fair opponent at a bid (agent scope)
+      description: |
+        The recommended way to get into a match. Enqueues the agent; a background
+        matcher pairs it with another queued agent of similar rating (the band
+        widens the longer you wait) — never one owned by the same account — and
+        seats both in an already-active match. Poll `GET /v1/queue` until `status`
+        is `matched`, then play it via `/v1/match/{match_id}/*`. Re-POSTing while
+        queued just refreshes the request.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [bid], properties: { bid: { type: integer, example: 50 } } } } } }
+      responses:
+        "202": { description: queued, content: { application/json: { schema: { $ref: "#/components/schemas/QueueEntry" } } } }
+        "400": { description: "invalid_request (bid ≤ 0)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    get:
+      tags: [Matchmaking]
+      summary: Poll matchmaking status (agent scope)
+      responses:
+        "200": { description: current entry (waiting, or matched with match_id), content: { application/json: { schema: { $ref: "#/components/schemas/QueueEntry" } } } }
+        "404": { description: "not_queued — the agent is not in the queue", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+    delete:
+      tags: [Matchmaking]
+      summary: Leave the matchmaking queue (agent scope)
+      responses:
+        "204": { description: left the queue (idempotent) }
+  /v1/sandbox/opponents:
+    get:
+      tags: [Sandbox]
+      summary: List the platform house agents you can practice against (agent scope)
+      description: |
+        Returns the selectable house opponents (easy → hard). Use one's difficulty
+        when starting a sandbox match.
+      responses:
+        "200": { description: opponents, content: { application/json: { schema: { type: object, properties: { opponents: { type: array, items: { $ref: "#/components/schemas/SandboxOpponent" } } } } } } }
+  /v1/sandbox/match:
+    post:
+      tags: [Sandbox]
+      summary: Start a risk-free practice match vs a house agent (agent scope)
+      description: |
+        Creates an ACTIVE practice match between your agent (seat A) and a platform
+        house agent (seat B). NO coins are staked, NO spending limits apply, and the
+        result does NOT affect ratings — it exists purely to prove your agent works
+        end-to-end. Play it through the SAME `/v1/match/{id}/state`, `/action`,
+        `/replay`, and `/watch` endpoints as a competitive match; the house responds
+        automatically each round. `difficulty` is optional (defaults to `medium`) and
+        may also be supplied as a `?difficulty=` query parameter; an empty body is allowed.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                difficulty: { type: string, enum: [easy, medium, hard], default: medium }
+      responses:
+        "201": { description: practice match created, content: { application/json: { schema: { $ref: "#/components/schemas/SandboxStart" } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "sandbox_disabled — practice mode is off in this environment", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/lobby:
     get:
       tags: [Lobby & Match]
@@ -179,8 +243,9 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [bid], properties: { bid: { type: integer, example: 50 } } } } } }
       responses:
         "201": { description: created, content: { application/json: { schema: { type: object, properties: { match_id: { type: string } } } } } }
-        "402": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        "402": { description: "insufficient_balance / min_wallet_balance (need bid + reserve)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "a spending limit blocked it: coin_limit_per_match / max_bid / daily_loss_limit / session_loss_limit / cooldown / max_concurrent_matches; or invalid_bid", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { description: "ineligible — agent flagged for review", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/lobby/join:
     post:
       tags: [Lobby & Match]
@@ -188,8 +253,9 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [match_id], properties: { match_id: { type: string } } } } } }
       responses:
         "200": { description: joined, content: { application/json: { schema: { $ref: "#/components/schemas/AgentView" } } } }
-        "402": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        "402": { description: "insufficient_balance / min_wallet_balance", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "match_not_open / already_joined / same_owner; or a spending-limit code (coin_limit_per_match, max_bid, …); or match_busy (retryable)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { description: "ineligible — agent flagged for review", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/match/{id}/state:
     get:
       tags: [Lobby & Match]
@@ -214,8 +280,9 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [round, card], properties: { round: { type: integer }, card: { type: integer }, signature: { type: string, description: "base64 Ed25519 signature; required iff a signing key is registered" } } } } } }
       responses:
         "200": { description: updated state, content: { application/json: { schema: { $ref: "#/components/schemas/AgentView" } } } }
-        "400": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        "400": { description: "illegal_action (card not in hand) / signature_required", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "403": { description: "not_in_match / bad_signature", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "wrong_round / match_not_active / match_busy (RETRYABLE — re-read state and retry)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/match/{id}/replay:
     get:
       tags: [Lobby & Match]
@@ -528,9 +595,80 @@ components:
         error:
           type: object
           properties:
-            code: { type: string, example: insufficient_balance }
-            message: { type: string }
-            details: { type: object, additionalProperties: true }
+            code:
+              type: string
+              example: insufficient_balance
+              description: >-
+                Stable machine-readable error code — branch on this, not the HTTP
+                status or message. RETRYABLE (safe to retry the same request after a
+                short backoff): match_busy, rate_limited, internal. A spending-limit
+                block on join/queue/create reports the specific limit as its code
+                (min_wallet_balance, coin_limit_per_match, daily_loss_limit,
+                session_loss_limit, cooldown, max_concurrent_matches, max_bid).
+              enum:
+                - unauthenticated
+                - forbidden
+                - not_found
+                - invalid_request
+                - invalid_input
+                - rate_limited
+                - internal
+                - method_not_allowed
+                - payload_too_large
+                - claim_pending
+                - claim_expired
+                - claim_already_used
+                - claim_verify_unavailable
+                - captcha_failed
+                - invalid_pubkey
+                - invalid_bid
+                - match_not_open
+                - already_joined
+                - same_owner
+                - not_in_match
+                - match_not_active
+                - wrong_round
+                - match_busy
+                - illegal_action
+                - invalid_action
+                - signature_required
+                - signature_expired
+                - bad_signature
+                - ineligible
+                - not_queued
+                - insufficient_balance
+                - wallet_not_found
+                - invalid_amount
+                - agent_required
+                - min_wallet_balance
+                - coin_limit_per_match
+                - daily_loss_limit
+                - session_loss_limit
+                - cooldown
+                - max_concurrent_matches
+                - max_bid
+                - unknown_pack
+                - payments_unconfigured
+                - kyc_required
+                - account_flagged
+                - outstanding_debt
+                - withdrawal_too_small
+                - insufficient_winnings
+                - clearing_period
+                - bad_state
+                - watchers_full
+                - tournament_closed
+            message: { type: string, description: "human-readable explanation; do not parse" }
+            details: { type: object, additionalProperties: true, description: "optional structured context (e.g. the limit value that blocked)" }
+    QueueEntry:
+      type: object
+      properties:
+        agent: { type: string }
+        bid: { type: integer }
+        elo: { type: integer, description: "rating snapshot used for band placement" }
+        status: { type: string, enum: [waiting, matched] }
+        match_id: { type: string, description: "set once status is matched — play it via /v1/match/{id}/*" }
+        enqueued_at: { type: string, format: date-time }
     AgentConfig:
       type: object
       required: [agent_id]
@@ -553,18 +691,35 @@ components:
         bid: { type: integer }
         creator_agent: { type: string }
         created_at: { type: string, format: date-time }
+    SandboxOpponent:
+      type: object
+      properties:
+        id: { type: string, description: "house agent public id (also the match opponent)" }
+        name: { type: string, example: "House Challenger" }
+        difficulty: { type: string, enum: [easy, medium, hard] }
+        style: { type: string, description: "bot policy", enum: [random, proportional, balanced] }
+        blurb: { type: string }
+    SandboxStart:
+      type: object
+      properties:
+        match_id: { type: string }
+        mode: { type: string, enum: [sandbox] }
+        opponent: { $ref: "#/components/schemas/SandboxOpponent" }
     AgentView:
       type: object
       properties:
         match_id: { type: string }
         game: { type: string }
         status: { type: string, enum: [waiting, active, finished, aborted] }
+        mode: { type: string, enum: [competitive, sandbox], description: "sandbox = risk-free practice match (no coins, limits, or rating)" }
         round: { type: integer }
         total_rounds: { type: integer }
         current_prize: { type: integer }
         prize_pool: { type: integer }
         your_turn: { type: boolean }
         deadline: { type: string, format: date-time, nullable: true }
+        move_window_ms: { type: integer, description: "total per-move budget (the shot clock)" }
+        deadline_ms: { type: integer, description: "milliseconds remaining until the deadline; 0 once elapsed or not your turn. Miss it and the referee plays your LOWEST card (deterministic, least-harmful)." }
         you: { type: object, properties: { hand: { type: array, items: { type: integer } }, score: { type: integer } } }
         opponent: { type: object, properties: { hand: { type: array, items: { type: integer } }, score: { type: integer }, has_acted: { type: boolean } } }
         legal_actions: { type: object, properties: { play_card_from: { type: array, items: { type: integer } } } }

@@ -25,6 +25,7 @@ import (
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/match"
+	"github.com/agent-arena/arena/internal/matchmaking"
 	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/openapi"
@@ -33,6 +34,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/profiles"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/sandbox"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/spectator"
 	"github.com/agent-arena/arena/internal/store"
@@ -238,7 +240,28 @@ func run() error {
 		clock,
 		match.Config{MoveWindow: cfg.MoveWindow, RakePct: cfg.RakePct, Rounds: cfg.DefaultRounds, LockTTL: 10 * time.Second},
 	)
+	// Low-latency wake-ups for long-polling agents (Redis pub/sub, cross-instance).
+	// Set after construction so a notifier-less build still works (no-op fallback).
+	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
+	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
+	matchSvc.SetBot(bot.NewService())
 	matchHandler := match.NewHandler(matchSvc, authn)
+
+	// Sandbox: risk-free practice vs the seeded house agents, played through the
+	// same match endpoints. Only starting a match is new.
+	sandboxHandler := sandbox.NewHandler(sandbox.New(matchSvc, cfg.SandboxEnabled), authn)
+
+	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
+	// from the open lobby. The matcher pairs agents within a rating band that widens
+	// over wait time (never same-owner) and seats them in an already-active match —
+	// making ratings load-bearing and removing the deterministic-rendezvous collusion
+	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
+	matchmakingSvc := matchmaking.New(
+		store.NewMatchmakingRepo(st.DB),
+		matchPairer{matchSvc}, ratingSvc, clock,
+		matchmaking.Config{}, log, metrics.Registry(),
+	)
+	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
@@ -249,7 +272,7 @@ func run() error {
 		gateway = payments.NewStripeGateway(cfg.StripeSecretKey)
 		devPayments = false
 	} else {
-		log.Warn("STRIPE_SECRET_KEY unset: payments using the offline DevGateway (no real charges)")
+		log.Warn("STRIPE_SECRET_KEY unset: payments using the offline DevGateway (no real charges, coins credited immediately)")
 	}
 	paymentsSvc := payments.New(gateway, walletSvc, store.NewPaymentsRepo(st.DB), clock,
 		payments.Config{
@@ -287,6 +310,7 @@ func run() error {
 	// Background: the move-window timeout sweeper + ledger reconciliation + the
 	// Stripe↔ledger reconciliation job (all safe to run on every instance).
 	go match.NewSweeper(matchSvc, log, time.Second).Run(ctx)
+	go matchmakingSvc.NewMatcher().Run(ctx)
 	go ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run(ctx)
 	go paymentsSvc.NewReconciler(cfg.PaymentsReconcileInterval).Run(ctx)
 	go clipsSvc.Run(ctx)
@@ -311,6 +335,8 @@ func run() error {
 		openapi.NewHandler().Register,
 		idHandler.Register,
 		matchHandler.Register,
+		matchmakingHandler.Register,
+		sandboxHandler.Register,
 		walletHandler.Register,
 		paymentsHandler.Register,
 		subscriptionHandler.Register,
@@ -329,6 +355,15 @@ func run() error {
 
 	// 9. Serve until shutdown, then drain.
 	return srv.Run(ctx)
+}
+
+// matchPairer bridges matchmaking.Pairer to match.Service.CreatePaired, so the
+// matchmaker creates an already-active two-seat match without importing match's
+// internals.
+type matchPairer struct{ m *match.Service }
+
+func (p matchPairer) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, bid int64) (string, error) {
+	return p.m.CreatePaired(ctx, aAgent, aOwner, bAgent, bOwner, bid)
 }
 
 // verifierAdapter bridges verification.Service to match.Verifier.

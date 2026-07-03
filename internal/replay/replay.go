@@ -44,10 +44,7 @@ func Reconstruct(events []gs.Event) (Result, error) {
 			if err := remarshal(ev.Payload, &p); err != nil {
 				return Result{}, fmt.Errorf("seq %d: %w", ev.Seq, err)
 			}
-			res.Rounds = append(res.Rounds, gs.RoundResult{
-				Round: p.Round, Prize: p.Prize, PrizePool: p.PrizePool,
-				Cards: p.Cards, Winner: p.Winner, Scores: p.Scores,
-			})
+			res.Rounds = append(res.Rounds, gs.RoundResult(p))
 			res.Scores = p.Scores
 		case gs.EvMatchFinished:
 			var p gs.MatchFinishedPayload
@@ -142,10 +139,10 @@ func Verify(seed []byte, events []gs.Event) error {
 	return nil
 }
 
-// ReplayHash is a stable digest of the event log, independent of whether payloads
+// Hash is a stable digest of the event log, independent of whether payloads
 // are Go structs (in-memory) or maps (DB round-trip) — both canonicalize to the
 // same JSON. Stored on the match and re-checkable by anyone.
-func ReplayHash(events []gs.Event) (string, error) {
+func Hash(events []gs.Event) (string, error) {
 	h := sha256.New()
 	for _, ev := range events {
 		b, err := canonicalJSON(map[string]any{"seq": ev.Seq, "type": string(ev.Type), "payload": ev.Payload})

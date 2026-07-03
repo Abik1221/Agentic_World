@@ -47,6 +47,9 @@ type Config struct {
 	RakePct       int
 	DefaultRounds int
 
+	// Sandbox practice mode — risk-free matches vs the house agents.
+	SandboxEnabled bool
+
 	// Ratings (Stage 7)
 	RatingK      int           // ELO volatility factor
 	SeasonLength time.Duration // length of one ranked season
@@ -74,12 +77,12 @@ type Config struct {
 	AllowMint         bool          // enables the non-prod test mint endpoint
 
 	// Payments (Stage 5) — empty StripeSecretKey selects the offline DevGateway.
-	StripeSecretKey          string
-	StripeWebhookSecret      string
-	CheckoutSuccessURL       string
-	CheckoutCancelURL        string
-	ConnectReturnURL         string
-	ConnectRefreshURL        string
+	StripeSecretKey           string
+	StripeWebhookSecret       string
+	CheckoutSuccessURL        string
+	CheckoutCancelURL         string
+	ConnectReturnURL          string
+	ConnectRefreshURL         string
 	PaymentsReconcileInterval time.Duration
 
 	// Arena Pass subscription (Stripe Billing)
@@ -129,9 +132,10 @@ func Load() (*Config, error) {
 		HCaptchaSecret:    l.str("HCAPTCHA_SECRET", ""),
 		XBearerToken:      l.str("X_BEARER_TOKEN", ""),
 
-		MoveWindow:    time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
-		RakePct:       l.intVal("RAKE_PCT", 5),
-		DefaultRounds: l.intVal("DEFAULT_ROUNDS", 13),
+		MoveWindow:     time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
+		RakePct:        l.intVal("RAKE_PCT", 5),
+		DefaultRounds:  l.intVal("DEFAULT_ROUNDS", 13),
+		SandboxEnabled: l.boolVal("SANDBOX_ENABLED", true),
 
 		RatingK:      l.intVal("RATING_K", 32),
 		SeasonLength: l.dur("SEASON_LENGTH", 30*24*time.Hour),

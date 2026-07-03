@@ -11,7 +11,7 @@ import (
 // DevGateway implements Gateway without touching Stripe, so the full top-up and
 // onboarding flow runs offline in local/test. NEVER used in prod.
 type DevGateway struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	sessions []CheckoutRecord
 }
 
@@ -25,14 +25,14 @@ func (g *DevGateway) CreateCheckout(_ context.Context, p CheckoutParams) (Checko
 	return Checkout{ID: id, URL: p.SuccessURL + "?session_id=" + id}, nil
 }
 
-func (DevGateway) EnsureConnectAccount(_ context.Context, existingID, _ string) (string, error) {
+func (d *DevGateway) EnsureConnectAccount(_ context.Context, existingID, _ string) (string, error) {
 	if existingID != "" {
 		return existingID, nil
 	}
 	return platform.NewID("acct_dev"), nil
 }
 
-func (DevGateway) CreateOnboardingLink(_ context.Context, accountID, returnURL, _ string) (string, error) {
+func (d *DevGateway) CreateOnboardingLink(_ context.Context, accountID, returnURL, _ string) (string, error) {
 	return returnURL + "?onboarded=dev&account=" + accountID, nil
 }
 

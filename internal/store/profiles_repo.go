@@ -48,7 +48,7 @@ func (r *ProfilesRepo) Stats(ctx context.Context, agentPublicID string, season i
 func (r *ProfilesRepo) RecentMatches(ctx context.Context, agentPublicID string, season, limit int) ([]profiles.RecentMatch, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT m.public_id, COALESCE(mp.coins_delta, 0), COALESCE(mp.final_score, 0),
-		        COALESCE(opp_mp.final_score, 0), opp.public_id, COALESCE(re.elo, 1200), m.finished_at
+		        COALESCE(opp_mp.final_score, 0), opp.public_id, COALESCE(re.elo, 1500), m.finished_at
 		 FROM match_players mp
 		 JOIN matches m       ON m.id = mp.match_id
 		 JOIN match_players opp_mp ON opp_mp.match_id = m.id AND opp_mp.seat <> mp.seat

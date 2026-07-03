@@ -29,8 +29,8 @@ type Config struct {
 // Service orchestrates the payment flows over the Gateway, Coiner and Repo ports.
 type Service struct {
 	gw     Gateway
-	coiner Coiner
-	repo   Repo
+	Coiner Coiner // exported for dev testing endpoints
+	Repo   Repo   // exported for dev testing endpoints
 	hook   StripeEventHook
 	clock  platform.Clock
 	cfg    Config
@@ -59,7 +59,7 @@ func New(gw Gateway, coiner Coiner, repo Repo, clock platform.Clock, cfg Config,
 	for _, p := range cfg.Packs {
 		packs[p.Key] = p
 	}
-	return &Service{gw: gw, coiner: coiner, repo: repo, clock: clock, cfg: cfg, log: log, m: newMetrics(reg), packs: packs}
+	return &Service{gw: gw, Coiner: coiner, Repo: repo, clock: clock, cfg: cfg, log: log, m: newMetrics(reg), packs: packs}
 }
 
 // Packs returns the configured price list (for a public pack-listing endpoint).
@@ -82,7 +82,7 @@ func (s *Service) Topup(ctx context.Context, userPublicID, agentPublicID, packKe
 		return Checkout{}, ErrUnknownPack
 	}
 	if agentPublicID != "" {
-		owner, err := s.repo.OwnerOfAgent(ctx, agentPublicID)
+		owner, err := s.Repo.OwnerOfAgent(ctx, agentPublicID)
 		if err != nil {
 			return Checkout{}, httpx.ErrNotFound
 		}
@@ -111,19 +111,19 @@ func (s *Service) ConfirmDevCheckout(ctx context.Context, userPublicID, sessionI
 	if err == nil {
 		for _, rec := range recs {
 			if rec.SessionID == sessionID && rec.UserPublicID == userPublicID {
-				return s.coiner.Topup(ctx, userPublicID, rec.Coins, "topup:"+sessionID)
+				return s.Coiner.Topup(ctx, userPublicID, rec.Coins, "topup:"+sessionID)
 			}
 		}
 	}
 	// Fallback: parse coins from default starter pack for cs_dev sessions in local dev.
-	return s.coiner.Topup(ctx, userPublicID, 100, "topup:"+sessionID)
+	return s.Coiner.Topup(ctx, userPublicID, 100, "topup:"+sessionID)
 }
 
 // Onboard returns a Stripe Connect Express KYC link for the user, creating and
 // persisting a Connect account on first call. Payout EXECUTION stays gated behind
 // the Stage 4 validation gate — onboarding only collects KYC (Tier 2 groundwork).
 func (s *Service) Onboard(ctx context.Context, userPublicID string) (string, error) {
-	existing, err := s.repo.StripeConnectID(ctx, userPublicID)
+	existing, err := s.Repo.StripeConnectID(ctx, userPublicID)
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +132,7 @@ func (s *Service) Onboard(ctx context.Context, userPublicID string) (string, err
 		return "", err
 	}
 	if accountID != existing {
-		if err := s.repo.SetStripeConnectID(ctx, userPublicID, accountID); err != nil {
+		if err := s.Repo.SetStripeConnectID(ctx, userPublicID, accountID); err != nil {
 			return "", err
 		}
 	}
@@ -154,7 +154,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 		return httpx.ErrBadRequest
 	}
 	// Persist-first: the event is logged by id before we act on it.
-	alreadySeen, err := s.repo.InsertEvent(ctx, ev.ID, ev.Type, payload)
+	alreadySeen, err := s.Repo.InsertEvent(ctx, ev.ID, ev.Type, payload)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 			return err
 		}
 	}
-	return s.repo.MarkProcessed(ctx, ev.ID)
+	return s.Repo.MarkProcessed(ctx, ev.ID)
 }
 
 // process applies the coin effect of an event. Crediting is keyed by the Checkout
@@ -182,7 +182,7 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 			s.log.Warn("checkout completed without usable metadata; skipping", "event", ev.ID, "session", ev.ObjectID)
 			return nil
 		}
-		if err := s.coiner.Topup(ctx, ev.UserPublicID, ev.Coins, "topup:"+ev.ObjectID); err != nil {
+		if err := s.Coiner.Topup(ctx, ev.UserPublicID, ev.Coins, "topup:"+ev.ObjectID); err != nil {
 			return err
 		}
 		s.m.topups.Inc()
@@ -193,7 +193,10 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 		if ev.UserPublicID == "" || ev.Coins <= 0 {
 			return nil
 		}
-		return s.coiner.Reverse(ctx, ev.UserPublicID, ev.Coins, "reversal:"+ev.ID)
+		// Reverse recovers what the user still holds and books any shortfall as
+		// chargeback debt (wallet never goes negative); it self-handles the
+		// can't-fully-claw-back case, so there's no special error to branch on.
+		return s.Coiner.Reverse(ctx, ev.UserPublicID, ev.Coins, "reversal:"+ev.ID)
 
 	case EventPaymentSucceeded:
 		// Crediting happens on checkout.session.completed (same purchase, one key).
@@ -210,7 +213,7 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 func (s *Service) Reconcile(ctx context.Context) (int, error) {
 	reconciled := 0
 
-	stored, err := s.repo.UnprocessedEvents(ctx, 500)
+	stored, err := s.Repo.UnprocessedEvents(ctx, 500)
 	if err != nil {
 		return reconciled, err
 	}
@@ -224,7 +227,7 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 			s.log.Error("reconcile: reprocess failed", "event", se.ID, "error", err)
 			continue
 		}
-		if err := s.repo.MarkProcessed(ctx, ev.ID); err != nil {
+		if err := s.Repo.MarkProcessed(ctx, ev.ID); err != nil {
 			s.log.Error("reconcile: mark processed failed", "event", se.ID, "error", err)
 			continue
 		}
@@ -239,7 +242,8 @@ func (s *Service) Reconcile(ctx context.Context) (int, error) {
 		if rec.UserPublicID == "" || rec.Coins <= 0 {
 			continue
 		}
-		if err := s.coiner.Topup(ctx, rec.UserPublicID, rec.Coins, "topup:"+rec.SessionID); err != nil {
+		// Idempotent: a no-op if the webhook already credited this session.
+		if err := s.Coiner.Topup(ctx, rec.UserPublicID, rec.Coins, "topup:"+rec.SessionID); err != nil {
 			s.m.reconcileUnmatched.Inc()
 			s.log.Error("reconcile: credit failed for Stripe session", "session", rec.SessionID, "error", err)
 			continue

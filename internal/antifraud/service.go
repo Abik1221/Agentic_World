@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/platform"
@@ -150,7 +151,8 @@ func (s *Service) AgentTiming(ctx context.Context, agentPublicID string) (Timing
 
 // RunDetection is the periodic sweep: flag collusion rings and human-like agents.
 func (s *Service) RunDetection(ctx context.Context) error {
-	pairs, err := s.repo.RecentPairs(ctx, s.clock.Now().Add(-s.cfg.DetectLookback), s.cfg.CollusionMinGames)
+	since := s.clock.Now().Add(-s.cfg.DetectLookback)
+	pairs, err := s.repo.RecentPairs(ctx, since, s.cfg.CollusionMinGames)
 	if err != nil {
 		return err
 	}
@@ -161,6 +163,47 @@ func (s *Service) RunDetection(ctx context.Context) error {
 			s.m.flags.WithLabelValues("collusion").Inc()
 			s.audit(ctx, "system", "flag_collusion", p.A+"|"+p.B, map[string]any{"games": p.Games, "score": CollusionScore(p)})
 		}
+	}
+
+	// Ring detection: 3+ account funnels that each stay under the pairwise ban
+	// threshold. Conservative (2-core guard excludes a strong player's star), and
+	// like every flag here it drives a payout hold + human review, not an auto-ban.
+	for _, ring := range DetectRings(pairs) {
+		for _, ag := range ring.Agents {
+			_ = s.repo.RecordFlag(ctx, ag, "", "collusion_ring", "coin-funnel ring detected")
+		}
+		s.m.flags.WithLabelValues("collusion_ring").Inc()
+		s.audit(ctx, "system", "flag_collusion_ring", strings.Join(ring.Agents, "|"),
+			map[string]any{"sink": ring.Sink, "score": ring.Score, "size": len(ring.Agents)})
+	}
+
+	// Action-correlation: pairs that aren't lopsided enough for the outcome test to
+	// flag, but whose per-round bids are statistically dependent (high mutual
+	// information) — coordination in the *process*. Only runs on the suspicious
+	// sub-ban band; review-only, like every flag here.
+	for _, p := range pairs {
+		// Cheap result-band pre-filter (passing the sample floor isolates the
+		// win-rate test) so we only run the move query for genuinely suspicious pairs.
+		if !actionSuspect(p, actionMinSamples) {
+			continue
+		}
+		samples, err := s.repo.PairMoves(ctx, p.A, p.B, since)
+		if err != nil {
+			s.log.Error("antifraud: pair moves lookup failed", "a", p.A, "b", p.B, "error", err)
+			continue
+		}
+		if !actionSuspect(p, len(samples)) {
+			continue
+		}
+		mi := ActionMI(samples)
+		if mi < actionMIThreshold {
+			continue
+		}
+		_ = s.repo.RecordFlag(ctx, p.A, "", "collusion_action", "coordinated bidding (high move correlation)")
+		_ = s.repo.RecordFlag(ctx, p.B, "", "collusion_action", "coordinated bidding (high move correlation)")
+		s.m.flags.WithLabelValues("collusion_action").Inc()
+		s.audit(ctx, "system", "flag_collusion_action", p.A+"|"+p.B,
+			map[string]any{"mi": mi, "games": p.Games, "rounds": len(samples)})
 	}
 
 	agents, err := s.repo.AgentsWithSamples(ctx, minTimingSamples)

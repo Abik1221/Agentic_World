@@ -150,10 +150,15 @@ func (e *Engine) Resolve(s State) (State, []Event, error) {
 	return ns, evs, nil
 }
 
-// ForceTimeout plays a deterministic random legal card for a seat that missed its
-// window. Idempotent: if the seat already sealed, it is a no-op. The chosen card
-// is recorded through the normal Seal path, so replay reproduces it exactly.
-func (e *Engine) ForceTimeout(s State, seat int, rnd Rand) (State, []Event, error) {
+// ForceTimeout plays the deterministic, least-harmful card for a seat that missed
+// its window: its LOWEST card in hand. Conceding the current prize with your
+// weakest card is the minimal-damage forfeit (high cards are preserved for future
+// prizes), and being deterministic it is predictable and replay-reproducible — far
+// fairer to a timed-out agent (and far easier to defend in a money game) than a
+// random discard that might throw away a strong card. Idempotent: a no-op if the
+// seat already sealed. The card is recorded through the normal Seal path, so replay
+// reproduces it exactly.
+func (e *Engine) ForceTimeout(s State, seat int) (State, []Event, error) {
 	if s.Finished {
 		return s, nil, ErrFinished
 	}
@@ -167,7 +172,13 @@ func (e *Engine) ForceTimeout(s State, seat int, rnd Rand) (State, []Event, erro
 	if len(hand) == 0 {
 		return s, nil, ErrIllegalCard
 	}
-	return e.Seal(s, seat, hand[rnd.Intn(len(hand))])
+	low := hand[0]
+	for _, c := range hand[1:] {
+		if c < low {
+			low = c
+		}
+	}
+	return e.Seal(s, seat, low)
 }
 
 func finalWinner(scores [2]int) int {

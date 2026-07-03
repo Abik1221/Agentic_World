@@ -47,7 +47,7 @@ func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool
 		return false, err
 	}
 
-	// Ensure both rating rows exist (default 1200) before locking them.
+	// Ensure both rating rows exist (default 1500) before locking them.
 	for _, ag := range in.Agents {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO ratings (agent_id, season) SELECT id, $2 FROM agents WHERE public_id = $1
@@ -60,10 +60,10 @@ func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool
 	// matches that share an agent.
 	ids := []int64{idA, idB}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	elo := map[int64]int{}
+	pr := map[int64]rating.PlayerRating{}
 	streak := map[int64]int{}
 	rows, err := tx.Query(ctx,
-		`SELECT agent_id, elo, current_streak FROM ratings
+		`SELECT agent_id, elo, rd, vol, current_streak FROM ratings
 		 WHERE agent_id = ANY($1) AND season = $2 ORDER BY agent_id FOR UPDATE`, ids, in.Season)
 	if err != nil {
 		return false, err
@@ -71,18 +71,20 @@ func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool
 	for rows.Next() {
 		var id int64
 		var e, s int
-		if err := rows.Scan(&id, &e, &s); err != nil {
+		var rd, vol float64
+		if err := rows.Scan(&id, &e, &rd, &vol, &s); err != nil {
 			rows.Close()
 			return false, err
 		}
-		elo[id], streak[id] = e, s
+		pr[id] = rating.PlayerRating{Elo: e, RD: rd, Vol: vol}
+		streak[id] = s
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
 
-	newA, newB := in.Compute(elo[idA], elo[idB])
+	newA, newB := in.Compute(pr[idA], pr[idB])
 	if err := updateRating(ctx, tx, idA, in.Season, 0, in.WinnerSeat, newA, streak[idA], in.CoinsDelta[0]); err != nil {
 		return false, err
 	}
@@ -96,7 +98,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int)
 	rows, err := r.db.Query(ctx,
 		`SELECT a.public_id, a.slug, a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE r.season = $1
+		 WHERE r.season = $1 AND a.kind <> 'house'
 		 ORDER BY r.elo DESC, r.agent_id ASC
 		 LIMIT $2 OFFSET $3`, season, limit, offset)
 	if err != nil {
@@ -123,7 +125,7 @@ func resolveAgentID(ctx context.Context, tx pgx.Tx, agentPublicID string) (int64
 	return id, err
 }
 
-func updateRating(ctx context.Context, tx pgx.Tx, agentID int64, season, seat, winnerSeat, newElo, oldStreak int, coins int64) error {
+func updateRating(ctx context.Context, tx pgx.Tx, agentID int64, season, seat, winnerSeat int, nr rating.PlayerRating, oldStreak int, coins int64) error {
 	var w, l, t, streak int
 	switch {
 	case winnerSeat == rating.Tie:
@@ -135,10 +137,29 @@ func updateRating(ctx context.Context, tx pgx.Tx, agentID int64, season, seat, w
 	}
 	_, err := tx.Exec(ctx,
 		`UPDATE ratings
-		 SET elo = $3, wins = wins + $4, losses = losses + $5, ties = ties + $6,
-		     coins_earned = coins_earned + $7, current_streak = $8,
-		     best_streak = GREATEST(best_streak, $8), updated_at = now()
+		 SET elo = $3, rd = $4, vol = $5,
+		     wins = wins + $6, losses = losses + $7, ties = ties + $8,
+		     coins_earned = coins_earned + $9, current_streak = $10,
+		     best_streak = GREATEST(best_streak, $10), updated_at = now()
 		 WHERE agent_id = $1 AND season = $2`,
-		agentID, season, newElo, w, l, t, coins, streak)
+		agentID, season, nr.Elo, nr.RD, nr.Vol, w, l, t, coins, streak)
 	return err
+}
+
+// AgentElo returns the agent's rating for the season, defaulting to the 1500
+// Glicko-2 baseline when the agent has not yet been rated this season (so unrated
+// agents matchmake from the baseline rather than failing).
+func (r *RatingRepo) AgentElo(ctx context.Context, agentPublicID string, season int) (int, error) {
+	var elo int
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(
+		     (SELECT rt.elo FROM ratings rt
+		      JOIN agents a ON a.id = rt.agent_id
+		      WHERE a.public_id = $1 AND rt.season = $2),
+		     1500)`,
+		agentPublicID, season).Scan(&elo)
+	if err != nil {
+		return 1500, err
+	}
+	return elo, nil
 }
