@@ -61,16 +61,6 @@ func (m *Match) playerBySeat(seat int) *Player {
 	return nil
 }
 
-func (m *Match) aliveCount() int {
-	n := 0
-	for _, ok := range m.State.Alive {
-		if ok {
-			n++
-		}
-	}
-	return n
-}
-
 // LobbyItem summarizes an open Mafia table.
 type LobbyItem struct {
 	PublicID             string    `json:"match_id"`

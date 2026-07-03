@@ -59,15 +59,6 @@ func (m *Match) agentByAgentID(agent string) *Player {
 	return nil
 }
 
-func (m *Match) agentBySeat(seat int) *Player {
-	for i := range m.Agents {
-		if m.Agents[i].Seat == seat {
-			return &m.Agents[i]
-		}
-	}
-	return nil
-}
-
 // botSeats returns the set of seats controlled by server bots (every seat not
 // held by a real agent).
 func (m *Match) botSeats() map[int]bool {

@@ -44,10 +44,6 @@ func DevAgentName(i int) string {
 	return fmt.Sprintf("DEMO_%d", i+1)
 }
 
-func devSlug(i int) string { return fmt.Sprintf("demo-bot-%02d", i+1) }
-
-func devXUser(i int) string { return fmt.Sprintf("dev:demo:%02d", i+1) }
-
 // Unused but documents intent — agents are code-driven, not LLM-backed.
 const FrameworkLabel = "rules-engine"
 

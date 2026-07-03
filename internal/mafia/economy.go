@@ -74,11 +74,12 @@ func ComputeRewards(winner string, seats []SeatInfo, econ EconomySnapshot) []Rew
 			Seat: s.Seat, AgentPublicID: s.AgentPublicID, Team: s.Team,
 			Alive: s.Alive, OnWinningTeam: s.Team == winner,
 		}
-		if s.Team != winner {
+		switch {
+		case s.Team != winner:
 			row.Reason = "Losing team"
-		} else if !s.Alive {
+		case !s.Alive:
 			row.Reason = "Eliminated before victory"
-		} else {
+		default:
 			row.Eligible = true
 			row.Payout = share
 			row.Reason = "Winning team · survived"

@@ -314,10 +314,10 @@ func (e *Engine) stepJail(ns *State, a Action, seed []byte) ([]Event, error) {
 		_, cev := e.chargeBank(ns, seat, JailFine, "jail_fine")
 		p.InJail = false
 		p.JailTurns = 0
-		evs := append(cev, e.emit(ns, EvLeftJail, LeftJailPayload{Seat: seat, Method: "paid"}))
-		evs = append(evs, e.doRoll(ns, seed)...)
+		cev = append(cev, e.emit(ns, EvLeftJail, LeftJailPayload{Seat: seat, Method: "paid"}))
+		cev = append(cev, e.doRoll(ns, seed)...)
 		ns.Players[seat].Doubles = 0
-		return evs, nil
+		return cev, nil
 	case ActRollJail:
 		return e.doJailRoll(ns, seed), nil
 	default:

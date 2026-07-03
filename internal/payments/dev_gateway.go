@@ -39,10 +39,6 @@ func (d *DevGateway) CreateOnboardingLink(_ context.Context, accountID, returnUR
 func (g *DevGateway) ListRecentCheckouts(_ context.Context, since time.Time) ([]CheckoutRecord, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	var out []CheckoutRecord
-	for _, s := range g.sessions {
-		out = append(out, s)
-	}
 	_ = since
-	return out, nil
+	return append([]CheckoutRecord(nil), g.sessions...), nil
 }
