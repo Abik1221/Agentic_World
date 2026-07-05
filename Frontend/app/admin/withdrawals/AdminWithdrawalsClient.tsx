@@ -1,17 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
-import { Panel, Pill, SectionLabel, cx } from "@/components/ui";
 import { fmt } from "@/lib/mock";
-import {
-  approveWithdrawal,
-  fetchAdminWithdrawals,
-  rejectWithdrawal,
-  type AdminWithdrawal,
-} from "@/lib/api";
+import { approveWithdrawal, fetchAdminWithdrawals, rejectWithdrawal, type AdminWithdrawal } from "@/lib/api";
 import { getSession } from "@/lib/session";
+import { Badge, Button, Card, CardHeader, PageHeader } from "@/components/console/primitives";
+import { SectionTabs } from "@/components/console/SectionTabs";
 
 export function AdminWithdrawalsClient() {
   const [items, setItems] = useState<AdminWithdrawal[]>([]);
@@ -58,80 +52,65 @@ export function AdminWithdrawalsClient() {
   }
 
   return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
-        <SectionLabel className="mb-3 text-secondary">ADMIN</SectionLabel>
-        <h1 className="font-display text-3xl font-bold">Withdrawal approval queue</h1>
-        <p className="mt-2 max-w-xl text-ink-dim">
-          Review pending cash-out requests. Approve only after the anti-fraud clearing window elapses
-          and the agent is not flagged.
-        </p>
+    <div className="space-y-5">
+      <PageHeader
+        title="Withdrawal Queue"
+        subtitle="Review pending cash-outs · approve only after the anti-fraud clearing window elapses"
+      />
+      <SectionTabs />
 
-        {err && (
-          <Panel className="mt-6 border-status-error/40 p-4">
-            <p className="font-mono text-sm text-status-error">{err}</p>
-            <p className="mt-2 font-mono text-[11px] text-ink-faint">
-              Set your user id in backend <code>ADMIN_USER_IDS</code> and sign in with that dashboard token.
-            </p>
-          </Panel>
-        )}
+      {err && (
+        <Card className="border-danger/40 p-4">
+          <p className="font-mono text-sm text-danger">{err}</p>
+          <p className="mt-2 font-mono text-[11px] text-fg-muted">
+            Set your user id in backend <code className="text-fg">ADMIN_USER_IDS</code> and sign in with that dashboard token.
+          </p>
+        </Card>
+      )}
 
-        <Panel className="mt-8 overflow-x-auto p-0">
-          <table className="w-full min-w-[720px] font-mono text-[12px]">
+      <Card className="p-5">
+        <CardHeader title="Pending Requests" subtitle={`${items.length} awaiting review`} />
+        <div className="mt-3 overflow-x-auto rounded-lg border border-line">
+          <table className="w-full min-w-[760px] text-sm">
             <thead>
-              <tr className="border-b border-border-soft text-left text-ink-faint">
-                <th className="p-4">ID</th>
-                <th className="p-4">Agent</th>
-                <th className="p-4">Owner</th>
-                <th className="p-4">Coins</th>
-                <th className="p-4">Net</th>
-                <th className="p-4">Requested</th>
-                <th className="p-4">Clearing</th>
-                <th className="p-4">Actions</th>
+              <tr className="border-b border-line bg-panel-2/40 font-mono text-[10px] uppercase tracking-widest text-fg-muted">
+                <th className="px-4 py-2.5 text-left font-medium">ID</th>
+                <th className="px-4 py-2.5 text-left font-medium">Agent</th>
+                <th className="px-4 py-2.5 text-left font-medium">Owner</th>
+                <th className="px-4 py-2.5 text-right font-medium">Coins</th>
+                <th className="px-4 py-2.5 text-right font-medium">Net</th>
+                <th className="px-4 py-2.5 text-left font-medium">Requested</th>
+                <th className="px-4 py-2.5 text-left font-medium">Clearing</th>
+                <th className="px-4 py-2.5 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-8 text-center text-ink-faint">
+                  <td colSpan={8} className="px-4 py-10 text-center font-mono text-xs text-fg-muted">
                     {err ? "—" : "No pending withdrawals."}
                   </td>
                 </tr>
               ) : (
                 items.map((w) => (
-                  <tr key={w.withdrawal_id} className="border-b border-border-soft/50">
-                    <td className="p-4 text-ink-dim">{w.withdrawal_id.slice(0, 10)}…</td>
-                    <td className="p-4">{w.agent}</td>
-                    <td className="p-4">{w.owner}</td>
-                    <td className="p-4">{fmt(w.coins)}</td>
-                    <td className="p-4 text-primary">${(w.net_cents / 100).toFixed(2)}</td>
-                    <td className="p-4 text-ink-faint">{new Date(w.requested_at).toLocaleString()}</td>
-                    <td className="p-4">
-                      {w.can_approve ? (
-                        <Pill tone="teal">Ready</Pill>
-                      ) : (
-                        <span className="text-amber-400">
-                          {Math.ceil(w.clearing_wait_ms / 3600000)}h left
-                        </span>
-                      )}
+                  <tr key={w.withdrawal_id} className="border-b border-line/60 last:border-0">
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-fg-muted">{w.withdrawal_id.slice(0, 10)}…</td>
+                    <td className="px-4 py-2.5 text-fg">{w.agent}</td>
+                    <td className="px-4 py-2.5 text-fg-muted">{w.owner}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-fg">{fmt(w.coins)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-ok">${(w.net_cents / 100).toFixed(2)}</td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-fg-muted">{new Date(w.requested_at).toLocaleString()}</td>
+                    <td className="px-4 py-2.5">
+                      {w.can_approve ? <Badge tone="ok">Ready</Badge> : <span className="font-mono text-[11px] text-warn">{Math.ceil(w.clearing_wait_ms / 3600000)}h left</span>}
                     </td>
-                    <td className="p-4">
-                      <div className="flex gap-2">
-                        <button
-                          disabled={!w.can_approve || busy !== null}
-                          onClick={() => approve(w.withdrawal_id)}
-                          className="btn-primary px-3 py-1 text-[11px] disabled:opacity-40"
-                        >
+                    <td className="px-4 py-2.5">
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" disabled={!w.can_approve || busy !== null} onClick={() => approve(w.withdrawal_id)}>
                           Approve
-                        </button>
-                        <button
-                          disabled={busy !== null}
-                          onClick={() => reject(w.withdrawal_id)}
-                          className="btn-ghost px-3 py-1 text-[11px] disabled:opacity-40"
-                        >
+                        </Button>
+                        <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => reject(w.withdrawal_id)}>
                           Reject
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -139,9 +118,8 @@ export function AdminWithdrawalsClient() {
               )}
             </tbody>
           </table>
-        </Panel>
-      </div>
-      <Footer />
+        </div>
+      </Card>
     </div>
   );
 }

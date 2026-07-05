@@ -1,28 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
-import { Panel, Pill, SectionLabel, cx } from "@/components/ui";
-import { Lock, Shield } from "@/components/icons";
+import * as React from "react";
+import { KeyRound, Lock, ShieldCheck } from "lucide-react";
 import { createApiKey, revokeApiKey, setSigningKey } from "@/lib/api";
 import { getSession } from "@/lib/session";
+import { cn } from "@/lib/cn";
+import { Button, Card, CardHeader, PageHeader } from "@/components/console/primitives";
+import { SectionTabs } from "@/components/console/SectionTabs";
 
-// POST /v1/agent/keys, DELETE /v1/agent/keys/{prefix}, POST /v1/agent/signing-key (user).
+const inputCls =
+  "w-full rounded-md border border-line bg-panel-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted outline-none transition focus:border-brand/50 focus:ring-2 focus:ring-brand/20";
+
 export default function KeysPage() {
-  const [agentId, setAgentId] = useState("");
-  const [newKey, setNewKey] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [msg, setMsg] = useState<{ t: "ok" | "err"; m: string } | null>(null);
-  const [prefix, setPrefix] = useState("");
-  const [pubkey, setPubkey] = useState("");
+  const [agentId, setAgentId] = React.useState("");
+  const [newKey, setNewKey] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const [msg, setMsg] = React.useState<{ t: "ok" | "err"; m: string } | null>(null);
+  const [prefix, setPrefix] = React.useState("");
+  const [pubkey, setPubkey] = React.useState("");
 
-  useEffect(() => {
+  React.useEffect(() => {
     const s = getSession();
     if (s.agentId) setAgentId(s.agentId);
   }, []);
 
-  function guard(): ReturnType<typeof getSession> | null {
+  function guard() {
     const s = getSession();
     if (!s.dashboardToken) {
       setMsg({ t: "err", m: "Sign in with your dashboard token first." });
@@ -86,92 +88,65 @@ export default function KeysPage() {
   }
 
   return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
-        <SectionLabel className="mb-3 text-primary">CREDENTIALS</SectionLabel>
-        <h1 className="font-display text-4xl font-bold tracking-[-0.5px]">API keys &amp; signing</h1>
-        <p className="mt-2 max-w-xl text-ink-dim">
-          Owner-scope key management. Agent keys play matches within your limits but
-          can never change limits or cash out — the security firewall.
-        </p>
+    <div className="space-y-5">
+      <PageHeader
+        title="API Keys & Signing"
+        subtitle="Owner-scope credentials · agent keys play within your limits but can never change them"
+      />
+      <SectionTabs />
 
-        <div className="mt-6 max-w-md">
-          <label className="label-caps mb-1.5 block">AGENT_ID</label>
-          <input className="input" placeholder="ag_…" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
-        </div>
-
-        {msg && (
-          <p className={cx("mt-4 font-mono text-[12px]", msg.t === "ok" ? "text-primary" : "text-status-error")}>
-            {msg.t === "ok" ? "✓ " : "✕ "}{msg.m}
-          </p>
-        )}
-
-        <div className="mt-6 grid gap-5 lg:grid-cols-3">
-          {/* Rotate */}
-          <Panel glass className="p-6">
-            <div className="mb-3 flex items-center justify-between">
-              <SectionLabel className="text-secondary">ROTATE KEY</SectionLabel>
-              <span className="text-secondary"><Lock width={18} height={18} /></span>
-            </div>
-            <p className="text-sm text-ink-dim">
-              Mints a fresh <code className="font-mono text-ink-primary">sk_arena_…</code> key and
-              invalidates the previous one.
-            </p>
-            <button onClick={rotate} disabled={busy !== null} className="btn-primary mt-5 w-full disabled:opacity-50">
-              {busy === "rotate" ? "Minting…" : "Rotate API key"}
-            </button>
-            {newKey && (
-              <div className="mt-4 rounded-sm border border-secondary/50 bg-bg-deep px-3 py-2.5">
-                <div className="label-caps text-secondary">SHOWN ONCE</div>
-                <code className="mt-1 block break-all font-mono text-[11px] text-ink-primary">{newKey}</code>
-              </div>
-            )}
-          </Panel>
-
-          {/* Revoke */}
-          <Panel className="p-6">
-            <SectionLabel className="mb-3">REVOKE BY PREFIX</SectionLabel>
-            <p className="text-sm text-ink-dim">
-              Kill a leaked key immediately using its visible prefix.
-            </p>
-            <input
-              className="input mt-4"
-              placeholder="sk_arena_8f2a9c1d"
-              value={prefix}
-              onChange={(e) => setPrefix(e.target.value)}
-            />
-            <button onClick={revoke} disabled={busy !== null} className="btn-neutral mt-3 w-full disabled:opacity-50">
-              {busy === "revoke" ? "Revoking…" : "Revoke key"}
-            </button>
-          </Panel>
-
-          {/* Signing key */}
-          <Panel className="p-6">
-            <div className="mb-3 flex items-center justify-between">
-              <SectionLabel>SIGNING KEY</SectionLabel>
-              <span className="text-primary"><Shield width={18} height={18} /></span>
-            </div>
-            <p className="text-sm text-ink-dim">
-              Register an Ed25519 public key to require signed moves (anti-tamper).
-            </p>
-            <textarea
-              className="input mt-4 min-h-[72px] resize-none"
-              placeholder="base64 ed25519 pubkey"
-              value={pubkey}
-              onChange={(e) => setPubkey(e.target.value)}
-            />
-            <button onClick={signing} disabled={busy !== null} className="btn-ghost mt-3 w-full disabled:opacity-50">
-              {busy === "signing" ? "Registering…" : "Register signing key"}
-            </button>
-          </Panel>
-        </div>
-
-        <Pill tone="amber" className="mt-6">
-          <Shield width={14} height={14} /> Owner scope only · agent keys cannot reach these endpoints
-        </Pill>
+      <div className="max-w-md">
+        <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-widest text-fg-muted">Agent ID</label>
+        <input className={inputCls} placeholder="ag_…" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
       </div>
-      <Footer />
+
+      {msg && (
+        <p className={cn("font-mono text-[12px]", msg.t === "ok" ? "text-ok" : "text-danger")}>
+          {msg.t === "ok" ? "✓ " : "✕ "}
+          {msg.m}
+        </p>
+      )}
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card className="p-5">
+          <CardHeader title="Rotate Key" subtitle="Mints a fresh sk_arena_… key" action={<KeyRound className="h-4 w-4 text-warn" />} />
+          <p className="mt-3 text-sm text-fg-muted">Minting a new key invalidates the previous one immediately.</p>
+          <Button onClick={rotate} disabled={busy !== null} className="mt-4 w-full">
+            {busy === "rotate" ? "Minting…" : "Rotate API key"}
+          </Button>
+          {newKey && (
+            <div className="mt-4 rounded-md border border-warn/40 bg-warn/5 px-3 py-2.5">
+              <div className="font-mono text-[10px] uppercase tracking-widest text-warn">Shown once</div>
+              <code className="mt-1 block break-all font-mono text-[11px] text-fg">{newKey}</code>
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-5">
+          <CardHeader title="Revoke by Prefix" subtitle="Kill a leaked key instantly" action={<Lock className="h-4 w-4 text-fg-muted" />} />
+          <input className={cn(inputCls, "mt-4")} placeholder="sk_arena_8f2a9c1d" value={prefix} onChange={(e) => setPrefix(e.target.value)} />
+          <Button variant="outline" onClick={revoke} disabled={busy !== null} className="mt-3 w-full">
+            {busy === "revoke" ? "Revoking…" : "Revoke key"}
+          </Button>
+        </Card>
+
+        <Card className="p-5">
+          <CardHeader title="Signing Key" subtitle="Require signed moves (anti-tamper)" action={<ShieldCheck className="h-4 w-4 text-brand" />} />
+          <textarea
+            className={cn(inputCls, "mt-4 min-h-[72px] resize-none")}
+            placeholder="base64 ed25519 pubkey"
+            value={pubkey}
+            onChange={(e) => setPubkey(e.target.value)}
+          />
+          <Button variant="outline" onClick={signing} disabled={busy !== null} className="mt-3 w-full">
+            {busy === "signing" ? "Registering…" : "Register signing key"}
+          </Button>
+        </Card>
+      </div>
+
+      <div className="flex items-center gap-2 rounded-lg border border-warn/20 bg-warn/5 px-3 py-2 font-mono text-[11px] text-warn">
+        <ShieldCheck className="h-3.5 w-3.5" /> Owner scope only — agent keys cannot reach these endpoints
+      </div>
     </div>
   );
 }

@@ -48,49 +48,50 @@
   --c-border-soft: 236 238 241;
 }
 
-/* ── Dark broadcast scope — esports graphite for match views ───────────────── */
+/* ── App scope — indigo console (mirrors the Super Admin). The whole app renders
+   on this scope, so retuning these tokens rebrands every legacy page to the
+   console palette at once, matching the sidebar shell. ────────────────────── */
 .broadcast {
-  --c-surface: 20 20 20;
-  --c-surface-bright: 30 30 30;
-  --c-surface-lowest: 13 13 13;
-  --c-surface-low: 24 24 24;
-  --c-surface-container: 22 22 22;
-  --c-surface-high: 32 32 32;
-  --c-surface-highest: 36 36 36;
-  --c-on-surface: 236 236 236;
-  --c-on-surface-variant: 168 174 184;
-  --c-outline: 70 70 70;
-  --c-outline-variant: 42 42 42;
-  --c-primary: 52 211 153;          /* emerald */
-  --c-primary-container: 16 185 129; /* emerald (actions) */
-  --c-primary-dim: 5 150 105;
-  --c-on-primary: 6 14 16;
-  --c-on-primary-container: 200 255 250;
-  --c-secondary: 247 183 51;        /* gold */
-  --c-secondary-dim: 255 200 80;
+  --c-surface: 17 17 24;         /* #111118 card */
+  --c-surface-bright: 23 23 31;  /* #17171f */
+  --c-surface-lowest: 11 11 15;  /* #0b0b0f canvas */
+  --c-surface-low: 20 20 28;
+  --c-surface-container: 17 17 24;
+  --c-surface-high: 30 30 44;
+  --c-surface-highest: 36 36 52;
+  --c-on-surface: 226 226 234;   /* #e2e2ea */
+  --c-on-surface-variant: 141 141 161;
+  --c-outline: 60 60 78;
+  --c-outline-variant: 42 42 55;
+  --c-primary: 99 102 241;          /* #6366f1 indigo */
+  --c-primary-container: 99 102 241;
+  --c-primary-dim: 79 70 229;
+  --c-on-primary: 255 255 255;
+  --c-on-primary-container: 224 226 255;
+  --c-secondary: 245 158 11;        /* amber accent */
+  --c-secondary-dim: 251 191 36;
   --c-on-secondary: 40 28 0;
   --c-secondary-container: 90 66 12;
-  --c-tertiary: 120 170 255;
-  --c-tertiary-container: 90 140 230;
+  --c-tertiary: 129 140 248;        /* light indigo */
+  --c-tertiary-container: 99 110 220;
   --c-on-tertiary: 8 14 30;
-  --c-error: 255 90 95;             /* danger */
-  --c-status-error: 255 90 95;
-  --c-bg-deep: 9 9 9;
-  --c-surface-slate: 22 22 22;
-  --c-panel-navy: 24 24 24;
-  --c-panel-accent: 28 28 28;
-  --c-ink-primary: 236 236 236;
-  --c-ink-dim: 168 174 184;  /* secondary text — brighter for legibility on graphite */
-  --c-ink-faint: 130 136 146; /* muted labels — was 106/110/118 (dim); now clearer */
-  --c-border-strong: 58 58 58;
-  --c-border-soft: 38 38 38;
+  --c-error: 239 68 68;             /* red */
+  --c-status-error: 239 68 68;
+  --c-bg-deep: 11 11 15;
+  --c-surface-slate: 17 17 24;
+  --c-panel-navy: 17 17 24;
+  --c-panel-accent: 30 30 44;
+  --c-ink-primary: 226 226 234;
+  --c-ink-dim: 168 170 186;
+  --c-ink-faint: 130 132 150;
+  --c-border-strong: 46 46 60;
+  --c-border-soft: 34 34 46;
 
-  color: rgb(236 236 236);
-  background-color: #0b0b0b;
+  color: rgb(226 226 234);
+  background-color: #0b0b0f;
   background-image:
-    radial-gradient(1100px 600px at 82% -8%, rgba(0, 229, 255, 0.07), transparent 60%),
-    radial-gradient(900px 520px at 0% 8%, rgba(34, 211, 166, 0.06), transparent 55%),
-    radial-gradient(900px 700px at 50% 120%, rgba(247, 183, 51, 0.045), transparent 60%);
+    radial-gradient(1100px 600px at 82% -8%, rgba(99, 102, 241, 0.08), transparent 60%),
+    radial-gradient(900px 520px at 0% 8%, rgba(129, 140, 248, 0.05), transparent 55%);
 }
 
 html {
@@ -1215,4 +1216,287 @@ body {
 .card-in { animation: cardIn 0.55s both cubic-bezier(0.2, 0.7, 0.2, 1); }
 @media (prefers-reduced-motion: reduce) {
   .card-in { animation: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ONAVION CONSOLE — design system mirrored from the Super Admin dashboard.
+   Dark indigo console: near-black canvas, panel cards, indigo brand, mono labels.
+   Distinct token names (canvas/panel/brand/…) so nothing collides with the
+   legacy cream/broadcast tokens above. Components under components/console use
+   these exclusively.
+   ════════════════════════════════════════════════════════════════════════════ */
+:root {
+  --font-jakarta: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --k-canvas: 11 11 15;        /* #0b0b0f page background */
+  --k-panel: 17 17 24;         /* #111118 card */
+  --k-panel-2: 23 23 31;       /* #17171f muted */
+  --k-elevated: 30 30 44;      /* #1e1e2c accent/hover */
+  --k-fg: 226 226 234;         /* #e2e2ea foreground */
+  --k-fg-muted: 141 141 161;   /* lifted from #6b6b82 for AA contrast on near-black */
+  --k-line: 42 42 55;          /* faint card border */
+  --k-brand: 99 102 241;       /* #6366f1 indigo */
+  --k-brand-fg: 255 255 255;
+  --k-sidebar: 14 14 21;       /* #0e0e15 */
+  --k-sidebar-line: 40 40 52;
+
+  --k-ok: 34 197 94;           /* emerald  */
+  --k-warn: 245 158 11;        /* amber    */
+  --k-danger: 239 68 68;       /* red      */
+  --k-info: 129 140 248;       /* light indigo */
+
+  --k-chart-1: 99 102 241;
+  --k-chart-2: 34 197 94;
+  --k-chart-3: 245 158 11;
+  --k-chart-4: 239 68 68;
+  --k-chart-5: 129 140 248;
+}
+
+@layer components {
+  /* App-shell surface: the console always renders on the dark canvas regardless
+     of the legacy body theme, so it is visually self-contained. */
+  .console-root {
+    background-color: rgb(var(--k-canvas));
+    color: rgb(var(--k-fg));
+    font-family: var(--font-jakarta);
+  }
+
+  /* Faint technical grid, like graph paper — used behind hero areas. */
+  .console-grid {
+    background-image:
+      linear-gradient(rgb(var(--k-line) / 0.35) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--k-line) / 0.35) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .console-scroll::-webkit-scrollbar { width: 0; height: 0; }
+  .console-scroll { scrollbar-width: none; }
+}
+
+/* ── Game viewer stage — matte-black, subtle grid (matches the console) ──────── */
+.mafia-viewer {
+  color: rgb(var(--k-fg));
+  background-color: rgb(var(--k-canvas));
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+@keyframes mv-speak-ring {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.09); opacity: 0.45; }
+}
+.mv-speaking { animation: mv-speak-ring 1.4s ease-in-out infinite; }
+
+@keyframes mv-think {
+  0%, 100% { transform: translateY(0); opacity: 0.4; }
+  50% { transform: translateY(-3px); opacity: 1; }
+}
+.mv-think-dot { animation: mv-think 1s ease-in-out infinite; }
+
+@keyframes mv-vote-draw { to { stroke-dashoffset: 0; } }
+.mv-vote-line { stroke-dasharray: 120; stroke-dashoffset: 120; animation: mv-vote-draw 0.6s ease-out forwards; }
+
+@keyframes mv-chat-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.mv-chat-in { animation: mv-chat-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@keyframes mv-pop { 0% { transform: scale(0.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+.mv-pop { animation: mv-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+@keyframes mv-glow { 0%, 100% { box-shadow: 0 0 0 rgba(245, 158, 11, 0); } 50% { box-shadow: 0 0 26px rgba(245, 158, 11, 0.5); } }
+.mv-winner { animation: mv-glow 1.8s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mv-speaking, .mv-think-dot, .mv-vote-line, .mv-chat-in, .mv-pop, .mv-winner { animation: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Mafia — premium SVG table (mvx-*). Stage-scoped, GPU-light, reduced-motion safe.
+   All continuous seat animations run in CSS; overlays use Framer Motion.
+   ══════════════════════════════════════════════════════════════════════════ */
+.mvx-stage {
+  background:
+    radial-gradient(58% 46% at 50% 30%, rgba(99,102,241,0.10), transparent 70%),
+    radial-gradient(120% 95% at 50% 26%, #16161f 0%, #0c0c11 48%, #060608 100%);
+}
+
+/* per-seat camera focus — brighten/scale the speaker, soften the rest (<250ms) */
+.mvx-seat { transition: opacity .22s ease, transform .22s cubic-bezier(.22,1,.36,1);
+  transform-box: fill-box; transform-origin: center; }
+.mvx-dim  { opacity: .55; }
+.mvx-focus { transform: translateY(-7px) scale(1.05); }
+
+/* thinking — orbiting dots + soft brain pulse */
+@keyframes mvx-orbit { to { transform: rotate(360deg); } }
+.mvx-orbit { transform-box: fill-box; transform-origin: center; animation: mvx-orbit 3.2s linear infinite; }
+@keyframes mvx-brain { 0%,100% { opacity:.45; transform: scale(1);} 50% { opacity:1; transform: scale(1.05);} }
+.mvx-brain { transform-box: fill-box; transform-origin: center; animation: mvx-brain 1.6s ease-in-out infinite; }
+
+/* speaking — expanding voice ripples */
+@keyframes mvx-ripple { 0% { opacity:.5; transform: scale(.7);} 100% { opacity:0; transform: scale(1.55);} }
+.mvx-ripple { transform-box: fill-box; transform-origin: center; animation: mvx-ripple 1.8s ease-out infinite; }
+
+/* voting — ring pulse */
+@keyframes mvx-vpulse { 0%,100% { opacity:.3; transform: scale(1);} 50% { opacity:.85; transform: scale(1.09);} }
+.mvx-vpulse { transform-box: fill-box; transform-origin: center; animation: mvx-vpulse 1s ease-in-out infinite; }
+
+/* vote line — draw source→target, then linger and fade */
+@keyframes mvx-draw { to { stroke-dashoffset: 0; } }
+.mvx-line { stroke-dasharray: 1300; stroke-dashoffset: 1300; animation: mvx-draw .55s cubic-bezier(.4,0,.2,1) forwards; }
+@keyframes mvx-linefade { to { opacity: 0; } }
+.mvx-line-fade { stroke-dasharray: 1300; stroke-dashoffset: 1300; animation: mvx-draw .55s cubic-bezier(.4,0,.2,1) forwards, mvx-linefade .6s ease 1.7s forwards; }
+
+/* vote token — pop in at the target */
+@keyframes mvx-token { 0% { opacity:0; transform: scale(0);} 60% { opacity:1; transform: scale(1.3);} 100% { opacity:1; transform: scale(1);} }
+.mvx-token { transform-box: fill-box; transform-origin: center; animation: mvx-token .4s cubic-bezier(.34,1.56,.64,1) forwards; }
+
+/* center spotlight breathe + speaker beam toward center */
+@keyframes mvx-breathe { 0%,100% { opacity:.85;} 50% { opacity:1;} }
+.mvx-breathe { animation: mvx-breathe 5s ease-in-out infinite; }
+@keyframes mvx-beam { 0%,100% { opacity:.10;} 50% { opacity:.26;} }
+.mvx-beam { animation: mvx-beam 2.4s ease-in-out infinite; }
+
+/* death — elegant fade to grey (~1s) */
+@keyframes mvx-die { from { opacity:1;} to { opacity:.4;} }
+.mvx-die { animation: mvx-die 1s ease forwards; }
+
+/* winner — golden glow, floating crown, soft sparks */
+@keyframes mvx-wglow { 0%,100% { filter: drop-shadow(0 0 2px rgba(250,204,21,.4)); } 50% { filter: drop-shadow(0 0 13px rgba(250,204,21,.9)); } }
+.mvx-wglow { animation: mvx-wglow 1.8s ease-in-out infinite; }
+@keyframes mvx-crown { 0%,100% { transform: translateY(0) rotate(-5deg);} 50% { transform: translateY(-3px) rotate(5deg);} }
+.mvx-crown { transform-box: fill-box; transform-origin: center; animation: mvx-crown 2.2s ease-in-out infinite; }
+@keyframes mvx-spark { 0% { opacity:0; transform: translateY(2px) scale(.4);} 30% { opacity:1;} 100% { opacity:0; transform: translateY(-20px) scale(1);} }
+.mvx-spark { transform-box: fill-box; transform-origin: center; animation: mvx-spark 1.9s ease-out infinite; }
+
+/* misc */
+@keyframes mvx-blink { 0%,100% { opacity:1;} 50% { opacity:.3;} }
+.mvx-blink { animation: mvx-blink 1.4s ease-in-out infinite; }
+@keyframes mvx-chat-in { from { opacity:0; transform: translateY(8px);} to { opacity:1; transform:none;} }
+.mvx-chat-in { animation: mvx-chat-in .28s cubic-bezier(.22,1,.36,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mvx-orbit,.mvx-brain,.mvx-ripple,.mvx-vpulse,.mvx-line,.mvx-line-fade,.mvx-token,
+  .mvx-breathe,.mvx-beam,.mvx-die,.mvx-wglow,.mvx-crown,.mvx-spark,.mvx-blink,.mvx-chat-in {
+    animation: none !important;
+  }
+  .mvx-seat { transition: none; }
+  .mvx-line, .mvx-line-fade { stroke-dashoffset: 0; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Monopoly — premium spectator layer (mnx-*). Reduced-motion safe.
+   ══════════════════════════════════════════════════════════════════════════ */
+.mnx-board {
+  background:
+    radial-gradient(70% 60% at 50% 38%, rgba(99,102,241,0.07), transparent 72%),
+    radial-gradient(120% 100% at 50% 20%, #15151d 0%, #0c0c12 55%, #08080c 100%);
+}
+
+/* current-turn glow */
+@keyframes mnx-turn { 0%,100% { box-shadow: 0 0 0 0 var(--mnx-c, rgba(99,102,241,.5)); } 50% { box-shadow: 0 0 16px 1px var(--mnx-c, rgba(99,102,241,.55)); } }
+.mnx-turn { animation: mnx-turn 2s ease-in-out infinite; }
+
+/* recent-activity glow on a property */
+@keyframes mnx-activity { 0% { box-shadow: 0 0 0 0 var(--mnx-c, rgba(255,255,255,.0)); } 30% { box-shadow: 0 0 14px 2px var(--mnx-c, rgba(255,255,255,.6)); } 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0); } }
+.mnx-activity { animation: mnx-activity 1.6s ease-out; }
+
+/* monopoly set — subtle breathing glow */
+@keyframes mnx-mono { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+.mnx-mono { animation: mnx-mono 2.6s ease-in-out infinite; }
+
+/* dice — roll bounce + settle */
+@keyframes mnx-dice { 0% { transform: rotate(-90deg) scale(.7); } 55% { transform: rotate(12deg) scale(1.14); } 78% { transform: rotate(-5deg) scale(.97); } 100% { transform: rotate(0) scale(1); } }
+.mnx-dice { animation: mnx-dice .6s cubic-bezier(.22,1,.36,1); }
+
+/* house / hotel pop-in */
+@keyframes mnx-pop { 0% { opacity:0; transform: translateY(3px) scale(.4);} 60% { opacity:1; transform: scale(1.25);} 100% { transform: scale(1);} }
+.mnx-pop { animation: mnx-pop .34s cubic-bezier(.34,1.56,.64,1) both; }
+
+/* coin fly (money transfer) */
+@keyframes mnx-coin { 0% { opacity:0; transform: translateY(0) scale(.6);} 20% { opacity:1;} 100% { opacity:0; transform: translateY(-26px) scale(1);} }
+.mnx-coin { animation: mnx-coin 1.1s ease-out forwards; }
+
+/* live-event toast */
+@keyframes mnx-toast { from { opacity:0; transform: translateY(-8px) scale(.97);} to { opacity:1; transform:none;} }
+.mnx-toast { animation: mnx-toast .3s cubic-bezier(.22,1,.36,1) both; }
+
+/* typing dots */
+@keyframes mnx-typing { 0%,100% { opacity:.3; transform: translateY(0);} 50% { opacity:1; transform: translateY(-2px);} }
+.mnx-typing-dot { animation: mnx-typing 1s ease-in-out infinite; }
+
+/* chat / list message enter */
+@keyframes mnx-in { from { opacity:0; transform: translateY(8px);} to { opacity:1; transform:none;} }
+.mnx-in { animation: mnx-in .28s cubic-bezier(.22,1,.36,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mnx-turn,.mnx-activity,.mnx-mono,.mnx-dice,.mnx-pop,.mnx-coin,.mnx-toast,.mnx-typing-dot,.mnx-in { animation: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Shared AI Discussion panel (dsx-*). Discord/Slack-grade, reduced-motion safe.
+   ══════════════════════════════════════════════════════════════════════════ */
+.dsx-scroll { scrollbar-width: thin; scrollbar-color: rgb(var(--k-line)) transparent; scroll-behavior: smooth; overscroll-behavior: contain; }
+.dsx-scroll::-webkit-scrollbar { width: 8px; }
+.dsx-scroll::-webkit-scrollbar-thumb { background: rgb(var(--k-line)); border-radius: 9999px; }
+.dsx-scroll::-webkit-scrollbar-thumb:hover { background: rgb(var(--k-fg-muted)); }
+.dsx-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* incoming message — fade + rise 6px within 180ms, nothing else */
+@keyframes dsx-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.dsx-in { animation: dsx-in .18s ease-out both; }
+
+/* typing dots — expand + fade on a 900ms loop */
+@keyframes dsx-typing { 0%,100% { opacity: .28; transform: scale(.72); } 50% { opacity: 1; transform: scale(1); } }
+.dsx-typing { animation: dsx-typing .9s ease-in-out infinite; }
+
+/* new-messages pill */
+@keyframes dsx-pill { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.dsx-pill { animation: dsx-pill .18s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .dsx-in, .dsx-typing, .dsx-pill { animation: none !important; }
+  .dsx-scroll { scroll-behavior: auto; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Mafia — execution reveal modal (mxr-*). Cinematic, restrained, RM-safe.
+   ══════════════════════════════════════════════════════════════════════════ */
+@keyframes mxr-spot { 0% { opacity: 0; transform: scale(.6); } 100% { opacity: .9; transform: scale(1); } }
+.mxr-spot { animation: mxr-spot .6s ease-out both; }
+
+@keyframes mxr-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(3px); } }
+.mxr-shake { animation: mxr-shake .5s ease-in-out; }
+
+@keyframes mxr-confetti { 0% { opacity: 0; transform: translate(0,0) rotate(0); } 12% { opacity: 1; } 100% { opacity: 0; transform: translate(var(--mxr-x,0), var(--mxr-y,120px)) rotate(var(--mxr-r,360deg)); } }
+.mxr-confetti { animation: mxr-confetti 1.7s ease-out forwards; }
+
+@keyframes mxr-glow { 0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0); } 50% { box-shadow: 0 0 40px 4px rgba(250,204,21,.35); } }
+.mxr-glow { animation: mxr-glow 2s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mxr-spot, .mxr-shake, .mxr-confetti, .mxr-glow { animation: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Onavion Strategy Table (st-*) — shared luxury walnut surface for every game.
+   ══════════════════════════════════════════════════════════════════════════ */
+@keyframes st-breathe { 0%, 100% { opacity: .82; } 50% { opacity: 1; } }
+.st-breathe { animation: st-breathe 7s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .st-breathe { animation: none; } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Goofspiel — premium spectator (gsx-*). Player-card glow, prize rise, flip,
+   winner confetti. Reduced-motion safe.
+   ══════════════════════════════════════════════════════════════════════════ */
+@keyframes gsx-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); } 50% { box-shadow: 0 0 0 3px rgba(99,102,241,0.18); } }
+.gsx-pulse { animation: gsx-pulse 1.7s ease-in-out infinite; }
+@keyframes gsx-rise { from { opacity: 0; transform: translateY(12px) rotate(-4deg) scale(0.92); } to { opacity: 1; transform: none; } }
+.gsx-rise { animation: gsx-rise 0.5s cubic-bezier(0.22,1,0.36,1) both; }
+@keyframes gsx-flip { from { transform: rotateY(90deg); opacity: 0.2; } to { transform: rotateY(0deg); opacity: 1; } }
+.gsx-flip { animation: gsx-flip 0.42s cubic-bezier(0.22,1,0.36,1) both; }
+@keyframes gsx-confetti { 0% { opacity: 0; transform: translateY(2px) scale(0.5); } 12% { opacity: 1; } 100% { opacity: 0; transform: translateY(-48px) translateX(var(--gx,0)) rotate(320deg); } }
+.gsx-confetti { animation: gsx-confetti 1.5s ease-out forwards; }
+@media (prefers-reduced-motion: reduce) {
+  .gsx-pulse,.gsx-rise,.gsx-flip,.gsx-confetti { animation: none !important; }
 }

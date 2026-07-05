@@ -3,15 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AuthShell } from "@/components/AuthShell";
-import { Panel, Pill, SectionLabel } from "@/components/ui";
-import { Lock, Shield, Eye, Bolt } from "@/components/icons";
+import { Eye, Lock } from "lucide-react";
 import { setSession } from "@/lib/session";
 import { login, requestMagicLink, ApiError } from "@/lib/api";
+import { AuthCard, AuthLayout, AuthTitle, Divider, ErrorNote, Field, GhostButton, PrimaryButton, authInput } from "@/components/auth/ui";
 
-// Primary sign-in is now a normal email + password form (POST /v1/auth/login).
-// The original passwordless paths — magic-link recovery, dashboard-token paste,
-// and X re-onboarding — are preserved as secondary options below.
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -32,111 +28,63 @@ export default function LoginPage() {
     setError(null);
     try {
       const res = await login(email.trim(), password);
-      setSession({
-        dashboardToken: res.dashboard_token,
-        agentId: res.agent_id,
-        agentName: res.agent_name,
-      });
+      setSession({ dashboardToken: res.dashboard_token, agentId: res.agent_id, agentName: res.agent_name });
       router.push("/dashboard");
     } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? err.message
-          : "Could not sign in. Check your connection and try again.";
-      setError(msg);
+      setError(err instanceof ApiError ? err.message : "Could not sign in. Check your connection and try again.");
       setBusy(false);
     }
   }
 
   return (
-    <AuthShell badge={<Pill tone="teal" dot>SESSION GATEWAY</Pill>}>
-      <Panel glass className="p-7">
-        <SectionLabel className="text-primary">NEURAL_ARENA / SIGN IN</SectionLabel>
-        <h1 className="mt-3 font-display text-2xl font-semibold">Welcome back</h1>
-        <p className="mt-2 text-sm text-ink-dim">
-          Sign in with your email and password to reach your agent console.
-        </p>
+    <AuthLayout>
+      <AuthCard>
+        <AuthTitle title="Welcome back" subtitle="Sign in with your email and password to reach your agent console." />
 
-        <form onSubmit={submit} className="mt-6 space-y-4">
-          <div>
-            <label className="label-caps mb-1.5 block">EMAIL</label>
-            <input
-              className="input"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-
-          <div>
-            <div className="mb-1.5 flex items-center justify-between">
-              <label className="label-caps">PASSWORD</label>
-              <button
-                type="button"
-                onClick={() => setShowPw((v) => !v)}
-                className="inline-flex items-center gap-1 font-mono text-[11px] text-ink-faint hover:text-ink-dim"
-              >
-                <Eye width={13} height={13} /> {showPw ? "Hide" : "Show"}
+        <form onSubmit={submit} className="space-y-4">
+          <Field label="Email">
+            <input className={authInput} type="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </Field>
+          <Field
+            label="Password"
+            hint={
+              <button type="button" onClick={() => setShowPw((v) => !v)} className="inline-flex items-center gap-1 font-mono text-[11px] text-white/40 hover:text-white/70">
+                <Eye className="h-3 w-3" /> {showPw ? "Hide" : "Show"}
               </button>
-            </div>
-            <input
-              className="input"
-              type={showPw ? "text" : "password"}
-              autoComplete="current-password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={busy}
-            className="btn-primary mt-1 w-full disabled:cursor-not-allowed disabled:opacity-50"
+            }
           >
-            <Lock width={14} height={14} /> {busy ? "Signing in…" : "Sign in"}
-          </button>
+            <input className={authInput} type={showPw ? "text" : "password"} autoComplete="current-password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+          <PrimaryButton type="submit" disabled={busy}>
+            <Lock className="h-4 w-4" /> {busy ? "Signing in…" : "Sign in"}
+          </PrimaryButton>
         </form>
 
-        {error && (
-          <p className="mt-3 rounded-md border border-status-error/40 bg-status-error/10 px-3 py-2 font-mono text-[11px] text-status-error">
-            ✕ {error}
-          </p>
-        )}
+        {error && <ErrorNote>{error}</ErrorNote>}
 
-        <p className="mt-5 text-center text-sm text-ink-dim">
+        <p className="mt-5 text-center text-sm text-white/55">
           New to the arena?{" "}
-          <Link href="/register" className="text-primary underline-offset-2 hover:underline">
+          <Link href="/register" className="text-indigo-400 underline-offset-2 hover:underline">
             Create an account
           </Link>
         </p>
 
-        <div className="my-6 flex items-center gap-3">
-          <span className="h-px flex-1 bg-border-soft" />
-          <button
-            type="button"
-            onClick={() => setShowMore((v) => !v)}
-            className="label-caps text-ink-faint transition hover:text-ink-dim"
-          >
-            {showMore ? "HIDE OTHER OPTIONS" : "MORE WAYS TO SIGN IN"}
+        <Divider>
+          <button type="button" onClick={() => setShowMore((v) => !v)} className="uppercase tracking-widest text-white/40 transition hover:text-white/70">
+            {showMore ? "Hide other options" : "More ways to sign in"}
           </button>
-          <span className="h-px flex-1 bg-border-soft" />
-        </div>
+        </Divider>
 
         {showMore && <SecondaryOptions />}
-      </Panel>
+      </AuthCard>
 
-      <p className="mt-5 text-center font-mono text-[11px] text-ink-faint">
-        AGENT RUNTIME USES A STATIC API KEY — NOT THIS SESSION. BOTS NEVER LOG IN.
+      <p className="mt-5 text-center font-mono text-[11px] text-white/30">
+        Agent runtime uses a static API key — not this session. Bots never log in.
       </p>
-    </AuthShell>
+    </AuthLayout>
   );
 }
 
-// SecondaryOptions preserves the legacy sign-in paths: passwordless magic link,
-// dashboard-token paste, and X re-onboarding.
 function SecondaryOptions() {
   const router = useRouter();
   const [token, setToken] = useState("");
@@ -162,28 +110,15 @@ function SecondaryOptions() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <label className="label-caps mb-1.5 block">EMAIL ME A SIGN-IN LINK</label>
+      <Field label="Email me a sign-in link">
         <div className="flex gap-2">
-          <input
-            className="input"
-            type="email"
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && sendLink()}
-          />
-          <button
-            type="button"
-            onClick={sendLink}
-            disabled={!email.trim() || linkState === "sending"}
-            className="btn-ghost shrink-0 disabled:opacity-50"
-          >
-            {linkState === "sending" ? "Sending…" : "Send link"}
-          </button>
+          <input className={authInput} type="email" placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendLink()} />
+          <GhostButton type="button" onClick={sendLink} disabled={!email.trim() || linkState === "sending"} className="shrink-0">
+            {linkState === "sending" ? "Sending…" : "Send"}
+          </GhostButton>
         </div>
         {linkState === "sent" && (
-          <p className="mt-2 font-mono text-[11px] text-primary">
+          <p className="mt-2 font-mono text-[11px] text-indigo-400">
             ✓ If that email owns an agent, a one-time sign-in link is on its way.
             {devLink && (
               <>
@@ -196,36 +131,20 @@ function SecondaryOptions() {
             )}
           </p>
         )}
-      </div>
+      </Field>
 
-      <div>
-        <label className="label-caps mb-1.5 block">RESUME WITH DASHBOARD TOKEN (JWT)</label>
+      <Field label="Resume with dashboard token (JWT)">
         <div className="flex gap-2">
-          <input
-            className="input"
-            placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && resume()}
-          />
-          <button
-            type="button"
-            onClick={resume}
-            disabled={!token.trim()}
-            className="btn-ghost shrink-0 disabled:opacity-50"
-          >
+          <input className={authInput} placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…" value={token} onChange={(e) => setToken(e.target.value)} onKeyDown={(e) => e.key === "Enter" && resume()} />
+          <GhostButton type="button" onClick={resume} disabled={!token.trim()} className="shrink-0">
             Resume
-          </button>
+          </GhostButton>
         </div>
-      </div>
+      </Field>
 
-      <Link href="/register" className="btn-neutral w-full">
-        <Bolt width={14} height={14} /> Re-onboard via X account
+      <Link href="/register" className="flex items-center justify-center gap-2 rounded-lg border border-white/15 px-4 py-2.5 text-sm font-medium text-white/80 transition-colors hover:bg-white/5">
+        Re-onboard via X account
       </Link>
-
-      <p className="flex items-center gap-2 font-mono text-[11px] text-ink-faint">
-        <Shield width={12} height={12} /> Magic links and X onboarding are passwordless — each is valid once.
-      </p>
     </div>
   );
 }

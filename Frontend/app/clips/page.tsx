@@ -1,72 +1,50 @@
 import Link from "next/link";
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
-import { Panel, Pill, SectionLabel } from "@/components/ui";
+import { Film, Share2 } from "lucide-react";
 import { fmt } from "@/lib/mock";
 import { fetchClips } from "@/lib/api";
+import { Card, EmptyState, PageHeader } from "@/components/console/primitives";
+import { SectionTabs } from "@/components/console/SectionTabs";
 
-// GET /v1/clips/trending — auto-generated highlight clips (public).
+export const metadata = { title: "Clips | Onavion" };
+
 export default async function ClipsPage() {
   const clips = await fetchClips();
-  return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <SectionLabel className="mb-3 text-secondary">HIGHLIGHTS</SectionLabel>
-            <h1 className="font-display text-4xl font-bold tracking-[-0.5px]">
-              Trending clips
-            </h1>
-            <p className="mt-2 text-ink-dim">
-              Dramatic moments the engine clipped automatically — carryover steals,
-              perfect reads, last-card upsets.
-            </p>
-          </div>
-          <Pill tone="amber" dot>AUTO-CLIPPED</Pill>
-        </div>
 
-        {clips.length === 0 ? (
-          <Panel className="mt-8 p-10 text-center">
-            <p className="font-mono text-sm text-ink-dim">
-              No clips yet. Highlights appear here as live matches produce dramatic rounds.
-            </p>
-          </Panel>
-        ) : (
-          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {clips.map((c) => (
-              <Panel key={c.clip_id} className="flex flex-col overflow-hidden">
-                <div className="relative aspect-video bg-bg-deep bg-redact">
-                  <span className="absolute left-3 top-3">
-                    <Pill tone="red" dot>{c.trigger.replace(/_/g, " ").toUpperCase()}</Pill>
-                  </span>
-                  <span className="absolute bottom-3 right-3 font-mono text-[11px] text-ink-faint">
-                    ROUND {c.round_seq}
+  return (
+    <div className="space-y-5">
+      <PageHeader title="Clips" subtitle="Auto-generated highlight reels from dramatic match moments" />
+      <SectionTabs />
+
+      {clips.length === 0 ? (
+        <EmptyState icon={Film} title="No clips yet" hint="Highlights are generated automatically when matches hit dramatic moments." />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {clips.map((c) => (
+            <Card key={c.clip_id} className="overflow-hidden transition-colors hover:border-brand/30">
+              <div className="relative flex aspect-video items-center justify-center bg-panel-2">
+                <Film className="h-7 w-7 text-fg-muted" />
+                <span className="absolute left-2 top-2 rounded bg-brand/15 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-brand">
+                  {c.trigger.replace(/_/g, " ")}
+                </span>
+              </div>
+              <div className="p-4">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] text-fg-muted">{c.match_id.slice(0, 12)}</span>
+                  <span className="flex items-center gap-1 font-mono text-[11px] text-fg-muted">
+                    <Share2 className="h-3 w-3" /> {fmt(c.share_count)}
                   </span>
                 </div>
-                <div className="flex flex-1 flex-col p-5">
-                  <div className="font-mono text-sm text-ink-primary">Match {c.match_id}</div>
-                  <div className="mt-1 font-mono text-[11px] text-ink-faint">
-                    {new Date(c.created_at).toLocaleString()}
-                  </div>
-                  <div className="mt-4 flex items-center justify-between border-t border-border-soft pt-3">
-                    <span className="label-caps">
-                      ◎ {fmt(c.share_count)} shares
-                    </span>
-                    <Link
-                      href={c.asset_url || `/spectate`}
-                      className="font-mono text-[11px] uppercase tracking-caps text-primary hover:underline"
-                    >
-                      Watch clip →
-                    </Link>
-                  </div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-sm font-medium text-fg">Round {c.round_seq}</span>
+                  <Link href={c.asset_url} className="text-xs text-brand hover:underline">
+                    Watch →
+                  </Link>
                 </div>
-              </Panel>
-            ))}
-          </div>
-        )}
-      </div>
-      <Footer />
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,10 +1,9 @@
 "use client";
 
+import * as React from "react";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
-import { Panel, Pill, SectionLabel } from "@/components/ui";
+import { Check, Star } from "lucide-react";
 import { StripeBadge } from "@/components/payments/StripeBadge";
 import { fmt } from "@/lib/mock";
 import {
@@ -16,6 +15,8 @@ import {
   type SubscriptionStatus,
 } from "@/lib/api";
 import { getSession } from "@/lib/session";
+import { Badge, Button, Card, CardHeader, PageHeader } from "@/components/console/primitives";
+import { SectionTabs } from "@/components/console/SectionTabs";
 
 const perks = [
   "1,000 coins credited to your treasury every month",
@@ -66,75 +67,60 @@ export function ArenaPassClient() {
   }
 
   return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
-        <SectionLabel className="mb-3 text-secondary">ARENA PASS</SectionLabel>
-        <h1 className="font-display text-4xl font-bold tracking-[-0.5px]">Subscription</h1>
-        <p className="mt-2 max-w-xl text-ink-dim">
-          Recurring monthly coins for your treasury. Billed through Stripe; cancel anytime from the billing portal.
-        </p>
+    <div className="space-y-5">
+      <PageHeader title="Arena Pass" subtitle="Recurring monthly coins for your treasury — billed via Stripe, cancel anytime" />
+      <SectionTabs />
 
-        <div className="mt-8 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-          <Panel glass className="p-8">
-            <StripeBadge className="mb-4" />
-            {plan ? (
-              <>
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-5xl font-semibold text-primary">
-                    ${(plan.price_cents / 100).toFixed(2)}
-                  </span>
-                  <span className="text-ink-dim">/ month</span>
-                </div>
-                <div className="mt-2 font-mono text-lg text-ink-primary">
-                  {fmt(plan.monthly_coins)} coins / month
-                </div>
-                <ul className="mt-8 space-y-3">
-                  {perks.map((p) => (
-                    <li key={p} className="flex gap-2 font-mono text-sm text-ink-dim">
-                      <span className="text-primary">✓</span> {p}
-                    </li>
-                  ))}
-                </ul>
-                {status?.active ? (
-                  <button onClick={manage} disabled={busy} className="btn-primary mt-8 w-full disabled:opacity-50">
-                    Manage billing
-                  </button>
-                ) : (
-                  <button onClick={subscribe} disabled={busy} className="btn-primary mt-8 w-full disabled:opacity-50">
-                    {busy ? "Redirecting…" : "Subscribe with Stripe"}
-                  </button>
-                )}
-              </>
-            ) : (
-              <p className="font-mono text-sm text-ink-faint">Sign in to view plans.</p>
-            )}
-            {err && <p className="mt-4 font-mono text-[11px] text-status-error">{err}</p>}
-          </Panel>
-
-          <Panel className="p-6">
-            <SectionLabel className="mb-4">YOUR STATUS</SectionLabel>
-            {status ? (
-              <div className="space-y-4">
-                <Pill tone={status.active ? "teal" : "amber"}>
-                  {status.active ? "ACTIVE" : status.status.toUpperCase()}
-                </Pill>
-                {status.current_period_end && (
-                  <p className="font-mono text-sm text-ink-dim">
-                    Renews {new Date(status.current_period_end).toLocaleDateString()}
-                  </p>
-                )}
-                <Link href="/wallet" className="btn-ghost block w-full text-center text-sm">
-                  View treasury →
-                </Link>
+      <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+        <Card className="p-6">
+          <StripeBadge className="mb-4" />
+          {plan ? (
+            <>
+              <div className="flex items-baseline gap-2">
+                <span className="text-5xl font-semibold text-brand">${(plan.price_cents / 100).toFixed(2)}</span>
+                <span className="text-fg-muted">/ month</span>
               </div>
-            ) : (
-              <p className="font-mono text-[12px] text-ink-faint">Not subscribed.</p>
-            )}
-          </Panel>
-        </div>
+              <div className="mt-2 font-mono text-lg text-fg">{fmt(plan.monthly_coins)} coins / month</div>
+              <ul className="mt-6 space-y-2.5">
+                {perks.map((p) => (
+                  <li key={p} className="flex items-start gap-2 text-sm text-fg-muted">
+                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-brand" /> {p}
+                  </li>
+                ))}
+              </ul>
+              {status?.active ? (
+                <Button onClick={manage} disabled={busy} className="mt-6 w-full">
+                  Manage billing
+                </Button>
+              ) : (
+                <Button onClick={subscribe} disabled={busy} className="mt-6 w-full">
+                  {busy ? "Redirecting…" : "Subscribe with Stripe"}
+                </Button>
+              )}
+            </>
+          ) : (
+            <p className="font-mono text-sm text-fg-muted">Sign in to view plans.</p>
+          )}
+          {err && <p className="mt-4 font-mono text-[11px] text-danger">{err}</p>}
+        </Card>
+
+        <Card className="p-5">
+          <CardHeader title="Your Status" action={<Star className="h-4 w-4 text-warn" />} />
+          {status ? (
+            <div className="mt-4 space-y-4">
+              <Badge tone={status.active ? "ok" : "warn"}>{status.active ? "Active" : status.status}</Badge>
+              {status.current_period_end && (
+                <p className="font-mono text-sm text-fg-muted">Renews {new Date(status.current_period_end).toLocaleDateString()}</p>
+              )}
+              <Button asChild variant="outline" size="sm" className="w-full">
+                <Link href="/wallet">View treasury →</Link>
+              </Button>
+            </div>
+          ) : (
+            <p className="mt-4 font-mono text-[12px] text-fg-muted">Not subscribed.</p>
+          )}
+        </Card>
       </div>
-      <Footer />
     </div>
   );
 }

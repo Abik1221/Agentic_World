@@ -1,19 +1,21 @@
 "use client";
 
-import { useState } from "react";
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
-import { Panel, Pill, SectionLabel, Stat } from "@/components/ui";
-import { Trophy } from "@/components/icons";
+import * as React from "react";
+import { Search, Trophy, Users } from "lucide-react";
 import { fmt } from "@/lib/mock";
 import { fetchTournament, type Tournament } from "@/lib/api";
+import { cn } from "@/lib/cn";
+import { Button, Card, CardHeader, KpiCard, PageHeader, StatusBadge } from "@/components/console/primitives";
+import { SectionTabs } from "@/components/console/SectionTabs";
 
-// GET /v1/tournaments/{id} — tournament detail (public).
+const inputCls =
+  "w-full rounded-md border border-line bg-panel-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted outline-none transition focus:border-brand/50 focus:ring-2 focus:ring-brand/20";
+
 export default function TournamentsPage() {
-  const [id, setId] = useState("");
-  const [data, setData] = useState<Tournament | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [id, setId] = React.useState("");
+  const [data, setData] = React.useState<Tournament | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
 
   async function lookup() {
     const q = id.trim();
@@ -28,52 +30,53 @@ export default function TournamentsPage() {
   }
 
   return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
-        <SectionLabel className="mb-3 text-secondary">TOURNAMENTS</SectionLabel>
-        <h1 className="font-display text-4xl font-bold tracking-[-0.5px]">Tournament lookup</h1>
-        <p className="mt-2 max-w-xl text-ink-dim">
-          Sponsored brackets with carryover prize pools. Enter a tournament ID to
-          view its status, pool and winner.
-        </p>
+    <div className="space-y-5">
+      <PageHeader title="Tournaments" subtitle="Funded freerolls · look up a tournament by ID" />
+      <SectionTabs />
 
-        <div className="mt-6 flex max-w-xl gap-3">
+      <Card className="p-5">
+        <CardHeader title="Lookup" subtitle="Enter a tournament ID" />
+        <div className="mt-4 flex gap-2">
           <input
-            className="input flex-1"
-            placeholder="tr_… tournament id"
+            className={inputCls}
+            placeholder="trn_…"
             value={id}
             onChange={(e) => setId(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && lookup()}
           />
-          <button onClick={lookup} disabled={busy || !id.trim()} className="btn-primary disabled:opacity-50">
-            {busy ? "Looking…" : "Look up"}
-          </button>
+          <Button onClick={lookup} disabled={busy}>
+            <Search className="h-4 w-4" />
+            {busy ? "Searching…" : "Look up"}
+          </Button>
         </div>
-        {err && <p className="mt-3 font-mono text-[12px] text-status-error">{err}</p>}
+        {err && <p className={cn("mt-3 font-mono text-[12px] text-danger")}>✕ {err}</p>}
+      </Card>
 
-        {data && (
-          <Panel glass className="mt-8 p-7">
-            <div className="flex items-start justify-between">
-              <div>
-                <SectionLabel className="text-secondary">{data.sponsor ?? "OPEN"} · {data.tournament_id}</SectionLabel>
-                <h2 className="mt-2 font-display text-2xl font-semibold">{data.name}</h2>
+      {data && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line bg-panel p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full border border-warn/40 bg-warn/10">
+                <Trophy className="h-5 w-5 text-warn" />
               </div>
-              <span className="text-secondary"><Trophy width={26} height={26} /></span>
+              <div>
+                <p className="text-base font-semibold text-fg">{data.name}</p>
+                <p className="font-mono text-[11px] text-fg-muted">
+                  {data.tournament_id}
+                  {data.sponsor ? ` · sponsored by ${data.sponsor}` : ""}
+                </p>
+              </div>
             </div>
-            <div className="mt-6 grid grid-cols-2 gap-4 border-t border-border-soft pt-5 sm:grid-cols-4">
-              <Stat label="PRIZE POOL" value={fmt(data.prize_pool)} tone="amber" />
-              <Stat label="ENTRIES" value={fmt(data.entries)} tone="teal" />
-              <Stat label="STATUS" value={data.status.toUpperCase()} />
-              <Stat label="WINNER" value={data.winner || "—"} tone="blue" />
-            </div>
-            {data.status !== "finalized" && (
-              <Pill tone="teal" dot className="mt-6">REGISTRATION OPEN</Pill>
-            )}
-          </Panel>
-        )}
-      </div>
-      <Footer />
+            <StatusBadge status={data.status} />
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <KpiCard label="Prize Pool" value={fmt(data.prize_pool)} sub="coins" icon={Trophy} />
+            <KpiCard label="Entries" value={data.entries} icon={Users} />
+            <KpiCard label="Winner" value={data.winner ?? "—"} sub={data.winner ? "champion" : "in progress"} icon={Trophy} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

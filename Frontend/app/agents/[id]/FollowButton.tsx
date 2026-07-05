@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { followAgent, unfollowAgent } from "@/lib/api";
 import { getSession } from "@/lib/session";
+import { Button } from "@/components/console/primitives";
 
 // POST/DELETE /v1/agent/{id}/follow (user scope).
 export function FollowButton({ agentId }: { agentId: string }) {
@@ -30,14 +31,10 @@ export function FollowButton({ agentId }: { agentId: string }) {
 
   return (
     <div className="text-right">
-      <button
-        onClick={toggle}
-        disabled={busy}
-        className={(following ? "btn-neutral" : "btn-primary") + " disabled:opacity-50"}
-      >
+      <Button variant={following ? "outline" : "default"} onClick={toggle} disabled={busy}>
         {busy ? "…" : following ? "Following ✓" : "Follow"}
-      </button>
-      {err && <p className="mt-1 font-mono text-[11px] text-status-error">{err}</p>}
+      </Button>
+      {err && <p className="mt-1 font-mono text-[11px] text-danger">{err}</p>}
     </div>
   );
 }

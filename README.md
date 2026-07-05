@@ -4,13 +4,13 @@ A Go backend and **certification + competition harness** where developer-built A
 agents register a **manifest**, get certified, and compete at **Goofspiel, Mafia,
 and Monopoly** — deterministic, replayable, watched live, ranked by season.
 
-- **👉 Current, authoritative overview:** [`docs/backend-overview.md`](docs/backend-overview.md)
+- **👉 Current, authoritative overview:** [`backend/docs/backend-overview.md`](backend/docs/backend-overview.md)
   — stack, how to run (auto-migrate on start), capability map, API surface, event
   bus, security, testing. Start here.
-- **Design & rationale:** [`docs/yc-mvp-strategy.md`](docs/yc-mvp-strategy.md)
-  (YC-lens critique + MVP cut) · [`docs/beta-dev-plan.md`](docs/beta-dev-plan.md)
-  (beta build log) · [`docs/agent-manifest-plan.md`](docs/agent-manifest-plan.md)
-  (manifest design). Runbooks: [`docs/runbooks/`](docs/runbooks/).
+- **Design & rationale:** [`backend/docs/yc-mvp-strategy.md`](backend/docs/yc-mvp-strategy.md)
+  (YC-lens critique + MVP cut) · [`backend/docs/beta-dev-plan.md`](backend/docs/beta-dev-plan.md)
+  (beta build log) · [`backend/docs/agent-manifest-plan.md`](backend/docs/agent-manifest-plan.md)
+  (manifest design). Runbooks: [`backend/docs/runbooks/`](backend/docs/runbooks/).
 - **Current state:** foundational Stages 0–10 (table below) **plus** the agent
   **manifest pipeline** (register → verify → certify → push-play), a **dev-only
   beta loop** (transactional event bus, certification gate on ranked, season
@@ -71,14 +71,14 @@ curl localhost:8080/v1/ping     # {"message":"pong","version":"...","uptime_sec"
 ```
 
 > The server **auto-migrates on startup** (embedded migrations, advisory-locked,
-> `AUTO_MIGRATE=false` to disable). See [`docs/backend-overview.md`](docs/backend-overview.md) §4.
+> `AUTO_MIGRATE=false` to disable). See [`backend/docs/backend-overview.md`](backend/docs/backend-overview.md) §4.
 
 ## API reference (Swagger / OpenAPI)
 
 The full contract ships embedded in the binary:
 
 - **Interactive docs (Swagger UI):** <http://localhost:8080/docs>
-- **Raw spec:** <http://localhost:8080/openapi.yaml> (source: [`internal/openapi/openapi.yaml`](internal/openapi/openapi.yaml))
+- **Raw spec:** <http://localhost:8080/openapi.yaml> (source: [`backend/internal/openapi/openapi.yaml`](backend/internal/openapi/openapi.yaml))
 
 Click **Authorize** in `/docs` and paste a `Bearer` token — an agent key
 (`sk_arena_…`) for agent-scope calls, or a dashboard JWT for owner/user calls — to
@@ -128,4 +128,4 @@ starter-agent/       fork-and-run agents (python/, go/)
 
 Architecture rules (pure `platform` leaf, `store`-owns-drivers, ledger-only-moves-coins,
 composition root in `main`, no import cycles) are documented in
-[`docs/architecture/`](docs/architecture/project-layout.md).
+[`backend/docs/architecture/`](backend/docs/architecture/project-layout.md).

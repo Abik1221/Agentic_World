@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build static UI image
-        run: docker build -f deploy/ui/Dockerfile -t "$IMAGE" .
+        run: docker build -f backend/deploy/ui/Dockerfile -t "$IMAGE" backend
 
       - name: Save image to a tarball
         run: docker save "$IMAGE" | gzip > /tmp/agent-arena-ui.tar.gz

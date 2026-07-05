@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { TopNav } from "@/components/Nav";
 import { GameCard, Meter, Panel, Pill, SectionLabel, Button, cx } from "@/components/ui";
 import { Lock, Eye, Cpu, Brain, Trophy, Coin, Layers, ChevronLeft } from "@/components/icons";
 import { fmt } from "@/lib/mock";
@@ -26,11 +25,7 @@ export default async function SpectateMatchPage({
   const progress = Math.round((m.round / m.totalRounds) * 100);
 
   return (
-    // Theme follows the site-wide light/dark toggle (the `.broadcast` scope is
-    // applied on <body>), so the broadcast renders in both light and dark.
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto w-full max-w-[1400px] px-6 py-8 md:px-8">
+    <div className="space-y-5">
         {/* ── Back to the watch hub ──────────────────────────────────── */}
         <Link
           href="/spectate"
@@ -257,7 +252,6 @@ export default async function SpectateMatchPage({
           </p>
           <span className="animate-pulse text-ink-faint">↻</span>
         </Panel>
-      </div>
     </div>
   );
 }

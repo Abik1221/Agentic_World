@@ -1,77 +1,43 @@
-import { MobileShell } from "@/components/MobileShell";
-import { StepBar } from "@/components/Nav";
-import { Button, Panel, Pill, SectionLabel } from "@/components/ui";
-import { Shield } from "@/components/icons";
+import Link from "next/link";
+import { ShieldCheck } from "lucide-react";
 import { fetchCoinPacks, fetchUserWallet } from "@/lib/api";
 import { serverSession } from "@/lib/session.server";
 import { MintButton, ProvisionCheckout } from "./ProvisionActions";
-import Link from "next/link";
-
-const log = [
-  { tag: "SYSTEM", msg: "SECURE CONNECTION ESTABLISHED…", tone: "text-ink-dim" },
-  { tag: "VAULT", msg: "TREASURY WALLET ONLINE…", tone: "text-ink-dim" },
-  { tag: "STRIPE", msg: "CHECKOUT · CONNECT · BILLING", tone: "text-primary" },
-  { tag: "STATUS", msg: "READY FOR PROVISIONING.", tone: "text-tertiary" },
-];
+import { AuthLayout, AuthCard, AuthTitle } from "@/components/auth/ui";
 
 export default async function ProvisionPage() {
   const session = serverSession();
-  const [coinPacks, treasury] = await Promise.all([
-    fetchCoinPacks(session),
-    fetchUserWallet(session),
-  ]);
+  const [coinPacks, treasury] = await Promise.all([fetchCoinPacks(session), fetchUserWallet(session)]);
+
   return (
-    <MobileShell>
-      <StepBar step={4} total={4} label="PROVISIONING" />
+    <AuthLayout step={{ n: 4, total: 4, label: "Provisioning" }} maxWidth="max-w-lg">
+      <AuthTitle title="Fund your treasury" subtitle="Purchase coins through Stripe Checkout. Funds land in your treasury — allocate to agents before competing." />
 
-      <div className="pt-2">
-        <h1 className="font-display text-[28px] font-bold leading-tight tracking-[-0.5px]">
-          VAULT_INITI
-          <br />
-          ALIZATION
-        </h1>
-        <p className="mt-3 font-mono text-[13px] leading-5 text-ink-dim">
-          Purchase coins through Stripe Checkout. Funds land in your treasury — allocate to agents before competing.
-        </p>
-      </div>
-
-      <Panel className="p-5">
-        <SectionLabel>TREASURY BALANCE</SectionLabel>
+      <AuthCard>
+        <p className="font-mono text-[10px] uppercase tracking-widest text-white/40">Treasury balance</p>
         <div className="mt-2 flex items-baseline gap-2">
-          <span className="font-mono text-5xl font-semibold text-primary drop-shadow-[0_0_18px_rgba(67,230,201,0.35)]">
-            {treasury.available_balance.toLocaleString()}
-          </span>
-          <span className="font-display text-xl text-ink-dim">CRD</span>
+          <span className="text-5xl font-semibold text-indigo-400">{treasury.available_balance.toLocaleString()}</span>
+          <span className="text-xl text-white/50">CRD</span>
         </div>
-        <Link href="/wallet" className="btn-ghost mt-4 block w-full text-center text-sm">
+        <Link href="/wallet" className="mt-4 block w-full rounded-lg border border-white/15 py-2.5 text-center text-sm text-white/80 transition-colors hover:bg-white/5">
           Open full wallet →
         </Link>
-        <MintButton />
-      </Panel>
-
-      <Panel className="bg-bg-deep/70 p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <SectionLabel>NODE_FEEDBACK</SectionLabel>
-          <span className="font-mono text-[11px] text-ink-faint">● ● ●</span>
+        <div className="mt-3">
+          <MintButton />
         </div>
-        <div className="space-y-1.5 font-mono text-[12px] leading-5">
-          {log.map((l, i) => (
-            <p key={i} className={l.tone}>
-              <span className="text-ink-faint">[{l.tag}]</span> {l.msg}
-            </p>
-          ))}
-        </div>
-      </Panel>
+      </AuthCard>
 
-      <ProvisionCheckout packs={coinPacks} />
+      <div className="mt-4">
+        <ProvisionCheckout packs={coinPacks} />
+      </div>
 
-      <Pill tone="teal" className="w-full justify-center py-2.5">
-        <Shield width={14} height={14} /> STRIPE_SECURED · PCI SAQ-A
-      </Pill>
+      <div className="mt-4 flex items-center justify-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 py-2.5 font-mono text-[11px] text-emerald-400">
+        <ShieldCheck className="h-3.5 w-3.5" /> Stripe secured · PCI SAQ-A
+      </div>
 
-      <Button variant="primary" full href="/lobby">
-        Launch_to_Lobby
-      </Button>
-    </MobileShell>
+      <Link href="/lobby" className="mt-4 flex w-full items-center justify-center rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-400">
+        Launch to lobby
+      </Link>
+    </AuthLayout>
   );
 }

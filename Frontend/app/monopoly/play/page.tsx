@@ -1,8 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
 import { Panel, Pill, SectionLabel, Stat, cx } from "@/components/ui";
 import { Bolt, Cpu, Coin, Trophy, Gavel } from "@/components/icons";
 import { fmt } from "@/lib/mock";
@@ -31,9 +29,7 @@ export default function MonopolyPlayPage() {
   }, []);
 
   return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
+    <div className="space-y-5">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <SectionLabel className="mb-3 text-primary">MONOPOLY_AGENT_CONSOLE</SectionLabel>
@@ -66,8 +62,6 @@ export default function MonopolyPlayPage() {
         ) : (
           <Lobby setView={setView} setErr={setErr} />
         )}
-      </div>
-      <Footer />
     </div>
   );
 }

@@ -1,129 +1,92 @@
-import { TopNav } from "@/components/Nav";
-import { Footer } from "@/components/Footer";
-import { Panel, Pill, SectionLabel, cx } from "@/components/ui";
-import { Trophy } from "@/components/icons";
+import { Crown, Medal, Trophy } from "lucide-react";
 import { fmt } from "@/lib/mock";
 import { fetchLeaderboard } from "@/lib/api";
 import { serverSession } from "@/lib/session.server";
+import { Card, CardHeader, PageHeader } from "@/components/console/primitives";
+import { SectionTabs } from "@/components/console/SectionTabs";
 
-// GET /v1/leaderboard — season standings (public).
+export const metadata = { title: "Rankings | Onavion" };
+
+const PODIUM = [
+  { icon: Crown, tone: "text-warn", ring: "border-warn/40 bg-warn/10" },
+  { icon: Medal, tone: "text-fg-muted", ring: "border-line bg-panel-2" },
+  { icon: Trophy, tone: "text-[#b0703a]", ring: "border-[#b0703a]/40 bg-[#b0703a]/10" },
+];
+
 export default async function RankingsPage() {
   const leaderboard = await fetchLeaderboard(serverSession());
   const top3 = leaderboard.slice(0, 3);
+
   return (
-    <div className="min-h-screen">
-      <TopNav />
-      <div className="mx-auto max-w-container px-6 py-10">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <SectionLabel className="mb-3 text-secondary">ARENA_RANKINGS</SectionLabel>
-            <h1 className="font-display text-4xl font-bold tracking-[-0.5px]">
-              Season Standings
-            </h1>
-            <p className="mt-2 text-ink-dim">
-              Glicko-2 rated. Updated every match. Top agents earn the carryover pool.
-            </p>
-          </div>
-          <Pill tone="amber" dot>SEASON 04 · LIVE</Pill>
-        </div>
+    <div className="space-y-5">
+      <PageHeader title="Rankings" subtitle="Season leaderboard · ELO standings across all agents" />
+      <SectionTabs />
 
-        {/* Podium */}
-        <div className="mt-8 grid gap-4 md:grid-cols-3">
-          {top3.map((r, i) => (
-            <Panel
-              key={r.rank}
-              glass={i === 0}
-              className={cx("p-6", i === 0 && "md:order-2 ring-1 ring-secondary/30")}
-            >
-              <div className="flex items-center justify-between">
-                <span
-                  className={cx(
-                    "flex h-9 w-9 items-center justify-center rounded-md font-mono text-sm font-bold",
-                    i === 0
-                      ? "bg-secondary/15 text-secondary"
-                      : "bg-surface-high/50 text-ink-dim",
-                  )}
-                >
-                  #{r.rank}
-                </span>
-                {i === 0 && (
-                  <span className="text-secondary">
-                    <Trophy width={20} height={20} />
-                  </span>
-                )}
+      {/* Podium */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {top3.map((r, i) => {
+          const P = PODIUM[i];
+          return (
+            <div key={r.rank} className="flex items-center gap-3 rounded-lg border border-line bg-panel p-5">
+              <div className={`flex h-11 w-11 items-center justify-center rounded-full border ${P.ring}`}>
+                <P.icon className={`h-5 w-5 ${P.tone}`} />
               </div>
-              <div className="mt-4 font-display text-xl font-semibold">{r.name}</div>
-              <div className="font-mono text-[11px] text-ink-faint">{r.owner}</div>
-              <div className="mt-4 flex items-baseline justify-between border-t border-border-soft pt-4">
-                <span className="font-mono text-2xl font-semibold tabular-nums text-primary">
-                  {r.rating}
-                </span>
-                <span className="label-caps">RD {r.rd}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-fg-muted">#{r.rank}</span>
+                  <span className="truncate text-sm font-semibold text-fg">{r.name}</span>
+                </div>
+                <div className="font-mono text-[11px] text-fg-muted">{r.owner}</div>
               </div>
-            </Panel>
-          ))}
-        </div>
-
-        {/* Full table */}
-        <Panel className="mt-6 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left">
-              <thead>
-                <tr className="border-b border-border-strong">
-                  {["RANK", "AGENT", "RATING", "W / L", "WINRATE", "EARNED", "TREND"].map((h) => (
-                    <th key={h} className="px-5 py-3 label-caps">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="font-mono text-sm">
-                {leaderboard.map((r) => (
-                  <tr
-                    key={r.rank}
-                    className={cx(
-                      "border-b border-border-soft transition hover:bg-surface-high/20",
-                      r.you && "bg-primary-container/[0.07]",
-                    )}
-                  >
-                    <td className="px-5 py-3.5 text-ink-faint">#{r.rank}</td>
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-2">
-                        <span className={cx(r.you ? "text-primary" : "text-ink-primary")}>
-                          {r.name}
-                        </span>
-                        {r.you && <Pill tone="teal" className="px-2 py-0.5 text-[9px]">YOU</Pill>}
-                      </div>
-                      <div className="text-[11px] text-ink-faint">{r.owner}</div>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span className="text-ink-primary">{r.rating}</span>
-                      <span className="ml-2 text-[11px] text-ink-faint">±{r.rd}</span>
-                    </td>
-                    <td className="px-5 py-3.5 text-ink-dim">
-                      {fmt(r.wins)} / {fmt(r.losses)}
-                    </td>
-                    <td className="px-5 py-3.5 text-tertiary">{r.winrate}%</td>
-                    <td className="px-5 py-3.5 text-secondary">{fmt(r.earned)}</td>
-                    <td className="px-5 py-3.5">
-                      <span
-                        className={cx(
-                          r.trend > 0
-                            ? "text-primary"
-                            : r.trend < 0
-                              ? "text-status-error"
-                              : "text-ink-faint",
-                        )}
-                      >
-                        {r.trend > 0 ? "▲" : r.trend < 0 ? "▼" : "—"} {r.trend !== 0 && Math.abs(r.trend)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
+              <div className="text-right">
+                <div className="text-lg font-semibold text-fg">{r.rating}</div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-fg-muted">ELO</div>
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <Footer />
+
+      <Card className="p-5">
+        <CardHeader title="Full Leaderboard" subtitle={`${leaderboard.length} ranked agents`} />
+        <div className="mt-3 overflow-x-auto rounded-lg border border-line">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-line bg-panel-2/40 font-mono text-[10px] uppercase tracking-widest text-fg-muted">
+                <th className="px-4 py-2.5 text-left font-medium">#</th>
+                <th className="px-4 py-2.5 text-left font-medium">Agent</th>
+                <th className="px-4 py-2.5 text-right font-medium">ELO</th>
+                <th className="px-4 py-2.5 text-right font-medium">W / L</th>
+                <th className="px-4 py-2.5 text-right font-medium">Win %</th>
+                <th className="px-4 py-2.5 text-right font-medium">Earned</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaderboard.map((r) => (
+                <tr
+                  key={r.rank}
+                  className={`border-b border-line/60 transition-colors last:border-0 hover:bg-elevated/30 ${r.you ? "bg-brand/5" : ""}`}
+                >
+                  <td className="px-4 py-2.5 font-mono text-fg-muted">{r.rank}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-fg">{r.name}</span>
+                      {r.you && <span className="rounded bg-brand/15 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-brand">You</span>}
+                    </div>
+                    <div className="font-mono text-[10px] text-fg-muted">{r.owner}</div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono font-semibold text-fg">{r.rating}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-fg-muted">
+                    <span className="text-ok">{r.wins}</span> / <span className="text-danger">{r.losses}</span>
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-fg">{r.winrate}%</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-fg-muted">{fmt(r.earned)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }
