@@ -28,15 +28,16 @@ type Config struct {
 
 // Service orchestrates the payment flows over the Gateway, Coiner and Repo ports.
 type Service struct {
-	gw     Gateway
-	Coiner Coiner // exported for dev testing endpoints
-	Repo   Repo   // exported for dev testing endpoints
-	hook   StripeEventHook
-	clock  platform.Clock
-	cfg    Config
-	log    *slog.Logger
-	m      *metrics
-	packs  map[string]Pack
+	gw        Gateway
+	Coiner    Coiner // exported for dev testing endpoints
+	Repo      Repo   // exported for dev testing endpoints
+	hook      StripeEventHook
+	payoutRec PayoutReconciler
+	clock     platform.Clock
+	cfg       Config
+	log       *slog.Logger
+	m         *metrics
+	packs     map[string]Pack
 }
 
 // StripeEventHook receives subscription and other Stripe events after verification.
@@ -46,6 +47,10 @@ type StripeEventHook interface {
 
 // SetStripeHook wires subscription (or other) processors into the shared webhook.
 func (s *Service) SetStripeHook(h StripeEventHook) { s.hook = h }
+
+// SetPayoutReconciler wires cash-out reconciliation (transfer reversals) into the
+// shared webhook.
+func (s *Service) SetPayoutReconciler(r PayoutReconciler) { s.payoutRec = r }
 
 // New builds the payments service and registers its collectors on reg.
 func New(gw Gateway, coiner Coiner, repo Repo, clock platform.Clock, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
@@ -208,6 +213,15 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 		// The buyer's async payment failed or the session expired unpaid — no coins.
 		s.log.Info("checkout not paid; no credit", "event", ev.ID, "type", ev.Type, "session", ev.ObjectID)
 		return nil
+
+	case EventTransferReversed:
+		// A cash-out transfer was reversed by Stripe (money returned) — re-credit the
+		// withdrawn coins. ObjectID is the transfer id; the reconciler maps it to the
+		// withdrawal and is idempotent. No reconciler wired ⇒ nothing to do.
+		if s.payoutRec == nil || ev.ObjectID == "" {
+			return nil
+		}
+		return s.payoutRec.ReverseByTransfer(ctx, ev.ObjectID, ev.Type)
 
 	case EventChargeRefunded, EventDisputeCreated:
 		if ev.UserPublicID == "" || ev.Coins <= 0 {

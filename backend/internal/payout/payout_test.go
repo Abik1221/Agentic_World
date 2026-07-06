@@ -33,7 +33,7 @@ func (r *fakeRepo) Withdrawable(context.Context, string) (int64, error) { return
 func (r *fakeRepo) AgentOwner(context.Context, string) (string, string, error) {
 	return r.owner, r.connect, nil
 }
-func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)    { return r.flagged, nil }
+func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)     { return r.flagged, nil }
 func (r *fakeRepo) OutstandingDebt(context.Context, string) (int64, error) { return r.debt, nil }
 func (r *fakeRepo) Create(_ context.Context, w payout.Withdrawal) error {
 	w.RequestedAt = r.requestedAt
@@ -47,6 +47,14 @@ func (r *fakeRepo) Get(_ context.Context, id string) (payout.Withdrawal, error) 
 		return payout.Withdrawal{}, payout.ErrNotFound
 	}
 	return *w, nil
+}
+func (r *fakeRepo) GetByTransferID(_ context.Context, transferID string) (payout.Withdrawal, error) {
+	for _, w := range r.rows {
+		if w.TransferID == transferID {
+			return *w, nil
+		}
+	}
+	return payout.Withdrawal{}, payout.ErrNotFound
 }
 func (r *fakeRepo) SetStatus(_ context.Context, id, from, to, transferID, _ string) (bool, error) {
 	w, ok := r.rows[id]
@@ -67,12 +75,15 @@ func (r *fakeRepo) ListByStatus(context.Context, string, int) ([]payout.Withdraw
 	return nil, nil
 }
 
-type fakeBank struct{ held, released, paid map[string]int64 }
+type fakeBank struct{ held, released, paid, reversed map[string]int64 }
 
 func newBank() *fakeBank {
-	return &fakeBank{held: map[string]int64{}, released: map[string]int64{}, paid: map[string]int64{}}
+	return &fakeBank{held: map[string]int64{}, released: map[string]int64{}, paid: map[string]int64{}, reversed: map[string]int64{}}
 }
-func (b *fakeBank) Hold(_ context.Context, id, _ string, coins int64) error { b.held[id] = coins; return nil }
+func (b *fakeBank) Hold(_ context.Context, id, _ string, coins int64) error {
+	b.held[id] = coins
+	return nil
+}
 func (b *fakeBank) Release(_ context.Context, id, _ string, coins int64) error {
 	b.released[id] = coins
 	return nil
@@ -81,10 +92,15 @@ func (b *fakeBank) Payout(_ context.Context, id, _ string, coins, _ int64) error
 	b.paid[id] = coins
 	return nil
 }
+func (b *fakeBank) ReversePayout(_ context.Context, id, _ string, coins, _ int64) error {
+	b.reversed[id] = coins
+	return nil
+}
 
 type fakeXfer struct {
-	calls int
-	fail  bool
+	calls           int
+	fail            bool
+	payoutsDisabled bool // zero value = payouts enabled, so existing tests are unaffected
 }
 
 func (x *fakeXfer) Transfer(context.Context, string, int64, string) (string, error) {
@@ -93,6 +109,9 @@ func (x *fakeXfer) Transfer(context.Context, string, int64, string) (string, err
 		return "", errors.New("stripe down")
 	}
 	return "tr_1", nil
+}
+func (x *fakeXfer) PayoutsEnabled(context.Context, string) (bool, error) {
+	return !x.payoutsDisabled, nil
 }
 
 func newSvc(repo payout.Repo, bank payout.Bank, xfer payout.Transferrer) *payout.Service {
@@ -220,5 +239,65 @@ func TestRejectReleasesCoins(t *testing.T) {
 	// Idempotent second reject.
 	if err := svc.Reject(ctx, "usr_admin", wd.PublicID, ""); err != nil {
 		t.Fatalf("re-reject: %v", err)
+	}
+}
+
+// ── KYC capability gate + payout reversal reconciliation ───────────────────────
+
+func TestApproveBlockedUntilPayoutsEnabled(t *testing.T) {
+	repo, bank := newRepo(), newBank()
+	xfer := &fakeXfer{payoutsDisabled: true} // Connect account exists but KYC incomplete
+	svc := newSvc(repo, bank, xfer)
+	ctx := context.Background()
+
+	wd, _ := svc.Request(ctx, "usr_a", "ag_a", 600) // requestedAt = -48h (past clearing)
+	if err := svc.Approve(ctx, "usr_admin", wd.PublicID); err != payout.ErrNoKYC {
+		t.Fatalf("approve with payouts disabled = %v, want ErrNoKYC", err)
+	}
+	if xfer.calls != 0 {
+		t.Fatal("must not attempt a transfer when payouts are not enabled")
+	}
+	if _, burned := bank.paid[wd.PublicID]; burned {
+		t.Fatal("must not burn coins when payouts are not enabled")
+	}
+}
+
+func TestReverseByTransferReCreditsExactlyOnce(t *testing.T) {
+	repo, bank := newRepo(), newBank()
+	svc := newSvc(repo, bank, &fakeXfer{})
+	ctx := context.Background()
+
+	// Pay a withdrawal so it is in "paid" with transfer id "tr_1".
+	wd, _ := svc.Request(ctx, "usr_a", "ag_a", 600)
+	if err := svc.Approve(ctx, "usr_admin", wd.PublicID); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if repo.rows[wd.PublicID].Status != "paid" {
+		t.Fatalf("want paid, got %s", repo.rows[wd.PublicID].Status)
+	}
+
+	// Stripe reverses the transfer → re-credit the coins and mark reversed.
+	if err := svc.ReverseByTransfer(ctx, "tr_1", "transfer.reversed"); err != nil {
+		t.Fatalf("reverse: %v", err)
+	}
+	if bank.reversed[wd.PublicID] != 600 {
+		t.Fatalf("re-credited %d, want 600", bank.reversed[wd.PublicID])
+	}
+	if repo.rows[wd.PublicID].Status != "reversed" {
+		t.Fatalf("status = %s, want reversed", repo.rows[wd.PublicID].Status)
+	}
+
+	// Idempotent: a webhook redelivery re-credits nothing more.
+	bank.reversed[wd.PublicID] = 0
+	if err := svc.ReverseByTransfer(ctx, "tr_1", "transfer.reversed"); err != nil {
+		t.Fatalf("reverse redelivery: %v", err)
+	}
+	if bank.reversed[wd.PublicID] != 0 {
+		t.Fatal("already-reversed withdrawal must not re-credit again")
+	}
+
+	// An unknown transfer id is a safe no-op.
+	if err := svc.ReverseByTransfer(ctx, "tr_unknown", "transfer.reversed"); err != nil {
+		t.Fatalf("unknown transfer: %v", err)
 	}
 }

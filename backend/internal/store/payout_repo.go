@@ -126,6 +126,24 @@ func (r *PayoutRepo) Get(ctx context.Context, publicID string) (payout.Withdrawa
 	return w, err
 }
 
+func (r *PayoutRepo) GetByTransferID(ctx context.Context, transferID string) (payout.Withdrawal, error) {
+	var w payout.Withdrawal
+	err := r.db.QueryRow(ctx,
+		`SELECT w.public_id, ag.public_id, u.public_id, w.coins, w.fee_coins, w.gross_cents,
+		        w.stripe_fee_cents, w.net_cents, COALESCE(w.connect_account_id, ''), w.status,
+		        COALESCE(w.transfer_id, ''), w.requested_at
+		 FROM withdrawals w
+		 JOIN agents ag ON ag.id = w.agent_id
+		 JOIN users  u  ON u.id  = w.user_id
+		 WHERE w.transfer_id = $1`, transferID).
+		Scan(&w.PublicID, &w.Agent, &w.Owner, &w.Coins, &w.FeeCoins, &w.GrossCents,
+			&w.StripeFeeCents, &w.NetCents, &w.ConnectAccount, &w.Status, &w.TransferID, &w.RequestedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payout.Withdrawal{}, httpx.ErrNotFound
+	}
+	return w, err
+}
+
 func (r *PayoutRepo) SetStatus(ctx context.Context, publicID, from, to, transferID, reason string) (bool, error) {
 	ct, err := r.db.Exec(ctx,
 		`UPDATE withdrawals

@@ -271,6 +271,29 @@ func TestWebhookPaidCompletionCredits(t *testing.T) {
 	}
 }
 
+// fakePayoutRec records transfer-reversal reconciliations routed from the webhook.
+type fakePayoutRec struct{ transfers []string }
+
+func (f *fakePayoutRec) ReverseByTransfer(_ context.Context, transferID, _ string) error {
+	f.transfers = append(f.transfers, transferID)
+	return nil
+}
+
+func TestWebhookTransferReversedRoutesToReconciler(t *testing.T) {
+	rec := &fakePayoutRec{}
+	svc := newSvc(newCoiner(), newRepo())
+	svc.SetPayoutReconciler(rec)
+
+	// transfer.reversed: the object id is the transfer id the payout used.
+	body := eventJSON("evt_tr", payments.EventTransferReversed, "tr_9", "ag_a", 0)
+	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+		t.Fatalf("transfer.reversed webhook: %v", err)
+	}
+	if len(rec.transfers) != 1 || rec.transfers[0] != "tr_9" {
+		t.Fatalf("reconciler received %v, want [tr_9]", rec.transfers)
+	}
+}
+
 func TestWebhookCompletionThenAsyncCreditsExactlyOnce(t *testing.T) {
 	coiner := newCoiner()
 	svc := newSvc(coiner, newRepo())

@@ -29,6 +29,9 @@ const (
 	EventPaymentSucceeded       = "payment_intent.succeeded"
 	EventChargeRefunded         = "charge.refunded"
 	EventDisputeCreated         = "charge.dispute.created"
+	// Payout side: a transfer we made to a connected account was reversed (money
+	// clawed back after we already burned the coins) — reconcile by re-crediting.
+	EventTransferReversed = "transfer.reversed"
 )
 
 // Pack is a purchasable bundle of coins. Defined in config, never in handlers.
@@ -105,6 +108,13 @@ type Gateway interface {
 type Coiner interface {
 	Topup(ctx context.Context, userPublicID string, coins int64, idemKey string) error
 	Reverse(ctx context.Context, userPublicID string, coins int64, idemKey string) error
+}
+
+// PayoutReconciler handles the payout side of Stripe events (transfer reversals),
+// so the single webhook endpoint drives both deposits and cash-out reconciliation.
+// Satisfied by payout.Service; nil disables payout reconciliation.
+type PayoutReconciler interface {
+	ReverseByTransfer(ctx context.Context, transferID, reason string) error
 }
 
 // Repo persists the idempotent webhook log and Stripe linkage on users.

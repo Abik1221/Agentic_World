@@ -28,6 +28,9 @@ type Repo interface {
 	OutstandingDebt(ctx context.Context, agentPublicID string) (int64, error)
 	Create(ctx context.Context, w Withdrawal) error
 	Get(ctx context.Context, publicID string) (Withdrawal, error)
+	// GetByTransferID resolves the withdrawal a Stripe transfer belongs to, so a
+	// transfer.reversed webhook can reconcile it. ErrNotFound if unknown.
+	GetByTransferID(ctx context.Context, transferID string) (Withdrawal, error)
 	// SetStatus transitions status from→to (idempotent); changed=false if the row
 	// was not in `from`. Optionally records a transfer id / reason.
 	SetStatus(ctx context.Context, publicID, from, to, transferID, reason string) (changed bool, err error)
@@ -37,30 +40,38 @@ type Repo interface {
 }
 
 // Bank moves coins through the ledger. Satisfied by an adapter over ledger.Service.
-// All three are idempotent on the withdrawal id.
+// All are idempotent on the withdrawal id.
 type Bank interface {
 	Hold(ctx context.Context, withdrawalID, agentPublicID string, coins int64) error    // agent → escrow
 	Release(ctx context.Context, withdrawalID, agentPublicID string, coins int64) error // escrow → agent (reject/fail)
 	// Payout burns held coins: escrow → platform_revenue (fee) + stripe_clearing (rest).
 	Payout(ctx context.Context, withdrawalID, agentPublicID string, coins, feeCoins int64) error
+	// ReversePayout is the exact inverse of Payout: the money came back (Stripe
+	// reversed the transfer), so re-credit the agent's coins and undo the fee/
+	// clearing postings. Idempotent on the withdrawal id.
+	ReversePayout(ctx context.Context, withdrawalID, agentPublicID string, coins, feeCoins int64) error
 }
 
 // Transferrer sends money to a connected account. DevTransferrer runs offline;
 // StripeTransferrer hits the real API. Idempotent on idemKey.
 type Transferrer interface {
 	Transfer(ctx context.Context, connectAccountID string, amountCents int64, idemKey string) (transferID string, err error)
+	// PayoutsEnabled reports whether the connected account has completed KYC and can
+	// actually receive transfers (Stripe `payouts_enabled`). Guards Approve so we
+	// never attempt a payout to an un-onboarded account.
+	PayoutsEnabled(ctx context.Context, connectAccountID string) (bool, error)
 }
 
 // Withdrawal is a cash-out record.
 type Withdrawal struct {
-	PublicID       string `json:"withdrawal_id"`
-	Agent          string `json:"agent"`
-	Owner          string `json:"-"`
-	Coins          int64  `json:"coins"`
-	FeeCoins       int64  `json:"fee_coins"`
-	GrossCents     int64  `json:"gross_cents"`
-	StripeFeeCents int64  `json:"stripe_fee_cents"`
-	NetCents       int64  `json:"net_cents"`
+	PublicID       string    `json:"withdrawal_id"`
+	Agent          string    `json:"agent"`
+	Owner          string    `json:"-"`
+	Coins          int64     `json:"coins"`
+	FeeCoins       int64     `json:"fee_coins"`
+	GrossCents     int64     `json:"gross_cents"`
+	StripeFeeCents int64     `json:"stripe_fee_cents"`
+	NetCents       int64     `json:"net_cents"`
 	ConnectAccount string    `json:"-"`
 	Status         string    `json:"status"`
 	TransferID     string    `json:"transfer_id,omitempty"`

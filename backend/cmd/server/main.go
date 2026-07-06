@@ -489,6 +489,7 @@ func run() error {
 			DevMode:         devPayments,
 		}, log)
 	paymentsSvc.SetStripeHook(subscriptionSvc)
+	paymentsSvc.SetPayoutReconciler(payoutSvc) // transfer.reversed → re-credit withdrawn coins
 	subscriptionHandler := subscription.NewHandler(subscriptionSvc, authn)
 	paymentsHandler := payments.NewHandler(paymentsSvc, authn)
 
@@ -720,6 +721,22 @@ func (b payoutBank) Payout(ctx context.Context, withdrawalID, agentPublicID stri
 			{Wallet: ledger.SystemWallet(ledger.SysEscrow), Amount: -coins},
 			{Wallet: ledger.SystemWallet(ledger.SysPlatformRevenue), Amount: feeCoins},
 			{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: coins - feeCoins},
+		},
+	})
+	return err
+}
+
+// ReversePayout undoes a burned payout when Stripe reverses the transfer: the exact
+// inverse of Payout (clearing + revenue back out, coins back to the agent). Balanced
+// and idempotent on the withdrawal id.
+func (b payoutBank) ReversePayout(ctx context.Context, withdrawalID, agentPublicID string, coins, feeCoins int64) error {
+	_, err := b.l.Post(ctx, ledger.Txn{
+		Kind: "withdraw_reversal", Key: "wh-reversal:" + withdrawalID,
+		Metadata: map[string]any{"withdrawal": withdrawalID, "agent": agentPublicID, "coins": coins, "fee": feeCoins},
+		Postings: []ledger.Posting{
+			{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: -(coins - feeCoins)},
+			{Wallet: ledger.SystemWallet(ledger.SysPlatformRevenue), Amount: -feeCoins},
+			{Wallet: ledger.AgentWallet(agentPublicID), Amount: coins},
 		},
 	})
 	return err

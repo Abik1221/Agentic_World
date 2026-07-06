@@ -3,6 +3,7 @@ package payout
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -22,13 +23,13 @@ type Config struct {
 
 // Service runs the request → approve → pay cash-out workflow.
 type Service struct {
-	repo    Repo
-	bank    Bank
-	xfer    Transferrer
-	clock   platform.Clock
-	cfg     Config
-	log     *slog.Logger
-	m       *metrics
+	repo  Repo
+	bank  Bank
+	xfer  Transferrer
+	clock platform.Clock
+	cfg   Config
+	log   *slog.Logger
+	m     *metrics
 }
 
 func New(repo Repo, bank Bank, xfer Transferrer, clock platform.Clock, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
@@ -177,6 +178,14 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	} else if flagged {
 		return ErrFlagged
 	}
+	// KYC/capabilities must actually be complete before we move money — a Connect
+	// id existing is not enough. Fail closed so the hold stays and the admin can
+	// retry once the payee finishes onboarding.
+	if ok, err := s.xfer.PayoutsEnabled(ctx, w.ConnectAccount); err != nil {
+		return err
+	} else if !ok {
+		return ErrNoKYC
+	}
 
 	transferID, err := s.xfer.Transfer(ctx, w.ConnectAccount, w.NetCents, "wd:"+w.PublicID)
 	if err != nil {
@@ -226,6 +235,44 @@ func (s *Service) Get(ctx context.Context, publicID string) (Withdrawal, error) 
 	return s.repo.Get(ctx, publicID)
 }
 
+// ReverseByTransfer reconciles a payout that Stripe later reversed (transfer.reversed
+// webhook): it re-credits the agent's coins (the exact inverse of the burn) and marks
+// the withdrawal `reversed`. Idempotent and safe to replay — an unknown transfer, a
+// non-paid withdrawal, or an already-reversed one is a no-op. This is the mirror of
+// the deposit-side refund/dispute reversal, so the ledger stays self-healing.
+func (s *Service) ReverseByTransfer(ctx context.Context, transferID, reason string) error {
+	if transferID == "" {
+		return nil
+	}
+	w, err := s.repo.GetByTransferID(ctx, transferID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			s.log.Warn("payout: transfer.reversed for an unknown transfer; ignoring", "transfer", transferID)
+			return nil
+		}
+		return err
+	}
+	if w.Status == "reversed" {
+		return nil // already reconciled
+	}
+	if w.Status != "paid" {
+		s.log.Warn("payout: transfer.reversed for a non-paid withdrawal; ignoring",
+			"id", w.PublicID, "status", w.Status, "transfer", transferID)
+		return nil
+	}
+	// Re-credit before flipping status; the ledger key makes the re-credit single-effect.
+	if err := s.bank.ReversePayout(ctx, w.PublicID, w.Agent, w.Coins, w.FeeCoins); err != nil {
+		return err
+	}
+	if _, err := s.repo.SetStatus(ctx, w.PublicID, "paid", "reversed", w.TransferID, reason); err != nil {
+		return err
+	}
+	s.m.reversed.Inc()
+	s.audit(ctx, "stripe", "withdrawal_reversed", w.PublicID,
+		map[string]any{"reason": reason, "coins": w.Coins, "transfer": transferID})
+	return nil
+}
+
 func (s *Service) audit(ctx context.Context, actor, action, target string, detail map[string]any) {
 	b, _ := json.Marshal(detail)
 	if err := s.repo.Audit(ctx, actor, action, target, b); err != nil {
@@ -239,6 +286,7 @@ type metrics struct {
 	requested prometheus.Counter
 	paid      prometheus.Counter
 	paidCents prometheus.Counter
+	reversed  prometheus.Counter
 }
 
 func newMetrics(reg *prometheus.Registry) *metrics {
@@ -246,7 +294,8 @@ func newMetrics(reg *prometheus.Registry) *metrics {
 		requested: prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_requested_total", Help: "Cash-out requests filed."}),
 		paid:      prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_paid_total", Help: "Cash-outs paid to a bank."}),
 		paidCents: prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_paid_cents_total", Help: "Total cents paid out to users."}),
+		reversed:  prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_reversed_total", Help: "Payouts reversed by Stripe and re-credited."}),
 	}
-	reg.MustRegister(m.requested, m.paid, m.paidCents)
+	reg.MustRegister(m.requested, m.paid, m.paidCents, m.reversed)
 	return m
 }
