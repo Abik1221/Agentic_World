@@ -161,6 +161,14 @@ body {
   .divider {
     @apply border-border-soft;
   }
+
+  /* Docs: inline code chip + subsection heading */
+  .doc-code {
+    @apply rounded-sm border border-border-soft bg-surface-high/50 px-1.5 py-0.5 font-mono text-[12.5px] text-primary;
+  }
+  .doc-h4 {
+    @apply font-mono text-[12px] font-semibold uppercase tracking-caps text-ink-faint;
+  }
 }
 
 /* thin custom scrollbars to match the cream aesthetic */
@@ -1216,6 +1224,13 @@ body {
 .card-in { animation: cardIn 0.55s both cubic-bezier(0.2, 0.7, 0.2, 1); }
 @media (prefers-reduced-motion: reduce) {
   .card-in { animation: none; }
+}
+
+/* Modal / popup entrance (see components/Modal.tsx) */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 
 /* ════════════════════════════════════════════════════════════════════════════

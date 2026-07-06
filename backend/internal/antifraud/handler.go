@@ -28,9 +28,11 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		user := auth.RequireScope(auth.ScopeUser)
+		// Admin routes also admit the Super Admin Platform token (IsAdmin still gates).
+		admin := auth.RequireScopeAny(auth.ScopeUser, auth.ScopePlatform)
 		r.With(user).Post("/v1/disputes", h.report)
-		r.With(user).Post("/v1/admin/disputes/{id}/resolve", h.resolve)
-		r.With(user).Get("/v1/admin/agent/{id}/timing", h.timing)
+		r.With(admin).Post("/v1/admin/disputes/{id}/resolve", h.resolve)
+		r.With(admin).Get("/v1/admin/agent/{id}/timing", h.timing)
 	})
 }
 
@@ -101,5 +103,5 @@ func (h *Handler) timing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) isAdmin(p *auth.Principal) bool {
-	return p != nil && h.admins[p.UserPublicID]
+	return auth.IsAdmin(p, h.admins)
 }

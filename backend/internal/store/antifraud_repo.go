@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/agent-arena/arena/internal/antifraud"
+	"github.com/agent-arena/arena/internal/events"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -84,8 +86,14 @@ func (r *AntifraudRepo) ResolveHold(ctx context.Context, matchPublicID, status s
 }
 
 func (r *AntifraudRepo) OpenDispute(ctx context.Context, in antifraud.DisputeInput) (string, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	var pub string
-	err := r.db.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO disputes (public_id, match_id, agent_id, reporter_user_id, kind, detail)
 		 VALUES ($1,
 		         (SELECT id FROM matches WHERE public_id = $2),
@@ -95,7 +103,24 @@ func (r *AntifraudRepo) OpenDispute(ctx context.Context, in antifraud.DisputeInp
 		 RETURNING public_id`,
 		in.PublicID, nullString(in.MatchPublicID), nullString(in.AgentPublicID),
 		in.ReporterUserID, in.Kind, nullString(in.Detail)).Scan(&pub)
-	return pub, err
+	if err != nil {
+		return "", err
+	}
+	// dispute.opened for the Super Admin mirror, in the same tx as the insert.
+	payload, err := json.Marshal(map[string]any{
+		"dispute_id": pub, "kind": in.Kind,
+		"match": in.MatchPublicID, "agent": in.AgentPublicID,
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := InsertEventTx(ctx, tx, events.TypeDisputeOpened, payload); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return pub, nil
 }
 
 // ResolveDispute transitions an open/reviewing dispute, returning the linked match

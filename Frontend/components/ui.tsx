@@ -108,6 +108,8 @@ export function Button({
   className,
   type,
   full,
+  onClick,
+  disabled,
 }: {
   children: React.ReactNode;
   variant?: BtnVariant;
@@ -115,17 +117,19 @@ export function Button({
   className?: string;
   type?: "button" | "submit";
   full?: boolean;
+  onClick?: () => void;
+  disabled?: boolean;
 }) {
-  const cls = cx(btnClass[variant], full && "w-full", className);
+  const cls = cx(btnClass[variant], full && "w-full", disabled && "pointer-events-none opacity-50", className);
   if (href) {
     return (
-      <Link href={href} className={cls}>
+      <Link href={href} className={cls} onClick={onClick}>
         {children}
       </Link>
     );
   }
   return (
-    <button type={type ?? "button"} className={cls}>
+    <button type={type ?? "button"} className={cls} onClick={onClick} disabled={disabled}>
       {children}
     </button>
   );

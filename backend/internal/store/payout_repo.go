@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
+	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/payout"
 	"github.com/jackc/pgx/v5"
@@ -74,7 +76,13 @@ func (r *PayoutRepo) OutstandingDebt(ctx context.Context, agentPublicID string) 
 }
 
 func (r *PayoutRepo) Create(ctx context.Context, w payout.Withdrawal) error {
-	ct, err := r.db.Exec(ctx,
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	ct, err := tx.Exec(ctx,
 		`INSERT INTO withdrawals
 		   (public_id, agent_id, user_id, coins, fee_coins, gross_cents, stripe_fee_cents, net_cents, connect_account_id, status)
 		 SELECT $1, a.id, u.id, $4, $5, $6, $7, $8, $9, 'requested'
@@ -87,7 +95,17 @@ func (r *PayoutRepo) Create(ctx context.Context, w payout.Withdrawal) error {
 	if ct.RowsAffected() == 0 {
 		return httpx.ErrNotFound
 	}
-	return nil
+	// withdrawal.requested for the Super Admin mirror, in the same tx as the insert.
+	payload, err := json.Marshal(map[string]any{
+		"withdrawal_id": w.PublicID, "agent": w.Agent, "coins": w.Coins,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := InsertEventTx(ctx, tx, events.TypeWithdrawalRequested, payload); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *PayoutRepo) Get(ctx context.Context, publicID string) (payout.Withdrawal, error) {

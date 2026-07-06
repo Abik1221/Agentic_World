@@ -21,9 +21,17 @@ import (
 // Event types are past-tense facts. Add new ones here as producers emit them.
 const (
 	TypeAgentCertified = "agent.certified"
+	TypeMatchStarted   = "match.started"
 	TypeMatchFinished  = "match.finished"
 	TypeSeasonRolled   = "season.rolled"
 	TypeBadgeAwarded   = "badge.awarded"
+	// Cross-service live-feed facts for the Super Admin mirror. See
+	// docs/architecture/platform-events-contract.md. TypeTopupSucceeded is defined
+	// for the contract but not yet emitted (topups commit inside the ledger's own
+	// tx; the mirror picks them up via backfill until a hook lands).
+	TypeDisputeOpened       = "dispute.opened"
+	TypeWithdrawalRequested = "withdrawal.requested"
+	TypeTopupSucceeded      = "topup.succeeded"
 )
 
 // Event is one persisted domain fact.

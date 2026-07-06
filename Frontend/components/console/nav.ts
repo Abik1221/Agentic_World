@@ -7,6 +7,7 @@ import {
   CircleDollarSign,
   User,
   Shield,
+  BookOpen,
   type LucideIcon,
 } from "lucide-react";
 
@@ -76,6 +77,7 @@ export const NAV: NavItem[] = [
     ],
   },
   { id: "profile", label: "Profile", icon: User, href: "/profile" },
+  { id: "docs", label: "Docs", icon: BookOpen, href: "/docs" },
   {
     id: "admin",
     label: "Admin",
@@ -86,7 +88,7 @@ export const NAV: NavItem[] = [
 
 // Routes that render WITHOUT the console chrome (marketing + auth + hosted
 // return pages). Everything else is a console route (sidebar + topbar).
-const BARE_EXACT = new Set(["/", "/welcome", "/login", "/register", "/verify", "/provision"]);
+const BARE_EXACT = new Set(["/", "/welcome", "/login", "/register", "/verify", "/provision", "/docs"]);
 const BARE_PREFIX = ["/auth", "/billing", "/payouts", "/subscription/success", "/subscription/cancel"];
 
 export function isConsoleRoute(pathname: string): boolean {

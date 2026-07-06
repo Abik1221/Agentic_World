@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
+	"github.com/agent-arena/arena/internal/adminapi"
 	"github.com/agent-arena/arena/internal/antifraud"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/badges"
@@ -221,8 +222,9 @@ func run() error {
 	// unpublished for the dispatcher to retry, and consumers dedupe on event id.
 	platformEvents := store.NewPlatformEventStream(st.Redis, enginePrivKey)
 	for _, t := range []string{
-		events.TypeAgentCertified, events.TypeMatchFinished,
+		events.TypeAgentCertified, events.TypeMatchStarted, events.TypeMatchFinished,
 		events.TypeSeasonRolled, events.TypeBadgeAwarded,
+		events.TypeDisputeOpened, events.TypeWithdrawalRequested,
 	} {
 		eventBus.On(t, platformEvents.Publish)
 	}
@@ -334,6 +336,11 @@ func run() error {
 			MinCoins: cfg.WithdrawMinCoins, Clearing: cfg.WithdrawClearing,
 		}, log, metrics.Registry())
 	payoutHandler := payout.NewHandler(payoutSvc, authn, cfg.AdminUserIDs)
+
+	// Read-only admin surface the Super Admin backfills its live mirror from
+	// (users/agents/matches/payments/disputes + revenue overview). Authorized by a
+	// Platform service token or the ADMIN_USER_IDS allowlist; additive only.
+	adminReadHandler := adminapi.NewHandler(store.NewAdminRepo(st.DB), authn, cfg.AdminUserIDs)
 
 	// Match lifecycle: real engine + persistence + per-match Redis lock, real coin
 	// escrow/settlement + limit enforcement, live broadcast, ELO at finalize, and
@@ -460,6 +467,7 @@ func run() error {
 		antifraudHandler.Register,
 		tournamentHandler.Register,
 		payoutHandler.Register,
+		adminReadHandler.Register,
 	)
 	srv := httpx.NewServer(cfg, router, log)
 

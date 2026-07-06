@@ -28,9 +28,11 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/tournaments/{id}", h.get) // public
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
+		// Admin routes also admit the Super Admin Platform token (IsAdmin still gates).
+		admin := auth.RequireScopeAny(auth.ScopeUser, auth.ScopePlatform)
 		r.With(auth.RequireScope(auth.ScopeAgent)).Post("/v1/tournaments/{id}/enter", h.enter)
-		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/tournaments", h.create)
-		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/admin/tournaments/{id}/finalize", h.finalize)
+		r.With(admin).Post("/v1/tournaments", h.create)
+		r.With(admin).Post("/v1/admin/tournaments/{id}/finalize", h.finalize)
 	})
 }
 
@@ -95,6 +97,5 @@ func (h *Handler) finalize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) isAdmin(r *http.Request) bool {
-	p := auth.PrincipalFromContext(r.Context())
-	return p != nil && h.admins[p.UserPublicID]
+	return auth.IsAdmin(auth.PrincipalFromContext(r.Context()), h.admins)
 }

@@ -29,13 +29,17 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		user := auth.RequireScope(auth.ScopeUser)
+		// Admin routes additionally admit the Super Admin's Platform service token
+		// (the per-handler IsAdmin check still gates the action); user-owned routes
+		// stay user-only.
+		admin := auth.RequireScopeAny(auth.ScopeUser, auth.ScopePlatform)
 		r.With(user).Get("/v1/wallet/withdrawable", h.withdrawable)
 		r.With(user).Get("/v1/withdrawals", h.list)
 		r.With(user).Post("/v1/withdrawals", h.request)
-		r.With(user).Get("/v1/withdrawals/{id}", h.get)
-		r.With(user).Get("/v1/admin/withdrawals", h.adminList)
-		r.With(user).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
-		r.With(user).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
+		r.With(admin).Get("/v1/withdrawals/{id}", h.get)
+		r.With(admin).Get("/v1/admin/withdrawals", h.adminList)
+		r.With(admin).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
+		r.With(admin).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
 	})
 }
 
@@ -114,7 +118,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if wd.Owner != p.UserPublicID && !h.admins[p.UserPublicID] {
+	if wd.Owner != p.UserPublicID && !auth.IsAdmin(p, h.admins) {
 		httpx.Error(w, httpx.ErrForbidden)
 		return
 	}
@@ -152,5 +156,5 @@ func (h *Handler) reject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) isAdmin(p *auth.Principal) bool {
-	return p != nil && h.admins[p.UserPublicID]
+	return auth.IsAdmin(p, h.admins)
 }

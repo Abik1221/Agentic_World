@@ -142,10 +142,12 @@ func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner match.Player, state gs.State, deadline time.Time, events []gs.Event) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
+		var game string
+		var bid int64
 		err := tx.QueryRow(ctx,
 			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, started_at=now(), updated_at=now()
-			 WHERE public_id=$1 AND status='waiting' RETURNING id`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
+			 WHERE public_id=$1 AND status='waiting' RETURNING id, game, bid`,
+			matchPublicID, mustJSON(state), deadline).Scan(&matchID, &game, &bid)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return match.ErrNotWaiting
 		}
@@ -155,7 +157,10 @@ func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner m
 		if err := insertPlayer(ctx, tx, matchID, joiner); err != nil {
 			return err
 		}
-		return insertEvents(ctx, tx, matchID, events)
+		if err := insertEvents(ctx, tx, matchID, events); err != nil {
+			return err
+		}
+		return emitMatchStarted(ctx, tx, matchPublicID, game, bid)
 	})
 }
 
@@ -181,7 +186,10 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 		if err := insertPlayer(ctx, tx, matchID, in.SeatB); err != nil {
 			return err
 		}
-		return insertEvents(ctx, tx, matchID, in.Events)
+		if err := insertEvents(ctx, tx, matchID, in.Events); err != nil {
+			return err
+		}
+		return emitMatchStarted(ctx, tx, in.PublicID, in.Game, in.Bid)
 	})
 }
 
@@ -251,6 +259,23 @@ func (r *MatchRepo) finishTx(ctx context.Context, matchPublicID string, state gs
 		}
 		return nil
 	})
+}
+
+// emitMatchStarted appends a match.started fact to the transactional outbox in the
+// same tx as the match going active, so the Super Admin mirror learns of a live
+// match the instant it begins (not on the next 30s backfill). Best-effort payload:
+// a marshal failure aborts the tx (the match wouldn't have started cleanly anyway).
+func emitMatchStarted(ctx context.Context, tx pgx.Tx, matchPublicID, game string, bid int64) error {
+	payload, err := json.Marshal(map[string]any{
+		"match_id": matchPublicID,
+		"game":     game,
+		"bid":      bid,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = InsertEventTx(ctx, tx, eventbus.TypeMatchStarted, payload)
+	return err
 }
 
 func (r *MatchRepo) ListActiveExpired(ctx context.Context, now time.Time, limit int) ([]string, error) {
