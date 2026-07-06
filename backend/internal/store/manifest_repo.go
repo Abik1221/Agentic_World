@@ -154,11 +154,17 @@ func (r *ManifestRepo) ActiveManifest(ctx context.Context, agentPublicID string)
 	return r.scanOne(ctx, row)
 }
 
-// ActiveAgentIDs returns the public id of every agent with an active
-// (endpoint-verified) manifest — the set the health monitor probes.
+// ActiveAgentIDs returns the public id of every agent with an active manifest
+// whose endpoint is a real hosted http(s) URL — the set the health monitor
+// probes and the dispatcher can deliver to. In-process/demo agents (seeded with
+// an "internal://…" placeholder endpoint) are excluded: they play via the bot
+// runner, not push-play, so probing/delivering to them is meaningless.
 func (r *ManifestRepo) ActiveAgentIDs(ctx context.Context) ([]string, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT public_id FROM agents WHERE active_manifest_public_id IS NOT NULL`)
+		`SELECT a.public_id
+		 FROM agents a
+		 JOIN agent_manifests m ON a.active_manifest_public_id = m.public_id
+		 WHERE m.endpoint_url LIKE 'http://%' OR m.endpoint_url LIKE 'https://%'`)
 	if err != nil {
 		return nil, err
 	}

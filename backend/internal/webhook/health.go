@@ -225,6 +225,18 @@ func (m *Monitor) tick(ctx context.Context) error {
 		}(id)
 	}
 	wg.Wait()
+
+	// Surface health so continuous monitoring is observable: log only the
+	// endpoints currently degraded (empty log line when all healthy = quiet).
+	var degraded []EndpointHealth
+	for _, h := range m.health.Snapshot() {
+		if !h.Healthy || h.CircuitOpen {
+			degraded = append(degraded, h)
+		}
+	}
+	if len(degraded) > 0 {
+		m.log.Warn("webhook endpoints degraded", "count", len(degraded), "total", len(ids), "endpoints", degraded)
+	}
 	return nil
 }
 

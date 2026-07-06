@@ -29,6 +29,12 @@ func (f *fakeRepo) InsertManifest(_ context.Context, _ Manifest, _ string, _ []b
 func (f *fakeRepo) ActiveManifest(_ context.Context, _ string) (Manifest, bool, error) {
 	return f.active, f.activeFound, nil
 }
+func (f *fakeRepo) ActiveAgentIDs(_ context.Context) ([]string, error) {
+	if f.activeFound {
+		return []string{f.active.AgentPublicID}, nil
+	}
+	return nil, nil
+}
 func (f *fakeRepo) LatestManifest(_ context.Context, _ string) (Manifest, bool, error) {
 	return f.manifest, f.found, nil
 }
