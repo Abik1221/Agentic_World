@@ -21,7 +21,9 @@ package agentclient
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,6 +37,38 @@ import (
 	"syscall"
 	"time"
 )
+
+// SignatureVersion is the scheme id carried in the X-Arena-Signature header. The
+// SDKs branch on it so the scheme can evolve without breaking older agents.
+const SignatureVersion = "v1"
+
+// SignRequest computes the canonical HMAC-SHA256 signature the platform sends on
+// every call to a developer endpoint, and that the SDKs verify. The canonical
+// string binds the timestamp, per-request nonce, method, path, and a hash of the
+// body, so a captured request cannot be replayed to a different route/time. It is
+// exported so the reference SDKs (and tests) share EXACTLY this construction.
+//
+//	signingString = timestamp \n nonce \n METHOD \n path \n hex(sha256(body))
+//	signature     = hex(hmacSHA256(secret, signingString))
+//
+// The agent verifies by recomputing with its shared secret (constant-time compare),
+// rejecting stale timestamps (clock-skew window) and already-seen nonces (replay).
+func SignRequest(secret, timestamp, nonce, method, path string, body []byte) string {
+	bodyHash := sha256.Sum256(body)
+	var b strings.Builder
+	b.WriteString(timestamp)
+	b.WriteByte('\n')
+	b.WriteString(nonce)
+	b.WriteByte('\n')
+	b.WriteString(strings.ToUpper(method))
+	b.WriteByte('\n')
+	b.WriteString(path)
+	b.WriteByte('\n')
+	b.WriteString(hex.EncodeToString(bodyHash[:]))
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(b.String()))
+	return hex.EncodeToString(mac.Sum(nil))
+}
 
 // Config tunes the client. Zero values fall back to sensible defaults in New.
 type Config struct {
@@ -283,15 +317,23 @@ func (c *Client) attempt(ctx context.Context, method, rawURL, token string, body
 	if err != nil {
 		return 0, nil, err
 	}
+	nonce := newRequestID()
+	timestamp := time.Now().UTC().Format(time.RFC3339)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "AgentArena-Verifier/1.0")
-	req.Header.Set("X-Arena-Request-Id", newRequestID())
-	req.Header.Set("X-Arena-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	req.Header.Set("X-Arena-Request-Id", nonce)
+	req.Header.Set("X-Arena-Timestamp", timestamp)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if token != "" {
+		// Static bearer (back-compat) PLUS a per-request HMAC signature. The SDKs
+		// verify the signature (constant-time), reject stale timestamps, and
+		// dedupe nonces — so a leaked/replayed request can't be reused. The shared
+		// secret is the agent's endpoint token.
 		req.Header.Set("Authorization", "Bearer "+token)
+		sig := SignRequest(token, timestamp, nonce, method, req.URL.Path, body)
+		req.Header.Set("X-Arena-Signature", SignatureVersion+"="+sig)
 	}
 
 	resp, err := c.http.Do(req)
