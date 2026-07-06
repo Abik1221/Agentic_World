@@ -7,10 +7,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -417,6 +419,38 @@ func run() error {
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
 	// gateway; otherwise the offline DevGateway runs the whole flow locally.
+	//
+	// Guard: in production/staging we must NEVER silently run the DevGateway (it
+	// credits coins with NO real charge) or accept unsigned webhooks — refuse to
+	// boot without real Stripe configuration.
+	if cfg.IsProd() {
+		var missing []string
+		if cfg.StripeSecretKey == "" {
+			missing = append(missing, "STRIPE_SECRET_KEY")
+		}
+		if cfg.StripeWebhookSecret == "" {
+			missing = append(missing, "STRIPE_WEBHOOK_SECRET")
+		}
+		// The redirect URLs default to localhost; a real deploy must override them.
+		if cfg.CheckoutSuccessURL == "" || strings.Contains(cfg.CheckoutSuccessURL, "localhost") {
+			missing = append(missing, "CHECKOUT_SUCCESS_URL")
+		}
+		if cfg.CheckoutCancelURL == "" || strings.Contains(cfg.CheckoutCancelURL, "localhost") {
+			missing = append(missing, "CHECKOUT_CANCEL_URL")
+		}
+		if cfg.ConnectReturnURL == "" || strings.Contains(cfg.ConnectReturnURL, "localhost") {
+			missing = append(missing, "CONNECT_RETURN_URL")
+		}
+		if cfg.ConnectRefreshURL == "" || strings.Contains(cfg.ConnectRefreshURL, "localhost") {
+			missing = append(missing, "CONNECT_REFRESH_URL")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("payments: %s=%q requires real Stripe configuration; missing/placeholder: %s "+
+				"(refusing to run the offline DevGateway that credits coins with no charge)",
+				"APP_ENV", cfg.Env, strings.Join(missing, ", "))
+		}
+	}
+
 	var gateway payments.Gateway = &payments.DevGateway{}
 	devPayments := true
 	if cfg.StripeSecretKey != "" {

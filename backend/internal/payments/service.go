@@ -94,7 +94,7 @@ func (s *Service) Topup(ctx context.Context, userPublicID, agentPublicID, packKe
 	return s.gw.CreateCheckout(ctx, CheckoutParams{
 		Pack: pack, UserPublicID: userPublicID, AgentPublicID: agentPublicID,
 		ProcessingFeeCents: q.ProcessingFeeCents,
-		SuccessURL: s.cfg.SuccessURL, CancelURL: s.cfg.CancelURL,
+		SuccessURL:         s.cfg.SuccessURL, CancelURL: s.cfg.CancelURL,
 	})
 }
 
@@ -108,15 +108,17 @@ func (s *Service) ConfirmDevCheckout(ctx context.Context, userPublicID, sessionI
 	}
 	// Dev sessions carry pack metadata via reconciliation list or we re-fetch from session id pattern.
 	recs, err := s.gw.ListRecentCheckouts(ctx, s.clock.Now().Add(-time.Hour))
-	if err == nil {
-		for _, rec := range recs {
-			if rec.SessionID == sessionID && rec.UserPublicID == userPublicID {
-				return s.Coiner.Topup(ctx, userPublicID, rec.Coins, "topup:"+sessionID)
-			}
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if rec.SessionID == sessionID && rec.UserPublicID == userPublicID {
+			return s.Coiner.Topup(ctx, userPublicID, rec.Coins, "topup:"+sessionID)
 		}
 	}
-	// Fallback: parse coins from default starter pack for cs_dev sessions in local dev.
-	return s.Coiner.Topup(ctx, userPublicID, 100, "topup:"+sessionID)
+	// The session must be a real, matching dev checkout — never fabricate coins for
+	// an unknown session id.
+	return httpx.ErrNotFound
 }
 
 // Onboard returns a Stripe Connect Express KYC link for the user, creating and

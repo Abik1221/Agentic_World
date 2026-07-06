@@ -140,8 +140,10 @@ func (h *Handler) devConfirmCheckout(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.NewError(http.StatusForbidden, "forbidden", "You do not own this agent"))
 		return
 	}
-	// Simulate webhook: credit coins using session-based idempotency key
-	if err := h.svc.Coiner.Topup(r.Context(), in.Agent, in.Coins, "topup:"+in.SessionID); err != nil {
+	// Simulate the webhook: credit the OWNER's treasury wallet (Topup keys on the
+	// USER public id, exactly like the real checkout.session.completed path — the
+	// agent id is only used above to authorize this dev call), idempotent by session.
+	if err := h.svc.Coiner.Topup(r.Context(), owner, in.Coins, "topup:"+in.SessionID); err != nil {
 		httpx.Error(w, err)
 		return
 	}
