@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -95,6 +96,14 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.maxMatch)
 	defer cancel()
 
+	// Lifecycle: /initialize once at match start (best-effort — the agent may also
+	// initialise lazily on the first /turn). Seat A is always the developer.
+	if _, err := p.client.Initialize(ctx, target, agentclient.InitializeRequest{
+		MatchID: matchID, Game: "goofspiel", Seat: 0, Players: 2,
+	}); err != nil {
+		p.log.Warn("pushplay: initialize failed (continuing)", "match", matchID, "err", err)
+	}
+
 	fallbacks := 0
 	for {
 		if ctx.Err() != nil {
@@ -112,6 +121,13 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 		}
 		if v.Status != "active" {
 			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
+			// Lifecycle: /game-end with the final result (best-effort webhook).
+			result, _ := json.Marshal(v.Result)
+			if err := p.client.GameEnd(ctx, target, agentclient.GameEndNotification{
+				MatchID: matchID, Game: "goofspiel", Result: result,
+			}); err != nil {
+				p.log.Warn("pushplay: game-end delivery failed", "match", matchID, "err", err)
+			}
 			return
 		}
 		if !v.YourTurn {
