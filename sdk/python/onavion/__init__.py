@@ -32,3 +32,11 @@ __all__ = [
     "SimulationError",
     "__version__",
 ]
+
+
+def __getattr__(name):  # lazy so `import onavion` never forces the websockets dep
+    if name in ("RuntimeConnector", "ConnectorError"):
+        from . import runtime
+
+        return getattr(runtime, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

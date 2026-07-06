@@ -240,6 +240,41 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0 if verified else 1
 
 
+# --- run (connect the local agent over WSS) ------------------------------------
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Load the developer's agent object and connect it to the platform over the
+    outbound WebSocket. This is the local-runtime path: no inbound endpoint."""
+    import importlib.util
+    import os
+
+    url = args.url or os.environ.get("ONAVION_URL", "")
+    if not url:
+        print(f"{BAD} no platform URL — pass --url or set ONAVION_URL", file=sys.stderr)
+        return 2
+    agent_id = args.agent or os.environ.get("ONAVION_AGENT_ID", "")
+    token = args.token or os.environ.get("ONAVION_TOKEN", "")
+
+    # Load the agent module and find the `Agent` instance (var name configurable).
+    spec = importlib.util.spec_from_file_location("_onavion_user_agent", args.file)
+    if spec is None or spec.loader is None:
+        print(f"{BAD} cannot load {args.file}", file=sys.stderr)
+        return 2
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    agent = getattr(mod, args.var, None)
+    if agent is None:
+        print(f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)", file=sys.stderr)
+        return 2
+
+    print(f"onavion run — connecting {args.file}:{args.var} to {url}")
+    try:
+        agent.run(url=url, agent_id=agent_id, token=token)
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    return 0
+
+
 # --- init (scaffold) -----------------------------------------------------------
 
 _PY_STARTER = '''\
@@ -350,6 +385,14 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--game", choices=["goofspiel"], default="goofspiel")
     ps.add_argument("--hand", type=int, default=13)
     ps.set_defaults(func=cmd_simulate)
+
+    pr = sub.add_parser("run", help="connect your local agent to the platform over WSS")
+    pr.add_argument("--file", default="agent.py", help="path to your agent module")
+    pr.add_argument("--var", default="agent", help="the Agent variable name in that module")
+    pr.add_argument("--url", default="", help="platform connect URL (or ONAVION_URL)")
+    pr.add_argument("--agent", default="", help="agent public id (or ONAVION_AGENT_ID)")
+    pr.add_argument("--token", default="", help="access token (or ONAVION_TOKEN)")
+    pr.set_defaults(func=cmd_run)
 
     pp = sub.add_parser("publish", help="submit + verify a manifest via the platform API")
     pp.add_argument("--api", required=True, help="platform API base, e.g. https://host/api")

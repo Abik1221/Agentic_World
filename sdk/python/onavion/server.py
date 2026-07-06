@@ -177,6 +177,42 @@ class Agent:
             return 500, {"error": "handler_error"}
         return 200, move_to_dict(move)
 
+    # --- shared handler invocation (used by both the HTTP path and the socket
+    # RuntimeConnector, so both transports run identical decision logic) ---
+
+    def decide_turn(self, view_data: Dict[str, Any]) -> Response:
+        """Run the turn handler for a raw view dict; return ``(status, move)``."""
+        return self._handle_turn(view_data)
+
+    def ack_initialize(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the initialize handler and return the ack dict."""
+        ack = self._on_initialize(InitializeRequest.from_dict(data)) if self._on_initialize else None
+        return ack if isinstance(ack, dict) else {"ready": True, "display_name": self.name}
+
+    def notify_event(self, data: Dict[str, Any]) -> None:
+        if self._on_event:
+            self._on_event(EventNotification.from_dict(data))
+
+    def notify_game_end(self, data: Dict[str, Any]) -> None:
+        if self._on_game_end:
+            self._on_game_end(GameEndNotification.from_dict(data))
+
+    # --- local runtime (dial OUT to the platform over WSS) ---
+
+    def run(self, url: str, agent_id: str = "", token: str = "", **kwargs) -> None:
+        """Connect to the platform and serve matches over an outbound WebSocket.
+
+        This is the Beta local-runtime path: your machine dials the platform, so
+        no inbound endpoint or networking config is needed. Blocks until
+        interrupted; reconnects automatically. ``token``/``agent_id`` come from
+        ``onavion login`` (or pass them explicitly / via env)."""
+        from .runtime import RuntimeConnector
+
+        RuntimeConnector(
+            self, url=url, agent_id=agent_id, token=token,
+            name=self.name, games=self.supported_games, **kwargs,
+        ).run()
+
     # --- built-in HTTP server ---
 
     def serve(self, host: str = "127.0.0.1", port: int = 9099) -> None:
