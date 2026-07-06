@@ -141,8 +141,16 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 		deliveredRounds = p.dispatchRoundEvents(ctx, agentID, target, matchID, v, deliveredRounds)
 		if v.Status != "active" {
 			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
-			// Lifecycle: /game-end with the final result.
-			result, _ := json.Marshal(v.Result)
+			// Lifecycle: /game-end with a FAT, replayable result — the outcome plus
+			// the full round-by-round history, so the agent has the complete match
+			// record without stitching /event notifications together.
+			result, _ := json.Marshal(gameEndResult{
+				Result:  v.Result,
+				MatchID: matchID,
+				Game:    "goofspiel",
+				Seat:    0,
+				History: historyFromView(v),
+			})
 			p.emitGameEnd(ctx, agentID, target, matchID, result)
 			return
 		}
@@ -234,12 +242,63 @@ func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matc
 		YourHand:     v.You.Hand,
 		Scores:       [2]int{v.You.Score, v.Opponent.Score},
 		LegalActions: legal,
+		History:      historyFromView(v), // self-contained: every resolved round so far
 	}
 	var move remoteplay.GoofspielMove
 	if _, err := p.client.Play(ctx, target, view, &move); err == nil && containsInt(legal, move.Card) {
 		return move.Card, false
 	}
 	return lowestInt(legal), true
+}
+
+// historyFromView maps the match service's per-round history into the seat's
+// replayable RoundView list (developer is seat 0). Running scores are computed
+// cumulatively so the payload is a complete, self-consistent record.
+func historyFromView(v match.AgentView) []remoteplay.RoundView {
+	out := make([]remoteplay.RoundView, 0, len(v.History))
+	cum := [2]int{}
+	for _, h := range v.History {
+		w := winnerSeat(h.Winner)
+		if w == 0 {
+			cum[0] += h.PrizePool
+		} else if w == 1 {
+			cum[1] += h.PrizePool
+		}
+		out = append(out, remoteplay.RoundView{
+			Round:     h.Round,
+			Prize:     h.Prize,
+			PrizePool: h.PrizePool,
+			YourCard:  h.YourCard,
+			OppCard:   h.OppCard,
+			Winner:    w,
+			Scores:    cum,
+		})
+	}
+	return out
+}
+
+// gameEndResult is the fat /game-end payload: the settled result plus the full
+// replayable round history. The embedded Result keeps the historical shape
+// (winner + coins) so existing consumers keep working; History is additive.
+type gameEndResult struct {
+	Result  any                    `json:"result"`
+	MatchID string                 `json:"match_id"`
+	Game    string                 `json:"game"`
+	Seat    int                    `json:"seat"`
+	History []remoteplay.RoundView `json:"history"`
+}
+
+// winnerSeat maps the match view's "you"/"opponent"/"tie" to a seat index from
+// the developer's perspective (seat 0), matching remoteplay.RoundView semantics.
+func winnerSeat(winner string) int {
+	switch winner {
+	case "you":
+		return 0
+	case "opponent":
+		return 1
+	default:
+		return -1 // tie
+	}
 }
 
 func containsInt(xs []int, v int) bool {

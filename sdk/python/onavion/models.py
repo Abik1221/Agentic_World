@@ -91,7 +91,12 @@ class GameEndNotification:
 
 @dataclass
 class GoofspielView:
-    """The redacted state POSTed each turn for Goofspiel."""
+    """The redacted state POSTed each turn for Goofspiel.
+
+    ``history`` makes the view self-contained: every already-resolved round from
+    this seat's perspective (both revealed cards, winner, running scores), so you
+    can reason over the whole match from a single turn payload — you never depend
+    on having caught every ``/event``."""
 
     match_id: str
     seat: int
@@ -101,6 +106,7 @@ class GoofspielView:
     your_hand: List[int]
     scores: List[int]
     legal_actions: List[int]
+    history: List[Dict[str, Any]] = field(default_factory=list)
     game: str = GOOFSPIEL
     raw: Dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -115,6 +121,7 @@ class GoofspielView:
             your_hand=list(d.get("your_hand", [])),
             scores=list(d.get("scores", [])),
             legal_actions=list(d.get("legal_actions") or d.get("your_hand", [])),
+            history=list(d.get("history", [])),
             raw=d,
         )
 

@@ -45,6 +45,17 @@ export interface GameEndNotification {
 
 // --- Turn views (per game) ---
 
+/** One resolved round from this seat's perspective (both cards open post-resolution). */
+export interface GoofspielRound {
+  round: number;
+  prize: number;
+  prize_pool: number;
+  your_card: number;
+  opp_card: number;
+  winner: number; // 0 = you, 1 = opponent, -1 = tie
+  scores: number[];
+}
+
 export interface GoofspielView {
   game: "goofspiel";
   match_id: string;
@@ -55,6 +66,8 @@ export interface GoofspielView {
   your_hand: number[];
   scores: number[];
   legal_actions: number[];
+  /** Every already-resolved round — the view is self-contained/replayable. */
+  history: GoofspielRound[];
   raw: Record<string, unknown>;
 }
 
@@ -123,6 +136,7 @@ export function parseView(d: Record<string, any>): TurnView {
         your_hand: asArr<number>(d.your_hand),
         scores: asArr<number>(d.scores),
         legal_actions: asArr<number>(d.legal_actions).length ? asArr<number>(d.legal_actions) : asArr<number>(d.your_hand),
+        history: asArr<GoofspielRound>(d.history),
         raw: d,
       };
     case MONOPOLY:
