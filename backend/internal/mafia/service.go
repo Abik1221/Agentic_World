@@ -32,6 +32,9 @@ type Service struct {
 	clock  platform.Clock
 	cfg    Config
 	eng    *mf.Engine
+	// pusher is set by EnablePushPlay to enable POST /v1/mafia/pushplay
+	// (manifest push model with bot-filled seats). Nil ⇒ push-play returns 501.
+	pusher *pushPlayer
 }
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {

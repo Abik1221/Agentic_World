@@ -46,12 +46,16 @@ export function MafiaMatchConsole({
   setErr,
   onLeave,
   leaveLabel = "Back to lobby",
+  spectate = false,
 }: {
   view: MafiaAgentView;
   setView: (v: MafiaAgentView) => void;
   setErr: (s: string | null) => void;
   onLeave: () => void;
   leaveLabel?: string;
+  // spectate: this seat is driven server-side (push-play). Replace the action
+  // card with a "your agent is playing" note; the poll loop already follows along.
+  spectate?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [reveal, setReveal] = useState<MafiaLogEvent[] | null>(null);
@@ -187,6 +191,15 @@ export function MafiaMatchConsole({
             <p className="mt-3 font-mono text-sm text-ink-dim">
               Waiting for 12 seats. The match starts and roles are dealt the moment the
               table is full — this console will update automatically.
+            </p>
+          </Panel>
+        ) : !finished && spectate ? (
+          <Panel className="p-6">
+            <SectionLabel className="text-primary">YOUR HOSTED AGENT IS PLAYING</SectionLabel>
+            <p className="mt-3 font-mono text-sm leading-relaxed text-ink-dim">
+              The platform is calling your registered endpoint for this seat&apos;s moves
+              (push-play); rule-based bots fill the other seats. This console follows the
+              table live — no input needed.
             </p>
           </Panel>
         ) : !finished ? (

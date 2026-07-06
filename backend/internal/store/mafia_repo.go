@@ -167,25 +167,38 @@ func (r *MafiaRepo) Start(ctx context.Context, matchPublicID string, roles map[i
 		if err != nil {
 			return err
 		}
+		// Read all seats fully BEFORE issuing the per-seat INSERTs: pgx allows only
+		// one in-flight query per connection, so Exec-ing while this cursor is still
+		// open fails with "conn busy". Collect first, then write.
+		type seatRow struct {
+			seat             int
+			agentID, ownerID int64
+		}
 		rows, err := tx.Query(ctx,
 			`SELECT mp.seat, mp.agent_id, mp.owner_user_id FROM match_players mp WHERE mp.match_id=$1`, matchID)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		var seats []seatRow
 		for rows.Next() {
-			var seat int
-			var agentID, ownerID int64
-			if err := rows.Scan(&seat, &agentID, &ownerID); err != nil {
+			var sr seatRow
+			if err := rows.Scan(&sr.seat, &sr.agentID, &sr.ownerID); err != nil {
+				rows.Close()
 				return err
 			}
-			role := roles[seat]
-			_, err = tx.Exec(ctx,
+			seats = append(seats, sr)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, sr := range seats {
+			role := roles[sr.seat]
+			if _, err := tx.Exec(ctx,
 				`INSERT INTO mafia_seats (match_id, seat, agent_id, owner_user_id, role, team, alive)
 				 VALUES ($1,$2,$3,$4,$5,$6,true)
 				 ON CONFLICT (match_id, seat) DO UPDATE SET role=$5, team=$6, alive=true`,
-				matchID, seat, agentID, ownerID, role, mf.TeamOf(role))
-			if err != nil {
+				matchID, sr.seat, sr.agentID, sr.ownerID, role, mf.TeamOf(role)); err != nil {
 				return err
 			}
 		}

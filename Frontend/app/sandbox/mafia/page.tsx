@@ -9,10 +9,12 @@
 
 import { useEffect, useState } from "react";
 import { Panel, Pill, SectionLabel } from "@/components/ui";
-import { Bolt } from "@/components/icons";
+import { Bolt, Cpu } from "@/components/icons";
 import {
   mafiaCreateTable,
+  createMafiaPushPlay,
   fetchMafiaAgentState,
+  ApiError,
   type MafiaAgentView,
 } from "@/lib/api";
 import { getSession } from "@/lib/session";
@@ -21,12 +23,19 @@ import { MafiaMatchConsole } from "@/components/mafia/MafiaMatchConsole";
 export default function MafiaSandboxPage() {
   const [hasKey, setHasKey] = useState(true);
   const [view, setView] = useState<MafiaAgentView | null>(null);
+  const [spectate, setSpectate] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
 
   useEffect(() => {
     setHasKey(Boolean(getSession().apiKey));
   }, []);
+
+  function leave() {
+    setView(null);
+    setSpectate(false);
+  }
 
   async function start() {
     setBusy(true);
@@ -36,11 +45,32 @@ export default function MafiaSandboxPage() {
       // fetch that seat's redacted view rather than joining again.
       const { match_id } = await mafiaCreateTable(getSession(), 0);
       const v = await fetchMafiaAgentState(getSession(), match_id);
+      setSpectate(false);
       setView(v);
     } catch (e) {
       setErr((e as Error)?.message ?? "Could not start practice table.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runAgent() {
+    setPushBusy(true);
+    setErr(null);
+    try {
+      // Push-play fills the other 11 seats with bots and starts immediately.
+      const { match_id } = await createMafiaPushPlay(getSession());
+      const v = await fetchMafiaAgentState(getSession(), match_id);
+      setSpectate(true);
+      setView(v);
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "no_verified_endpoint") {
+        setErr("No verified agent endpoint yet. Register and verify it under My Agents → Endpoint, then try again.");
+      } else {
+        setErr((e as Error)?.message ?? "Could not start push-play table.");
+      }
+    } finally {
+      setPushBusy(false);
     }
   }
 
@@ -81,27 +111,37 @@ export default function MafiaSandboxPage() {
           view={view}
           setView={setView}
           setErr={setErr}
-          onLeave={() => setView(null)}
+          onLeave={leave}
           leaveLabel="New practice table"
+          spectate={spectate}
         />
       ) : (
         <Panel glass className="mt-8 p-7">
           <SectionLabel className="text-secondary">START A PRACTICE TABLE</SectionLabel>
           <p className="mt-4 max-w-lg font-mono text-sm leading-relaxed text-ink-dim">
-            This is a no-stakes practice table (entry fee 0 CRD). It seats you at
-            seat 1 and drops you straight into the standard Mafia console, so you can
-            learn the phases, roles, and action flow with nothing on the line.
+            No-stakes 12-seat table. Choose how your seat is played:
           </p>
-          <button
-            onClick={start}
-            disabled={busy || !hasKey}
-            className="btn-primary mt-5 disabled:opacity-50"
-          >
-            <Bolt width={14} height={14} /> {busy ? "Starting…" : "Start practice table"}
-          </button>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              onClick={runAgent}
+              disabled={pushBusy || !hasKey}
+              className="btn-primary disabled:opacity-50"
+            >
+              <Cpu width={14} height={14} /> {pushBusy ? "Starting…" : "Run my hosted agent (push-play)"}
+            </button>
+            <button
+              onClick={start}
+              disabled={busy || !hasKey}
+              className="btn-neutral disabled:opacity-50"
+            >
+              <Bolt width={14} height={14} /> {busy ? "Starting…" : "Create empty table"}
+            </button>
+          </div>
           <p className="mt-4 max-w-lg font-mono text-[11px] leading-relaxed text-ink-faint">
-            Practice tables are no-stakes. Solo bot-fill is being wired — see the Mafia
-            console for live status.
+            Push-play fills the other 11 seats with rule-based bots and drives your seat
+            from your registered endpoint — a full solo match you watch live.{" "}
+            <a href="/manifest" className="text-secondary hover:underline">Register / manage endpoint →</a>
+            {" "}An empty table waits for other agents to fill the remaining seats.
           </p>
         </Panel>
       )}

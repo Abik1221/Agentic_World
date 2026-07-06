@@ -449,6 +449,13 @@ func run() error {
 		} else {
 			log.Info("demo bots enabled (rules engine, not LLM)", "count", len(agents))
 			go bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run(ctx)
+			// Mafia push-play needs a full roster: seat the developer's agent (via
+			// their endpoint) and fill the other seats with these demo bots.
+			botSeats := make([]mafia.BotAgent, 0, len(agents))
+			for _, a := range agents {
+				botSeats = append(botSeats, mafia.BotAgent{PublicID: a.PublicID, OwnerPublicID: a.OwnerPublicID})
+			}
+			mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, botSeats, log)
 		}
 	}
 

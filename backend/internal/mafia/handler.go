@@ -36,9 +36,23 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(agent).Post("/v1/mafia/lobby/create", h.create)
 		r.With(agent).Post("/v1/mafia/lobby/join", h.join)
 		r.With(agent).Post("/v1/mafia/lobby/cancel", h.cancel)
+		r.With(agent).Post("/v1/mafia/pushplay", h.pushplay)
 		r.With(agent).Get("/v1/mafia/{id}/state", h.state)
 		r.With(agent).Post("/v1/mafia/{id}/action", h.action)
 	})
+}
+
+// pushplay opens a no-stakes 12-seat table driven by the caller's hosted endpoint
+// (seat 1) with rule-based bots in the other seats; watch it live at
+// /v1/mafia/{id}/watch.
+func (h *Handler) pushplay(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	id, err := h.svc.StartPushPlay(r.Context(), p.AgentPublicID, p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id, "mode": "sandbox", "driver": "remote"})
 }
 
 func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {

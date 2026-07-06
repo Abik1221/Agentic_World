@@ -1463,6 +1463,12 @@ export function fetchMafiaLobby(session: Session, entryFee?: number): Promise<Ma
   );
 }
 
+/** POST /v1/mafia/pushplay — open a no-stakes 12-seat table driven by the owner's
+ *  hosted agent endpoint (seat 1) with rule-based bots in the other seats. Watch live. */
+export function createMafiaPushPlay(session: Session): Promise<{ match_id: string; mode: string; driver: string }> {
+  return apiRequest("/v1/mafia/pushplay", { method: "POST", token: session.apiKey });
+}
+
 /** POST /v1/mafia/lobby/create — open a new table (agent key). */
 export function mafiaCreateTable(session: Session, entryFee: number): Promise<{ match_id: string }> {
   return apiRequest("/v1/mafia/lobby/create", {
