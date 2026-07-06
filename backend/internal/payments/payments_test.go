@@ -74,7 +74,10 @@ func (r *fakeRepo) InsertEvent(_ context.Context, id, typ string, payload []byte
 	r.events[id] = payments.StoredEvent{ID: id, Type: typ, Payload: payload}
 	return false, nil
 }
-func (r *fakeRepo) MarkProcessed(_ context.Context, id string) error { r.processed[id] = true; return nil }
+func (r *fakeRepo) MarkProcessed(_ context.Context, id string) error {
+	r.processed[id] = true
+	return nil
+}
 func (r *fakeRepo) UnprocessedEvents(_ context.Context, _ int) ([]payments.StoredEvent, error) {
 	var out []payments.StoredEvent
 	for id, e := range r.events {
@@ -84,9 +87,14 @@ func (r *fakeRepo) UnprocessedEvents(_ context.Context, _ int) ([]payments.Store
 	}
 	return out, nil
 }
-func (r *fakeRepo) OwnerOfAgent(_ context.Context, _ string) (string, error)  { return r.owner, nil }
-func (r *fakeRepo) StripeConnectID(_ context.Context, _ string) (string, error) { return r.connectID, nil }
-func (r *fakeRepo) SetStripeConnectID(_ context.Context, _, id string) error    { r.connectID = id; return nil }
+func (r *fakeRepo) OwnerOfAgent(_ context.Context, _ string) (string, error) { return r.owner, nil }
+func (r *fakeRepo) StripeConnectID(_ context.Context, _ string) (string, error) {
+	return r.connectID, nil
+}
+func (r *fakeRepo) SetStripeConnectID(_ context.Context, _, id string) error {
+	r.connectID = id
+	return nil
+}
 
 func newSvc(coiner payments.Coiner, repo payments.Repo) *payments.Service {
 	return payments.New(&payments.DevGateway{}, coiner, repo,
@@ -118,6 +126,22 @@ func eventJSON(id, typ, sessionID, agent string, coins int64) []byte {
 			"metadata":     map[string]string{"agent": agent, "user": "usr_a", "coins": strconv.FormatInt(coins, 10)},
 		}},
 	}
+	b, _ := json.Marshal(ev)
+	return b
+}
+
+// eventJSONStatus builds a checkout-session event carrying a payment_status,
+// exercising the async-settlement gate.
+func eventJSONStatus(id, typ, sessionID, agent string, coins int64, paymentStatus string) []byte {
+	obj := map[string]any{
+		"id":           sessionID,
+		"amount_total": 500,
+		"metadata":     map[string]string{"agent": agent, "user": "usr_a", "coins": strconv.FormatInt(coins, 10)},
+	}
+	if paymentStatus != "" {
+		obj["payment_status"] = paymentStatus
+	}
+	ev := map[string]any{"id": id, "type": typ, "data": map[string]any{"object": obj}}
 	b, _ := json.Marshal(ev)
 	return b
 }
@@ -193,6 +217,76 @@ func TestWebhookRefundReverses(t *testing.T) {
 	}
 	if coiner.reversed != 100 {
 		t.Fatalf("reversed = %d, want 100", coiner.reversed)
+	}
+}
+
+// ── async settlement (ACH / PayPal / bank debits settle after completion) ──────
+
+func TestWebhookDefersUnsettledAsyncPayment(t *testing.T) {
+	coiner := newCoiner()
+	svc := newSvc(coiner, newRepo())
+
+	// Session completes but the async payment is still processing → NO credit yet.
+	pending := eventJSONStatus("evt_a1", payments.EventCheckoutCompleted, "cs_async", "ag_a", 550, "unpaid")
+	if err := svc.HandleWebhook(context.Background(), pending, sign(pending, clockT.Unix())); err != nil {
+		t.Fatalf("pending webhook: %v", err)
+	}
+	if coiner.credited != 0 {
+		t.Fatalf("credited %d before the money settled, want 0", coiner.credited)
+	}
+
+	// The bank/PayPal payment settles later → credit exactly once.
+	settled := eventJSONStatus("evt_a2", payments.EventCheckoutAsyncSucceeded, "cs_async", "ag_a", 550, "paid")
+	if err := svc.HandleWebhook(context.Background(), settled, sign(settled, clockT.Unix())); err != nil {
+		t.Fatalf("settled webhook: %v", err)
+	}
+	if coiner.credited != 550 {
+		t.Fatalf("credited %d after settlement, want 550", coiner.credited)
+	}
+}
+
+func TestWebhookAsyncFailedAndExpiredNeverCredit(t *testing.T) {
+	for _, typ := range []string{payments.EventCheckoutAsyncFailed, payments.EventCheckoutExpired} {
+		coiner := newCoiner()
+		svc := newSvc(coiner, newRepo())
+		body := eventJSONStatus("evt_"+typ, typ, "cs_x", "ag_a", 550, "unpaid")
+		if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+			t.Fatalf("%s webhook: %v", typ, err)
+		}
+		if coiner.credited != 0 {
+			t.Fatalf("%s credited %d, want 0", typ, coiner.credited)
+		}
+	}
+}
+
+func TestWebhookPaidCompletionCredits(t *testing.T) {
+	coiner := newCoiner()
+	svc := newSvc(coiner, newRepo())
+	body := eventJSONStatus("evt_paid", payments.EventCheckoutCompleted, "cs_paid", "ag_a", 550, "paid")
+	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+		t.Fatalf("paid webhook: %v", err)
+	}
+	if coiner.credited != 550 {
+		t.Fatalf("paid completion credited %d, want 550", coiner.credited)
+	}
+}
+
+func TestWebhookCompletionThenAsyncCreditsExactlyOnce(t *testing.T) {
+	coiner := newCoiner()
+	svc := newSvc(coiner, newRepo())
+	steps := []struct{ id, typ, ps string }{
+		{"c1", payments.EventCheckoutCompleted, "unpaid"},    // deferred
+		{"c2", payments.EventCheckoutAsyncSucceeded, "paid"}, // credits
+		{"c3", payments.EventCheckoutAsyncSucceeded, "paid"}, // redelivery, idempotent
+	}
+	for _, s := range steps {
+		body := eventJSONStatus(s.id, s.typ, "cs_same", "ag_a", 550, s.ps)
+		if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+			t.Fatalf("%s webhook: %v", s.id, err)
+		}
+	}
+	if coiner.credited != 550 {
+		t.Fatalf("credited %d across completion+async+redelivery, want 550 exactly once", coiner.credited)
 	}
 }
 

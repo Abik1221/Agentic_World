@@ -179,16 +179,34 @@ func (s *Service) HandleWebhook(ctx context.Context, payload []byte, sigHeader s
 // SESSION id so the webhook and reconciliation converge on one idempotency key.
 func (s *Service) process(ctx context.Context, ev Event) error {
 	switch ev.Type {
-	case EventCheckoutCompleted:
+	case EventCheckoutCompleted, EventCheckoutAsyncSucceeded:
 		if ev.UserPublicID == "" || ev.Coins <= 0 {
 			s.log.Warn("checkout completed without usable metadata; skipping", "event", ev.ID, "session", ev.ObjectID)
 			return nil
 		}
+		// Credit only a SETTLED payment. Card checkouts complete as paid; async
+		// methods (ACH, some bank/PayPal) complete as "unpaid" and settle later via
+		// async_payment_succeeded — crediting on completion would hand out coins
+		// before the money clears. async_payment_succeeded always implies paid, so
+		// only guard the completion event. (Empty status = DevGateway/legacy → allow.)
+		if ev.Type == EventCheckoutCompleted &&
+			ev.PaymentStatus != "" && ev.PaymentStatus != "paid" && ev.PaymentStatus != "no_payment_required" {
+			s.log.Info("checkout completed but payment not settled; awaiting async settlement",
+				"event", ev.ID, "session", ev.ObjectID, "payment_status", ev.PaymentStatus)
+			return nil
+		}
+		// Idempotent by the checkout SESSION id, so completion + async_payment_succeeded
+		// for the same session credit exactly once (and match reconciliation's key).
 		if err := s.Coiner.Topup(ctx, ev.UserPublicID, ev.Coins, "topup:"+ev.ObjectID); err != nil {
 			return err
 		}
 		s.m.topups.Inc()
 		s.m.topupCoins.Add(float64(ev.Coins))
+		return nil
+
+	case EventCheckoutAsyncFailed, EventCheckoutExpired:
+		// The buyer's async payment failed or the session expired unpaid — no coins.
+		s.log.Info("checkout not paid; no credit", "event", ev.ID, "type", ev.Type, "session", ev.ObjectID)
 		return nil
 
 	case EventChargeRefunded, EventDisputeCreated:

@@ -16,12 +16,19 @@ import (
 	"time"
 )
 
-// Stripe event types we act on.
+// Stripe event types we act on. Coins credit on a SETTLED payment only:
+// synchronous methods (card) settle at checkout.session.completed with
+// payment_status=paid; asynchronous methods (ACH debit, some bank/PayPal flows)
+// complete first as "unpaid" and settle later via async_payment_succeeded — so
+// we must wait for that event rather than credit on completion.
 const (
-	EventCheckoutCompleted = "checkout.session.completed"
-	EventPaymentSucceeded  = "payment_intent.succeeded"
-	EventChargeRefunded    = "charge.refunded"
-	EventDisputeCreated    = "charge.dispute.created"
+	EventCheckoutCompleted      = "checkout.session.completed"
+	EventCheckoutAsyncSucceeded = "checkout.session.async_payment_succeeded"
+	EventCheckoutAsyncFailed    = "checkout.session.async_payment_failed"
+	EventCheckoutExpired        = "checkout.session.expired"
+	EventPaymentSucceeded       = "payment_intent.succeeded"
+	EventChargeRefunded         = "charge.refunded"
+	EventDisputeCreated         = "charge.dispute.created"
 )
 
 // Pack is a purchasable bundle of coins. Defined in config, never in handlers.
@@ -77,6 +84,7 @@ type Event struct {
 	UserPublicID  string
 	Coins         int64
 	AmountCents   int64
+	PaymentStatus string // checkout session payment_status: paid|unpaid|no_payment_required
 	Payload       []byte
 }
 
@@ -130,10 +138,11 @@ func parseEvent(payload []byte) (Event, error) {
 		return Event{}, err
 	}
 	var obj struct {
-		ID          string            `json:"id"`
-		AmountTotal int64             `json:"amount_total"`
-		Amount      int64             `json:"amount"`
-		Metadata    map[string]string `json:"metadata"`
+		ID            string            `json:"id"`
+		AmountTotal   int64             `json:"amount_total"`
+		Amount        int64             `json:"amount"`
+		PaymentStatus string            `json:"payment_status"`
+		Metadata      map[string]string `json:"metadata"`
 	}
 	_ = json.Unmarshal(env.Data.Object, &obj) // metadata-less objects are fine
 
@@ -150,6 +159,7 @@ func parseEvent(payload []byte) (Event, error) {
 		UserPublicID:  obj.Metadata["user"],
 		Coins:         coins,
 		AmountCents:   cents,
+		PaymentStatus: obj.PaymentStatus,
 		Payload:       payload,
 	}, nil
 }
