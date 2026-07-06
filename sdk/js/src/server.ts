@@ -135,6 +135,37 @@ export class Agent {
     }
   }
 
+  // --- shared handler invocation (used by both the HTTP path and the socket
+  // RuntimeConnector, so both transports run identical decision logic) ---
+
+  /** Run the turn handler for a raw view dict; returns `{status, body}`. */
+  decideTurn(view: Record<string, unknown>): Promise<DispatchResult> {
+    return this.handleTurn(view);
+  }
+  /** Run the initialize handler and return the ack object. */
+  async ackInitialize(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const ack = this.initHandler ? await this.initHandler(data as unknown as InitializeRequest) : undefined;
+    return ack && typeof ack === "object" ? (ack as Record<string, unknown>) : { ready: true, display_name: this.name };
+  }
+  async notifyEvent(data: Record<string, unknown>): Promise<void> {
+    if (this.eventHandler) await this.eventHandler(data as unknown as EventNotification);
+  }
+  async notifyGameEnd(data: Record<string, unknown>): Promise<void> {
+    if (this.gameEndHandler) await this.gameEndHandler(data as unknown as GameEndNotification);
+  }
+
+  /** Connect to the platform and serve matches over an outbound WebSocket — the
+   *  Beta local-runtime path (no inbound endpoint; works behind NAT). Blocks
+   *  until stopped; reconnects automatically. */
+  async run(opts: import("./runtime.js").RuntimeOptions): Promise<void> {
+    const { RuntimeConnector } = await import("./runtime.js");
+    await new RuntimeConnector(this, {
+      name: this.name,
+      games: this.supportedGames,
+      ...opts,
+    }).run();
+  }
+
   /** Run an HTTP server until the process exits. Zero dependencies. */
   serve(port = 9099, host = "127.0.0.1"): ReturnType<typeof createServer> {
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
