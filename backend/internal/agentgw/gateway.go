@@ -121,6 +121,22 @@ func (g *Gateway) Online() []AgentStatus {
 	return out
 }
 
+// ConnectionStatus reports whether an agent is connected and, if so, a snapshot
+// for the dashboard / `onavion status`.
+func (g *Gateway) ConnectionStatus(agentID string) (AgentStatus, bool) {
+	c := g.lookup(agentID)
+	if c == nil {
+		return AgentStatus{AgentID: agentID}, false
+	}
+	return AgentStatus{
+		AgentID:    c.agentID,
+		Name:       c.name,
+		Games:      c.games,
+		SDKVersion: c.sdkVersion,
+		LastSeen:   time.Unix(0, c.lastSeen.Load()),
+	}, true
+}
+
 func (g *Gateway) lookup(agentID string) *conn {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

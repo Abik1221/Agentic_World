@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -202,8 +204,15 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 # --- publish (submit -> set secret -> verify) ----------------------------------
 
 def cmd_publish(args: argparse.Namespace) -> int:
-    api = args.api.rstrip("/")
-    agent, token = args.agent, args.token
+    from . import credentials
+
+    creds = credentials.load()
+    api = (args.api or (creds.url if creds else "")).rstrip("/")
+    agent = args.agent or (creds.agent_id if creds else "")
+    token = args.token or (creds.access_token if creds else "")
+    if not (api and agent and token):
+        print(f"{BAD} need --api, --agent and --token (or `onavion login` first)", file=sys.stderr)
+        return 2
     with open(args.manifest, "rb") as f:
         manifest = f.read()
 
@@ -240,20 +249,127 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0 if verified else 1
 
 
+# --- login / logout ------------------------------------------------------------
+
+def cmd_login(args: argparse.Namespace) -> int:
+    from . import credentials, login
+
+    # Explicit token paste (headless/CI fallback) — normal onboarding uses the browser.
+    if args.token:
+        creds = credentials.Credentials(
+            url=args.api, connect_url=args.connect or login.derive_connect_url(args.api),
+            agent_id=args.agent, access_token=args.token)
+        backend = credentials.save(creds)
+        print(f"{OK} stored credentials ({backend})")
+        return 0
+
+    dashboard = args.dashboard or args.api
+    if not dashboard:
+        print(f"{BAD} pass --dashboard (or --api), or --token for headless login", file=sys.stderr)
+        return 2
+    print(f"opening {dashboard}/cli-login in your browser…")
+    try:
+        creds = login.run_login_flow(dashboard, api_url=args.api)
+    except Exception as e:  # noqa: BLE001
+        print(f"{BAD} login failed: {e}", file=sys.stderr)
+        return 1
+    if args.connect:
+        creds.connect_url = args.connect
+    backend = credentials.save(creds)
+    who = creds.agent_id or "(no agent yet)"
+    print(f"{OK} logged in as {who} — credentials stored ({backend})")
+    return 0
+
+
+def cmd_logout(_args: argparse.Namespace) -> int:
+    from . import credentials
+
+    print(f"{OK} logged out" if credentials.clear() else "not logged in")
+    return 0
+
+
+# --- status / logs -------------------------------------------------------------
+
+def cmd_status(args: argparse.Namespace) -> int:
+    from . import credentials
+
+    creds = credentials.load()
+    if creds is None or not creds.access_token:
+        print(f"{BAD} not logged in — run `onavion login` first", file=sys.stderr)
+        return 2
+    api = (args.api or creds.url).rstrip("/")
+    agent_id = args.agent or creds.agent_id
+    if not api or not agent_id:
+        print(f"{BAD} need an API url and agent id (login or pass --api/--agent)", file=sys.stderr)
+        return 2
+    req = urllib.request.Request(
+        f"{api}/v1/agent/status?agent_id={urllib.parse.quote(agent_id)}",
+        headers={"Authorization": "Bearer " + creds.access_token})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        print(f"{BAD} status failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        print(f"{BAD} status failed: {e}", file=sys.stderr)
+        return 1
+    online = body.get("online")
+    dot = "🟢 Online" if online else "⚪ Offline"
+    print(f"Agent {agent_id}\n  {dot}")
+    if online:
+        print(f"  SDK       {body.get('sdk_version', '?')}")
+        print(f"  Games     {', '.join(body.get('games', []) or [])}")
+        print(f"  Last seen {body.get('last_seen', '?')}")
+    return 0
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    from . import credentials
+
+    path = args.file or os.path.join(credentials.config_dir(), "logs", "agent.log")
+    if not os.path.exists(path):
+        print(f"no logs yet at {path} (run `onavion run` to generate them)")
+        return 0
+    with open(path) as f:
+        lines = f.readlines()
+    for line in lines[-args.n:]:
+        sys.stdout.write(line)
+    return 0
+
+
 # --- run (connect the local agent over WSS) ------------------------------------
+
+def _log_file_handler():
+    """Attach a file handler so `onavion logs` has content."""
+    import logging
+
+    from . import credentials
+
+    d = os.path.join(credentials.config_dir(), "logs")
+    os.makedirs(d, exist_ok=True)
+    handler = logging.FileHandler(os.path.join(d, "agent.log"))
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger = logging.getLogger("onavion")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Load the developer's agent object and connect it to the platform over the
     outbound WebSocket. This is the local-runtime path: no inbound endpoint."""
     import importlib.util
-    import os
 
-    url = args.url or os.environ.get("ONAVION_URL", "")
+    from . import credentials
+
+    creds = credentials.load()
+    url = args.url or os.environ.get("ONAVION_URL", "") or (creds.connect_url if creds else "")
     if not url:
-        print(f"{BAD} no platform URL — pass --url or set ONAVION_URL", file=sys.stderr)
+        print(f"{BAD} no platform URL — pass --url, set ONAVION_URL, or run `onavion login`", file=sys.stderr)
         return 2
-    agent_id = args.agent or os.environ.get("ONAVION_AGENT_ID", "")
-    token = args.token or os.environ.get("ONAVION_TOKEN", "")
+    agent_id = args.agent or os.environ.get("ONAVION_AGENT_ID", "") or (creds.agent_id if creds else "")
+    token = args.token or os.environ.get("ONAVION_TOKEN", "") or (creds.access_token if creds else "")
+    _log_file_handler()
 
     # Load the agent module and find the `Agent` instance (var name configurable).
     spec = importlib.util.spec_from_file_location("_onavion_user_agent", args.file)
@@ -386,6 +502,27 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--hand", type=int, default=13)
     ps.set_defaults(func=cmd_simulate)
 
+    pl = sub.add_parser("login", help="log in via the browser and store credentials")
+    pl.add_argument("--dashboard", default="", help="dashboard base URL (opens {dashboard}/cli-login)")
+    pl.add_argument("--api", default="", help="platform API base URL to record")
+    pl.add_argument("--connect", default="", help="override the WSS connect URL")
+    pl.add_argument("--agent", default="", help="agent public id (if known)")
+    pl.add_argument("--token", default="", help="paste a token directly (headless/CI fallback)")
+    pl.set_defaults(func=cmd_login)
+
+    plo = sub.add_parser("logout", help="remove stored credentials")
+    plo.set_defaults(func=cmd_logout)
+
+    pst = sub.add_parser("status", help="show whether your agent is connected")
+    pst.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
+    pst.add_argument("--agent", default="", help="agent public id (defaults to the logged-in one)")
+    pst.set_defaults(func=cmd_status)
+
+    plg = sub.add_parser("logs", help="show recent local agent logs")
+    plg.add_argument("--file", default="", help="log file path (defaults to ~/.onavion/logs/agent.log)")
+    plg.add_argument("-n", type=int, default=50, help="number of trailing lines")
+    plg.set_defaults(func=cmd_logs)
+
     pr = sub.add_parser("run", help="connect your local agent to the platform over WSS")
     pr.add_argument("--file", default="agent.py", help="path to your agent module")
     pr.add_argument("--var", default="agent", help="the Agent variable name in that module")
@@ -395,9 +532,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_run)
 
     pp = sub.add_parser("publish", help="submit + verify a manifest via the platform API")
-    pp.add_argument("--api", required=True, help="platform API base, e.g. https://host/api")
-    pp.add_argument("--agent", required=True, help="agent public id (ag_…)")
-    pp.add_argument("--token", required=True, help="dashboard JWT (user scope)")
+    pp.add_argument("--api", default="", help="platform API base, e.g. https://host/api (or from login)")
+    pp.add_argument("--agent", default="", help="agent public id (ag_…) (or from login)")
+    pp.add_argument("--token", default="", help="dashboard JWT / access token (or from login)")
     pp.add_argument("--manifest", required=True, help="path to manifest.json")
     pp.add_argument("--secret", default="", help="endpoint secret to store before verify")
     pp.set_defaults(func=cmd_publish)

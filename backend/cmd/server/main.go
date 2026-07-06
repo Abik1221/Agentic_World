@@ -508,6 +508,7 @@ func run() error {
 		idHandler.Register,
 		manifestHandler.Register,
 		agentGateway.Register,
+		mountAgentStatus(authn, agentGateway),
 		matchHandler.Register,
 		matchmakingHandler.Register,
 		sandboxHandler.Register,
