@@ -271,11 +271,24 @@ func TestWebhookPaidCompletionCredits(t *testing.T) {
 	}
 }
 
-// fakePayoutRec records transfer-reversal reconciliations routed from the webhook.
-type fakePayoutRec struct{ transfers []string }
+// fakePayoutRec records payout reconciliations routed from the webhook.
+type fakePayoutRec struct {
+	transfers []string
+	accounts  []struct {
+		id      string
+		enabled bool
+	}
+}
 
 func (f *fakePayoutRec) ReverseByTransfer(_ context.Context, transferID, _ string) error {
 	f.transfers = append(f.transfers, transferID)
+	return nil
+}
+func (f *fakePayoutRec) OnAccountUpdated(_ context.Context, acct string, enabled bool) error {
+	f.accounts = append(f.accounts, struct {
+		id      string
+		enabled bool
+	}{acct, enabled})
 	return nil
 }
 
@@ -291,6 +304,23 @@ func TestWebhookTransferReversedRoutesToReconciler(t *testing.T) {
 	}
 	if len(rec.transfers) != 1 || rec.transfers[0] != "tr_9" {
 		t.Fatalf("reconciler received %v, want [tr_9]", rec.transfers)
+	}
+}
+
+func TestWebhookAccountUpdatedRoutesToReconciler(t *testing.T) {
+	rec := &fakePayoutRec{}
+	svc := newSvc(newCoiner(), newRepo())
+	svc.SetPayoutReconciler(rec)
+
+	body, _ := json.Marshal(map[string]any{
+		"id": "evt_acc", "type": payments.EventAccountUpdated,
+		"data": map[string]any{"object": map[string]any{"id": "acct_9", "payouts_enabled": true}},
+	})
+	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+		t.Fatalf("account.updated webhook: %v", err)
+	}
+	if len(rec.accounts) != 1 || rec.accounts[0].id != "acct_9" || !rec.accounts[0].enabled {
+		t.Fatalf("reconciler received %+v, want [{acct_9 true}]", rec.accounts)
 	}
 }
 

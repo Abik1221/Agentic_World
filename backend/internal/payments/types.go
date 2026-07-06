@@ -32,6 +32,9 @@ const (
 	// Payout side: a transfer we made to a connected account was reversed (money
 	// clawed back after we already burned the coins) — reconcile by re-crediting.
 	EventTransferReversed = "transfer.reversed"
+	// A connected account changed (e.g. KYC/onboarding finished → payouts_enabled
+	// flips true) — auto-clear that account's KYC-blocked pending withdrawals.
+	EventAccountUpdated = "account.updated"
 )
 
 // Pack is a purchasable bundle of coins. Defined in config, never in handlers.
@@ -80,15 +83,16 @@ type CheckoutRecord struct {
 
 // Event is the parsed, domain-relevant slice of a Stripe webhook event.
 type Event struct {
-	ID            string
-	Type          string
-	ObjectID      string
-	AgentPublicID string
-	UserPublicID  string
-	Coins         int64
-	AmountCents   int64
-	PaymentStatus string // checkout session payment_status: paid|unpaid|no_payment_required
-	Payload       []byte
+	ID             string
+	Type           string
+	ObjectID       string
+	AgentPublicID  string
+	UserPublicID   string
+	Coins          int64
+	AmountCents    int64
+	PaymentStatus  string // checkout session payment_status: paid|unpaid|no_payment_required
+	PayoutsEnabled bool   // account.updated: connected account can now receive payouts
+	Payload        []byte
 }
 
 // Gateway is the Stripe boundary. DevGateway implements it offline; StripeGateway
@@ -115,6 +119,9 @@ type Coiner interface {
 // Satisfied by payout.Service; nil disables payout reconciliation.
 type PayoutReconciler interface {
 	ReverseByTransfer(ctx context.Context, transferID, reason string) error
+	// OnAccountUpdated fires when a connected account changes; when payouts become
+	// enabled it clears that account's KYC-blocked pending withdrawals.
+	OnAccountUpdated(ctx context.Context, connectAccountID string, payoutsEnabled bool) error
 }
 
 // Repo persists the idempotent webhook log and Stripe linkage on users.
@@ -148,11 +155,12 @@ func parseEvent(payload []byte) (Event, error) {
 		return Event{}, err
 	}
 	var obj struct {
-		ID            string            `json:"id"`
-		AmountTotal   int64             `json:"amount_total"`
-		Amount        int64             `json:"amount"`
-		PaymentStatus string            `json:"payment_status"`
-		Metadata      map[string]string `json:"metadata"`
+		ID             string            `json:"id"`
+		AmountTotal    int64             `json:"amount_total"`
+		Amount         int64             `json:"amount"`
+		PaymentStatus  string            `json:"payment_status"`
+		PayoutsEnabled bool              `json:"payouts_enabled"`
+		Metadata       map[string]string `json:"metadata"`
 	}
 	_ = json.Unmarshal(env.Data.Object, &obj) // metadata-less objects are fine
 
@@ -162,14 +170,15 @@ func parseEvent(payload []byte) (Event, error) {
 		cents = obj.Amount
 	}
 	return Event{
-		ID:            env.ID,
-		Type:          env.Type,
-		ObjectID:      obj.ID,
-		AgentPublicID: obj.Metadata["agent"],
-		UserPublicID:  obj.Metadata["user"],
-		Coins:         coins,
-		AmountCents:   cents,
-		PaymentStatus: obj.PaymentStatus,
-		Payload:       payload,
+		ID:             env.ID,
+		Type:           env.Type,
+		ObjectID:       obj.ID,
+		AgentPublicID:  obj.Metadata["agent"],
+		UserPublicID:   obj.Metadata["user"],
+		Coins:          coins,
+		AmountCents:    cents,
+		PaymentStatus:  obj.PaymentStatus,
+		PayoutsEnabled: obj.PayoutsEnabled,
+		Payload:        payload,
 	}, nil
 }

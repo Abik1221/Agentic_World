@@ -74,6 +74,15 @@ func (r *fakeRepo) ListByOwner(context.Context, string, int) ([]payout.Withdrawa
 func (r *fakeRepo) ListByStatus(context.Context, string, int) ([]payout.Withdrawal, error) {
 	return nil, nil
 }
+func (r *fakeRepo) PendingByConnectAccount(_ context.Context, acct string) ([]payout.Withdrawal, error) {
+	var out []payout.Withdrawal
+	for _, w := range r.rows {
+		if w.ConnectAccount == acct && w.Status == "requested" {
+			out = append(out, *w)
+		}
+	}
+	return out, nil
+}
 
 type fakeBank struct{ held, released, paid, reversed map[string]int64 }
 
@@ -299,5 +308,34 @@ func TestReverseByTransferReCreditsExactlyOnce(t *testing.T) {
 	// An unknown transfer id is a safe no-op.
 	if err := svc.ReverseByTransfer(ctx, "tr_unknown", "transfer.reversed"); err != nil {
 		t.Fatalf("unknown transfer: %v", err)
+	}
+}
+
+func TestOnAccountUpdatedAutoApprovesPending(t *testing.T) {
+	ctx := context.Background()
+
+	// KYC completes (payouts now enabled) → the pending withdrawal auto-clears.
+	repo, bank, xfer := newRepo(), newBank(), &fakeXfer{}
+	svc := newSvc(repo, bank, xfer)
+	wd, _ := svc.Request(ctx, "usr_a", "ag_a", 600) // connect "acct_1", requested, past clearing
+	if err := svc.OnAccountUpdated(ctx, "acct_1", true); err != nil {
+		t.Fatalf("OnAccountUpdated: %v", err)
+	}
+	if xfer.calls != 1 {
+		t.Fatalf("transfer calls = %d, want 1 (auto-approved)", xfer.calls)
+	}
+	if repo.rows[wd.PublicID].Status != "paid" || bank.paid[wd.PublicID] != 600 {
+		t.Fatalf("want paid+burned 600, got status=%s burned=%d", repo.rows[wd.PublicID].Status, bank.paid[wd.PublicID])
+	}
+
+	// payouts_enabled=false is a no-op — nothing auto-approves.
+	repo2, bank2, xfer2 := newRepo(), newBank(), &fakeXfer{}
+	svc2 := newSvc(repo2, bank2, xfer2)
+	wd2, _ := svc2.Request(ctx, "usr_a", "ag_a", 600)
+	if err := svc2.OnAccountUpdated(ctx, "acct_1", false); err != nil {
+		t.Fatalf("OnAccountUpdated(disabled): %v", err)
+	}
+	if xfer2.calls != 0 || repo2.rows[wd2.PublicID].Status != "requested" {
+		t.Fatal("payouts-disabled account.updated must not approve anything")
 	}
 }

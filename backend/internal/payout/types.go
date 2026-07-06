@@ -37,6 +37,9 @@ type Repo interface {
 	Audit(ctx context.Context, actor, action, target string, detail []byte) error
 	ListByOwner(ctx context.Context, ownerUserPublicID string, limit int) ([]Withdrawal, error)
 	ListByStatus(ctx context.Context, status string, limit int) ([]Withdrawal, error)
+	// PendingByConnectAccount returns the still-requested withdrawals routed to a
+	// connected account — used to auto-clear them once KYC completes.
+	PendingByConnectAccount(ctx context.Context, connectAccountID string) ([]Withdrawal, error)
 }
 
 // Bank moves coins through the ledger. Satisfied by an adapter over ledger.Service.

@@ -223,6 +223,14 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 		}
 		return s.payoutRec.ReverseByTransfer(ctx, ev.ObjectID, ev.Type)
 
+	case EventAccountUpdated:
+		// A connected account finished onboarding (payouts_enabled) — clear its
+		// KYC-blocked pending withdrawals. ObjectID is the connect account id.
+		if s.payoutRec == nil || ev.ObjectID == "" {
+			return nil
+		}
+		return s.payoutRec.OnAccountUpdated(ctx, ev.ObjectID, ev.PayoutsEnabled)
+
 	case EventChargeRefunded, EventDisputeCreated:
 		if ev.UserPublicID == "" || ev.Coins <= 0 {
 			return nil

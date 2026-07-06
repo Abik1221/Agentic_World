@@ -207,6 +207,37 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	return nil
 }
 
+// OnAccountUpdated reacts to a Stripe account.updated webhook: once a connected
+// account can receive payouts (KYC finished), it re-attempts approval of that
+// account's still-pending withdrawals — the ones the capability gate previously
+// blocked. Each goes through the full Approve path, so the clearing window, fraud
+// gate, and idempotency all still apply; a not-yet-cleared or otherwise-ineligible
+// item is simply left for the admin queue. Business-state errors are logged, not
+// propagated, so the webhook isn't retried for a normal "still clearing" outcome.
+func (s *Service) OnAccountUpdated(ctx context.Context, connectAccountID string, payoutsEnabled bool) error {
+	if connectAccountID == "" || !payoutsEnabled {
+		return nil
+	}
+	pending, err := s.repo.PendingByConnectAccount(ctx, connectAccountID)
+	if err != nil {
+		return err
+	}
+	for _, w := range pending {
+		switch err := s.Approve(ctx, "stripe:account.updated", w.PublicID); {
+		case err == nil:
+			s.log.Info("payout: auto-approved after KYC completed", "id", w.PublicID, "account", connectAccountID)
+		case errors.Is(err, ErrClearing), errors.Is(err, ErrFlagged), errors.Is(err, ErrNoKYC),
+			errors.Is(err, ErrBadState), errors.Is(err, ErrInsufficient):
+			s.log.Info("payout: auto-approve deferred", "id", w.PublicID, "reason", err)
+		default:
+			// Unexpected (e.g. transient DB/transfer error): surface it so Stripe
+			// retries the event; already-paid items are idempotent no-ops on retry.
+			return err
+		}
+	}
+	return nil
+}
+
 // Reject denies a withdrawal and returns the held coins. Idempotent.
 func (s *Service) Reject(ctx context.Context, adminUserID, publicID, reason string) error {
 	w, err := s.repo.Get(ctx, publicID)
