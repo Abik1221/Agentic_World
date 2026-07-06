@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
+	"github.com/agent-arena/arena/internal/agentgw"
+	"github.com/agent-arena/arena/internal/agentwire"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/remoteplay"
@@ -41,7 +43,11 @@ type pushPlayer struct {
 	// dispatcher (retry + health-gated). When nil, they fall back to best-effort
 	// inline goroutines so tests/standalone use still work.
 	enqueue webhook.Enqueuer
-	log     *slog.Logger
+	// gw is the local-runtime WebSocket gateway. When the developer's agent is
+	// connected over the socket, matches are driven over it; otherwise the loop
+	// falls back to the hosted HTTP endpoint. Nil disables the socket path.
+	gw  *agentgw.Gateway
+	log *slog.Logger
 	// maxMatch caps a single driven match's wall-clock so a stalled/hostile
 	// endpoint can never leak a goroutine forever.
 	maxMatch time.Duration
@@ -52,6 +58,28 @@ type pushPlayer struct {
 func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
 	if s.pusher != nil {
 		s.pusher.enqueue = e
+	}
+}
+
+// SetGateway wires the local-runtime WebSocket gateway so a connected agent plays
+// over its socket. Call after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetGateway(gw *agentgw.Gateway) {
+	if s.pusher != nil {
+		s.pusher.gw = gw
+	}
+}
+
+// transport picks the delivery path for this agent+match: the live socket if the
+// agent is connected, else the hosted HTTP endpoint (durable webhook queue for
+// notifications). Re-evaluated per use so a mid-match connect/disconnect is
+// handled — a dropped socket simply reverts to the endpoint (or fallback moves).
+func (p *pushPlayer) transport(agentID string, target agentclient.Target) agentwire.Transport {
+	if p.gw != nil && p.gw.Connected(agentID) {
+		return agentwire.SocketTransport{GW: p.gw, AgentID: agentID, Game: "goofspiel"}
+	}
+	return agentwire.HTTPTransport{
+		Client: p.client, Target: target, Enqueue: p.enqueue,
+		AgentID: agentID, Game: "goofspiel", Log: p.log,
 	}
 }
 
@@ -81,9 +109,12 @@ func (s *Service) StartPushPlay(ctx context.Context, humanAgent, humanOwner, dif
 	if err != nil {
 		return StartResult{}, err
 	}
-	if !found || target.EndpointURL == "" {
-		return StartResult{}, httpx.NewError(400, "no_verified_endpoint",
-			"Register and verify your agent's endpoint (manifest) before running push-play.")
+	// A local-runtime agent connected over the socket needs no hosted endpoint;
+	// a legacy push agent needs a verified endpoint URL. Require at least one.
+	connected := s.pusher.gw != nil && s.pusher.gw.Connected(humanAgent)
+	if !connected && (!found || target.EndpointURL == "") {
+		return StartResult{}, httpx.NewError(400, "no_agent_transport",
+			"Connect your agent (onavion run) or register and verify a hosted endpoint before running push-play.")
 	}
 
 	opp := opponentFor(difficulty)
@@ -110,9 +141,9 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.maxMatch)
 	defer cancel()
 
-	// Lifecycle: /initialize once at match start (best-effort — the agent may also
-	// initialise lazily on the first /turn). Seat A is always the developer.
-	if _, err := p.client.Initialize(ctx, target, agentclient.InitializeRequest{
+	// Lifecycle: initialize once at match start (best-effort — the agent may also
+	// initialise lazily on the first turn). Seat A is always the developer.
+	if err := p.transport(agentID, target).Initialize(ctx, agentclient.InitializeRequest{
 		MatchID: matchID, Game: "goofspiel", Seat: 0, Players: 2,
 	}); err != nil {
 		p.log.Warn("pushplay: initialize failed (continuing)", "match", matchID, "err", err)
@@ -134,16 +165,17 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			p.log.Warn("pushplay: state read failed, stopping driver", "match", matchID, "err", err)
 			return
 		}
-		// Async /event notifications for rounds that resolved since the last read
-		// (opponent card + winner). Fire-and-forget so the turn loop / engine never
-		// blocks on delivery; the agent orders by Seq. (Production scale: a central
-		// outbox dispatcher — see ONAVION_DEV_PLATFORM.md P2.)
-		deliveredRounds = p.dispatchRoundEvents(ctx, agentID, target, matchID, v, deliveredRounds)
+		// Pick the transport fresh each pass so a mid-match connect/disconnect is
+		// handled. Async event notifications for rounds resolved since the last read
+		// (opponent card + winner) — fire-and-forget so the loop/engine never block;
+		// the agent orders by Seq.
+		tr := p.transport(agentID, target)
+		deliveredRounds = p.dispatchRoundEvents(ctx, tr, matchID, v, deliveredRounds)
 		if v.Status != "active" {
-			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
-			// Lifecycle: /game-end with a FAT, replayable result — the outcome plus
+			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks, "socket", tr.Socket())
+			// Lifecycle: game-end with a FAT, replayable result — the outcome plus
 			// the full round-by-round history, so the agent has the complete match
-			// record without stitching /event notifications together.
+			// record without stitching event notifications together.
 			result, _ := json.Marshal(gameEndResult{
 				Result:  v.Result,
 				MatchID: matchID,
@@ -151,7 +183,9 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 				Seat:    0,
 				History: historyFromView(v),
 			})
-			p.emitGameEnd(ctx, agentID, target, matchID, result)
+			if err := tr.GameEnd(context.WithoutCancel(ctx), matchID, result); err != nil {
+				p.log.Warn("pushplay: game-end delivery failed", "match", matchID, "err", err)
+			}
 			return
 		}
 		if !v.YourTurn {
@@ -169,7 +203,7 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			return
 		}
 
-		card, usedFallback := p.decide(ctx, target, matchID, v, legal)
+		card, usedFallback := p.decide(ctx, tr, matchID, v, legal)
 		if usedFallback {
 			fallbacks++
 		}
@@ -180,20 +214,20 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 	}
 }
 
-// decide asks the remote endpoint for a card and validates it against the legal
-// set, falling back to the lowest legal card on any error or illegal response.
-// dispatchRoundEvents pushes a /event webhook for each round that resolved since
-// the last read. Delivery is async (a goroutine per event) so the turn loop and
-// the engine never block on it; each event carries Seq so the agent can order
-// them, and agentclient retries + signs. Returns the new highest delivered round.
-func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, agentID string, target agentclient.Target, matchID string, v match.AgentView, delivered int) int {
+// dispatchRoundEvents pushes an event for each round that resolved since the last
+// read, over the chosen transport. Delivery is async/best-effort so the turn loop
+// and the engine never block; each event carries Seq for ordering. Returns the new
+// highest delivered round.
+func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, delivered int) int {
 	highest := delivered
 	for _, h := range v.History {
 		if h.Round <= delivered {
 			continue
 		}
 		payload, _ := json.Marshal(h)
-		p.emitEvent(ctx, agentID, target, matchID, h.Round, "round_revealed", payload)
+		if err := tr.Event(context.WithoutCancel(ctx), matchID, h.Round, "round_revealed", payload); err != nil {
+			p.log.Warn("pushplay: event delivery failed", "match", matchID, "round", h.Round, "err", err)
+		}
 		if h.Round > highest {
 			highest = h.Round
 		}
@@ -201,37 +235,10 @@ func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, agentID string, ta
 	return highest
 }
 
-// emitEvent / emitGameEnd persist the notification to the durable webhook queue
-// (delivered by the central dispatcher: signed, retried, health-gated). Without a
-// queue configured they fall back to a best-effort detached goroutine so the loop
-// and engine still never block. Detached context: persistence/delivery must
-// outlive the match's drive deadline.
-func (p *pushPlayer) emitEvent(ctx context.Context, agentID string, target agentclient.Target, matchID string, seq int, eventType string, payload []byte) {
-	if p.enqueue != nil {
-		if err := p.enqueue.EnqueueEvent(context.WithoutCancel(ctx), agentID, "goofspiel", matchID, seq, eventType, payload); err != nil {
-			p.log.Warn("pushplay: enqueue event failed", "match", matchID, "err", err)
-		}
-		return
-	}
-	n := agentclient.EventNotification{MatchID: matchID, Game: "goofspiel", Seq: seq, Type: eventType, Payload: payload}
-	go func() { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }()
-}
-
-func (p *pushPlayer) emitGameEnd(ctx context.Context, agentID string, target agentclient.Target, matchID string, result []byte) {
-	if p.enqueue != nil {
-		if err := p.enqueue.EnqueueGameEnd(context.WithoutCancel(ctx), agentID, "goofspiel", matchID, result); err != nil {
-			p.log.Warn("pushplay: enqueue game-end failed", "match", matchID, "err", err)
-		}
-		return
-	}
-	if err := p.client.GameEnd(context.WithoutCancel(ctx), target, agentclient.GameEndNotification{
-		MatchID: matchID, Game: "goofspiel", Result: result,
-	}); err != nil {
-		p.log.Warn("pushplay: game-end delivery failed", "match", matchID, "err", err)
-	}
-}
-
-func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matchID string, v match.AgentView, legal []int) (int, bool) {
+// decide asks the agent for a card over the transport and validates it against
+// the legal set, falling back to the lowest legal card on any error or illegal
+// response — so an absent/slow agent can never wedge the match.
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, bool) {
 	view := remoteplay.GoofspielView{
 		Game:         "goofspiel",
 		MatchID:      matchID,
@@ -245,7 +252,7 @@ func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matc
 		History:      historyFromView(v), // self-contained: every resolved round so far
 	}
 	var move remoteplay.GoofspielMove
-	if _, err := p.client.Play(ctx, target, view, &move); err == nil && containsInt(legal, move.Card) {
+	if err := tr.Turn(ctx, view, &move); err == nil && containsInt(legal, move.Card) {
 		return move.Card, false
 	}
 	return lowestInt(legal), true

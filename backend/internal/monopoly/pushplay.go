@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
+	"github.com/agent-arena/arena/internal/agentgw"
+	"github.com/agent-arena/arena/internal/agentwire"
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/webhook"
@@ -37,6 +39,7 @@ type pushPlayer struct {
 	remote   RemoteResolver
 	client   PushClient
 	enqueue  webhook.Enqueuer // durable async /event + /game-end; nil => inline fallback
+	gw       *agentgw.Gateway // local-runtime socket; nil disables the socket path
 	log      *slog.Logger
 	maxMatch time.Duration
 }
@@ -55,6 +58,36 @@ func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
 	if s.pusher != nil {
 		s.pusher.enqueue = e
 	}
+}
+
+// SetGateway wires the local-runtime WebSocket gateway. Call after EnablePushPlay.
+func (s *Service) SetGateway(gw *agentgw.Gateway) {
+	if s.pusher != nil {
+		s.pusher.gw = gw
+	}
+}
+
+// transport picks the socket if the agent is connected, else the hosted endpoint.
+func (p *pushPlayer) transport(agentID string, target agentclient.Target) agentwire.Transport {
+	if p.gw != nil && p.gw.Connected(agentID) {
+		return agentwire.SocketTransport{GW: p.gw, AgentID: agentID, Game: "monopoly"}
+	}
+	return agentwire.HTTPTransport{
+		Client: p.client, Target: target, Enqueue: p.enqueue,
+		AgentID: agentID, Game: "monopoly", Log: p.log,
+	}
+}
+
+// monopolyGameEnd is the fat /game-end payload: the settled result, the final
+// board, AND the full itemized engine event log (every roll/rent/purchase/trade),
+// so the agent has a complete, replayable record in one payload.
+type monopolyGameEnd struct {
+	Result     any          `json:"result"`
+	MatchID    string       `json:"match_id"`
+	Game       string       `json:"game"`
+	Seat       int          `json:"seat"`
+	FinalState *mono.State  `json:"final_state,omitempty"`
+	Log        []mono.Event `json:"log,omitempty"`
 }
 
 // MonopolyPushView is the JSON the platform POSTs to the agent endpoint each turn.
@@ -87,9 +120,10 @@ func (s *Service) StartPushPlay(ctx context.Context, agentPublicID, ownerPublicI
 	if err != nil {
 		return "", err
 	}
-	if !found || target.EndpointURL == "" {
-		return "", httpx.NewError(400, "no_verified_endpoint",
-			"Register and verify your agent's endpoint (manifest) before running push-play.")
+	connected := s.pusher.gw != nil && s.pusher.gw.Connected(agentPublicID)
+	if !connected && (!found || target.EndpointURL == "") {
+		return "", httpx.NewError(400, "no_agent_transport",
+			"Connect your agent (onavion run) or register and verify a hosted endpoint before running push-play.")
 	}
 	id, err := s.CreateTable(ctx, agentPublicID, ownerPublicID, 0, players)
 	if err != nil {
@@ -119,8 +153,10 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			p.log.Warn("monopoly pushplay: state read failed", "match", matchID, "err", err)
 			return
 		}
-		// Lifecycle: /initialize once, lazily on the first state read (best-effort —
-		// the agent may also initialise on the first /turn). Player count comes from
+		// Pick the transport fresh each pass (socket if connected, else endpoint).
+		tr := p.transport(agentID, target)
+		// Lifecycle: initialize once, lazily on the first state read (best-effort —
+		// the agent may also initialise on the first turn). Player count comes from
 		// the live board so seat/roster match what the engine actually created.
 		if !initialized {
 			initialized = true
@@ -128,20 +164,28 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			if v.State != nil {
 				players = len(v.State.Players)
 			}
-			if _, err := p.client.Initialize(ctx, target, agentclient.InitializeRequest{
+			if err := tr.Initialize(ctx, agentclient.InitializeRequest{
 				MatchID: matchID, Game: "monopoly", Seat: v.YourSeat, Players: players,
 			}); err != nil {
 				p.log.Warn("monopoly pushplay: initialize failed (continuing)", "match", matchID, "err", err)
 			}
 		}
-		// Async /event for each turn that advanced since the last read. TurnCount is
-		// gap-free and monotonic, so it doubles as the event Seq for ordering.
-		deliveredTurn = p.dispatchTurnEvents(ctx, agentID, target, matchID, v, deliveredTurn)
+		// Async events: the FULL itemized engine log since the last delivery (every
+		// roll/rent/purchase/card/trade), each with its gap-free Seq — so an agent
+		// sees exactly what happened between its turns, not just a state snapshot.
+		deliveredTurn = p.dispatchEngineEvents(ctx, tr, s, matchID, deliveredTurn)
 		if v.Status != StatusActive {
-			p.log.Info("monopoly pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
-			// Lifecycle: /game-end with the final result.
-			result, _ := json.Marshal(v.Result)
-			p.emitGameEnd(ctx, agentID, target, matchID, result)
+			p.log.Info("monopoly pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks, "socket", tr.Socket())
+			// Lifecycle: game-end with a FAT, replayable payload — result + final board
+			// + the full itemized event log.
+			log, _ := s.repo.LoadEvents(context.WithoutCancel(ctx), matchID, 0)
+			result, _ := json.Marshal(monopolyGameEnd{
+				Result: v.Result, MatchID: matchID, Game: "monopoly",
+				Seat: v.YourSeat, FinalState: v.State, Log: log,
+			})
+			if err := tr.GameEnd(context.WithoutCancel(ctx), matchID, result); err != nil {
+				p.log.Warn("monopoly pushplay: game-end delivery failed", "match", matchID, "err", err)
+			}
 			return
 		}
 		if !v.YourTurn || len(v.Legal) == 0 {
@@ -149,7 +193,7 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			continue
 		}
 
-		act, usedFallback := p.decide(ctx, target, matchID, v)
+		act, usedFallback := p.decide(ctx, tr, matchID, v)
 		if usedFallback {
 			fallbacks++
 		}
@@ -164,54 +208,36 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 	}
 }
 
-// dispatchTurnEvents pushes an async /event webhook when the board's TurnCount has
-// advanced since the last read. Delivery is fire-and-forget (a detached goroutine)
-// so the turn loop and the engine never block on it; TurnCount is the Seq so the
-// agent can order events. Returns the new highest delivered turn.
-func (p *pushPlayer) dispatchTurnEvents(ctx context.Context, agentID string, target agentclient.Target, matchID string, v AgentView, delivered int) int {
-	if v.State == nil || v.State.TurnCount <= delivered {
+// dispatchEngineEvents delivers the full itemized engine log emitted since the
+// last delivery — one event per roll/rent/purchase/card/trade/etc., each with its
+// gap-free Seq for ordering. Best-effort so the loop and engine never block.
+// Returns the new highest delivered Seq.
+func (p *pushPlayer) dispatchEngineEvents(ctx context.Context, tr agentwire.Transport, s *Service, matchID string, delivered int) int {
+	evs, err := s.repo.LoadEvents(ctx, matchID, delivered)
+	if err != nil {
+		p.log.Warn("monopoly pushplay: load events failed", "match", matchID, "err", err)
 		return delivered
 	}
-	payload, _ := json.Marshal(v.State)
-	p.emitEvent(ctx, agentID, target, matchID, v.State.TurnCount, "turn_advanced", payload)
-	return v.State.TurnCount
-}
-
-// emitEvent / emitGameEnd persist to the durable webhook queue (delivered by the
-// central dispatcher: signed, retried, health-gated); without a queue they fall
-// back to a best-effort detached goroutine so the loop and engine never block.
-func (p *pushPlayer) emitEvent(ctx context.Context, agentID string, target agentclient.Target, matchID string, seq int, eventType string, payload []byte) {
-	if p.enqueue != nil {
-		if err := p.enqueue.EnqueueEvent(context.WithoutCancel(ctx), agentID, "monopoly", matchID, seq, eventType, payload); err != nil {
-			p.log.Warn("monopoly pushplay: enqueue event failed", "match", matchID, "err", err)
+	highest := delivered
+	for _, e := range evs {
+		payload, _ := json.Marshal(e.Payload)
+		if err := tr.Event(context.WithoutCancel(ctx), matchID, e.Seq, string(e.Type), payload); err != nil {
+			p.log.Warn("monopoly pushplay: event delivery failed", "match", matchID, "seq", e.Seq, "err", err)
 		}
-		return
-	}
-	n := agentclient.EventNotification{MatchID: matchID, Game: "monopoly", Seq: seq, Type: eventType, Payload: payload}
-	go func() { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }()
-}
-
-func (p *pushPlayer) emitGameEnd(ctx context.Context, agentID string, target agentclient.Target, matchID string, result []byte) {
-	if p.enqueue != nil {
-		if err := p.enqueue.EnqueueGameEnd(context.WithoutCancel(ctx), agentID, "monopoly", matchID, result); err != nil {
-			p.log.Warn("monopoly pushplay: enqueue game-end failed", "match", matchID, "err", err)
+		if e.Seq > highest {
+			highest = e.Seq
 		}
-		return
 	}
-	if err := p.client.GameEnd(context.WithoutCancel(ctx), target, agentclient.GameEndNotification{
-		MatchID: matchID, Game: "monopoly", Result: result,
-	}); err != nil {
-		p.log.Warn("monopoly pushplay: game-end delivery failed", "match", matchID, "err", err)
-	}
+	return highest
 }
 
-func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matchID string, v AgentView) (mono.Action, bool) {
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mono.Action, bool) {
 	req := MonopolyPushView{
 		Game: "monopoly", MatchID: matchID, Seat: v.YourSeat,
 		Phase: v.Phase, LegalActions: v.Legal, State: v.State,
 	}
 	var move MonopolyPushMove
-	if _, err := p.client.Play(ctx, target, req, &move); err == nil && containsStr(v.Legal, move.Action) {
+	if err := tr.Turn(ctx, req, &move); err == nil && containsStr(v.Legal, move.Action) {
 		return mono.Action{Kind: move.Action, Property: move.Property, Amount: move.Amount}, false
 	}
 	return safeFallback(v.Legal), true

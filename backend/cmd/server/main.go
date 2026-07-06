@@ -339,6 +339,7 @@ func run() error {
 	// fill the rest. Reuses the same match machinery + SSE spectating.
 	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
 	monopolySvc.SetWebhookEnqueuer(webhookQueue)
+	monopolySvc.SetGateway(agentGateway) // play over the socket when the agent is connected
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
@@ -397,6 +398,7 @@ func run() error {
 	// and the same match machinery, so the browser watches it live over SSE.
 	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, manifestProbe, log)
 	sandboxSvc.SetWebhookEnqueuer(webhookQueue)
+	sandboxSvc.SetGateway(agentGateway) // play over the socket when the agent is connected
 	sandboxHandler := sandbox.NewHandler(sandboxSvc, authn)
 
 	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
@@ -492,6 +494,7 @@ func run() error {
 			}
 			mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, botSeats, log)
 			mafiaSvc.SetWebhookEnqueuer(webhookQueue)
+			mafiaSvc.SetGateway(agentGateway) // play over the socket when the agent is connected
 		}
 	}
 	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
