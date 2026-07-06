@@ -105,6 +105,7 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 	}
 
 	fallbacks := 0
+	deliveredRounds := 0 // highest round already pushed to /event (async, ordered by seq)
 	for {
 		if ctx.Err() != nil {
 			p.log.Warn("pushplay: driver deadline exceeded, stopping", "match", matchID)
@@ -119,6 +120,11 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			p.log.Warn("pushplay: state read failed, stopping driver", "match", matchID, "err", err)
 			return
 		}
+		// Async /event notifications for rounds that resolved since the last read
+		// (opponent card + winner). Fire-and-forget so the turn loop / engine never
+		// blocks on delivery; the agent orders by Seq. (Production scale: a central
+		// outbox dispatcher — see ONAVION_DEV_PLATFORM.md P2.)
+		deliveredRounds = p.dispatchRoundEvents(ctx, target, matchID, v, deliveredRounds)
 		if v.Status != "active" {
 			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
 			// Lifecycle: /game-end with the final result (best-effort webhook).
@@ -158,6 +164,30 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 
 // decide asks the remote endpoint for a card and validates it against the legal
 // set, falling back to the lowest legal card on any error or illegal response.
+// dispatchRoundEvents pushes a /event webhook for each round that resolved since
+// the last read. Delivery is async (a goroutine per event) so the turn loop and
+// the engine never block on it; each event carries Seq so the agent can order
+// them, and agentclient retries + signs. Returns the new highest delivered round.
+func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, target agentclient.Target, matchID string, v match.AgentView, delivered int) int {
+	highest := delivered
+	for _, h := range v.History {
+		if h.Round <= delivered {
+			continue
+		}
+		payload, _ := json.Marshal(h)
+		n := agentclient.EventNotification{
+			MatchID: matchID, Game: "goofspiel", Seq: h.Round, Type: "round_revealed", Payload: payload,
+		}
+		// Detached context: notifications are best-effort and must still deliver
+		// after the match ends; each attempt is bounded by the client's timeout.
+		go func(n agentclient.EventNotification) { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }(n)
+		if h.Round > highest {
+			highest = h.Round
+		}
+	}
+	return highest
+}
+
 func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matchID string, v match.AgentView, legal []int) (int, bool) {
 	view := remoteplay.GoofspielView{
 		Game:         "goofspiel",
