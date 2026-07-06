@@ -69,8 +69,10 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
 **Missing vs the Onavion Beta spec:**
 1. **Full push lifecycle** — we have a single `/play`; the spec wants
    `/initialize` + `/turn` + `/event` + `/game-end`.
-2. **Async webhook dispatcher** for `/event` + `/game-end` off the outbox (secure,
-   retrying, HMAC-signed) — the event-driven delivery path.
+2. ~~**Async webhook dispatcher** for `/event` + `/game-end` off the outbox~~ ✅
+   BUILT — `internal/webhook` + a durable `agent_webhook_deliveries` queue:
+   at-least-once, HMAC-signed, exponential backoff, per-endpoint circuit breaker,
+   continuous health monitor. See P2.
 3. **HMAC request signing + timestamp + replay protection** (we have a static
    bearer token + Ed25519 *move* signing, not the spec's per-request HMAC).
 4. **Official SDKs (JS/TS + Python only)** — auth/HMAC, typed models, event parsing,
@@ -87,9 +89,17 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
   `/initialize` `/turn` `/event` `/game-end` schemas per game; extend `agentclient`
   to the full lifecycle; add HMAC-SHA256 request signing + timestamp + replay-nonce
   (verify helper for the SDKs). This is the contract everything else wraps.
-- **P2 — Async webhook dispatcher.** Deliver `/event` + `/game-end` from the outbox
-  via a retrying, at-least-once, signed dispatcher (health/latency/failure tracking;
-  unhealthy endpoints skipped). Engine never blocks.
+- **P2 — Async webhook dispatcher. ✅ DONE (durable).** `/event` + `/game-end` are
+  delivered by a central, durable dispatcher (`internal/webhook` + a persistent
+  `agent_webhook_deliveries` queue): drive loops ENQUEUE idempotently; the
+  dispatcher claims rows with a lease (`FOR UPDATE SKIP LOCKED`, so it's
+  horizontally safe), delivers them HMAC-signed, retries with exponential backoff,
+  and abandons a poison delivery after a cap. A per-endpoint **circuit breaker**
+  (`HealthTracker`) skips unhealthy endpoints instead of hammering them, and a
+  continuous **health `Monitor`** polls active endpoints' `/health` to open/close
+  the breaker. The engine never blocks. Verified e2e: normal runs delivered
+  177/177 with 0 retries/0 invalid sigs; a killed endpoint held all deliveries,
+  retried, opened the circuit, and **drained automatically on recovery**.
 - **P3 — Drive the live match loop through the lifecycle.** Seat `remoteplay`-style
   deciders (now `/turn`) into the served match pipeline for all 3 games, so a
   registered push agent plays real matches (ranked + sandbox).
@@ -113,9 +123,9 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
   signing, auth, replay, errors), manifest + publishing, per-game view/move APIs,
   and local testing + FAQ. The validation pipeline is the existing manifest-verify
   path (`/manifest/{id}/verify` → signed health + handshake + games-covered),
-  which the CLI `publish`/`validate` drive and the docs document. Remaining polish
-  (continuous endpoint health monitoring, unhealthy-endpoint skipping) rides on the
-  same verify machinery and the P2 dispatcher hardening.
+  which the CLI `publish`/`validate` drive and the docs document. Continuous
+  endpoint health monitoring + unhealthy-endpoint skipping are now DONE as part of
+  the P2 webhook dispatcher (health `Monitor` + circuit-breaker `HealthTracker`).
 
 **Out of scope for Beta (per the spec):** hosted runtime, hosted memory, skill/agent
 marketplaces, tournament simulator, prompt/memory inspectors, auto-optimization,

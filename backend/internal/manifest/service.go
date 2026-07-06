@@ -26,6 +26,9 @@ type Repo interface {
 	// found is false when the agent has no active manifest yet.
 	ActiveManifest(ctx context.Context, agentPublicID string) (m Manifest, found bool, err error)
 
+	// ActiveAgentIDs returns the public id of every agent with an active manifest.
+	ActiveAgentIDs(ctx context.Context) ([]string, error)
+
 	// LatestManifest returns the most recently submitted manifest (any status),
 	// used to surface a just-submitted, not-yet-verified manifest.
 	LatestManifest(ctx context.Context, agentPublicID string) (m Manifest, found bool, err error)

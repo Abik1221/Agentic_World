@@ -189,6 +189,12 @@ func (s *Service) PlayTarget(ctx context.Context, agentPublicID string) (agentcl
 	return agentclient.Target{EndpointURL: m.EndpointURL, Token: token}, true, nil
 }
 
+// ActiveAgentIDs returns every agent with an active, verified manifest. The
+// webhook health monitor uses it to enumerate endpoints to probe.
+func (s *Service) ActiveAgentIDs(ctx context.Context) ([]string, error) {
+	return s.repo.ActiveAgentIDs(ctx)
+}
+
 // VerificationAttempt is one recorded health+handshake attempt (audit trail).
 type VerificationAttempt struct {
 	ManifestPublicID    string

@@ -9,6 +9,7 @@ import (
 	"github.com/agent-arena/arena/internal/agentclient"
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/webhook"
 )
 
 // This file adds push-play to Monopoly: the platform drives the developer's seat
@@ -35,6 +36,7 @@ type PushClient interface {
 type pushPlayer struct {
 	remote   RemoteResolver
 	client   PushClient
+	enqueue  webhook.Enqueuer // durable async /event + /game-end; nil => inline fallback
 	log      *slog.Logger
 	maxMatch time.Duration
 }
@@ -45,6 +47,14 @@ func (s *Service) EnablePushPlay(remote RemoteResolver, client PushClient, log *
 		log = slog.Default()
 	}
 	s.pusher = &pushPlayer{remote: remote, client: client, log: log, maxMatch: 5 * time.Minute}
+}
+
+// SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
+// queue. Call after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
+	if s.pusher != nil {
+		s.pusher.enqueue = e
+	}
 }
 
 // MonopolyPushView is the JSON the platform POSTs to the agent endpoint each turn.
@@ -126,16 +136,12 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 		}
 		// Async /event for each turn that advanced since the last read. TurnCount is
 		// gap-free and monotonic, so it doubles as the event Seq for ordering.
-		deliveredTurn = p.dispatchTurnEvents(ctx, target, matchID, v, deliveredTurn)
+		deliveredTurn = p.dispatchTurnEvents(ctx, agentID, target, matchID, v, deliveredTurn)
 		if v.Status != StatusActive {
 			p.log.Info("monopoly pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
-			// Lifecycle: /game-end with the final result (best-effort webhook).
+			// Lifecycle: /game-end with the final result.
 			result, _ := json.Marshal(v.Result)
-			if err := p.client.GameEnd(ctx, target, agentclient.GameEndNotification{
-				MatchID: matchID, Game: "monopoly", Result: result,
-			}); err != nil {
-				p.log.Warn("monopoly pushplay: game-end delivery failed", "match", matchID, "err", err)
-			}
+			p.emitGameEnd(ctx, agentID, target, matchID, result)
 			return
 		}
 		if !v.YourTurn || len(v.Legal) == 0 {
@@ -162,16 +168,41 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 // advanced since the last read. Delivery is fire-and-forget (a detached goroutine)
 // so the turn loop and the engine never block on it; TurnCount is the Seq so the
 // agent can order events. Returns the new highest delivered turn.
-func (p *pushPlayer) dispatchTurnEvents(ctx context.Context, target agentclient.Target, matchID string, v AgentView, delivered int) int {
+func (p *pushPlayer) dispatchTurnEvents(ctx context.Context, agentID string, target agentclient.Target, matchID string, v AgentView, delivered int) int {
 	if v.State == nil || v.State.TurnCount <= delivered {
 		return delivered
 	}
 	payload, _ := json.Marshal(v.State)
-	n := agentclient.EventNotification{
-		MatchID: matchID, Game: "monopoly", Seq: v.State.TurnCount, Type: "turn_advanced", Payload: payload,
-	}
-	go func(n agentclient.EventNotification) { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }(n)
+	p.emitEvent(ctx, agentID, target, matchID, v.State.TurnCount, "turn_advanced", payload)
 	return v.State.TurnCount
+}
+
+// emitEvent / emitGameEnd persist to the durable webhook queue (delivered by the
+// central dispatcher: signed, retried, health-gated); without a queue they fall
+// back to a best-effort detached goroutine so the loop and engine never block.
+func (p *pushPlayer) emitEvent(ctx context.Context, agentID string, target agentclient.Target, matchID string, seq int, eventType string, payload []byte) {
+	if p.enqueue != nil {
+		if err := p.enqueue.EnqueueEvent(context.WithoutCancel(ctx), agentID, "monopoly", matchID, seq, eventType, payload); err != nil {
+			p.log.Warn("monopoly pushplay: enqueue event failed", "match", matchID, "err", err)
+		}
+		return
+	}
+	n := agentclient.EventNotification{MatchID: matchID, Game: "monopoly", Seq: seq, Type: eventType, Payload: payload}
+	go func() { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }()
+}
+
+func (p *pushPlayer) emitGameEnd(ctx context.Context, agentID string, target agentclient.Target, matchID string, result []byte) {
+	if p.enqueue != nil {
+		if err := p.enqueue.EnqueueGameEnd(context.WithoutCancel(ctx), agentID, "monopoly", matchID, result); err != nil {
+			p.log.Warn("monopoly pushplay: enqueue game-end failed", "match", matchID, "err", err)
+		}
+		return
+	}
+	if err := p.client.GameEnd(context.WithoutCancel(ctx), target, agentclient.GameEndNotification{
+		MatchID: matchID, Game: "monopoly", Result: result,
+	}); err != nil {
+		p.log.Warn("monopoly pushplay: game-end delivery failed", "match", matchID, "err", err)
+	}
 }
 
 func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matchID string, v AgentView) (mono.Action, bool) {

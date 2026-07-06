@@ -9,6 +9,7 @@ import (
 	"github.com/agent-arena/arena/internal/agentclient"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/webhook"
 )
 
 // Mafia push-play: a no-stakes 12-seat table where the developer's seat is driven
@@ -41,6 +42,7 @@ type pushPlayer struct {
 	remote   RemoteResolver
 	client   PushClient
 	bots     []BotAgent
+	enqueue  webhook.Enqueuer // durable async /event + /game-end; nil => inline fallback
 	log      *slog.Logger
 	maxMatch time.Duration
 }
@@ -52,6 +54,14 @@ func (s *Service) EnablePushPlay(remote RemoteResolver, client PushClient, bots 
 		log = slog.Default()
 	}
 	s.pusher = &pushPlayer{remote: remote, client: client, bots: bots, log: log, maxMatch: 5 * time.Minute}
+}
+
+// SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
+// queue. Call after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
+	if s.pusher != nil {
+		s.pusher.enqueue = e
+	}
 }
 
 // MafiaPushView is the redacted per-seat JSON POSTed to the agent endpoint. It
@@ -145,16 +155,12 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 		}
 		// Async /event for each public transcript entry that appeared since the last
 		// read. Public events carry a monotonic Seq, used directly for ordering.
-		deliveredSeq = p.dispatchPublicEvents(ctx, target, matchID, base.Public, deliveredSeq)
+		deliveredSeq = p.dispatchPublicEvents(ctx, userAgent, target, matchID, base.Public, deliveredSeq)
 		if base.Status != StatusActive {
 			p.log.Info("mafia pushplay: match finished", "match", matchID, "status", base.Status)
-			// Lifecycle: /game-end with the final result (best-effort webhook).
+			// Lifecycle: /game-end with the final result.
 			result, _ := json.Marshal(base.Result)
-			if err := p.client.GameEnd(ctx, target, agentclient.GameEndNotification{
-				MatchID: matchID, Game: "mafia", Result: result,
-			}); err != nil {
-				p.log.Warn("mafia pushplay: game-end delivery failed", "match", matchID, "err", err)
-			}
+			p.emitGameEnd(ctx, userAgent, target, matchID, result)
 			return
 		}
 
@@ -185,22 +191,47 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 // entry whose Seq exceeds the last delivered one. Delivery is fire-and-forget (a
 // detached goroutine per event) so the drive loop and the engine never block on it;
 // the agent orders by Seq. Returns the new highest delivered Seq.
-func (p *pushPlayer) dispatchPublicEvents(ctx context.Context, target agentclient.Target, matchID string, events []mf.Event, delivered int) int {
+func (p *pushPlayer) dispatchPublicEvents(ctx context.Context, agentID string, target agentclient.Target, matchID string, events []mf.Event, delivered int) int {
 	highest := delivered
 	for _, e := range events {
 		if e.Seq <= delivered {
 			continue
 		}
 		payload, _ := json.Marshal(e.Payload)
-		n := agentclient.EventNotification{
-			MatchID: matchID, Game: "mafia", Seq: e.Seq, Type: string(e.Type), Payload: payload,
-		}
-		go func(n agentclient.EventNotification) { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }(n)
+		p.emitEvent(ctx, agentID, target, matchID, e.Seq, string(e.Type), payload)
 		if e.Seq > highest {
 			highest = e.Seq
 		}
 	}
 	return highest
+}
+
+// emitEvent / emitGameEnd persist to the durable webhook queue (delivered by the
+// central dispatcher: signed, retried, health-gated); without a queue they fall
+// back to a best-effort detached goroutine so the loop and engine never block.
+func (p *pushPlayer) emitEvent(ctx context.Context, agentID string, target agentclient.Target, matchID string, seq int, eventType string, payload []byte) {
+	if p.enqueue != nil {
+		if err := p.enqueue.EnqueueEvent(context.WithoutCancel(ctx), agentID, "mafia", matchID, seq, eventType, payload); err != nil {
+			p.log.Warn("mafia pushplay: enqueue event failed", "match", matchID, "err", err)
+		}
+		return
+	}
+	n := agentclient.EventNotification{MatchID: matchID, Game: "mafia", Seq: seq, Type: eventType, Payload: payload}
+	go func() { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }()
+}
+
+func (p *pushPlayer) emitGameEnd(ctx context.Context, agentID string, target agentclient.Target, matchID string, result []byte) {
+	if p.enqueue != nil {
+		if err := p.enqueue.EnqueueGameEnd(context.WithoutCancel(ctx), agentID, "mafia", matchID, result); err != nil {
+			p.log.Warn("mafia pushplay: enqueue game-end failed", "match", matchID, "err", err)
+		}
+		return
+	}
+	if err := p.client.GameEnd(context.WithoutCancel(ctx), target, agentclient.GameEndNotification{
+		MatchID: matchID, Game: "mafia", Result: result,
+	}); err != nil {
+		p.log.Warn("mafia pushplay: game-end delivery failed", "match", matchID, "err", err)
+	}
 }
 
 func (p *pushPlayer) decideRemote(ctx context.Context, target agentclient.Target, matchID string, v AgentView) mf.Action {

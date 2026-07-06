@@ -10,6 +10,7 @@ import (
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/remoteplay"
+	"github.com/agent-arena/arena/internal/webhook"
 )
 
 // Driver is the slice of match.Service the push-play loop needs beyond opening a
@@ -35,10 +36,23 @@ type pushPlayer struct {
 	driver Driver
 	remote RemoteResolver
 	client *agentclient.Client
-	log    *slog.Logger
+	// enqueue is the durable webhook queue for async /event + /game-end. When set
+	// (production), notifications are persisted and delivered by the central
+	// dispatcher (retry + health-gated). When nil, they fall back to best-effort
+	// inline goroutines so tests/standalone use still work.
+	enqueue webhook.Enqueuer
+	log     *slog.Logger
 	// maxMatch caps a single driven match's wall-clock so a stalled/hostile
 	// endpoint can never leak a goroutine forever.
 	maxMatch time.Duration
+}
+
+// SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
+// queue. Call after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
+	if s.pusher != nil {
+		s.pusher.enqueue = e
+	}
 }
 
 // EnablePushPlay wires the optional /v1/sandbox/pushplay capability. Without it,
@@ -124,16 +138,12 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 		// (opponent card + winner). Fire-and-forget so the turn loop / engine never
 		// blocks on delivery; the agent orders by Seq. (Production scale: a central
 		// outbox dispatcher — see ONAVION_DEV_PLATFORM.md P2.)
-		deliveredRounds = p.dispatchRoundEvents(ctx, target, matchID, v, deliveredRounds)
+		deliveredRounds = p.dispatchRoundEvents(ctx, agentID, target, matchID, v, deliveredRounds)
 		if v.Status != "active" {
 			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
-			// Lifecycle: /game-end with the final result (best-effort webhook).
+			// Lifecycle: /game-end with the final result.
 			result, _ := json.Marshal(v.Result)
-			if err := p.client.GameEnd(ctx, target, agentclient.GameEndNotification{
-				MatchID: matchID, Game: "goofspiel", Result: result,
-			}); err != nil {
-				p.log.Warn("pushplay: game-end delivery failed", "match", matchID, "err", err)
-			}
+			p.emitGameEnd(ctx, agentID, target, matchID, result)
 			return
 		}
 		if !v.YourTurn {
@@ -168,24 +178,49 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 // the last read. Delivery is async (a goroutine per event) so the turn loop and
 // the engine never block on it; each event carries Seq so the agent can order
 // them, and agentclient retries + signs. Returns the new highest delivered round.
-func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, target agentclient.Target, matchID string, v match.AgentView, delivered int) int {
+func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, agentID string, target agentclient.Target, matchID string, v match.AgentView, delivered int) int {
 	highest := delivered
 	for _, h := range v.History {
 		if h.Round <= delivered {
 			continue
 		}
 		payload, _ := json.Marshal(h)
-		n := agentclient.EventNotification{
-			MatchID: matchID, Game: "goofspiel", Seq: h.Round, Type: "round_revealed", Payload: payload,
-		}
-		// Detached context: notifications are best-effort and must still deliver
-		// after the match ends; each attempt is bounded by the client's timeout.
-		go func(n agentclient.EventNotification) { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }(n)
+		p.emitEvent(ctx, agentID, target, matchID, h.Round, "round_revealed", payload)
 		if h.Round > highest {
 			highest = h.Round
 		}
 	}
 	return highest
+}
+
+// emitEvent / emitGameEnd persist the notification to the durable webhook queue
+// (delivered by the central dispatcher: signed, retried, health-gated). Without a
+// queue configured they fall back to a best-effort detached goroutine so the loop
+// and engine still never block. Detached context: persistence/delivery must
+// outlive the match's drive deadline.
+func (p *pushPlayer) emitEvent(ctx context.Context, agentID string, target agentclient.Target, matchID string, seq int, eventType string, payload []byte) {
+	if p.enqueue != nil {
+		if err := p.enqueue.EnqueueEvent(context.WithoutCancel(ctx), agentID, "goofspiel", matchID, seq, eventType, payload); err != nil {
+			p.log.Warn("pushplay: enqueue event failed", "match", matchID, "err", err)
+		}
+		return
+	}
+	n := agentclient.EventNotification{MatchID: matchID, Game: "goofspiel", Seq: seq, Type: eventType, Payload: payload}
+	go func() { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }()
+}
+
+func (p *pushPlayer) emitGameEnd(ctx context.Context, agentID string, target agentclient.Target, matchID string, result []byte) {
+	if p.enqueue != nil {
+		if err := p.enqueue.EnqueueGameEnd(context.WithoutCancel(ctx), agentID, "goofspiel", matchID, result); err != nil {
+			p.log.Warn("pushplay: enqueue game-end failed", "match", matchID, "err", err)
+		}
+		return
+	}
+	if err := p.client.GameEnd(context.WithoutCancel(ctx), target, agentclient.GameEndNotification{
+		MatchID: matchID, Game: "goofspiel", Result: result,
+	}); err != nil {
+		p.log.Warn("pushplay: game-end delivery failed", "match", matchID, "err", err)
+	}
 }
 
 func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matchID string, v match.AgentView, legal []int) (int, bool) {

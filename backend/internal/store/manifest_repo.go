@@ -154,6 +154,26 @@ func (r *ManifestRepo) ActiveManifest(ctx context.Context, agentPublicID string)
 	return r.scanOne(ctx, row)
 }
 
+// ActiveAgentIDs returns the public id of every agent with an active
+// (endpoint-verified) manifest — the set the health monitor probes.
+func (r *ManifestRepo) ActiveAgentIDs(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT public_id FROM agents WHERE active_manifest_public_id IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (r *ManifestRepo) LatestManifest(ctx context.Context, agentPublicID string) (manifest.Manifest, bool, error) {
 	row := r.db.QueryRow(ctx,
 		`SELECT `+manifestColumns+`

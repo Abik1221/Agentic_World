@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/adminapi"
+	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/antifraud"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/badges"
@@ -51,6 +51,7 @@ import (
 	"github.com/agent-arena/arena/internal/tournament"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
+	"github.com/agent-arena/arena/internal/webhook"
 )
 
 // version is injected at build time via -ldflags "-X main.version=$(git rev-parse --short HEAD)".
@@ -230,6 +231,19 @@ func run() error {
 	}
 	go eventBus.Run(ctx)
 
+	// Durable webhook delivery for the push protocol's async notifications
+	// (/event + /game-end). Drive loops ENQUEUE; this central dispatcher delivers
+	// them signed (HMAC), at-least-once with exponential backoff, and gated by a
+	// per-endpoint circuit breaker (webhookHealth) so an unhealthy endpoint is
+	// skipped rather than hammered. A continuous /health monitor feeds the breaker.
+	// The engine never blocks on any of this. See internal/webhook.
+	webhookQueue := store.NewWebhookRepo(st.DB)
+	webhookHealth := webhook.NewHealthTracker(webhook.HealthConfig{})
+	webhookDispatcher := webhook.NewDispatcher(webhookQueue, manifestSvc, manifestProbe, webhookHealth, log, webhook.Config{})
+	webhookMonitor := webhook.NewMonitor(manifestSvc, manifestProbe, webhookHealth, log, 30*time.Second)
+	go webhookDispatcher.Run(ctx)
+	go webhookMonitor.Run(ctx)
+
 	// Verification (built in Stage 1) is wired into the match flow now.
 	verSvc := verification.New(store.NewVerificationRepo(st.DB))
 
@@ -268,7 +282,7 @@ func run() error {
 	// match id) and powers the leaderboard + agent profiles + /v1/agent/stats.
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
 		rating.Config{K: cfg.RatingK, SeasonLength: cfg.SeasonLength}, metrics.Registry())
-	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint) // dev-only season force-roll gated with mint
+	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint)    // dev-only season force-roll gated with mint
 	go rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run(ctx) // finalise ended seasons + emit season.rolled
 	profilesSvc := profiles.New(store.NewProfilesRepo(st.DB), ratingSvc.CurrentSeason)
 	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
@@ -317,6 +331,7 @@ func run() error {
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
 	// fill the rest. Reuses the same match machinery + SSE spectating.
 	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
+	monopolySvc.SetWebhookEnqueuer(webhookQueue)
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
@@ -374,6 +389,7 @@ func run() error {
 	// agent endpoint (manifest push model). Reuses the hardened verification client
 	// and the same match machinery, so the browser watches it live over SSE.
 	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, manifestProbe, log)
+	sandboxSvc.SetWebhookEnqueuer(webhookQueue)
 	sandboxHandler := sandbox.NewHandler(sandboxSvc, authn)
 
 	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
@@ -468,6 +484,7 @@ func run() error {
 				botSeats = append(botSeats, mafia.BotAgent{PublicID: a.PublicID, OwnerPublicID: a.OwnerPublicID})
 			}
 			mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, botSeats, log)
+			mafiaSvc.SetWebhookEnqueuer(webhookQueue)
 		}
 	}
 	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
