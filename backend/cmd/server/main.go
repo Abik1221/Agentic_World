@@ -450,6 +450,16 @@ func run() error {
 			log.Warn("demo agent seed failed", "error", err)
 		} else {
 			log.Info("demo bots enabled (rules engine, not LLM)", "count", len(agents))
+			// Dev-only: certify the platform's demo bots so they clear the ranked
+			// certification gate. They have no hosted endpoint, so record a
+			// pre-verified manifest directly. This lets the demo runner produce rated
+			// Goofspiel matches, which populate the ELO leaderboard + season champion.
+			demoManifestRepo := store.NewManifestRepo(st.DB)
+			for _, a := range agents {
+				if err := demoManifestRepo.SeedVerifiedManifest(ctx, a.PublicID); err != nil {
+					log.Warn("demo agent certify failed", "agent", a.PublicID, "error", err)
+				}
+			}
 			go bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run(ctx)
 			// Mafia push-play needs a full roster: seat the developer's agent (via
 			// their endpoint) and fill the other seats with these demo bots.

@@ -70,11 +70,36 @@ func (r *Runner) tickGoofspiel(ctx context.Context, idx *int) {
 	}
 	b := r.next(idx)
 	if _, err := r.match.Join(ctx, b.PublicID, b.OwnerPublicID, mid); err == nil {
-		r.playGoofspiel(ctx, a.PublicID, mid)
-		r.playGoofspiel(ctx, b.PublicID, mid)
+		// Goofspiel is SIMULTANEOUS: each round resolves only once BOTH seats have
+		// sealed. Driving one seat to completion then the other stalls the match
+		// after round 1 (each waits on the other); interleave them instead so the
+		// full match plays out and finalises (which is what feeds the ratings).
+		r.driveGoofspielPair(ctx, mid, a.PublicID, b.PublicID)
 	}
 }
 
+// driveGoofspielPair plays both demo seats round-by-round until the match ends.
+func (r *Runner) driveGoofspielPair(ctx context.Context, matchID, agentA, agentB string) {
+	for step := 0; step < 40; step++ { // 13 rounds × 2 seats + headroom
+		for _, id := range [2]string{agentA, agentB} {
+			v, err := r.match.State(ctx, matchID, id, false, 0)
+			if err != nil {
+				return
+			}
+			if v.Status == match.StatusFinished {
+				return
+			}
+			if v.YourTurn && len(v.You.Hand) > 0 {
+				if _, err := r.match.Act(ctx, id, matchID, v.Round, PickGoofspielCard(v), ""); err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+// playGoofspiel drives a single demo seat (used when a demo bot joins a match a
+// real user created — the user drives their own seat).
 func (r *Runner) playGoofspiel(ctx context.Context, agentID, matchID string) {
 	for step := 0; step < 20; step++ {
 		v, err := r.match.State(ctx, matchID, agentID, false, 0)

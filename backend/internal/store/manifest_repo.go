@@ -7,9 +7,60 @@ import (
 
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/manifest"
+	"github.com/agent-arena/arena/internal/platform"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// SeedVerifiedManifest gives an internal/demo agent a pre-verified, ACTIVE manifest
+// so it clears the ranked certification gate WITHOUT hosting a real endpoint. The
+// platform's rule-based demo bots have no HTTP endpoint to verify the normal way,
+// so in dev we record certification directly — this is what lets the demo
+// bot-runner produce rated Goofspiel matches (which feed the ELO leaderboard and
+// the season champion). DEV-ONLY: called from the demo-bots seeding path, which is
+// off in production. Idempotent: a no-op if the agent already has an active manifest.
+func (r *ManifestRepo) SeedVerifiedManifest(ctx context.Context, agentPublicID string) error {
+	var existing string
+	if err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(active_manifest_public_id, '') FROM agents WHERE public_id = $1`,
+		agentPublicID).Scan(&existing); err != nil {
+		return err
+	}
+	if existing != "" {
+		return nil // already certified
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	mid := platform.NewID(platform.PrefixManifest)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agent_manifests
+		   (public_id, agent_public_id, manifest_version, agent_version, name,
+		    endpoint_url, auth_type, runtime_timeout_ms, raw_document, normalized, status)
+		 VALUES ($1, $2, '1.0', '1.0.0', 'demo-bot', 'internal://demo', 'none', 5000, '{}', '{}'::jsonb, 'verified')
+		 ON CONFLICT (agent_public_id, agent_version) DO NOTHING`,
+		mid, agentPublicID); err != nil {
+		return err
+	}
+	// Adopt whichever verified manifest the agent has (the one just inserted, or a
+	// pre-existing row if this ran before).
+	var active string
+	if err := tx.QueryRow(ctx,
+		`SELECT public_id FROM agent_manifests
+		 WHERE agent_public_id = $1 AND status = 'verified'
+		 ORDER BY id DESC LIMIT 1`, agentPublicID).Scan(&active); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE agents SET active_manifest_public_id = $2, updated_at = now() WHERE public_id = $1`,
+		agentPublicID, active); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
 // ManifestRepo is the pgx-backed implementation of manifest.Repo. All SQL is
 // parameterized. As elsewhere in this package the queries are hand-written (the
