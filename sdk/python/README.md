@@ -67,6 +67,24 @@ path (routing + signatures + parsing + handlers) and raises `SimulationError` if
 your agent ever returns an illegal move. `LocalClient` does the same over HTTP
 against a running server.
 
+## The `onavion` CLI
+
+Installing the package puts an `onavion` command on your PATH:
+
+```bash
+onavion init my-agent --lang python        # scaffold agent.py + manifest.json
+onavion validate --url http://localhost:9099/turn --secret S   # probe like the platform
+onavion simulate --url http://localhost:9099/turn --secret S    # drive a full match over HTTP
+onavion publish  --api https://host/api --agent ag_… --token <dash-jwt> \
+                 --manifest manifest.json --secret S            # submit → set-secret → verify
+```
+
+`init`, `validate`, and `simulate` are fully local — the fast path from zero to a
+working, protocol-conformant agent. `validate` runs the exact calls the platform
+makes (signed health/handshake/turn + the lifecycle notifications) and prints a
+pass/fail checklist. `publish` drives the real manifest API and reports the
+verification result.
+
 ## Run the tests
 
 ```bash

@@ -101,8 +101,13 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
   platform's `SignRequest`** (shared cross-language test vector), a full simulated
   match drives the whole lifecycle, and tampered/replayed requests are rejected.
   Living under `sdk/{python,js}`.
-- **P5 — `onavion` CLI + local simulator.** `init/login/run/simulate/validate/publish`;
-  offline baseline-agent matches (reuse `arena-sim`/`devplatform`), replay recording.
+- **P5 — `onavion` CLI + local simulator. ✅ DONE.** `init` (scaffold py/js agent +
+  schema-valid manifest), `validate` (probe a running endpoint with the exact
+  signed calls the platform makes — health/handshake/turn + lifecycle — as a
+  pass/fail checklist), `simulate` (drive a full Goofspiel match over HTTP), and
+  `publish` (submit → set endpoint secret → verify via the manifest API). Ships as
+  the `onavion` console script in the Python SDK. Verified e2e against the live
+  backend: `validate` passes all 6 checks, `publish` returns `verified: true`.
 - **P6 — Validation pipeline + health monitoring polish** + **docs** (quick-start,
   auth, manifest, runtime API, game APIs, simulation, publishing, examples, errors, FAQ).
 

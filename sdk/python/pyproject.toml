@@ -14,6 +14,9 @@ keywords = ["agent", "arena", "onavion", "goofspiel", "monopoly", "mafia"]
 # Zero runtime dependencies — stdlib only.
 dependencies = []
 
+[project.scripts]
+onavion = "onavion.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=7"]
 
