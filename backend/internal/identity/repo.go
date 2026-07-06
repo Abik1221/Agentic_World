@@ -1,6 +1,9 @@
 package identity
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repo is identity's persistence port. The concrete pgx implementation lives in
 // internal/store (the only package that touches the DB driver), keeping this
@@ -49,6 +52,28 @@ type Repo interface {
 	// CredentialsByEmail returns the auth record for a password-enabled account,
 	// or ErrNotFound if the email is unknown or has no password set.
 	CredentialsByEmail(ctx context.Context, email string) (AuthRecord, error)
+
+	// UpdateAgentProfile writes the owner's agent display identity (nil fields are
+	// left unchanged) and returns the saved profile. Returns ErrForbiddenOwner if
+	// the caller owns no agent.
+	UpdateAgentProfile(ctx context.Context, ownerPublicID string, displayName, bio, avatarURL *string) (AgentProfile, error)
+
+	// AgentProfileByOwner returns the owner's agent display identity, or
+	// ErrForbiddenOwner if the caller owns no agent.
+	AgentProfileByOwner(ctx context.Context, ownerPublicID string) (AgentProfile, error)
+
+	// SetGameConfig upserts per-game behaviour (a JSON object) for the owner's
+	// agent. Returns ErrForbiddenOwner if the caller owns no agent.
+	SetGameConfig(ctx context.Context, ownerPublicID, game string, behavior []byte) error
+
+	// CreateMagicLink stores a single-use sign-in token hash for the account with
+	// this email, returning whether such an account existed. A missing email is
+	// NOT an error (enumeration-safe: the caller behaves as if a link was sent).
+	CreateMagicLink(ctx context.Context, tokenHash, email string, expiresAt time.Time) (bool, error)
+
+	// ConsumeMagicLink atomically marks a valid (unconsumed, unexpired) token used
+	// and returns its owner (+ agent), or ErrNotFound.
+	ConsumeMagicLink(ctx context.Context, tokenHash string) (MagicLink, error)
 }
 
 // CreateAccountInput carries everything CreateAccount needs in one atomic call.

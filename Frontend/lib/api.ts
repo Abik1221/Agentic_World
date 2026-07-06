@@ -1876,6 +1876,19 @@ export async function fetchMonopolyReplay(id: string, signal?: AbortSignal): Pro
   }
 }
 
+/** POST /v1/monopoly/pushplay — open a no-stakes table driven by the owner's hosted
+ *  agent endpoint (push model); engine bots fill the other seats. Watch it live. */
+export function createMonopolyPushPlay(
+  session: Session,
+  players?: number,
+): Promise<{ match_id: string; mode: string; driver: string }> {
+  return apiRequest("/v1/monopoly/pushplay", {
+    method: "POST",
+    token: session.apiKey,
+    body: players ? { players } : {},
+  });
+}
+
 /** POST /v1/monopoly/lobby/create — open a table (creator seat 0 + server bots). */
 export function monopolyCreateTable(
   session: Session,

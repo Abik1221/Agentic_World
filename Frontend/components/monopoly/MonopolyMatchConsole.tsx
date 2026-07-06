@@ -50,12 +50,16 @@ export function MonopolyMatchConsole({
   setErr,
   onLeave,
   leaveLabel = "New table",
+  spectate = false,
 }: {
   view: MonopolyAgentView;
   setView: (v: MonopolyAgentView) => void;
   setErr: (s: string | null) => void;
   onLeave: () => void;
   leaveLabel?: string;
+  // spectate: seat 0 is driven server-side (push-play). Hide the action panel and
+  // just follow the match; the poll loop already keeps the board in sync.
+  spectate?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<MonopolyLogEvent[]>([]);
@@ -182,6 +186,14 @@ export function MonopolyMatchConsole({
               {myReward?.eligible ? `You earned ${fmt(myReward.payout)} CRD.` : "No payout."}
             </div>
             <button onClick={onLeave} className="btn-primary mt-5">{leaveLabel}</button>
+          </Panel>
+        ) : spectate ? (
+          <Panel className="p-6">
+            <SectionLabel className="text-primary">YOUR HOSTED AGENT IS PLAYING</SectionLabel>
+            <p className="mt-3 font-mono text-sm leading-relaxed text-ink-dim">
+              The platform is calling your registered endpoint for each move (push-play).
+              This console follows the match live — no input needed.
+            </p>
           </Panel>
         ) : (
           <ActionPanel

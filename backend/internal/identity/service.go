@@ -3,7 +3,10 @@ package identity
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -14,6 +17,13 @@ import (
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 )
+
+// magicLinkTTL bounds how long a passwordless sign-in token stays valid.
+const magicLinkTTL = 15 * time.Minute
+
+// validGames is the set of games an agent can be tuned for (mirrors the
+// agent_game_config.game_type CHECK constraint in migration 0019).
+var validGames = map[string]bool{"mafia": true, "goofspiel": true}
 
 // Service is the identity/onboarding application service. It implements
 // auth.KeyResolver.
@@ -269,6 +279,118 @@ func (s *Service) ResolveAgentKey(ctx context.Context, raw string) (*auth.Princi
 		UserPublicID:  rec.OwnerPublicID,
 		AgentPublicID: rec.AgentPublicID,
 	}, nil
+}
+
+// UpdateProfile writes the owner's agent display identity (nil fields left
+// unchanged) and returns the saved profile. Identity comes from the token
+// (ownerPublicID), never the body.
+func (s *Service) UpdateProfile(ctx context.Context, ownerPublicID string, displayName, bio, avatarURL *string) (AgentProfile, error) {
+	if displayName != nil {
+		trimmed := strings.TrimSpace(*displayName)
+		displayName = &trimmed
+	}
+	return s.repo.UpdateAgentProfile(ctx, ownerPublicID, displayName, bio, avatarURL)
+}
+
+// AgentProfile returns the owner's agent display identity.
+func (s *Service) AgentProfile(ctx context.Context, ownerPublicID string) (AgentProfile, error) {
+	return s.repo.AgentProfileByOwner(ctx, ownerPublicID)
+}
+
+// SetGameConfig persists per-game behaviour for the owner's agent. behavior must
+// be a JSON object (empty defaults to {}); the game must be a supported title.
+func (s *Service) SetGameConfig(ctx context.Context, ownerPublicID, game string, behavior json.RawMessage) error {
+	game = strings.ToLower(strings.TrimSpace(game))
+	if !validGames[game] {
+		return errInvalid("game must be one of: mafia, goofspiel")
+	}
+	if len(behavior) == 0 {
+		behavior = json.RawMessage("{}")
+	}
+	if !json.Valid(behavior) {
+		return errInvalid("behavior must be valid JSON")
+	}
+	return s.repo.SetGameConfig(ctx, ownerPublicID, game, []byte(behavior))
+}
+
+// Notification is a server-derived dashboard prompt (profile-completion, etc.).
+type Notification struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+	Href   string `json:"href"`
+	CTA    string `json:"cta"`
+}
+
+// Notifications derives the owner's outstanding setup prompts from persisted
+// profile state (no separate notification store). Returns an empty (non-nil)
+// slice when there is nothing to prompt, or the owner has no agent yet.
+func (s *Service) Notifications(ctx context.Context, ownerPublicID string) []Notification {
+	out := []Notification{}
+	prof, err := s.repo.AgentProfileByOwner(ctx, ownerPublicID)
+	if err != nil {
+		return out
+	}
+	const detail = "Complete this step to finish setting up your agent."
+	if strings.TrimSpace(prof.DisplayName) == "" {
+		out = append(out, Notification{ID: "profile-name", Kind: "profile",
+			Title: "Name your agent", Detail: detail, Href: "/profile", CTA: "Add name"})
+	}
+	if strings.TrimSpace(prof.AvatarURL) == "" {
+		out = append(out, Notification{ID: "profile-avatar", Kind: "profile",
+			Title: "Upload an agent photo", Detail: detail, Href: "/profile", CTA: "Upload"})
+	}
+	return out
+}
+
+// RequestMagicLink issues a single-use passwordless sign-in token for the
+// account with this email. To avoid leaking which emails are registered, an
+// unknown email is not an error and yields no token (sent is still true). The
+// raw token is returned ONLY for a known account; the handler surfaces it only
+// in non-prod envs — PROD must deliver it by email (not yet wired).
+func (s *Service) RequestMagicLink(ctx context.Context, email string) (token string, sent bool, err error) {
+	normEmail, ok := normalizeEmail(email)
+	if !ok {
+		return "", false, errInvalid("a valid email is required")
+	}
+	raw, err := randToken(24)
+	if err != nil {
+		return "", false, err
+	}
+	found, err := s.repo.CreateMagicLink(ctx, hashToken(raw), normEmail, s.clock.Now().Add(magicLinkTTL))
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", true, nil // behave as if a link was sent
+	}
+	return raw, true, nil
+}
+
+// VerifyMagicLink consumes a single-use token and mints a fresh dashboard
+// session, reusing the same JWT path as login/signup.
+func (s *Service) VerifyMagicLink(ctx context.Context, token string) (LoginResult, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return LoginResult{}, ErrInvalidMagicLink
+	}
+	ml, err := s.repo.ConsumeMagicLink(ctx, hashToken(token))
+	if err != nil {
+		return LoginResult{}, ErrInvalidMagicLink
+	}
+	dash, err := s.jwt.Issue(ml.UserPublicID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{DashboardToken: dash, AgentID: ml.AgentPublicID}, nil
+}
+
+// hashToken returns the hex SHA-256 of a raw token; only the hash is persisted,
+// so a DB read never reveals a usable sign-in token.
+func hashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // newClaimToken returns a human-postable token like "AA-7K3Q-9XF2".

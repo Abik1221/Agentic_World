@@ -34,9 +34,33 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
 		r.With(agent).Post("/v1/monopoly/lobby/create", h.create)
+		r.With(agent).Post("/v1/monopoly/pushplay", h.pushplay)
 		r.With(agent).Get("/v1/monopoly/{id}/state", h.state)
 		r.With(agent).Post("/v1/monopoly/{id}/action", h.action)
 	})
+}
+
+// pushplay opens a no-stakes table driven by the caller's hosted agent endpoint
+// (manifest push model) with engine bots in the other seats; watch it live at
+// /v1/monopoly/{id}/watch. Body: {players?}.
+func (h *Handler) pushplay(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Players int `json:"players"`
+	}
+	if r.ContentLength > 0 {
+		if err := httpx.DecodeJSON(w, r, &in); err != nil {
+			httpx.Error(w, err)
+			return
+		}
+	}
+	id, err := h.svc.StartPushPlay(r.Context(), p.AgentPublicID, p.UserPublicID, in.Players)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	h.hub.RegisterMatch(id)
+	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id, "mode": "sandbox", "driver": "remote"})
 }
 
 func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {

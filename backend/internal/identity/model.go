@@ -83,3 +83,19 @@ type KeyRecord struct {
 	OwnerPublicID string
 	Hash          string
 }
+
+// AgentProfile is an agent's public display identity (migration 0019:
+// agents.display_name / bio / avatar_url), mutable by the owner (user scope).
+type AgentProfile struct {
+	AgentPublicID string
+	DisplayName   string
+	Bio           string
+	AvatarURL     string
+}
+
+// MagicLink is the owner (and their agent) resolved by consuming a single-use
+// passwordless sign-in token.
+type MagicLink struct {
+	UserPublicID  string
+	AgentPublicID string // empty if the owner has no agent yet
+}

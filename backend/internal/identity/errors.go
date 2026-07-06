@@ -19,6 +19,7 @@ var (
 	ErrInvalidPubKey     = httpx.NewError(http.StatusBadRequest, "invalid_pubkey", "Signing key must be a base64-encoded Ed25519 public key.")
 	ErrEmailTaken         = httpx.NewError(http.StatusConflict, "email_taken", "That email is already registered. Try signing in instead.")
 	ErrInvalidCredentials = httpx.NewError(http.StatusUnauthorized, "invalid_credentials", "Incorrect email or password.")
+	ErrInvalidMagicLink   = httpx.NewError(http.StatusUnauthorized, "invalid_magic_link", "This sign-in link is invalid, expired, or already used.")
 )
 
 func errInvalid(msg string) *httpx.APIError {

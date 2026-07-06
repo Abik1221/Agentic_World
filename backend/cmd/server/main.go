@@ -174,7 +174,7 @@ func run() error {
 	limiter := store.NewRateLimiter(st.Redis)
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
 	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
-	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL)
+	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL, !cfg.IsProd())
 
 	// Agent manifests: the metadata contract a developer submits per agent
 	// version (info, supported games, hosted endpoint, runtime, model, SDK). The
@@ -314,6 +314,9 @@ func run() error {
 		clock,
 		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
+	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
+	// fill the rest. Reuses the same match machinery + SSE spectating.
+	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	go monopoly.NewSweeper(monopolySvc, log, time.Second).Run(ctx)
 

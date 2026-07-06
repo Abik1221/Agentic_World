@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/auth"
@@ -18,9 +19,10 @@ type Handler struct {
 	authn      *auth.Authenticator
 	registerRL func(http.Handler) http.Handler
 	loginRL    func(http.Handler) http.Handler
+	dev        bool // non-prod: surface the magic-link token in the response (no email wired)
 }
 
-func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL func(http.Handler) http.Handler) *Handler {
+func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL func(http.Handler) http.Handler, dev bool) *Handler {
 	noop := func(n http.Handler) http.Handler { return n }
 	if registerRL == nil {
 		registerRL = noop // no-op fallback
@@ -28,7 +30,7 @@ func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL fun
 	if loginRL == nil {
 		loginRL = noop
 	}
-	return &Handler{svc: svc, authn: authn, registerRL: registerRL, loginRL: loginRL}
+	return &Handler{svc: svc, authn: authn, registerRL: registerRL, loginRL: loginRL, dev: dev}
 }
 
 // Register is an httpx.Mount: it attaches all identity routes with their guards.
@@ -42,11 +44,16 @@ func (h *Handler) Register(r chi.Router) {
 		r.Post("/v1/auth/signup", h.signup)
 	})
 
-	// Password login (rate-limited to blunt credential-stuffing).
+	// Password login + passwordless magic-link request (rate-limited to blunt
+	// credential-stuffing and account enumeration).
 	r.Group(func(r chi.Router) {
 		r.Use(h.loginRL)
 		r.Post("/v1/auth/login", h.login)
+		r.Post("/v1/auth/magic-link", h.requestMagicLink)
 	})
+	// Magic-link verify consumes a single-use token (public; the token is the
+	// credential), so it is not IP-rate-limited.
+	r.Get("/v1/auth/magic-link/verify", h.verifyMagicLink)
 
 	// Authenticated routes: attach the principal, then guard by scope.
 	r.Group(func(r chi.Router) {
@@ -56,6 +63,9 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/keys", h.createKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/agent/keys/{prefix}", h.revokeKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/signing-key", h.setSigningKey)
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/profile", h.updateProfile)
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/game-config", h.setGameConfig)
+		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/notifications", h.notifications)
 		// /v1/agent/stats is served by the profiles module (Stage 7, real data).
 	})
 }
@@ -246,6 +256,100 @@ func (h *Handler) revokeKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusNoContent, nil)
+}
+
+// updateProfile persists the owner's agent display identity. Fields are optional
+// pointers: an omitted field is left unchanged. Identity is taken from the token.
+func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		DisplayName *string `json:"display_name"`
+		Bio         *string `json:"bio"`
+		AvatarURL   *string `json:"avatar_url"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	prof, err := h.svc.UpdateProfile(r.Context(), p.UserPublicID, in.DisplayName, in.Bio, in.AvatarURL)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, profileJSON(prof))
+}
+
+// setGameConfig persists per-game behaviour for the owner's agent.
+func (h *Handler) setGameConfig(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Game     string          `json:"game"`
+		Behavior json.RawMessage `json:"behavior"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.SetGameConfig(r.Context(), p.UserPublicID, in.Game, in.Behavior); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// notifications returns the owner's outstanding setup prompts (server-derived).
+func (h *Handler) notifications(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"notifications": h.svc.Notifications(r.Context(), p.UserPublicID),
+	})
+}
+
+// requestMagicLink issues a single-use passwordless sign-in token. In non-prod
+// envs the token is returned in the response (dev_token) for testing, mirroring
+// how other dev-only affordances are gated; PROD must deliver it by email
+// (delivery is not yet wired — do not enable this path in prod expecting mail).
+func (h *Handler) requestMagicLink(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email string `json:"email"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	token, sent, err := h.svc.RequestMagicLink(r.Context(), in.Email)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	resp := map[string]any{"sent": sent}
+	if h.dev && token != "" {
+		resp["dev_token"] = token
+	}
+	httpx.JSON(w, http.StatusOK, resp)
+}
+
+// verifyMagicLink consumes a token and returns a fresh dashboard session.
+func (h *Handler) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
+	res, err := h.svc.VerifyMagicLink(r.Context(), r.URL.Query().Get("token"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"agent_id":        res.AgentID,
+	})
+}
+
+// profileJSON renders an AgentProfile in the shape the dashboard expects.
+func profileJSON(p AgentProfile) map[string]any {
+	return map[string]any{
+		"agent_id":     p.AgentPublicID,
+		"display_name": p.DisplayName,
+		"bio":          p.Bio,
+		"avatar_url":   p.AvatarURL,
+	}
 }
 
 // stats is a Stage 1 stub; real numbers arrive in Stage 7 (ratings/profiles).

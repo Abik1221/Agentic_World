@@ -26,6 +26,9 @@ type Service struct {
 	finish FinishHook
 	clock  platform.Clock
 	cfg    Config
+	// pusher is set by EnablePushPlay to enable POST /v1/monopoly/pushplay
+	// (manifest push model). Nil ⇒ push-play returns 501.
+	pusher *pushPlayer
 }
 
 func NewService(repo Repo, lock Locker, wallet Wallet, bcast Broadcaster, finish FinishHook, clock platform.Clock, cfg Config) *Service {

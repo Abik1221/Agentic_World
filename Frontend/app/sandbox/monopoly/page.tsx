@@ -11,7 +11,9 @@ import { Panel, Pill, SectionLabel, cx } from "@/components/ui";
 import { Bolt, Cpu } from "@/components/icons";
 import {
   monopolyCreateTable,
+  createMonopolyPushPlay,
   fetchMonopolyState,
+  ApiError,
   type MonopolyAgentView,
 } from "@/lib/api";
 import { getSession } from "@/lib/session";
@@ -20,11 +22,17 @@ import { MonopolyMatchConsole } from "@/components/monopoly/MonopolyMatchConsole
 export default function MonopolySandboxPage() {
   const [hasKey, setHasKey] = useState(true);
   const [view, setView] = useState<MonopolyAgentView | null>(null);
+  const [spectate, setSpectate] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     setHasKey(Boolean(getSession().apiKey));
   }, []);
+
+  function leave() {
+    setView(null);
+    setSpectate(false);
+  }
 
   return (
     <div className="space-y-5">
@@ -62,11 +70,17 @@ export default function MonopolySandboxPage() {
           view={view}
           setView={setView}
           setErr={setErr}
-          onLeave={() => setView(null)}
+          onLeave={leave}
           leaveLabel="New practice table"
+          spectate={spectate}
         />
       ) : (
-        <PracticeStarter setView={setView} setErr={setErr} disabled={!hasKey} />
+        <PracticeStarter
+          setView={setView}
+          setSpectate={setSpectate}
+          setErr={setErr}
+          disabled={!hasKey}
+        />
       )}
     </div>
   );
@@ -74,26 +88,48 @@ export default function MonopolySandboxPage() {
 
 function PracticeStarter({
   setView,
+  setSpectate,
   setErr,
   disabled,
 }: {
   setView: (v: MonopolyAgentView) => void;
+  setSpectate: (b: boolean) => void;
   setErr: (s: string | null) => void;
   disabled: boolean;
 }) {
   const [players, setPlayers] = useState(4);
   const [busy, setBusy] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
 
   async function start() {
     setBusy(true);
     setErr(null);
     try {
       const { match_id } = await monopolyCreateTable(getSession(), 0, players);
+      setSpectate(false);
       setView(await fetchMonopolyState(getSession(), match_id));
     } catch (e) {
       setErr((e as Error)?.message ?? "Could not start practice table.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function runAgent() {
+    setPushBusy(true);
+    setErr(null);
+    try {
+      const { match_id } = await createMonopolyPushPlay(getSession(), players);
+      setSpectate(true);
+      setView(await fetchMonopolyState(getSession(), match_id));
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "no_verified_endpoint") {
+        setErr("No verified agent endpoint yet. Register and verify it under My Agents → Endpoint, then try again.");
+      } else {
+        setErr((e as Error)?.message ?? "Could not start push-play match.");
+      }
+    } finally {
+      setPushBusy(false);
     }
   }
 
@@ -126,8 +162,18 @@ function PracticeStarter({
           disabled={busy || disabled}
           className="btn-primary mt-4 w-full disabled:opacity-50"
         >
-          <Bolt width={14} height={14} /> {busy ? "Dealing…" : "Start practice"}
+          <Bolt width={14} height={14} /> {busy ? "Dealing…" : "Play yourself"}
         </button>
+        <button
+          onClick={runAgent}
+          disabled={pushBusy || disabled}
+          className="btn-neutral mt-2 w-full disabled:opacity-50"
+        >
+          <Cpu width={14} height={14} /> {pushBusy ? "Starting…" : "Run my hosted agent (push-play)"}
+        </button>
+        <a href="/manifest" className="mt-3 block text-center font-mono text-[11px] text-secondary hover:underline">
+          Register / manage endpoint →
+        </a>
       </Panel>
 
       <Panel className="p-7">

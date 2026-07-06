@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/agent-arena/arena/internal/identity"
 	"github.com/jackc/pgx/v5"
@@ -346,6 +347,119 @@ func (r *IdentityRepo) CredentialsByEmail(ctx context.Context, email string) (id
 		rec.AgentName = *agentName
 	}
 	return rec, nil
+}
+
+// ownerAgentSubquery selects the id of the owner's (earliest) agent. A user may
+// own more than one agent; the dashboard treats the earliest as the primary one
+// (same tie-break as CredentialsByEmail).
+const ownerAgentSubquery = `SELECT a.id FROM agents a JOIN users u ON u.id = a.owner_user_id
+	 WHERE u.public_id = $1 ORDER BY a.id LIMIT 1`
+
+// UpdateAgentProfile writes the owner's agent display identity. nil fields are
+// left unchanged (COALESCE keeps the existing value). Returns ErrForbiddenOwner
+// when the caller owns no agent (the UPDATE matches no row).
+func (r *IdentityRepo) UpdateAgentProfile(ctx context.Context, ownerPublicID string, displayName, bio, avatarURL *string) (identity.AgentProfile, error) {
+	var prof identity.AgentProfile
+	err := r.db.QueryRow(ctx,
+		`UPDATE agents SET
+		     display_name = COALESCE($2, display_name),
+		     bio          = COALESCE($3, bio),
+		     avatar_url   = COALESCE($4, avatar_url),
+		     updated_at   = now()
+		 WHERE id = (`+ownerAgentSubquery+`)
+		 RETURNING public_id, COALESCE(display_name,''), COALESCE(bio,''), COALESCE(avatar_url,'')`,
+		ownerPublicID, displayName, bio, avatarURL).
+		Scan(&prof.AgentPublicID, &prof.DisplayName, &prof.Bio, &prof.AvatarURL)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.AgentProfile{}, identity.ErrForbiddenOwner
+		}
+		return identity.AgentProfile{}, err
+	}
+	return prof, nil
+}
+
+// AgentProfileByOwner returns the owner's agent display identity.
+func (r *IdentityRepo) AgentProfileByOwner(ctx context.Context, ownerPublicID string) (identity.AgentProfile, error) {
+	var prof identity.AgentProfile
+	err := r.db.QueryRow(ctx,
+		`SELECT a.public_id, COALESCE(a.display_name,''), COALESCE(a.bio,''), COALESCE(a.avatar_url,'')
+		 FROM agents a JOIN users u ON u.id = a.owner_user_id
+		 WHERE u.public_id = $1 ORDER BY a.id LIMIT 1`,
+		ownerPublicID).
+		Scan(&prof.AgentPublicID, &prof.DisplayName, &prof.Bio, &prof.AvatarURL)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.AgentProfile{}, identity.ErrForbiddenOwner
+		}
+		return identity.AgentProfile{}, err
+	}
+	return prof, nil
+}
+
+// SetGameConfig upserts per-game behaviour for the owner's agent. behavior is a
+// JSON document; it is sent as text and cast to jsonb (pgx would otherwise send
+// []byte as bytea). Returns ErrForbiddenOwner when the caller owns no agent.
+func (r *IdentityRepo) SetGameConfig(ctx context.Context, ownerPublicID, game string, behavior []byte) error {
+	ct, err := r.db.Exec(ctx,
+		`INSERT INTO agent_game_config (agent_id, game_type, behavior, updated_at)
+		 SELECT a.id, $2, $3::jsonb, now()
+		 FROM agents a JOIN users u ON u.id = a.owner_user_id
+		 WHERE u.public_id = $1 ORDER BY a.id LIMIT 1
+		 ON CONFLICT (agent_id, game_type)
+		 DO UPDATE SET behavior = EXCLUDED.behavior, updated_at = now()`,
+		ownerPublicID, game, string(behavior))
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return identity.ErrForbiddenOwner
+	}
+	return nil
+}
+
+// CreateMagicLink stores a single-use sign-in token hash for the account with
+// this email. A missing email inserts nothing and returns found=false (the
+// caller behaves as if a link was sent, so emails are not enumerable).
+func (r *IdentityRepo) CreateMagicLink(ctx context.Context, tokenHash, email string, expiresAt time.Time) (bool, error) {
+	ct, err := r.db.Exec(ctx,
+		`INSERT INTO magic_links (token_hash, user_id, email, expires_at)
+		 SELECT $1, u.id, $2, $3 FROM users u WHERE u.email = $2`,
+		tokenHash, email, expiresAt)
+	if err != nil {
+		return false, err
+	}
+	return ct.RowsAffected() > 0, nil
+}
+
+// ConsumeMagicLink atomically marks a valid (unconsumed, unexpired) token used
+// and returns its owner and (earliest) agent, or ErrNotFound.
+func (r *IdentityRepo) ConsumeMagicLink(ctx context.Context, tokenHash string) (identity.MagicLink, error) {
+	var ml identity.MagicLink
+	var agentPublic *string
+	err := r.db.QueryRow(ctx,
+		`WITH consumed AS (
+		     UPDATE magic_links SET consumed_at = now()
+		     WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+		     RETURNING user_id)
+		 SELECT u.public_id, a.public_id
+		 FROM consumed c
+		 JOIN users u ON u.id = c.user_id
+		 LEFT JOIN agents a ON a.owner_user_id = u.id
+		 ORDER BY a.id
+		 LIMIT 1`,
+		tokenHash).
+		Scan(&ml.UserPublicID, &agentPublic)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.MagicLink{}, identity.ErrNotFound
+		}
+		return identity.MagicLink{}, err
+	}
+	if agentPublic != nil {
+		ml.AgentPublicID = *agentPublic
+	}
+	return ml, nil
 }
 
 func nullString(s string) any {
