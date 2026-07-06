@@ -12,13 +12,12 @@ import {
   BOARD,
   gridPos,
   INITIAL_OWNERS,
-  MAGENTS,
   MINTENT,
-  MSCRIPT,
   type MAgent,
   type MStep,
   type Space,
 } from "@/lib/monopoly-demo";
+import { useMonopolyLiveScript } from "@/lib/useMonopolyLiveScript";
 
 const HOUSE = 50;
 const HOTEL = 5; // houses >= 5 render as a hotel
@@ -85,10 +84,10 @@ type Derived = {
 
 const ACT_ICON: Record<MStep["kind"], string> = { say: "💬", roll: "🎲", buy: "🏷", rent: "💸", trade: "🤝", build: "🏗" };
 
-function replay(upto: number): Derived {
+function replay(upto: number, script: MStep[], agents: MAgent[]): Derived {
   const positions: Record<string, number> = {};
   const cash: Record<string, number> = {};
-  MAGENTS.forEach((a) => {
+  agents.forEach((a) => {
     positions[a.id] = 0;
     cash[a.id] = a.startCash;
   });
@@ -102,8 +101,8 @@ function replay(upto: number): Derived {
   const timeline: { key: number; text: string }[] = [];
   const netHistory: { label: string; value: number }[] = [];
   const netSeries: NetPoint[] = [];
-  let turn = MSCRIPT[0]?.turn ?? 1;
-  let player = MAGENTS[0].id;
+  let turn = script[0]?.turn ?? 1;
+  let player = agents[0].id;
   let dice: [number, number] | null = null;
   let tradesDone = 0;
   let tradesRejected = 0;
@@ -113,11 +112,11 @@ function replay(upto: number): Derived {
     for (const k of Object.keys(owners)) if (owners[+k] === id) n += priceOf(+k) + (houses[+k] ?? 0) * HOUSE;
     return n;
   };
-  const nameOf = (id: string) => MAGENTS.find((a) => a.id === id)?.name ?? id;
-  const colorOf = (id: string) => MAGENTS.find((a) => a.id === id)?.color ?? "#888";
+  const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
+  const colorOf = (id: string) => agents.find((a) => a.id === id)?.color ?? "#888";
 
-  for (let i = 0; i <= upto && i < MSCRIPT.length; i++) {
-    const s = MSCRIPT[i];
+  for (let i = 0; i <= upto && i < script.length; i++) {
+    const s = script[i];
     turn = s.turn;
     player = s.player;
 
@@ -155,7 +154,7 @@ function replay(upto: number): Derived {
       for (const sp of s.build.spaces) houses[sp] = Math.min(HOTEL, (houses[sp] ?? 0) + 1);
     }
 
-    if (s.text && s.speaker) chat.push({ key: i, agent: MAGENTS.find((a) => a.id === s.speaker)!, step: s, ts: `T${s.turn}` });
+    if (s.text && s.speaker) chat.push({ key: i, agent: agents.find((a) => a.id === s.speaker)!, step: s, ts: `T${s.turn}` });
 
     // activity feed entry
     let atext = "";
@@ -170,7 +169,7 @@ function replay(upto: number): Derived {
 
     const point: NetPoint = { label: `${i + 1}` };
     let total = 0;
-    for (const a of MAGENTS) {
+    for (const a of agents) {
       const nw = netWorth(a.id);
       point[a.id] = nw;
       total += nw;
@@ -183,12 +182,12 @@ function replay(upto: number): Derived {
 }
 
 /* active trade for the centered overlay (pending, or the resolving frame) */
-function tradeAt(idx: number) {
+function tradeAt(idx: number, script: MStep[]) {
   let t: MStep["trade"] | null = null;
   let resolvedAt = -1;
   let result: "accept" | "reject" | null = null;
-  for (let i = 0; i <= idx; i++) {
-    const tr = MSCRIPT[i].trade;
+  for (let i = 0; i <= idx && i < script.length; i++) {
+    const tr = script[i].trade;
     if (tr?.status === "propose") {
       t = tr;
       resolvedAt = -1;
@@ -204,12 +203,12 @@ function tradeAt(idx: number) {
   return null;
 }
 
-function nextThinking(idx: number): string[] {
+function nextThinking(idx: number, script: MStep[], agents: MAgent[]): string[] {
   const names: string[] = [];
-  for (let i = idx + 1; i < MSCRIPT.length && names.length < 2; i++) {
-    const s = MSCRIPT[i];
+  for (let i = idx + 1; i < script.length && names.length < 2; i++) {
+    const s = script[i];
     if (s.speaker && s.text) {
-      const n = MAGENTS.find((a) => a.id === s.speaker)?.name;
+      const n = agents.find((a) => a.id === s.speaker)?.name;
       if (n && !names.includes(n)) names.push(n);
     }
   }
@@ -220,20 +219,24 @@ type Tab = "live" | "standings" | "replays";
 
 /* ═══════════════════════════════ viewer ════════════════════════════════════ */
 export function MonopolyViewer() {
+  // Cast + script come from the live hook: it streams a real match when one is
+  // available and otherwise returns the scripted demo unchanged (the default).
+  const { agents, script } = useMonopolyLiveScript();
+
   const [idx, setIdx] = React.useState(0);
   const [playing, setPlaying] = React.useState(true);
   const [tab, setTab] = React.useState<Tab>("live");
   const [inspect, setInspect] = React.useState<string | null>(null);
-  const d = React.useMemo(() => replay(idx), [idx]);
+  const d = React.useMemo(() => replay(idx, script, agents), [idx, script, agents]);
 
   React.useEffect(() => {
     if (!playing) return;
-    const cur = MSCRIPT[idx];
+    const cur = script[idx];
     const isTrade = cur?.trade?.status === "propose";
     const delay = isTrade ? 3800 : cur?.kind === "roll" ? 2200 : cur?.kind === "say" ? 3100 : 2500;
-    const t = setTimeout(() => setIdx((i) => (i + 1) % MSCRIPT.length), delay);
+    const t = setTimeout(() => setIdx((i) => (i + 1) % script.length), delay);
     return () => clearTimeout(t);
-  }, [idx, playing]);
+  }, [idx, playing, script]);
 
   const netWorth = React.useCallback(
     (id: string) => {
@@ -243,14 +246,14 @@ export function MonopolyViewer() {
     },
     [d],
   );
-  const ranked = [...MAGENTS].sort((a, b) => netWorth(b.id) - netWorth(a.id));
-  const maxNet = Math.max(...MAGENTS.map((a) => netWorth(a.id)), 1);
+  const ranked = [...agents].sort((a, b) => netWorth(b.id) - netWorth(a.id));
+  const maxNet = Math.max(...agents.map((a) => netWorth(a.id)), 1);
   const propsOf = React.useCallback((id: string) => Object.keys(d.owners).filter((k) => d.owners[+k] === id).map(Number), [d]);
-  const inspected = MAGENTS.find((a) => a.id === inspect);
-  const cur = MAGENTS.find((a) => a.id === d.player)!;
-  const step = MSCRIPT[idx];
-  const trade = tradeAt(idx);
-  const thinking = nextThinking(idx);
+  const inspected = agents.find((a) => a.id === inspect);
+  const cur = agents.find((a) => a.id === d.player)!;
+  const step = script[idx] ?? script[script.length - 1];
+  const trade = tradeAt(idx, script);
+  const thinking = nextThinking(idx, script, agents);
 
   const messages: DiscussionMessage[] = d.chat.map((m) => {
     const tr = m.step.trade;
@@ -319,7 +322,7 @@ export function MonopolyViewer() {
         </div>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
           <Metric icon={Crown} label="Leader" value={ranked[0].name} tone="text-amber-400" />
-          <Metric icon={Users} label="Players" value={MAGENTS.length} tone="text-fg-muted" />
+          <Metric icon={Users} label="Players" value={agents.length} tone="text-fg-muted" />
           <Metric icon={Eye} label="Watching" value="3.1k" tone="text-brand" />
           <button onClick={() => setPlaying((p) => !p)} className="flex items-center gap-1.5 rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] font-medium text-fg shadow-sm transition hover:border-brand/40 hover:text-brand">
             {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
@@ -354,7 +357,7 @@ export function MonopolyViewer() {
           <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[1.7fr_1fr]">
             <Panel className="mnx-board relative flex items-center justify-center overflow-hidden p-4 lg:h-[600px]">
               <LiveEventToast idx={idx} text={step.event} />
-              <Board d={d} cur={cur} step={step} hotSpaces={hotSpaces} monopolies={monopolies} onInspect={setInspect} />
+              <Board d={d} cur={cur} step={step} hotSpaces={hotSpaces} monopolies={monopolies} agents={agents} onInspect={setInspect} />
             </Panel>
             <DiscussionPanel
               title="AI Negotiation"
@@ -382,7 +385,7 @@ export function MonopolyViewer() {
             <Panel className="p-4">
               <PanelTitle icon={TrendingUp}>Net Worth Over Time</PanelTitle>
               <div className="mt-3 h-[240px]">
-                <NetWorthGraph data={d.netSeries} />
+                <NetWorthGraph data={d.netSeries} agents={agents} />
               </div>
             </Panel>
 
@@ -417,7 +420,7 @@ export function MonopolyViewer() {
 
       {inspected && <Inspector agent={inspected} d={d} netWorth={netWorth(inspected.id)} props={propsOf(inspected.id)} monopolies={monopolies} onClose={() => setInspect(null)} />}
 
-      <AnimatePresence>{trade && <TradeOverlay trade={trade.trade} result={trade.result} />}</AnimatePresence>
+      <AnimatePresence>{trade && <TradeOverlay trade={trade.trade} result={trade.result} agents={agents} />}</AnimatePresence>
     </div>
   );
 }
@@ -429,6 +432,7 @@ function Board({
   step,
   hotSpaces,
   monopolies,
+  agents,
   onInspect,
 }: {
   d: Derived;
@@ -436,6 +440,7 @@ function Board({
   step: MStep;
   hotSpaces: number[];
   monopolies: Set<number>;
+  agents: MAgent[];
   onInspect: (id: string) => void;
 }) {
   const [hover, setHover] = React.useState<number | null>(null);
@@ -447,7 +452,7 @@ function Board({
         {BOARD.map((sp) => {
           const { col, row } = gridPos(sp.i);
           const owner = d.owners[sp.i];
-          const ownerAgent = MAGENTS.find((a) => a.id === owner);
+          const ownerAgent = agents.find((a) => a.id === owner);
           const houses = d.houses[sp.i] ?? 0;
           return (
             <div key={sp.i} style={{ gridColumn: col, gridRow: row }} className="relative" onMouseEnter={() => setHover(sp.i)} onMouseLeave={() => setHover((h) => (h === sp.i ? null : h))}>
@@ -458,15 +463,15 @@ function Board({
 
         {/* Center */}
         <div style={{ gridColumn: "2 / 11", gridRow: "2 / 11" }} className="flex flex-col items-center justify-center gap-3 rounded-2xl">
-          <CenterStage d={d} cur={cur} step={step} />
+          <CenterStage d={d} cur={cur} step={step} agents={agents} />
         </div>
       </div>
 
       {/* animated player tokens */}
-      <TokenLayer positions={d.positions} />
+      <TokenLayer positions={d.positions} agents={agents} />
 
       {/* hover detail popover */}
-      <AnimatePresence>{hover != null && BOARD[hover].type === "prop" && <HoverCard sp={BOARD[hover]} d={d} />}</AnimatePresence>
+      <AnimatePresence>{hover != null && BOARD[hover].type === "prop" && <HoverCard sp={BOARD[hover]} d={d} agents={agents} />}</AnimatePresence>
     </div>
   );
 }
@@ -512,13 +517,13 @@ function BoardCell({ sp, ownerColor, houses, hot, mono, onClick }: { sp: Space; 
   );
 }
 
-function TokenLayer({ positions }: { positions: Record<string, number> }) {
+function TokenLayer({ positions, agents }: { positions: Record<string, number>; agents: MAgent[] }) {
   // group tokens sharing a space to offset them
   const bySpace: Record<number, string[]> = {};
-  MAGENTS.forEach((a) => (bySpace[positions[a.id]] ??= []).push(a.id));
+  agents.forEach((a) => (bySpace[positions[a.id]] ??= []).push(a.id));
   return (
     <div className="pointer-events-none absolute inset-1.5">
-      {MAGENTS.map((a) => {
+      {agents.map((a) => {
         const pos = positions[a.id];
         const { x, y } = cellCenterPct(pos);
         const mates = bySpace[pos];
@@ -591,7 +596,7 @@ function synthThought(step: MStep, focus: Space | null, curName: string): string
 }
 
 /* ─── Live Action Stage — the center never sits empty; it narrates the turn ─── */
-function CenterStage({ d, cur, step }: { d: Derived; cur: MAgent; step: MStep }) {
+function CenterStage({ d, cur, step, agents }: { d: Derived; cur: MAgent; step: MStep; agents: MAgent[] }) {
   const sum = d.dice ? d.dice[0] + d.dice[1] : 0;
   const rolled = step.kind === "roll";
   const pos = d.positions[cur.id];
@@ -599,7 +604,7 @@ function CenterStage({ d, cur, step }: { d: Derived; cur: MAgent; step: MStep })
   const focusIdx =
     step.kind === "buy" && step.buy != null ? step.buy : rolled && BOARD[pos]?.type === "prop" ? pos : step.kind === "build" && step.build ? step.build.spaces[0] : step.kind === "rent" ? pos : null;
   const focus = focusIdx != null ? BOARD[focusIdx] : null;
-  const owner = focus && focusIdx != null ? MAGENTS.find((a) => a.id === d.owners[focusIdx]) : undefined;
+  const owner = focus && focusIdx != null ? agents.find((a) => a.id === d.owners[focusIdx]) : undefined;
 
   const groupSpaces = focus?.group ? GROUPS[focus.group] ?? [] : [];
   const ownedByCur = groupSpaces.filter((i) => d.owners[i] === cur.id).length;
@@ -750,9 +755,9 @@ function Die({ n, roll, delay }: { n: number; roll: boolean; delay?: boolean }) 
   );
 }
 
-function HoverCard({ sp, d }: { sp: Space; d: Derived }) {
+function HoverCard({ sp, d, agents }: { sp: Space; d: Derived; agents: MAgent[] }) {
   const owner = d.owners[sp.i];
-  const ownerAgent = MAGENTS.find((a) => a.id === owner);
+  const ownerAgent = agents.find((a) => a.id === owner);
   const houses = d.houses[sp.i] ?? 0;
   const rent = rentOf(sp.i, houses);
   const roi = ownerAgent ? Math.round(((d.spaceIncome[sp.i] ?? 0) / (priceOf(sp.i) || 1)) * 100) : 0;
@@ -811,9 +816,9 @@ function LiveEventToast({ idx, text }: { idx: number; text?: string }) {
   );
 }
 
-function TradeOverlay({ trade, result }: { trade: NonNullable<MStep["trade"]>; result: "accept" | "reject" | null }) {
-  const from = MAGENTS.find((a) => a.id === trade.from)!;
-  const to = MAGENTS.find((a) => a.id === trade.to)!;
+function TradeOverlay({ trade, result, agents }: { trade: NonNullable<MStep["trade"]>; result: "accept" | "reject" | null; agents: MAgent[] }) {
+  const from = agents.find((a) => a.id === trade.from)!;
+  const to = agents.find((a) => a.id === trade.to)!;
   const badge = result === "accept" ? { t: "Accepted", c: "#22c55e" } : result === "reject" ? { t: "Rejected", c: "#ef4444" } : { t: "Proposal", c: "#6366f1" };
   return (
     <motion.div className="fixed inset-0 z-50 flex items-center justify-center p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -872,7 +877,7 @@ function Trader({ agent }: { agent: MAgent }) {
 }
 
 /* ─────────────────── net-worth multi-line graph ─────────────────── */
-function NetWorthGraph({ data }: { data: NetPoint[] }) {
+function NetWorthGraph({ data, agents }: { data: NetPoint[]; agents: MAgent[] }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 6, right: 8, bottom: 0, left: -18 }}>
@@ -882,9 +887,9 @@ function NetWorthGraph({ data }: { data: NetPoint[] }) {
         <Tooltip
           contentStyle={{ background: "rgb(var(--k-panel))", border: "1px solid rgb(var(--k-line))", borderRadius: 10, fontSize: 12 }}
           labelStyle={{ color: "rgb(var(--k-fg-muted))" }}
-          formatter={(v: number, name: string) => [money(v), MAGENTS.find((a) => a.id === name)?.name ?? name]}
+          formatter={(v: number, name: string) => [money(v), agents.find((a) => a.id === name)?.name ?? name]}
         />
-        {MAGENTS.map((a) => (
+        {agents.map((a) => (
           <Line key={a.id} type="monotone" dataKey={a.id} stroke={a.color} strokeWidth={2} dot={false} isAnimationActive animationDuration={300} />
         ))}
       </LineChart>
