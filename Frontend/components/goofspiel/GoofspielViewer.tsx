@@ -6,7 +6,8 @@ import { Clock, Crown, Eye, ListOrdered, Pause, Play, Share2, Trophy, Users, X }
 import { cn } from "@/lib/cn";
 import { DiscussionPanel, STATUS, type DiscussionActivity, type DiscussionMessage } from "@/components/discussion/DiscussionPanel";
 import { StrategyTable } from "@/components/table/StrategyTable";
-import { GAGENTS, GINTENT, GSCRIPT, HAND, type GAgent, type GPhase, type GStep } from "@/lib/goofspiel-demo";
+import { GINTENT, type GAgent, type GPhase, type GStep } from "@/lib/goofspiel-demo";
+import { useGoofspielLiveScript } from "@/lib/useGoofspielLiveScript";
 
 function goofEventIcon(t: string) {
   const s = t.toLowerCase();
@@ -17,10 +18,19 @@ function goofEventIcon(t: string) {
   return "💬";
 }
 
-const N = GAGENTS.length;
+// Fixed positions around the central stage, in agent-index order (top, right,
+// bottom, left). The live 2-player cast fills the first two; the demo fills all
+// four. Each entry is the exact wrapper class the corresponding card used before.
+const SEAT_SLOTS = [
+  "col-start-2 row-start-1 self-start justify-self-center", // top    — agents[0]
+  "col-start-3 row-start-2 justify-self-end self-center", // right  — agents[1]
+  "col-start-2 row-start-3 self-end justify-self-center", // bottom — agents[2]
+  "col-start-1 row-start-2 justify-self-start self-center", // left   — agents[3]
+];
+
 const R = 38;
-function seatXY(i: number) {
-  const a = (-90 + i * (360 / N)) * (Math.PI / 180);
+function seatXY(i: number, n: number) {
+  const a = (-90 + i * (360 / n)) * (Math.PI / 180);
   return { x: 50 + R * Math.cos(a), y: 50 + R * Math.sin(a) };
 }
 
@@ -46,12 +56,12 @@ type Derived = {
   streak: Record<string, number>; // current consecutive round wins
 };
 
-function replay(upto: number): Derived {
+function replay(upto: number, agents: GAgent[], script: GStep[], hand: number[]): Derived {
   const hands: Record<string, number[]> = {};
   const scores: Record<string, number> = {};
   const roundsWon: Record<string, number> = {};
-  GAGENTS.forEach((a) => {
-    hands[a.id] = [...HAND];
+  agents.forEach((a) => {
+    hands[a.id] = [...hand];
     scores[a.id] = 0;
     roundsWon[a.id] = 0;
   });
@@ -68,10 +78,10 @@ function replay(upto: number): Derived {
   const timeline: { key: number; text: string }[] = [];
   const history: HistoryRow[] = [];
   const played: Record<string, number[]> = {};
-  GAGENTS.forEach((a) => (played[a.id] = []));
+  agents.forEach((a) => (played[a.id] = []));
 
-  for (let i = 0; i <= upto && i < GSCRIPT.length; i++) {
-    const s = GSCRIPT[i];
+  for (let i = 0; i <= upto && i < script.length; i++) {
+    const s = script[i];
     round = s.round;
     phase = s.phase;
     if (s.phase === "prize") {
@@ -109,7 +119,7 @@ function replay(upto: number): Derived {
       });
     }
     if (s.text && s.speaker) {
-      const agent = GAGENTS.find((a) => a.id === s.speaker)!;
+      const agent = agents.find((a) => a.id === s.speaker)!;
       chat.push({ key: i, agent, step: s, ts: `R${s.round}` });
     }
     if (s.event) timeline.push({ key: i, text: s.event });
@@ -117,7 +127,7 @@ function replay(upto: number): Derived {
 
   // current consecutive-win streak per agent, from the round history tail
   const streak: Record<string, number> = {};
-  GAGENTS.forEach((a) => {
+  agents.forEach((a) => {
     let s = 0;
     for (let r = history.length - 1; r >= 0; r--) {
       if (history[r].winner === a.id) s++;
@@ -137,7 +147,6 @@ const PHASE_LABEL: Record<GPhase, string> = {
 
 // persistent play-styles — spectators learn to recognise each agent
 const PERSONALITY: Record<string, string> = { A: "Probability Expert", B: "Aggressive", C: "Risk Optimizer", D: "Long-Term Planner" };
-const TOTAL_ROUNDS = HAND.length; // a full match spends the whole hand
 
 function pseudo(seed: number, min: number, max: number) {
   const x = Math.abs(Math.sin(seed * 12.9898) * 43758.5453) % 1;
@@ -150,8 +159,8 @@ function statusFor(phase: GPhase, isWinner: boolean): string {
   return "Waiting";
 }
 // live win-probability estimate while agents think (decorative, deterministic)
-function predictions(round: number, hands: Record<string, number[]>): Record<string, number> {
-  const raw = GAGENTS.map((a) => {
+function predictions(round: number, hands: Record<string, number[]>, agents: GAgent[]): Record<string, number> {
+  const raw = agents.map((a) => {
     const hi = Math.max(0, ...(hands[a.id] ?? [0]));
     return { id: a.id, w: hi + pseudo(round * 7 + a.id.charCodeAt(0), 0, 6) };
   });
@@ -183,20 +192,24 @@ function CountUp({ value }: { value: number }) {
 }
 
 export function GoofspielViewer() {
+  const { agents, script, hand } = useGoofspielLiveScript();
+  const N = agents.length;
+  const TOTAL_ROUNDS = hand.length; // a full match spends the whole hand
+
   const [idx, setIdx] = React.useState(0);
   const [playing, setPlaying] = React.useState(true);
   const [inspect, setInspect] = React.useState<string | null>(null);
   const [seconds, setSeconds] = React.useState(0);
   const [showFinal, setShowFinal] = React.useState(false);
 
-  const lastIdx = GSCRIPT.length - 1;
+  const lastIdx = script.length - 1;
   const ended = idx >= lastIdx;
-  const d = React.useMemo(() => replay(idx), [idx]);
+  const d = React.useMemo(() => replay(idx, agents, script, hand), [idx, agents, script, hand]);
 
   // Cinematic pacing — each reveal lingers; the match holds on the last prize.
   React.useEffect(() => {
     if (!playing || ended) return;
-    const cur = GSCRIPT[idx];
+    const cur = script[idx];
     const delay = cur?.phase === "revealed" ? 3600 : cur?.phase === "locked" ? 1600 : cur?.phase === "prize" ? 1700 : 2800;
     const t = setTimeout(() => setIdx((i) => Math.min(i + 1, lastIdx)), delay);
     return () => clearTimeout(t);
@@ -224,12 +237,12 @@ export function GoofspielViewer() {
     return () => clearInterval(t);
   }, [idx, playing]);
 
-  const ranked = [...GAGENTS].sort((a, b) => d.scores[b.id] - d.scores[a.id]);
+  const ranked = [...agents].sort((a, b) => d.scores[b.id] - d.scores[a.id]);
   const rankOf = (id: string) => ranked.findIndex((a) => a.id === id) + 1;
-  const preds = d.phase === "thinking" ? predictions(d.round, d.hands) : null;
+  const preds = d.phase === "thinking" ? predictions(d.round, d.hands, agents) : null;
   const leader = ranked[0];
-  const cardsRemaining = d.hands[GAGENTS[0].id]?.length ?? 0;
-  const inspected = GAGENTS.find((a) => a.id === inspect);
+  const cardsRemaining = d.hands[agents[0].id]?.length ?? 0;
+  const inspected = agents.find((a) => a.id === inspect);
   const revealed = d.phase === "revealed";
 
   const messages: DiscussionMessage[] = d.chat.map((m) => ({
@@ -249,7 +262,7 @@ export function GoofspielViewer() {
     if (d.phase === "revealed") return d.winner === agentId ? STATUS.winner : STATUS.observing;
     return STATUS.observing;
   };
-  const typingNames = d.phase === "thinking" ? GAGENTS.map((a) => a.name) : [];
+  const typingNames = d.phase === "thinking" ? agents.map((a) => a.name) : [];
 
   return (
     <div className="mafia-viewer flex min-h-full flex-col gap-4 rounded-xl p-4 text-fg md:p-5">
@@ -296,31 +309,24 @@ export function GoofspielViewer() {
           <span className="absolute left-4 top-4 z-30 rounded-md border border-line bg-panel-2/40 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-fg-muted">
             {ended ? "Match complete" : PHASE_LABEL[d.phase]}
           </span>
-          <ActionFeed idx={idx} text={GSCRIPT[idx]?.event} />
+          <ActionFeed idx={idx} text={script[idx]?.event} />
 
           {/* Onavion walnut strategy table — the shared stage, players seated OUTSIDE the rim */}
           <StrategyTable shape="round" size={0.92} topDown className="absolute inset-[15%] z-0" />
 
           <div className="relative z-10 grid h-full w-full gap-1 [grid-template-columns:auto_minmax(0,1fr)_auto] [grid-template-rows:auto_minmax(0,1fr)_auto]">
-            <div className="col-start-2 row-start-1 self-start justify-self-center">
-              <PlayerCard agent={GAGENTS[0]} d={d} rank={rankOf(GAGENTS[0].id)} pred={preds?.[GAGENTS[0].id]} onClick={() => setInspect(GAGENTS[0].id)} />
-            </div>
-            <div className="col-start-1 row-start-2 justify-self-start self-center">
-              <PlayerCard agent={GAGENTS[3]} d={d} rank={rankOf(GAGENTS[3].id)} pred={preds?.[GAGENTS[3].id]} onClick={() => setInspect(GAGENTS[3].id)} />
-            </div>
+            {agents.map((a, i) => (
+              <div key={a.id} className={SEAT_SLOTS[i] ?? SEAT_SLOTS[SEAT_SLOTS.length - 1]}>
+                <PlayerCard agent={a} d={d} rank={rankOf(a.id)} pred={preds?.[a.id]} onClick={() => setInspect(a.id)} />
+              </div>
+            ))}
             <div className="col-start-2 row-start-2 h-full w-full">
-              <CenterStage d={d} />
-            </div>
-            <div className="col-start-3 row-start-2 justify-self-end self-center">
-              <PlayerCard agent={GAGENTS[1]} d={d} rank={rankOf(GAGENTS[1].id)} pred={preds?.[GAGENTS[1].id]} onClick={() => setInspect(GAGENTS[1].id)} />
-            </div>
-            <div className="col-start-2 row-start-3 self-end justify-self-center">
-              <PlayerCard agent={GAGENTS[2]} d={d} rank={rankOf(GAGENTS[2].id)} pred={preds?.[GAGENTS[2].id]} onClick={() => setInspect(GAGENTS[2].id)} />
+              <CenterStage d={d} agents={agents} totalRounds={TOTAL_ROUNDS} />
             </div>
           </div>
 
           {/* End-of-round summary flashes between rounds */}
-          <AnimatePresence>{revealed && !ended && <RoundSummary d={d} />}</AnimatePresence>
+          <AnimatePresence>{revealed && !ended && <RoundSummary d={d} agents={agents} />}</AnimatePresence>
         </Panel>
 
         {/* Reasoning */}
@@ -353,7 +359,7 @@ export function GoofspielViewer() {
         <Panel className="p-4">
           <PanelTitle icon={Trophy}>Scoreboard</PanelTitle>
           <div className="mt-3 space-y-2.5">
-            {[...GAGENTS].sort((a, b) => d.scores[b.id] - d.scores[a.id]).map((a) => (
+            {[...agents].sort((a, b) => d.scores[b.id] - d.scores[a.id]).map((a) => (
               <div key={a.id}>
                 <div className="flex items-center justify-between text-[12px]">
                   <span className="flex items-center gap-2 font-medium text-fg">
@@ -366,7 +372,7 @@ export function GoofspielViewer() {
                 </div>
                 {/* Hand: remaining highlighted, used faded */}
                 <div className="mt-1 flex gap-1">
-                  {HAND.map((c) => {
+                  {hand.map((c) => {
                     const left = d.hands[a.id].includes(c);
                     return (
                       <span
@@ -402,7 +408,7 @@ export function GoofspielViewer() {
               </thead>
               <tbody className="text-fg-muted">
                 {d.history.slice().reverse().map((h) => {
-                  const w = GAGENTS.find((a) => a.id === h.winner);
+                  const w = agents.find((a) => a.id === h.winner);
                   return (
                     <tr key={h.round} className="border-t border-line">
                       <td className="py-1.5 font-mono">{h.round}</td>
@@ -428,7 +434,7 @@ export function GoofspielViewer() {
         </Panel>
       </div>
 
-      {inspected && <Inspector agent={inspected} d={d} onClose={() => setInspect(null)} />}
+      {inspected && <Inspector agent={inspected} d={d} hand={hand} onClose={() => setInspect(null)} />}
 
       <AnimatePresence>{showFinal && <FinalCelebration d={d} ranked={ranked} onReplay={replayMatch} onClose={() => setShowFinal(false)} />}</AnimatePresence>
     </div>
@@ -504,10 +510,10 @@ function PlayerCard({ agent, d, rank, pred, onClick }: { agent: GAgent; d: Deriv
 }
 
 /* ═════════════════ live action center stage (over the table) ════════════════ */
-function CenterStage({ d }: { d: Derived }) {
+function CenterStage({ d, agents, totalRounds }: { d: Derived; agents: GAgent[]; totalRounds: number }) {
   const revealed = d.phase === "revealed";
   const thinking = d.phase === "thinking";
-  const winner = revealed && d.winner ? GAGENTS.find((a) => a.id === d.winner) : undefined;
+  const winner = revealed && d.winner ? agents.find((a) => a.id === d.winner) : undefined;
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-center">
@@ -529,7 +535,7 @@ function CenterStage({ d }: { d: Derived }) {
         )}
       </motion.div>
 
-      <span className="font-mono text-[9px] uppercase tracking-wider text-fg-muted">Round {d.round} / {TOTAL_ROUNDS}</span>
+      <span className="font-mono text-[9px] uppercase tracking-wider text-fg-muted">Round {d.round} / {totalRounds}</span>
 
       {/* phase strip — the center stays clear; per-agent odds live on the cards */}
       <div className="flex min-h-[44px] w-full max-w-[190px] items-center justify-center">
@@ -583,9 +589,9 @@ function ActionFeed({ idx, text }: { idx: number; text?: string }) {
 }
 
 /* ═══════════════════════ end-of-round summary flash ════════════════════════ */
-function RoundSummary({ d }: { d: Derived }) {
-  const winner = d.winner ? GAGENTS.find((a) => a.id === d.winner) : undefined;
-  const leader = [...GAGENTS].sort((a, b) => d.scores[b.id] - d.scores[a.id])[0];
+function RoundSummary({ d, agents }: { d: Derived; agents: GAgent[] }) {
+  const winner = d.winner ? agents.find((a) => a.id === d.winner) : undefined;
+  const leader = [...agents].sort((a, b) => d.scores[b.id] - d.scores[a.id])[0];
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.96, y: 8 }}
@@ -596,7 +602,7 @@ function RoundSummary({ d }: { d: Derived }) {
     >
       <p className="text-center font-mono text-[9px] uppercase tracking-wider text-fg-muted">Round {d.round} complete · Prize {d.prizeCard}</p>
       <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
-        {GAGENTS.map((a) => (
+        {agents.map((a) => (
           <div key={a.id} className="flex items-center justify-between text-[11px]">
             <span className="flex items-center gap-1.5 text-fg-muted">
               <span className="h-2 w-2 rounded-full" style={{ background: a.color }} />
@@ -645,7 +651,7 @@ function FinalCelebration({ d, ranked, onReplay, onClose }: { d: Derived; ranked
             </span>
             <div className="text-left">
               <p className="text-xl font-semibold text-fg">{champ.name}</p>
-              <p className="font-mono text-[11px] text-fg-muted">{champ.dev} · {PERSONALITY[champ.id]}</p>
+              <p className="font-mono text-[11px] text-fg-muted">{champ.dev} · {PERSONALITY[champ.id] ?? "Strategist"}</p>
             </div>
           </div>
           <p className="mt-2 font-mono text-[13px] font-semibold text-amber-400">{d.scores[champ.id]} points · {totalWins} round wins</p>
@@ -702,8 +708,8 @@ function Metric({ icon: Icon, label, value, tone }: { icon: React.ElementType; l
   );
 }
 
-function Inspector({ agent, d, onClose }: { agent: GAgent; d: Derived; onClose: () => void }) {
-  const used = HAND.filter((c) => !d.hands[agent.id].includes(c));
+function Inspector({ agent, d, hand, onClose }: { agent: GAgent; d: Derived; hand: number[]; onClose: () => void }) {
+  const used = hand.filter((c) => !d.hands[agent.id].includes(c));
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
@@ -735,7 +741,7 @@ function Inspector({ agent, d, onClose }: { agent: GAgent; d: Derived; onClose: 
         <div className="mt-5">
           <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">Cards used</p>
           <div className="mt-1.5 flex gap-1">
-            {HAND.map((c) => {
+            {hand.map((c) => {
               const isUsed = used.includes(c);
               return (
                 <span
