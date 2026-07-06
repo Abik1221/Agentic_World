@@ -3,6 +3,7 @@ module github.com/agent-arena/arena
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.13
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/golang-migrate/migrate/v4 v4.17.1
