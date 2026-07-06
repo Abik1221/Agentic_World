@@ -78,6 +78,36 @@ func (s *Service) SeasonBounds(season int) (start, end time.Time) {
 	return start, end
 }
 
+// SeasonChampion is the winner of the most recently finalised season — the
+// rank-1 agent of that season's final standings — with full stats + avatar.
+// Champion is nil when no season has been finalised yet (or it had no matches).
+type SeasonChampion struct {
+	Season   int        `json:"season"`
+	Champion *LeaderRow `json:"champion"`
+}
+
+// SeasonChampion returns the winner of the last finalised season. Standings are
+// preserved per-season, so the champion is that season's rank 1.
+func (s *Service) SeasonChampion(ctx context.Context) (SeasonChampion, error) {
+	last, err := s.repo.LastRolledSeason(ctx)
+	if err != nil {
+		return SeasonChampion{}, err
+	}
+	res := SeasonChampion{Season: last}
+	if last < 0 {
+		return res, nil // no season finalised yet
+	}
+	rows, err := s.repo.Leaderboard(ctx, last, 0, 1)
+	if err != nil {
+		return SeasonChampion{}, err
+	}
+	if len(rows) > 0 {
+		rows[0].Rank = 1
+		res.Champion = &rows[0]
+	}
+	return res, nil
+}
+
 // CurrentSeasonInfo describes the ongoing season and how long is left in it.
 func (s *Service) CurrentSeasonInfo() SeasonInfo {
 	season := s.CurrentSeason()

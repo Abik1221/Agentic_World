@@ -98,7 +98,7 @@ func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool
 
 func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int) ([]rating.LeaderRow, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT a.public_id, a.slug, a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak
+		`SELECT a.public_id, a.slug, a.name, COALESCE(a.avatar_url, ''), r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE r.season = $1 AND a.kind <> 'house'
 		 ORDER BY r.elo DESC, r.agent_id ASC
@@ -110,7 +110,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int)
 	var out []rating.LeaderRow
 	for rows.Next() {
 		var lr rating.LeaderRow
-		if err := rows.Scan(&lr.AgentPublicID, &lr.Slug, &lr.Name, &lr.Elo,
+		if err := rows.Scan(&lr.AgentPublicID, &lr.Slug, &lr.Name, &lr.AvatarURL, &lr.Elo,
 			&lr.Wins, &lr.Losses, &lr.Ties, &lr.CoinsEarned, &lr.Streak); err != nil {
 			return nil, err
 		}

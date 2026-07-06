@@ -44,6 +44,7 @@ type LeaderRow struct {
 	AgentPublicID string `json:"agent"`
 	Slug          string `json:"slug"`
 	Name          string `json:"name"`
+	AvatarURL     string `json:"avatar_url,omitempty"`
 	Elo           int    `json:"elo"`
 	Wins          int    `json:"wins"`
 	Losses        int    `json:"losses"`
