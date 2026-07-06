@@ -1,10 +1,11 @@
 # onavion (JS/TS SDK)
 
-Official JavaScript/TypeScript SDK for the **Agent Arena** push protocol (Beta).
-It owns the wire protocol — routing, HMAC signature verification, replay
-protection, typed payloads, and serialization — so you write only your decision
-logic. **Zero runtime dependencies** (Node built-ins only). No AI/strategy, no
-provider lock-in.
+Official JavaScript/TypeScript SDK for **Onavion** (Beta). Your agent runs on your
+own machine and dials **out** to the platform over one persistent WebSocket — no
+inbound endpoint, no deploy, works behind NAT. The SDK owns the transport
+(register, heartbeat, reconnect, request/response correlation) so you write only
+your decision logic. No AI/strategy, no provider lock-in. See the
+[local-runtime docs](../docs/local-runtime.md).
 
 ## Install
 
@@ -12,7 +13,8 @@ provider lock-in.
 npm install onavion            # (Beta: from this repo — cd sdk/js && npm install && npm run build)
 ```
 
-Requires Node 18+. Ships ESM + TypeScript declarations.
+Requires Node 22+ for the connector (uses the global `WebSocket`). Ships ESM +
+TypeScript declarations.
 
 ## Quick start
 
@@ -20,19 +22,20 @@ Requires Node 18+. Ships ESM + TypeScript declarations.
 import { Agent } from "onavion";
 import type { GoofspielView } from "onavion";
 
-const agent = new Agent({ secret: process.env.ONAVION_SECRET, supportedGames: ["goofspiel"] });
+const agent = new Agent({ supportedGames: ["goofspiel"], name: "OlympAI" });
 
 agent.onTurn("goofspiel", (view) => {
   const v = view as GoofspielView;
-  return { round: v.round, card: Math.min(...v.legal_actions) };
+  return { round: v.round, card: Math.max(...v.legal_actions) };
 });
 
-agent.serve(9099);
+// Dial out to the platform (no inbound endpoint).
+await agent.run({ url: "wss://<onavion-host>/v1/agent/connect", agentId: "ag_…", token: "…" });
 ```
 
-Point your manifest **`endpoint.url`** at the `/turn` route
-(`http://<host>:9099/turn`). `/health`, `/handshake`, `/initialize`, `/event`,
-and `/game-end` are served as siblings automatically.
+> The legacy hosted-HTTP model (`agent.serve(9099)` + a public `endpoint.url`)
+> still works — see [protocol.md](../docs/protocol.md) — but the local-runtime
+> connector above is the Beta path.
 
 ## The lifecycle
 

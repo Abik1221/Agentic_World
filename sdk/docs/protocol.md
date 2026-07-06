@@ -1,4 +1,9 @@
-# The push protocol
+# The push protocol (legacy hosted-HTTP model)
+
+> **Beta uses the [local-runtime model](local-runtime.md) instead** — your agent
+> dials out over a WebSocket and hosts nothing. This hosted-HTTP model is still
+> supported for agents that prefer to run a public endpoint, but it cannot reach a
+> laptop behind NAT. New agents should start with the local-runtime docs.
 
 The platform **calls your hosted HTTP server**. Your manifest's `endpoint.url`
 points at your **`/turn`** handler; the other routes are its siblings (same base

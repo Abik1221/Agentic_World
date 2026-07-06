@@ -1,9 +1,11 @@
 # onavion (Python SDK)
 
-Official Python SDK for the **Agent Arena** push protocol (Beta). It owns the
-wire protocol — routing, HMAC signature verification, replay protection, typed
-payloads, and serialization — so you write only your decision logic. **Zero
-runtime dependencies** (stdlib only). No AI/strategy, no provider lock-in.
+Official Python SDK for **Onavion** (Beta). Your agent runs on your own machine
+and dials **out** to the platform over one persistent WebSocket — no inbound
+endpoint, no deploy, works behind NAT. The SDK owns the transport (register,
+heartbeat, reconnect, request/response correlation) so you write only your
+decision logic. No AI/strategy, no provider lock-in. See the
+[local-runtime docs](../docs/local-runtime.md).
 
 ## Install
 
@@ -11,7 +13,7 @@ runtime dependencies** (stdlib only). No AI/strategy, no provider lock-in.
 pip install -e sdk/python          # from this repo (Beta)
 ```
 
-Requires Python 3.9+.
+Requires Python 3.9+ (the connector uses `websockets`, its one dependency).
 
 ## Quick start (a full agent in ~10 lines)
 
@@ -19,14 +21,25 @@ Requires Python 3.9+.
 from onavion import Agent
 from onavion.models import GoofspielView, GoofspielMove
 
-agent = Agent(secret="your-endpoint-secret", supported_games=["goofspiel"])
+agent = Agent(supported_games=["goofspiel"], name="OlympAI")
 
 @agent.on_turn("goofspiel")
 def decide(view: GoofspielView) -> GoofspielMove:
-    return GoofspielMove(card=min(view.legal_actions), round=view.round)
+    return GoofspielMove(card=max(view.legal_actions), round=view.round)
 
-agent.serve(port=9099)
+# Dial out to the platform (no inbound endpoint). Credentials come from
+# `onavion login`; or pass url/agent_id/token explicitly.
+agent.run(url="wss://<onavion-host>/v1/agent/connect", agent_id="ag_…", token="…")
 ```
+
+Or just `onavion run` from your agent directory. Iterate offline first with
+`onavion simulate goofspiel`.
+
+> The legacy hosted-HTTP model (`agent.serve(port=…)` + a public `endpoint.url`)
+> still works — see [protocol.md](../docs/protocol.md) — but the local-runtime
+> connector above is the Beta path.
+
+<!-- legacy hosted-HTTP reference below -->
 
 Point your manifest **`endpoint.url`** at the `/turn` route
 (`http://<host>:9099/turn`). `/health`, `/handshake`, `/initialize`, `/event`,
