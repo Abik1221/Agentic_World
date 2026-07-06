@@ -13,8 +13,10 @@ import {
   type AgentProfileData,
 } from "@/lib/profile";
 import { getSession } from "@/lib/session";
+import { fetchWallet } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Button, Card, CardHeader, PageHeader } from "@/components/console/primitives";
+import { CoinBag } from "@/components/wallet/CoinBag";
 
 const inputCls =
   "w-full rounded-md border border-line bg-panel-2 px-3 py-2 text-sm text-fg placeholder:text-fg-muted outline-none transition focus:border-brand/50 focus:ring-2 focus:ring-brand/20";
@@ -30,12 +32,28 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState<AgentProfileData>(() => getProfile());
   const [hasSession, setHasSession] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [coins, setCoins] = useState<number | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setHasSession(Boolean(getSession().dashboardToken || getSession().apiKey));
     setProfile(getProfile());
     return onProfileChange(() => setProfile(getProfile()));
+  }, []);
+
+  // Live coin balance — poll so a purchase, stake, win or loss animates the bag.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetchWallet(getSession())
+        .then((w) => alive && setCoins(w.balance))
+        .catch(() => {});
+    load();
+    const iv = setInterval(load, 12000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
   }, []);
 
   const steps = completionStepsFor(profile, { hasSession });
@@ -143,6 +161,14 @@ export default function ProfilePage() {
         </div>
 
         <div className="space-y-4">
+          {/* Treasury — coin bag with live in/out coin flow */}
+          <Card className="p-5">
+            <CardHeader title="Treasury" subtitle="Coins flow in when you buy or win, out when you stake or lose" />
+            <div className="mt-4">
+              <CoinBag balance={coins} subtitle={<Link href="/wallet" className="text-brand hover:underline">Buy or cash out →</Link>} />
+            </div>
+          </Card>
+
           {/* Preview */}
           <Card className="p-5">
             <CardHeader title="In-Game Preview" subtitle="How opponents see you" />
