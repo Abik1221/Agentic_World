@@ -72,14 +72,20 @@ func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID strin
 }
 
 func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID string, entryFee int64) (string, error) {
-	if entryFee <= 0 {
-		entryFee = s.cfg.EntryFee
+	if entryFee < 0 {
+		entryFee = 0
 	}
-	if err := s.limits.CheckJoin(ctx, agentPublicID, entryFee); err != nil {
-		return "", err
-	}
-	if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
-		return "", err
+	// A zero-fee table is a no-stakes practice/sandbox table (nothing staked, no
+	// payout, no rating change): skip the spending-limit and certification gates,
+	// matching the Goofspiel sandbox and Monopoly's zero-fee tables. Paid tables
+	// enforce both.
+	if entryFee > 0 {
+		if err := s.limits.CheckJoin(ctx, agentPublicID, entryFee); err != nil {
+			return "", err
+		}
+		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+			return "", err
+		}
 	}
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
@@ -126,11 +132,15 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) > 0 && m.Players[0].OwnerPublicID == ownerPublicID {
 		return AgentView{}, ErrSameOwner
 	}
-	if err := s.limits.CheckJoin(ctx, agentPublicID, m.EntryFee); err != nil {
-		return AgentView{}, err
-	}
-	if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
-		return AgentView{}, err
+	// No-stakes practice table (see CreateTable): skip the spending-limit and
+	// certification gates when nothing is staked.
+	if m.EntryFee > 0 {
+		if err := s.limits.CheckJoin(ctx, agentPublicID, m.EntryFee); err != nil {
+			return AgentView{}, err
+		}
+		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+			return AgentView{}, err
+		}
 	}
 
 	nextSeat := len(m.Players) + 1
@@ -166,8 +176,11 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 	state, events := s.eng.Init(m.Seed, seats)
 	roles := state.Roles
 
-	if err := s.wallet.StakeTable(ctx, m.PublicID, agents, m.EntryFee); err != nil {
-		return err
+	// Only paid tables move coins; a zero-fee practice table stakes nothing.
+	if m.EntryFee > 0 {
+		if err := s.wallet.StakeTable(ctx, m.PublicID, agents, m.EntryFee); err != nil {
+			return err
+		}
 	}
 
 	deadline := s.clock.Now().Add(s.cfg.PhaseWindow)
@@ -242,8 +255,11 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 			}
 		}
 	}
-	if err := s.wallet.SettleTable(ctx, m.PublicID, econ.PlatformFee, payouts); err != nil {
-		return err
+	// A zero-fee practice table staked nothing, so there is nothing to settle.
+	if m.EntryFee > 0 {
+		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.PlatformFee, payouts); err != nil {
+			return err
+		}
 	}
 
 	players := finalizePlayers(m.Players, state, rewards, m.EntryFee)

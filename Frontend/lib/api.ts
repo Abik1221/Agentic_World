@@ -1110,6 +1110,154 @@ export function watchUrl(id: string): string {
   return `${API_BASE}/v1/match/${encodeURIComponent(id)}/watch`;
 }
 
+// ── Sandbox (practice vs house bots) ─────────────────────────────────────────
+// Practice mode is the competitive match loop with money, limits, and rating
+// switched off, played against a platform-controlled house bot. Only starting a
+// match is new (GET /v1/sandbox/opponents, POST /v1/sandbox/match); play then
+// reuses the standard /v1/match/{id}/state|action|watch|replay endpoints, so the
+// in-match UI is identical to ranked. Backend: internal/sandbox.
+
+export interface SandboxOpponent {
+  id: string;
+  name: string;
+  difficulty: string; // easy | medium | hard
+  style: string; // random | proportional | balanced
+  blurb: string;
+}
+
+export interface SandboxMatch {
+  match_id: string;
+  mode: string; // "sandbox"
+  opponent: SandboxOpponent;
+}
+
+/** GET /v1/sandbox/opponents — the house bots you can practice against (agent key). */
+export function fetchSandboxOpponents(session: Session): Promise<SandboxOpponent[]> {
+  return withFallback(
+    "sandbox/opponents",
+    async () => {
+      const r = await apiRequest<{ opponents: SandboxOpponent[] }>("/v1/sandbox/opponents", {
+        token: session.apiKey,
+      });
+      return r.opponents ?? [];
+    },
+    [],
+  );
+}
+
+/** POST /v1/sandbox/match — start a no-stakes practice match vs a house bot (agent key).
+ *  Difficulty is optional (easy | medium | hard; defaults to medium server-side). */
+export function createSandboxMatch(session: Session, difficulty?: string): Promise<SandboxMatch> {
+  return apiRequest<SandboxMatch>("/v1/sandbox/match", {
+    method: "POST",
+    token: session.apiKey,
+    body: difficulty ? { difficulty } : {},
+  });
+}
+
+/** POST /v1/sandbox/pushplay — start a practice match DRIVEN by the owner's hosted
+ *  agent endpoint (manifest push model): the platform calls the endpoint for each
+ *  move; the browser just watches. Requires an active, endpoint-verified manifest
+ *  (else the backend returns 400 no_verified_endpoint). Returns `driver:"remote"`. */
+export function createPushPlayMatch(session: Session, difficulty?: string): Promise<SandboxMatch> {
+  return apiRequest<SandboxMatch>("/v1/sandbox/pushplay", {
+    method: "POST",
+    token: session.apiKey,
+    body: difficulty ? { difficulty } : {},
+  });
+}
+
+// ── Agent manifest (push-play endpoint registration) ─────────────────────────
+// The manifest is how a developer registers the HTTP endpoint the platform calls
+// to drive their agent (push model). Lifecycle: submit → set endpoint secret →
+// verify (platform probes /health + /handshake) → active. All owner (dashboard) scope.
+// Backend: internal/manifest.
+
+export interface ManifestView {
+  agent_id: string;
+  manifest_id: string;
+  manifest_version: string;
+  name: string;
+  games: string[];
+  endpoint: { url: string; authentication: string };
+  status: string; // submitted | validated | verified | rejected
+}
+
+export interface ManifestVerifyReport {
+  manifest_id: string;
+  verified: boolean;
+  health_ok: boolean;
+  handshake_ok: boolean;
+  handshake_supported_games?: string[];
+  games_covered: boolean;
+  reason?: string;
+}
+
+export interface ManifestInput {
+  name: string;
+  description: string;
+  version: string;
+  games: string[];
+  endpointUrl: string;
+  developerName?: string;
+  organization?: string;
+  contactEmail?: string;
+  sdkLanguage?: string;
+  sdkVersion?: string;
+  timeoutMs?: number;
+}
+
+/** POST /v1/agents/{id}/manifest — register/version the agent manifest (owner). */
+export function submitManifest(session: Session, agentId: string, input: ManifestInput): Promise<ManifestView> {
+  return apiRequest<ManifestView>(`/v1/agents/${encodeURIComponent(agentId)}/manifest`, {
+    method: "POST",
+    token: session.dashboardToken,
+    body: {
+      manifestVersion: "1.0",
+      agent: {
+        name: input.name,
+        description: input.description,
+        version: input.version || "1.0.0",
+        visibility: "public",
+      },
+      developer: { name: input.developerName || "", organization: input.organization || "" },
+      games: input.games,
+      endpoint: { url: input.endpointUrl, authentication: "bearer-token" },
+      runtime: { timeout: input.timeoutMs ?? 5000, maxMemory: "256MB" },
+      sdk: { language: input.sdkLanguage || "custom", version: input.sdkVersion || "1.0.0" },
+      contact: { email: input.contactEmail || "" },
+    },
+  });
+}
+
+/** GET /v1/agents/{id}/manifest — the agent's active manifest, if any (owner). */
+export function fetchManifest(session: Session, agentId: string): Promise<ManifestView | null> {
+  return withFallback(
+    "manifest/active",
+    () => apiRequest<ManifestView>(`/v1/agents/${encodeURIComponent(agentId)}/manifest`, { token: session.dashboardToken }),
+    null,
+  );
+}
+
+/** PUT /v1/agents/{id}/manifest/{mid}/endpoint-secret — store the bearer token the
+ *  platform sends when calling the endpoint (sealed server-side; owner). */
+export function setEndpointSecret(session: Session, agentId: string, manifestId: string, token: string): Promise<{ status: string }> {
+  return apiRequest(`/v1/agents/${encodeURIComponent(agentId)}/manifest/${encodeURIComponent(manifestId)}/endpoint-secret`, {
+    method: "PUT",
+    token: session.dashboardToken,
+    body: { token },
+  });
+}
+
+/** POST /v1/agents/{id}/manifest/{mid}/verify — probe /health + /handshake and, on
+ *  success, mark the manifest verified + active (owner). */
+export function verifyManifest(session: Session, agentId: string, manifestId: string): Promise<ManifestVerifyReport> {
+  return apiRequest<ManifestVerifyReport>(`/v1/agents/${encodeURIComponent(agentId)}/manifest/${encodeURIComponent(manifestId)}/verify`, {
+    method: "POST",
+    token: session.dashboardToken,
+  });
+}
+
 // ── Mafia (social-deduction spectator game) ─────────────────────────────────
 
 /** SSE endpoint for spectating a Mafia match live (public). Use with EventSource. */

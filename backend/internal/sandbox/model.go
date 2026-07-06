@@ -60,4 +60,8 @@ type StartResult struct {
 	MatchID  string   `json:"match_id"`
 	Mode     string   `json:"mode"` // always "sandbox"
 	Opponent Opponent `json:"opponent"`
+	// Driver is "" for a manually-played match and "remote" when the developer's
+	// hosted endpoint drives their seat (push-play). Lets the client decide
+	// whether to render play controls or just spectate.
+	Driver string `json:"driver,omitempty"`
 }

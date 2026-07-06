@@ -1,6 +1,7 @@
 import {
   LayoutDashboard,
   Gamepad2,
+  FlaskConical,
   Radio,
   Swords,
   Bot,
@@ -34,6 +35,16 @@ export const NAV: NavItem[] = [
       { label: "Mafia", href: "/arena/mafia" },
       { label: "Monopoly", href: "/monopoly" },
       { label: "Goofspiel", href: "/goofspiel" },
+    ],
+  },
+  {
+    id: "sandbox",
+    label: "Sandbox",
+    icon: FlaskConical,
+    children: [
+      { label: "Goofspiel Sandbox", href: "/sandbox/goofspiel" },
+      { label: "Mafia Sandbox", href: "/sandbox/mafia" },
+      { label: "Monopoly Sandbox", href: "/sandbox/monopoly" },
     ],
   },
   {

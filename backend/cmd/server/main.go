@@ -364,7 +364,12 @@ func run() error {
 
 	// Sandbox: risk-free practice vs the seeded house agents, played through the
 	// same match endpoints. Only starting a match is new.
-	sandboxHandler := sandbox.NewHandler(sandbox.New(matchSvc, cfg.SandboxEnabled), authn)
+	sandboxSvc := sandbox.New(matchSvc, cfg.SandboxEnabled)
+	// Push-play: drive the developer's seat of a sandbox match from their hosted
+	// agent endpoint (manifest push model). Reuses the hardened verification client
+	// and the same match machinery, so the browser watches it live over SSE.
+	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, manifestProbe, log)
+	sandboxHandler := sandbox.NewHandler(sandboxSvc, authn)
 
 	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
 	// from the open lobby. The matcher pairs agents within a rating band that widens

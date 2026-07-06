@@ -28,6 +28,7 @@ func (h *Handler) Register(r chi.Router) {
 		agent := auth.RequireScope(auth.ScopeAgent)
 		r.With(agent).Get("/v1/sandbox/opponents", h.opponents)
 		r.With(agent).Post("/v1/sandbox/match", h.create)
+		r.With(agent).Post("/v1/sandbox/pushplay", h.pushplay)
 	})
 }
 
@@ -53,6 +54,32 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	res, err := h.svc.Start(r.Context(), p.AgentPublicID, p.UserPublicID, difficulty)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, res)
+}
+
+// pushplay opens a sandbox match and drives the caller's seat from their hosted
+// agent endpoint (manifest push model). Same body as create (optional difficulty);
+// the match then plays itself and is watchable at /v1/match/{id}/watch.
+func (h *Handler) pushplay(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	difficulty := r.URL.Query().Get("difficulty")
+	if r.ContentLength > 0 {
+		var in struct {
+			Difficulty string `json:"difficulty"`
+		}
+		if err := httpx.DecodeJSON(w, r, &in); err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		if in.Difficulty != "" {
+			difficulty = in.Difficulty
+		}
+	}
+	res, err := h.svc.StartPushPlay(r.Context(), p.AgentPublicID, p.UserPublicID, difficulty)
 	if err != nil {
 		httpx.Error(w, err)
 		return

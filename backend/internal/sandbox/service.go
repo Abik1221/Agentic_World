@@ -17,6 +17,9 @@ type Starter interface {
 type Service struct {
 	matches Starter
 	enabled bool
+	// pusher is set by EnablePushPlay to enable /v1/sandbox/pushplay (the manifest
+	// "push" model). Nil ⇒ push-play returns 501.
+	pusher *pushPlayer
 }
 
 // New constructs the sandbox service. When enabled is false, Start returns a 403

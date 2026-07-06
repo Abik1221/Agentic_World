@@ -172,6 +172,23 @@ func (s *Service) resolveToken(ctx context.Context, m Manifest) (string, error) 
 	return string(plain), nil
 }
 
+// PlayTarget returns the push-play call target (endpoint URL + resolved bearer
+// token) for an agent's ACTIVE, endpoint-verified manifest. found is false when
+// the agent has no active manifest, so callers can require registration before
+// driving a remote match. It never returns the sealed token — only the plaintext
+// the hardened agentclient needs to authenticate the POST.
+func (s *Service) PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error) {
+	m, found, err := s.repo.ActiveManifest(ctx, agentPublicID)
+	if err != nil || !found {
+		return agentclient.Target{}, false, err
+	}
+	token, err := s.resolveToken(ctx, m)
+	if err != nil {
+		return agentclient.Target{}, false, err
+	}
+	return agentclient.Target{EndpointURL: m.EndpointURL, Token: token}, true, nil
+}
+
 // VerificationAttempt is one recorded health+handshake attempt (audit trail).
 type VerificationAttempt struct {
 	ManifestPublicID    string
