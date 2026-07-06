@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import {
   Activity,
   Bot,
@@ -24,6 +25,11 @@ const GAMES = [
 
 export default async function DashboardPage() {
   const session = serverSession();
+  // The dashboard is agent-scoped: without a session there is nothing to show
+  // (and in strict mode the API calls would 401 → 500). Send them to sign in.
+  if (!session?.dashboardToken && !session?.apiKey) {
+    redirect("/login");
+  }
   const [{ userAgent, recentEngagements, performanceBars }, treasury] = await Promise.all([
     fetchDashboard(session),
     fetchUserWallet(session),

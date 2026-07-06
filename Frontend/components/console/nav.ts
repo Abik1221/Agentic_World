@@ -73,6 +73,7 @@ export const NAV: NavItem[] = [
     icon: Bot,
     children: [
       { label: "API Keys", href: "/keys" },
+      { label: "Endpoint", href: "/manifest" },
       { label: "Strategy", href: "/strategy" },
       { label: "Guardrails", href: "/guardrails" },
     ],

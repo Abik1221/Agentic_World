@@ -39,18 +39,27 @@ export function GoofspielMatchBoard({
   setErr,
   onLeave,
   leaveLabel = "Back to lobby",
+  spectate = false,
 }: {
   view: MatchView;
   setView: (v: MatchView) => void;
   setErr: (s: string | null) => void;
   onLeave: () => void;
   leaveLabel?: string;
+  // spectate: the seat is being driven elsewhere (push-play — the owner's hosted
+  // agent decides moves server-side). Hide the play controls and just follow the
+  // match: poll continuously regardless of whose turn it is.
+  spectate?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    if (view.status !== "active" || view.your_turn) return;
+    if (view.status !== "active") return;
+    // Interactive mode only long-polls while waiting for the opponent; spectate
+    // mode polls every state (our seat is driven server-side, so "your_turn" flips
+    // without any input here).
+    if (!spectate && view.your_turn) return;
     let cancelled = false;
     (async () => {
       try {
@@ -66,7 +75,7 @@ export function GoofspielMatchBoard({
     return () => {
       cancelled = true;
     };
-  }, [view.match_id, view.round, view.your_turn, view.status, tick, setView, setErr]);
+  }, [view.match_id, view.round, view.your_turn, view.status, tick, spectate, setView, setErr]);
 
   async function play(card: number) {
     setBusy(true);
@@ -103,7 +112,28 @@ export function GoofspielMatchBoard({
         </div>
       </Card>
 
-      {!finished ? (
+      {!finished && spectate ? (
+        <Card className="p-5">
+          <CardHeader
+            title="Your hosted agent is playing"
+            action={<span className="live-dot h-2 w-2 rounded-full bg-brand" />}
+          />
+          <p className="mt-3 font-mono text-[12px] leading-relaxed text-fg-muted">
+            The platform is calling your registered endpoint for each move (push-play). This
+            board follows the match live — no input needed.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2 opacity-60">
+            {cards.map((c) => (
+              <span
+                key={c}
+                className="flex h-16 w-12 items-center justify-center rounded-md border border-line bg-panel-2 font-mono text-lg font-semibold tabular-nums text-fg-muted"
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        </Card>
+      ) : !finished ? (
         <Card className="p-5">
           <CardHeader
             title={view.your_turn ? "Your move — play a card" : "Waiting for opponent…"}
