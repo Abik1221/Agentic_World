@@ -14,18 +14,29 @@ import (
 )
 
 // secretResolver is the slice of manifest.Service the socket authenticator needs:
-// the plaintext endpoint secret for an agent. It is the same sealed secret the
-// developer sets with `onavion publish` (PUT .../endpoint-secret), so a local
-// agent authenticates its socket with the credential it already has — no new
-// key management. (OAuth access tokens are the Phase D upgrade.)
+// the plaintext endpoint secret for an agent (the sealed secret set with
+// `onavion publish`).
 type secretResolver interface {
 	PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
 }
 
-// socketAuthenticator validates a register frame's (agent_id, token) against the
-// agent's stored endpoint secret with a constant-time compare.
+// keyResolver maps a raw agent API key to its Principal (implemented by identity).
+// This is the credential `onavion login` obtains via the dashboard /cli-login page.
+type keyResolver interface {
+	ResolveAgentKey(ctx context.Context, rawKey string) (*auth.Principal, error)
+}
+
+// socketAuthenticator validates a register frame's (agent_id, token). It accepts
+// either credential the developer may hold:
+//   - an **agent API key** (ScopeAgent) — the primary path; issued to the CLI by
+//     the dashboard /cli-login flow and resolved to its owning agent id;
+//   - the agent's **manifest endpoint secret** — the fallback for an agent that
+//     published a hosted endpoint and reuses that secret for the socket.
+//
+// Either must resolve to the claimed agent id.
 type socketAuthenticator struct {
 	resolver secretResolver
+	keys     keyResolver
 	log      *slog.Logger
 }
 
@@ -33,23 +44,28 @@ func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID st
 	if agentID == "" || token == "" {
 		return "", false
 	}
-	target, found, err := a.resolver.PlayTarget(ctx, agentID)
-	if err != nil {
+	// 1. Agent API key (ScopeAgent) — the login-issued credential.
+	if a.keys != nil {
+		if p, err := a.keys.ResolveAgentKey(ctx, token); err == nil && p != nil &&
+			p.Scope == auth.ScopeAgent && p.AgentPublicID == agentID {
+			return agentID, true
+		}
+	}
+	// 2. Manifest endpoint secret (constant-time compare) — the publish fallback.
+	if target, found, err := a.resolver.PlayTarget(ctx, agentID); err == nil && found && target.Token != "" {
+		if subtle.ConstantTimeCompare([]byte(token), []byte(target.Token)) == 1 {
+			return agentID, true
+		}
+	} else if err != nil {
 		a.log.Warn("agentgw: auth lookup failed", "agent", agentID, "err", err)
-		return "", false
-	}
-	if !found || target.Token == "" {
-		return "", false
-	}
-	if subtle.ConstantTimeCompare([]byte(token), []byte(target.Token)) == 1 {
-		return agentID, true
 	}
 	return "", false
 }
 
-// newAgentGateway builds the WSS agent gateway wired to the manifest secret store.
-func newAgentGateway(resolver secretResolver, log *slog.Logger) *agentgw.Gateway {
-	return agentgw.New(socketAuthenticator{resolver: resolver, log: log}, agentgw.Options{}, log)
+// newAgentGateway builds the WSS agent gateway wired to the agent-key resolver
+// (login credential) and the manifest secret store (publish fallback).
+func newAgentGateway(resolver secretResolver, keys keyResolver, log *slog.Logger) *agentgw.Gateway {
+	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, log: log}, agentgw.Options{}, log)
 }
 
 // mountAgentStatus serves GET /v1/agent/status?agent_id=… — is my agent connected

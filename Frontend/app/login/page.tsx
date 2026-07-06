@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Eye, Lock } from "lucide-react";
 import { setSession } from "@/lib/session";
@@ -10,6 +10,11 @@ import { AuthCard, AuthLayout, AuthTitle, Divider, ErrorNote, Field, GhostButton
 
 export default function LoginPage() {
   const router = useRouter();
+  const params = useSearchParams();
+  // Honor a ?next= return path (e.g. the CLI /cli-login flow) — only same-origin
+  // relative paths, so this can never be an open redirect.
+  const nextParam = params.get("next") || "";
+  const next = nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/dashboard";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -29,7 +34,7 @@ export default function LoginPage() {
     try {
       const res = await login(email.trim(), password);
       setSession({ dashboardToken: res.dashboard_token, agentId: res.agent_id, agentName: res.agent_name });
-      router.push("/dashboard");
+      router.push(next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not sign in. Check your connection and try again.");
       setBusy(false);

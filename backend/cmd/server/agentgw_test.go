@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agent-arena/arena/internal/agentclient"
+	"github.com/agent-arena/arena/internal/auth"
 )
 
 type fakeResolver struct {
@@ -17,6 +18,39 @@ type fakeResolver struct {
 
 func (f fakeResolver) PlayTarget(context.Context, string) (agentclient.Target, bool, error) {
 	return agentclient.Target{Token: f.token}, f.found, f.err
+}
+
+// fakeKeys resolves exactly one (key -> agent) pair, like the identity service.
+type fakeKeys struct {
+	key   string
+	agent string
+}
+
+func (f fakeKeys) ResolveAgentKey(_ context.Context, raw string) (*auth.Principal, error) {
+	if raw == f.key {
+		return &auth.Principal{Scope: auth.ScopeAgent, AgentPublicID: f.agent}, nil
+	}
+	return nil, errors.New("unknown key")
+}
+
+func TestSocketAuthenticatorAgentKey(t *testing.T) {
+	a := socketAuthenticator{
+		resolver: fakeResolver{found: false},
+		keys:     fakeKeys{key: "sk_arena_good", agent: "ag_1"},
+		log:      slog.Default(),
+	}
+	// A valid agent key resolving to the claimed agent is accepted.
+	if id, ok := a.Authenticate(context.Background(), "sk_arena_good", "ag_1"); !ok || id != "ag_1" {
+		t.Fatalf("valid agent key rejected: id=%q ok=%v", id, ok)
+	}
+	// A valid key but for a DIFFERENT agent id is rejected.
+	if _, ok := a.Authenticate(context.Background(), "sk_arena_good", "ag_other"); ok {
+		t.Fatal("agent key accepted for the wrong agent id")
+	}
+	// An unknown key with no endpoint-secret fallback is rejected.
+	if _, ok := a.Authenticate(context.Background(), "sk_arena_bad", "ag_1"); ok {
+		t.Fatal("unknown key accepted")
+	}
 }
 
 func TestSocketAuthenticator(t *testing.T) {

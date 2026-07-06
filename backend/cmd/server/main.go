@@ -205,7 +205,7 @@ func run() error {
 	// authenticated by their manifest endpoint secret. The engine drives matches
 	// over the socket via agentgw.*Decider, falling back deterministically if an
 	// agent is absent/slow — the same guarantee the HTTP push client gives.
-	agentGateway := newAgentGateway(manifestSvc, log)
+	agentGateway := newAgentGateway(manifestSvc, idSvc, log)
 
 	// Domain event bus (transactional outbox): producers emit facts in their own
 	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone
