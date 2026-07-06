@@ -141,6 +141,23 @@ func (s *Service) RollCompleted(ctx context.Context) error {
 	return nil
 }
 
+// ForceRollCurrentSeason finalises the CURRENT season immediately — recording its
+// champion and marking it rolled — regardless of the calendar. This is a DEV/TEST
+// affordance so the season-champion surface can be exercised without waiting for a
+// real season boundary; it is exposed only behind the dev gate. Idempotent per
+// season (RollSeason is a no-op if already rolled).
+func (s *Service) ForceRollCurrentSeason(ctx context.Context) (season int, champion string, err error) {
+	cur := s.CurrentSeason()
+	champion, err = s.championOf(ctx, cur)
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err = s.repo.RollSeason(ctx, cur, champion); err != nil {
+		return 0, "", err
+	}
+	return cur, champion, nil
+}
+
 // championOf returns the top-ranked agent of a season, or "" if none played. It
 // queries the repo directly with the exact season (Service.Leaderboard treats
 // season 0 as "current", which would misresolve season 0 here).

@@ -268,7 +268,7 @@ func run() error {
 	// match id) and powers the leaderboard + agent profiles + /v1/agent/stats.
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
 		rating.Config{K: cfg.RatingK, SeasonLength: cfg.SeasonLength}, metrics.Registry())
-	ratingHandler := rating.NewHandler(ratingSvc)
+	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint) // dev-only season force-roll gated with mint
 	go rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run(ctx) // finalise ended seasons + emit season.rolled
 	profilesSvc := profiles.New(store.NewProfilesRepo(st.DB), ratingSvc.CurrentSeason)
 	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
