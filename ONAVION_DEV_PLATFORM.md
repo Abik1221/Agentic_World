@@ -93,9 +93,14 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
 - **P3 — Drive the live match loop through the lifecycle.** Seat `remoteplay`-style
   deciders (now `/turn`) into the served match pipeline for all 3 games, so a
   registered push agent plays real matches (ranked + sandbox).
-- **P4 — SDKs (JS/TS + Python).** Thin, model-agnostic: auth/HMAC verify, typed
-  game models, event parsing, response serialization, logging, config, and a local
-  simulation client. No AI logic; no memory/provider lock-in.
+- **P4 — SDKs (JS/TS + Python). ✅ DONE.** Thin, model-agnostic, zero runtime
+  deps: `Agent` server (routing + HMAC verify + replay guard + typed payloads +
+  serialization), typed lifecycle + per-game models, and a local simulation
+  harness (`simulate_goofspiel` / `LocalClient`). No AI logic; no provider
+  lock-in. Verified: both SDKs' `computeSignature` is **byte-identical to the Go
+  platform's `SignRequest`** (shared cross-language test vector), a full simulated
+  match drives the whole lifecycle, and tampered/replayed requests are rejected.
+  Living under `sdk/{python,js}`.
 - **P5 — `onavion` CLI + local simulator.** `init/login/run/simulate/validate/publish`;
   offline baseline-agent matches (reuse `arena-sim`/`devplatform`), replay recording.
 - **P6 — Validation pipeline + health monitoring polish** + **docs** (quick-start,
