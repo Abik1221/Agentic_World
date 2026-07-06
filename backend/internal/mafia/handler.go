@@ -214,7 +214,14 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	view, err := h.svc.State(r.Context(), chi.URLParam(r, "id"), p.AgentPublicID)
+	wait := r.URL.Query().Get("wait") == "true"
+	timeout := 15 * time.Second
+	if t, err := strconv.Atoi(r.URL.Query().Get("timeout")); err == nil && t > 0 {
+		if d := time.Duration(t) * time.Second; d < timeout {
+			timeout = d
+		}
+	}
+	view, err := h.svc.State(r.Context(), chi.URLParam(r, "id"), p.AgentPublicID, wait, timeout)
 	if err != nil {
 		httpx.Error(w, err)
 		return

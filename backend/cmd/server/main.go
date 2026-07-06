@@ -317,6 +317,8 @@ func run() error {
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
 	// fill the rest. Reuses the same match machinery + SSE spectating.
 	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
+	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
+	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	go monopoly.NewSweeper(monopolySvc, log, time.Second).Run(ctx)
 
@@ -458,6 +460,8 @@ func run() error {
 			mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, botSeats, log)
 		}
 	}
+	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
+	mafiaSvc.SetNotifier(store.NewNotifier(st.Redis))
 
 	// 8. HTTP server with the standard middleware chain.
 	router := httpx.NewRouter(

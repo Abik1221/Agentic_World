@@ -98,7 +98,7 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			p.log.Warn("monopoly pushplay: deadline exceeded", "match", matchID)
 			return
 		}
-		v, err := s.State(ctx, matchID, agentID)
+		v, err := s.State(ctx, matchID, agentID, false, 0)
 		if err != nil {
 			p.log.Warn("monopoly pushplay: state read failed", "match", matchID, "err", err)
 			return

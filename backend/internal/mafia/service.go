@@ -35,6 +35,8 @@ type Service struct {
 	// pusher is set by EnablePushPlay to enable POST /v1/mafia/pushplay
 	// (manifest push model with bot-filled seats). Nil ⇒ push-play returns 501.
 	pusher *pushPlayer
+	// notify wakes long-polling State callers on a state change. Nil ⇒ no long-poll.
+	notify Notifier
 }
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {
@@ -190,7 +192,7 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 	if err := s.repo.Start(ctx, m.PublicID, roles, state, deadline, events); err != nil {
 		return err
 	}
-	s.bcast.Broadcast(m.PublicID, events)
+	s.publish(m.PublicID, events)
 	return nil
 }
 
@@ -241,7 +243,7 @@ func (s *Service) persist(ctx context.Context, m Match, state mf.State, events [
 	if err := s.repo.Advance(ctx, m.PublicID, state, &deadline, state.Alive, events); err != nil {
 		return err
 	}
-	s.bcast.Broadcast(m.PublicID, events)
+	s.publish(m.PublicID, events)
 	return nil
 }
 
@@ -270,7 +272,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	if err := s.repo.Finish(ctx, m.PublicID, state, state.Winner, hash, players, events); err != nil {
 		return err
 	}
-	s.bcast.Broadcast(m.PublicID, events)
+	s.publish(m.PublicID, events)
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil
 }
@@ -310,8 +312,44 @@ func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
 	return len(ids), nil
 }
 
-func (s *Service) State(ctx context.Context, matchPublicID, viewerAgent string) (AgentView, error) {
+// Notifier wakes long-polling State callers when the match changes. Satisfied by
+// *store.Notifier (structural). Nil ⇒ State returns immediately (no long-poll).
+type Notifier interface {
+	Notify(matchPublicID string)
+	Subscribe(matchPublicID string) (events <-chan struct{}, cancel func())
+}
+
+// SetNotifier installs the wake-up channel (called once at wiring time).
+func (s *Service) SetNotifier(n Notifier) { s.notify = n }
+
+// publish broadcasts events to spectators AND wakes any long-polling State callers.
+func (s *Service) publish(matchID string, events []mf.Event) {
+	s.bcast.Broadcast(matchID, events)
+	if s.notify != nil {
+		s.notify.Notify(matchID)
+	}
+}
+
+func (s *Service) State(ctx context.Context, matchPublicID, viewerAgent string, wait bool, timeout time.Duration) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if !wait || s.notify == nil || m.Status == StatusFinished {
+		return s.viewFor(ctx, m, viewerAgent), nil
+	}
+	// Long-poll: return as soon as anything is published for this match (a seat
+	// acted, a phase advanced, the match finished) or the timeout elapses. Every
+	// engine action is a publish, so this wakes on within-phase moves too — which
+	// a day/phase version key would miss (e.g. it becoming your turn to vote).
+	wake, cancel := s.notify.Subscribe(matchPublicID)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+	case <-wake:
+	case <-time.After(timeout):
+	}
+	m, err = s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
 	}

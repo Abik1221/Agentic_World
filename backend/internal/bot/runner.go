@@ -125,7 +125,7 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 
 func (r *Runner) playMafia(ctx context.Context, a demo.Agent, matchID string) {
 	for step := 0; step < 8; step++ {
-		view, err := r.mafia.State(ctx, matchID, a.PublicID)
+		view, err := r.mafia.State(ctx, matchID, a.PublicID, false, 0)
 		if err != nil || view.Status == mafia.StatusFinished {
 			return
 		}

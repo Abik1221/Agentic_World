@@ -122,7 +122,7 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 			p.log.Warn("mafia pushplay: deadline exceeded", "match", matchID)
 			return
 		}
-		base, err := s.State(ctx, matchID, userAgent)
+		base, err := s.State(ctx, matchID, userAgent, false, 0)
 		if err != nil {
 			p.log.Warn("mafia pushplay: state read failed", "match", matchID, "err", err)
 			return
@@ -134,7 +134,7 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 
 		acted := false
 		for _, id := range seatIDs {
-			v, err := s.State(ctx, matchID, id)
+			v, err := s.State(ctx, matchID, id, false, 0)
 			if err != nil || v.Status != StatusActive || len(v.Legal) == 0 {
 				continue
 			}

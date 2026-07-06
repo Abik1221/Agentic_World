@@ -3,6 +3,7 @@ package monopoly
 import (
 	"context"
 	"crypto/rand"
+	"strconv"
 	"time"
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
@@ -29,6 +30,27 @@ type Service struct {
 	// pusher is set by EnablePushPlay to enable POST /v1/monopoly/pushplay
 	// (manifest push model). Nil ⇒ push-play returns 501.
 	pusher *pushPlayer
+	// notify wakes long-polling State callers on a state change. Nil ⇒ no
+	// long-poll (State returns immediately), so tests and notifier-less builds work.
+	notify Notifier
+}
+
+// Notifier is the low-latency wake-up channel for long-polling State callers.
+// Satisfied by *store.Notifier (structural).
+type Notifier interface {
+	Notify(matchPublicID string)
+	Subscribe(matchPublicID string) (events <-chan struct{}, cancel func())
+}
+
+// SetNotifier installs the wake-up channel (called once at wiring time).
+func (s *Service) SetNotifier(n Notifier) { s.notify = n }
+
+// publish broadcasts events to spectators AND wakes any long-polling State callers.
+func (s *Service) publish(matchID string, events []mono.Event) {
+	s.bcast.Broadcast(matchID, events)
+	if s.notify != nil {
+		s.notify.Notify(matchID)
+	}
 }
 
 func NewService(repo Repo, lock Locker, wallet Wallet, bcast Broadcaster, finish FinishHook, clock platform.Clock, cfg Config) *Service {
@@ -96,7 +118,7 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 			return "", err
 		}
 	}
-	s.bcast.Broadcast(id, events)
+	s.publish(id, events)
 	return id, nil
 }
 
@@ -177,7 +199,7 @@ func (s *Service) persist(ctx context.Context, m Match, state mono.State, events
 	if err := s.repo.Advance(ctx, m.PublicID, state, &deadline, events); err != nil {
 		return err
 	}
-	s.bcast.Broadcast(m.PublicID, events)
+	s.publish(m.PublicID, events)
 	return nil
 }
 
@@ -202,7 +224,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 	if err := s.repo.Finish(ctx, m.PublicID, state, state.Winner, hash, agents, events); err != nil {
 		return err
 	}
-	s.bcast.Broadcast(m.PublicID, events)
+	s.publish(m.PublicID, events)
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil
 }
@@ -247,12 +269,52 @@ func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
 	return len(ids), nil
 }
 
-func (s *Service) State(ctx context.Context, matchPublicID, viewerAgent string) (AgentView, error) {
+func (s *Service) State(ctx context.Context, matchPublicID, viewerAgent string, wait bool, timeout time.Duration) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
 	}
+	if !wait || s.notify == nil || m.Status == StatusFinished {
+		return s.view(m, viewerAgent), nil
+	}
+
+	// Long-poll: block until the match state changes (a turn/phase advance or the
+	// match finishing) or the timeout elapses. Subscribe BEFORE the first compare
+	// so a change landing in between is never missed.
+	startVer := stateVersion(m)
+	wake, cancel := s.notify.Subscribe(matchPublicID)
+	defer cancel()
+	deadline := s.clock.Now().Add(timeout)
+	for {
+		remaining := deadline.Sub(s.clock.Now())
+		if remaining <= 0 {
+			break
+		}
+		tick := remaining
+		if tick > 2*time.Second {
+			tick = 2 * time.Second // backstop in case a wake-up is missed
+		}
+		select {
+		case <-ctx.Done():
+			return s.view(m, viewerAgent), nil
+		case <-wake:
+		case <-time.After(tick):
+		}
+		m, err = s.repo.Get(ctx, matchPublicID)
+		if err != nil {
+			return AgentView{}, ErrNotFound
+		}
+		if stateVersion(m) != startVer || m.Status == StatusFinished {
+			break
+		}
+	}
 	return s.view(m, viewerAgent), nil
+}
+
+// stateVersion is a cheap change key: any turn advance, phase change, or finish
+// flips it, which is what a long-poll caller wants to wake on.
+func stateVersion(m Match) string {
+	return m.Status + "|" + m.State.Phase + "|" + strconv.Itoa(m.State.TurnCount) + "|" + strconv.FormatBool(m.State.Finished)
 }
 
 func (s *Service) Economy(ctx context.Context, matchPublicID string) (EconomySnapshot, []RewardRow, error) {
