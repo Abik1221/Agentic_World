@@ -200,6 +200,13 @@ func run() error {
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
 
+	// Agent gateway: the Beta local-runtime transport. Developer agents dial OUT
+	// over a persistent WebSocket (no inbound endpoint; a laptop behind NAT works),
+	// authenticated by their manifest endpoint secret. The engine drives matches
+	// over the socket via agentgw.*Decider, falling back deterministically if an
+	// agent is absent/slow — the same guarantee the HTTP push client gives.
+	agentGateway := newAgentGateway(manifestSvc, log)
+
 	// Domain event bus (transactional outbox): producers emit facts in their own
 	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone
 	// for notifications, badges, and analytics (P1). Handlers registered here.
@@ -497,6 +504,7 @@ func run() error {
 		openapi.NewHandler().Register,
 		idHandler.Register,
 		manifestHandler.Register,
+		agentGateway.Register,
 		matchHandler.Register,
 		matchmakingHandler.Register,
 		sandboxHandler.Register,
