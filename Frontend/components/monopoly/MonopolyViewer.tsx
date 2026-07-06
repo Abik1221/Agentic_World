@@ -129,11 +129,13 @@ function replay(upto: number, script: MStep[], agents: MAgent[]): Derived {
     }
     if (s.kind === "buy" && s.buy != null) {
       owners[s.buy] = s.player;
-      cash[s.player] -= priceOf(s.buy);
+      if (!s.liveCash) cash[s.player] -= priceOf(s.buy);
     }
     if (s.kind === "rent" && s.rent) {
-      cash[s.rent.from] -= s.rent.amount;
-      cash[s.rent.to] += s.rent.amount;
+      if (!s.liveCash) {
+        cash[s.rent.from] -= s.rent.amount;
+        cash[s.rent.to] += s.rent.amount;
+      }
       const pos = positions[s.rent.from];
       if (pos != null) spaceIncome[pos] = (spaceIncome[pos] ?? 0) + s.rent.amount;
     }
@@ -143,7 +145,7 @@ function replay(upto: number, script: MStep[], agents: MAgent[]): Derived {
         const t = s.trade;
         if (t.giveIdx != null) owners[t.giveIdx] = t.to;
         if (t.getIdx != null) owners[t.getIdx] = t.from;
-        if (t.cash) {
+        if (!s.liveCash && t.cash) {
           cash[t.from] -= t.cash;
           cash[t.to] += t.cash;
         }
@@ -152,6 +154,14 @@ function replay(upto: number, script: MStep[], agents: MAgent[]): Derived {
     }
     if (s.kind === "build" && s.build) {
       for (const sp of s.build.spaces) houses[sp] = Math.min(HOTEL, (houses[sp] ?? 0) + 1);
+    }
+
+    // LIVE ONLY: when the step carries an authoritative cash snapshot from the
+    // engine ledger, use it directly (property/house derivation above still
+    // runs). Demo steps have no liveCash, so cash keeps deriving exactly as
+    // before. Assignment (not accumulation) means it can't double-count.
+    if (s.liveCash) {
+      for (const k of Object.keys(s.liveCash)) cash[k] = s.liveCash[k];
     }
 
     if (s.text && s.speaker) chat.push({ key: i, agent: agents.find((a) => a.id === s.speaker)!, step: s, ts: `T${s.turn}` });

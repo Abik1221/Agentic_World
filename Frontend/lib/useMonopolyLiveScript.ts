@@ -84,9 +84,34 @@ function mapEventsToScript(events: MonopolyLogEvent[]): MStep[] {
   let turn = 1;
   let pendingDice: { seat: number; dice: [number, number] } | null = null;
 
+  // Authoritative running cash per seat, folded from EVERY money event in
+  // stream order. `cash_changed` carries the exact post-change `balance`
+  // (one-sided bank moves: salary/tax/cards/build/mortgage/…), so it SETs the
+  // balance absolutely; buy/rent/trade never emit `cash_changed`, so those
+  // apply signed deltas. A SET absorbs any prior deltas (it is the true cash at
+  // that instant), so processing in order keeps this exactly in sync — no
+  // double-counting. Seeded lazily at the live startCash (1500).
+  const START_CASH = 1500;
+  const cashBySeat: Record<string, number> = {};
+  const seatCash = (seat: number): number => cashBySeat[seatId(seat)] ?? START_CASH;
+  const setCash = (seat: number, v: number) => {
+    cashBySeat[seatId(seat)] = v;
+  };
+  const addCash = (seat: number, delta: number) => {
+    cashBySeat[seatId(seat)] = seatCash(seat) + delta;
+  };
+  // Snapshot the current authoritative cash so the viewer uses real balances
+  // for live matches instead of deriving them.
+  const snapshot = (): Record<string, number> => ({ ...cashBySeat });
+
   for (const e of events) {
     const p = (e.payload ?? {}) as Record<string, unknown>;
     switch (e.type) {
+      case "cash_changed": {
+        // Absolute post-change balance for a one-sided bank transaction.
+        setCash(num(p.seat), num(p.balance, seatCash(num(p.seat))));
+        break;
+      }
       case "turn_started": {
         turn = num(p.turn_count, turn);
         break;
@@ -107,6 +132,7 @@ function mapEventsToScript(events: MonopolyLogEvent[]): MStep[] {
             dice: pendingDice.dice,
             to,
             event: `Seat ${seat} rolls ${sum} → ${propName(to)}`,
+            liveCash: snapshot(),
           });
           pendingDice = null;
         }
@@ -115,12 +141,15 @@ function mapEventsToScript(events: MonopolyLogEvent[]): MStep[] {
       case "property_purchased": {
         const seat = num(p.seat);
         const prop = num(p.property);
+        // Buys don't emit cash_changed — the engine deducts internally.
+        addCash(seat, -num(p.price));
         steps.push({
           turn,
           player: seatId(seat),
           kind: "buy",
           buy: prop,
           event: `Seat ${seat} buys ${propName(prop)} ($${num(p.price)})`,
+          liveCash: snapshot(),
         });
         break;
       }
@@ -128,24 +157,30 @@ function mapEventsToScript(events: MonopolyLogEvent[]): MStep[] {
         const from = num(p.from);
         const to = num(p.to);
         const amount = num(p.amount);
+        // Player-to-player rent doesn't emit cash_changed — apply the transfer.
+        addCash(from, -amount);
+        addCash(to, amount);
         steps.push({
           turn,
           player: seatId(from),
           kind: "rent",
           rent: { from: seatId(from), to: seatId(to), amount },
           event: `Seat ${from} pays $${amount} rent to Seat ${to}`,
+          liveCash: snapshot(),
         });
         break;
       }
       case "house_built": {
         const seat = num(p.seat);
         const prop = num(p.property);
+        // The build cost is a one-sided bank move, already folded via cash_changed.
         steps.push({
           turn,
           player: seatId(seat),
           kind: "build",
           build: { spaces: [prop] },
           event: `Seat ${seat} builds on ${propName(prop)}`,
+          liveCash: snapshot(),
         });
         break;
       }
@@ -159,6 +194,12 @@ function mapEventsToScript(events: MonopolyLogEvent[]): MStep[] {
         const giveCash = num(p.give_cash);
         const wantCash = num(p.want_cash);
         const status = e.type === "trade_executed" ? "accept" : e.type === "trade_rejected" ? "reject" : "propose";
+        // Executed-trade cash moves internally (no cash_changed): the proposer
+        // nets wantCash − giveCash, the target the inverse.
+        if (status === "accept") {
+          addCash(proposer, wantCash - giveCash);
+          addCash(target, giveCash - wantCash);
+        }
         steps.push({
           turn,
           player: seatId(proposer),
@@ -173,6 +214,7 @@ function mapEventsToScript(events: MonopolyLogEvent[]): MStep[] {
             getIdx: wantProps[0],
             cash: giveCash - wantCash,
           },
+          liveCash: snapshot(),
           event:
             status === "accept"
               ? `Trade accepted: Seat ${proposer} ↔ Seat ${target}`

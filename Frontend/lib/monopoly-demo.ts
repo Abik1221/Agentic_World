@@ -138,6 +138,10 @@ export type MStep = {
   intent?: MIntent;
   text?: string;
   event?: string;
+  // LIVE ONLY: authoritative per-seat cash snapshot (from the engine's cash
+  // ledger) as of this step. Demo steps omit it, so the viewer keeps deriving
+  // cash from step effects; when present it overrides that derivation.
+  liveCash?: Record<string, number>;
 };
 
 export const MSCRIPT: MStep[] = [
