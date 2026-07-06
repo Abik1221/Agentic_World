@@ -24,7 +24,7 @@ func (r *SpectatorRepo) LiveMatches(ctx context.Context) ([]spectator.LiveMatch,
 		 FROM matches m
 		 JOIN match_players mp ON mp.match_id = m.id
 		 JOIN agents ag ON ag.id = mp.agent_id
-		 WHERE m.status = 'active'
+		 WHERE m.status = 'active' AND m.game = 'goofspiel'
 		 GROUP BY m.id
 		 ORDER BY m.started_at DESC NULLS LAST
 		 LIMIT 100`)
