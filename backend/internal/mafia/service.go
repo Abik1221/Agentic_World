@@ -222,7 +222,12 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 	if err != nil {
 		return AgentView{}, mapEngineErr(err)
 	}
-	if len(events) == 0 {
+	// A night action that is NOT the phase resolver returns no events but still
+	// records the submission in state (MafiaKill/NightActs). That state MUST be
+	// persisted so a multi-actor night can complete across separate Act calls —
+	// otherwise every submission is lost and the phase never resolves. Only a true
+	// no-op (duplicate submit, no state change) is skipped.
+	if len(events) == 0 && !nightSubmissionAdded(m.State, state) {
 		return s.viewFor(ctx, m, agentPublicID), nil
 	}
 	if err := s.persist(ctx, m, state, events); err != nil {
@@ -233,6 +238,14 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 		return AgentView{}, err
 	}
 	return s.viewFor(ctx, m, agentPublicID), nil
+}
+
+// nightSubmissionAdded reports whether `after` recorded a new night submission
+// (a Mafia kill vote or a Detective/Doctor/Sheriff action) versus `before`. Such
+// a submission produces no events until the night resolves, so the service must
+// still persist it — otherwise the multi-actor night phase can never complete.
+func nightSubmissionAdded(before, after mf.State) bool {
+	return len(after.MafiaKill)+len(after.NightActs) > len(before.MafiaKill)+len(before.NightActs)
 }
 
 func (s *Service) persist(ctx context.Context, m Match, state mf.State, events []mf.Event) error {

@@ -149,7 +149,8 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 			}
 		}
 		if !acted {
-			time.Sleep(200 * time.Millisecond)
+			// No seat could act (e.g. brief lock contention) — yield, don't spin.
+			time.Sleep(150 * time.Millisecond)
 		}
 	}
 }
