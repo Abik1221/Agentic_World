@@ -2,6 +2,7 @@ package monopoly
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -26,6 +27,9 @@ type RemoteResolver interface {
 // Implemented by *agentclient.Client.
 type PushClient interface {
 	Play(ctx context.Context, t agentclient.Target, request, out any) (int, error)
+	Initialize(ctx context.Context, t agentclient.Target, req agentclient.InitializeRequest) (agentclient.InitializeResponse, error)
+	Event(ctx context.Context, t agentclient.Target, n agentclient.EventNotification) error
+	GameEnd(ctx context.Context, t agentclient.Target, n agentclient.GameEndNotification) error
 }
 
 type pushPlayer struct {
@@ -93,6 +97,8 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 	defer cancel()
 
 	fallbacks := 0
+	initialized := false
+	deliveredTurn := 0 // highest State.TurnCount already pushed to /event
 	for {
 		if ctx.Err() != nil {
 			p.log.Warn("monopoly pushplay: deadline exceeded", "match", matchID)
@@ -103,8 +109,33 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			p.log.Warn("monopoly pushplay: state read failed", "match", matchID, "err", err)
 			return
 		}
+		// Lifecycle: /initialize once, lazily on the first state read (best-effort —
+		// the agent may also initialise on the first /turn). Player count comes from
+		// the live board so seat/roster match what the engine actually created.
+		if !initialized {
+			initialized = true
+			players := 0
+			if v.State != nil {
+				players = len(v.State.Players)
+			}
+			if _, err := p.client.Initialize(ctx, target, agentclient.InitializeRequest{
+				MatchID: matchID, Game: "monopoly", Seat: v.YourSeat, Players: players,
+			}); err != nil {
+				p.log.Warn("monopoly pushplay: initialize failed (continuing)", "match", matchID, "err", err)
+			}
+		}
+		// Async /event for each turn that advanced since the last read. TurnCount is
+		// gap-free and monotonic, so it doubles as the event Seq for ordering.
+		deliveredTurn = p.dispatchTurnEvents(ctx, target, matchID, v, deliveredTurn)
 		if v.Status != StatusActive {
 			p.log.Info("monopoly pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks)
+			// Lifecycle: /game-end with the final result (best-effort webhook).
+			result, _ := json.Marshal(v.Result)
+			if err := p.client.GameEnd(ctx, target, agentclient.GameEndNotification{
+				MatchID: matchID, Game: "monopoly", Result: result,
+			}); err != nil {
+				p.log.Warn("monopoly pushplay: game-end delivery failed", "match", matchID, "err", err)
+			}
 			return
 		}
 		if !v.YourTurn || len(v.Legal) == 0 {
@@ -125,6 +156,22 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			fallbacks++
 		}
 	}
+}
+
+// dispatchTurnEvents pushes an async /event webhook when the board's TurnCount has
+// advanced since the last read. Delivery is fire-and-forget (a detached goroutine)
+// so the turn loop and the engine never block on it; TurnCount is the Seq so the
+// agent can order events. Returns the new highest delivered turn.
+func (p *pushPlayer) dispatchTurnEvents(ctx context.Context, target agentclient.Target, matchID string, v AgentView, delivered int) int {
+	if v.State == nil || v.State.TurnCount <= delivered {
+		return delivered
+	}
+	payload, _ := json.Marshal(v.State)
+	n := agentclient.EventNotification{
+		MatchID: matchID, Game: "monopoly", Seq: v.State.TurnCount, Type: "turn_advanced", Payload: payload,
+	}
+	go func(n agentclient.EventNotification) { _ = p.client.Event(context.WithoutCancel(ctx), target, n) }(n)
+	return v.State.TurnCount
 }
 
 func (p *pushPlayer) decide(ctx context.Context, target agentclient.Target, matchID string, v AgentView) (mono.Action, bool) {
