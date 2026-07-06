@@ -63,6 +63,7 @@ export const NAV: NavItem[] = [
     icon: Swords,
     children: [
       { label: "Quick Play", href: "/play" },
+      { label: "Ranked", href: "/ranked" },
       { label: "Rankings", href: "/rankings" },
       { label: "Tournaments", href: "/tournaments" },
     ],

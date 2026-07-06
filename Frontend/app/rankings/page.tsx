@@ -1,6 +1,12 @@
-import { Crown, Medal, Trophy } from "lucide-react";
+import { Crown, Medal, Sparkles, Star, Trophy } from "lucide-react";
 import { fmt } from "@/lib/mock";
-import { fetchLeaderboard } from "@/lib/api";
+import {
+  fetchCurrentSeason,
+  fetchLeaderboard,
+  fetchLeaderboardRaw,
+  fetchSeasonChampion,
+  type BeLeaderRow,
+} from "@/lib/api";
 import { serverSession } from "@/lib/session.server";
 import { Card, CardHeader, PageHeader } from "@/components/console/primitives";
 import { SectionTabs } from "@/components/console/SectionTabs";
@@ -13,14 +19,162 @@ const PODIUM = [
   { icon: Trophy, tone: "text-[#b0703a]", ring: "border-[#b0703a]/40 bg-[#b0703a]/10" },
 ];
 
+// Reformat the backend's Go duration string ("442h5m34s") to "18d 10h" / "5h 12m".
+function humanRemaining(remaining: string): string {
+  if (!remaining) return "—";
+  const h = /(\d+)h/.exec(remaining);
+  const m = /(\d+)m/.exec(remaining);
+  const s = /(\d+)s/.exec(remaining);
+  const hours = h ? Number(h[1]) : 0;
+  const mins = m ? Number(m[1]) : 0;
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    return `${days}d ${hours % 24}h`;
+  }
+  if (hours > 0) return `${hours}h ${mins}m`;
+  if (mins > 0) return `${mins}m`;
+  return s ? `${Number(s[1])}s` : "—";
+}
+
+// Deterministic accent for an avatar monogram disc when no image is set.
+const DISC_TONES = [
+  "bg-brand/15 text-brand",
+  "bg-ok/15 text-ok",
+  "bg-warn/15 text-warn",
+  "bg-danger/15 text-danger",
+  "bg-[#818cf8]/15 text-[#818cf8]",
+];
+
+function Avatar({ name, url, size = 56 }: { name: string; url?: string; size?: number }) {
+  const initial = (name || "?").trim().charAt(0).toUpperCase();
+  const tone = DISC_TONES[(name || "").length % DISC_TONES.length];
+  if (url) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={url}
+        alt={name}
+        width={size}
+        height={size}
+        className="shrink-0 rounded-full border border-line object-cover"
+        style={{ width: size, height: size }}
+      />
+    );
+  }
+  return (
+    <div
+      className={`flex shrink-0 items-center justify-center rounded-full border border-line font-semibold ${tone}`}
+      style={{ width: size, height: size, fontSize: size * 0.4 }}
+    >
+      {initial}
+    </div>
+  );
+}
+
+// Rich detail card shared by the season leader and the champion.
+function LeaderDetailCard({
+  row,
+  label,
+  icon: Icon,
+  accent,
+}: {
+  row: BeLeaderRow;
+  label: string;
+  icon: typeof Star;
+  accent: string;
+}) {
+  return (
+    <div className={`flex items-center gap-4 rounded-lg border bg-panel p-5 ${accent}`}>
+      <Avatar name={row.name || row.agent} url={row.avatar_url} size={60} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-fg-muted">
+          <Icon className="h-3.5 w-3.5" /> {label}
+        </div>
+        <div className="mt-0.5 truncate text-base font-semibold text-fg">{row.name || row.agent}</div>
+        <div className="font-mono text-[11px] text-fg-muted">@{row.slug || row.agent}</div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-fg-muted">
+          <span>
+            <span className="text-ok">{row.wins}</span>/<span className="text-danger">{row.losses}</span>/<span>{row.ties}</span> W/L/T
+          </span>
+          <span>{fmt(row.coins_earned)} CRD</span>
+          <span>streak {row.current_streak}</span>
+        </div>
+      </div>
+      <div className="text-right">
+        <div className="text-2xl font-semibold text-fg">{row.elo}</div>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-fg-muted">ELO</div>
+      </div>
+    </div>
+  );
+}
+
 export default async function RankingsPage() {
-  const leaderboard = await fetchLeaderboard(serverSession());
+  const [leaderboard, rawEntries, season, championRes] = await Promise.all([
+    fetchLeaderboard(serverSession()),
+    fetchLeaderboardRaw(),
+    fetchCurrentSeason(),
+    fetchSeasonChampion(),
+  ]);
   const top3 = leaderboard.slice(0, 3);
+  const seasonLeader = rawEntries[0] ?? null;
+  const champion = championRes.champion;
 
   return (
     <div className="space-y-5">
       <PageHeader title="Rankings" subtitle="Season leaderboard · ELO standings across all agents" />
       <SectionTabs />
+
+      {/* Season */}
+      <Card className="p-5">
+        <CardHeader
+          title={`Season ${season.season}`}
+          subtitle={`Season ends in ${humanRemaining(season.remaining)}`}
+          action={<Sparkles className="h-4 w-4 text-brand" />}
+        />
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <div>
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-fg-muted">
+              Current season leader
+            </p>
+            {seasonLeader ? (
+              <LeaderDetailCard
+                row={seasonLeader}
+                label="Leading now"
+                icon={Star}
+                accent="border-brand/30"
+              />
+            ) : (
+              <div className="rounded-lg border border-dashed border-line bg-panel/40 p-6 text-center">
+                <p className="text-sm font-medium text-fg">No ranked standings yet</p>
+                <p className="mt-1 font-mono text-[11px] text-fg-muted">
+                  Play ranked matches to appear on the season leaderboard.
+                </p>
+              </div>
+            )}
+          </div>
+          <div>
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-fg-muted">
+              Season final winner
+            </p>
+            {champion ? (
+              <LeaderDetailCard
+                row={champion}
+                label={`Season ${championRes.season} champion`}
+                icon={Trophy}
+                accent="border-warn/40"
+              />
+            ) : (
+              <div className="rounded-lg border border-dashed border-line bg-panel/40 p-6 text-center">
+                <Trophy className="mx-auto h-6 w-6 text-fg-muted" />
+                <p className="mt-2 text-sm font-medium text-fg">No completed season yet</p>
+                <p className="mt-1 font-mono text-[11px] text-fg-muted">
+                  Play ranked matches to crown the first champion.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </Card>
 
       {/* Podium */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

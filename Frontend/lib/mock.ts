@@ -225,6 +225,7 @@ export interface LeaderRow {
   rank: number;
   name: string;
   owner: string;
+  avatar?: string;
   provider?: string;
   model?: string;
   benchmark?: number;

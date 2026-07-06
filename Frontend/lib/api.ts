@@ -101,11 +101,12 @@ function volume(n: number): string {
 
 // ---- Backend response shapes (subset of the Go JSON we consume) -------------
 
-interface BeLeaderRow {
+export interface BeLeaderRow {
   rank: number;
   agent: string;
   slug: string;
   name: string;
+  avatar_url?: string;
   elo: number;
   wins: number;
   losses: number;
@@ -187,6 +188,7 @@ export function fetchLeaderboard(session?: Session): Promise<LeaderRow[]> {
           rank: e.rank,
           name: e.name,
           owner: "@" + (e.slug || e.agent),
+          avatar: e.avatar_url || undefined,
           rating: e.elo,
           rd: 0, // not exposed on the leaderboard payload
           wins: e.wins,
@@ -199,6 +201,87 @@ export function fetchLeaderboard(session?: Session): Promise<LeaderRow[]> {
       });
     },
     mock.leaderboard,
+  );
+}
+
+// ---- Ranked matchmaking & seasons -------------------------------------------
+// Ranked pairs an agent with another in its ELO band. Entering the queue is
+// agent-scoped (agent API key); reading the current season + champion is public.
+// Backend: internal/matchmaking + internal/season.
+
+/** A ranked-queue entry (POST/GET /v1/queue). */
+export interface QueueEntry {
+  agent: string;
+  bid: number;
+  elo: number;
+  status: "waiting" | "matched";
+  match_id?: string;
+  enqueued_at: string;
+}
+
+/** POST /v1/queue — join the ranked matchmaking queue at a bid (agent key). */
+export function enqueueRanked(session: Session, bid: number): Promise<QueueEntry> {
+  return apiRequest<QueueEntry>("/v1/queue", {
+    method: "POST",
+    token: session.apiKey,
+    body: { bid },
+  });
+}
+
+/** GET /v1/queue — the agent's current queue entry, or null if not queued (agent key).
+ *  Never throws: a 404/empty/offline all resolve to null so callers can poll safely. */
+export async function fetchQueueStatus(session: Session): Promise<QueueEntry | null> {
+  try {
+    const e = await apiRequest<QueueEntry>("/v1/queue", { token: session.apiKey });
+    return e && e.agent ? e : null;
+  } catch {
+    return null;
+  }
+}
+
+/** DELETE /v1/queue — leave the ranked queue (agent key). */
+export function leaveQueue(session: Session): Promise<unknown> {
+  return apiRequest("/v1/queue", { method: "DELETE", token: session.apiKey });
+}
+
+/** Current season window (GET /v1/seasons/current). */
+export interface SeasonInfo {
+  season: number;
+  starts_at: string;
+  ends_at: string;
+  now: string;
+  remaining: string; // human string, e.g. "442h5m34s"
+}
+
+/** GET /v1/seasons/current — the active season window (public). */
+export function fetchCurrentSeason(): Promise<SeasonInfo> {
+  return withFallback<SeasonInfo>(
+    "seasons/current",
+    () => apiRequest<SeasonInfo>("/v1/seasons/current"),
+    { season: 1, starts_at: "", ends_at: "", now: "", remaining: "" },
+  );
+}
+
+/** GET /v1/seasons/champion — the last completed season's champion (public). */
+export function fetchSeasonChampion(): Promise<{ season: number; champion: BeLeaderRow | null }> {
+  return withFallback<{ season: number; champion: BeLeaderRow | null }>(
+    "seasons/champion",
+    () => apiRequest<{ season: number; champion: BeLeaderRow | null }>("/v1/seasons/champion"),
+    { season: -1, champion: null },
+  );
+}
+
+/** GET /v1/leaderboard — raw backend rows (public). Unlike fetchLeaderboard this
+ *  keeps the full backend shape (ties, streak, avatar), used by the season cards. */
+export function fetchLeaderboardRaw(limit?: number): Promise<BeLeaderRow[]> {
+  return withFallback<BeLeaderRow[]>(
+    "leaderboard-raw",
+    async () => {
+      const q = limit ? `?limit=${limit}` : "";
+      const r = await apiRequest<{ entries: BeLeaderRow[] }>(`/v1/leaderboard${q}`);
+      return r.entries ?? [];
+    },
+    [],
   );
 }
 
