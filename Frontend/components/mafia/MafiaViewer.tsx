@@ -20,15 +20,14 @@ import { cn } from "@/lib/cn";
 import { DiscussionPanel, STATUS, type DiscussionActivity, type DiscussionMessage } from "@/components/discussion/DiscussionPanel";
 import { StrategyTable } from "@/components/table/StrategyTable";
 import {
-  AGENTS,
   INTENT,
   OUTCOME,
   ROLE_META,
-  SCRIPT,
   type Agent,
   type Phase,
   type Step,
 } from "@/lib/mafia-demo";
+import { useMafiaLiveScript } from "@/lib/useMafiaLiveScript";
 
 function mafiaEventIcon(t: string) {
   const s = t.toLowerCase();
@@ -52,20 +51,17 @@ const MAFIA_STATUS_KEY: Record<SeatState, string> = {
 /* ─────────────────────────────── geometry ──────────────────────────────────
    The whole table is one SVG in a 1000×1000 viewBox so it scales perfectly on
    any screen. Every seat is an individually-addressable <g data-seat> group. */
-const N = AGENTS.length;
 const C = 500; // center
 const R_SEAT = 358; // avatar-center ring (just outside the table edge)
 const R_TABLE = 250; // table surface radius
 const RA = 42; // avatar radius
 
-function polar(i: number) {
-  const angle = ((-90 + (i * 360) / N) * Math.PI) / 180;
+function polar(i: number, n: number) {
+  const angle = ((-90 + (i * 360) / n) * Math.PI) / 180;
   const ox = Math.cos(angle);
   const oy = Math.sin(angle);
   return { x: C + R_SEAT * ox, y: C + R_SEAT * oy, ox, oy };
 }
-const SEATS = AGENTS.map((_, i) => polar(i));
-const idxOf = (id: string) => AGENTS.findIndex((a) => a.id === id);
 
 /* ───────────────────────────── replay engine ───────────────────────────────
    Rebuilds the full match state from step 0..upto — deterministic and
@@ -84,11 +80,11 @@ type Derived = {
   timeline: { key: number; text: string }[];
 };
 
-function replay(upto: number): Derived {
+function replay(upto: number, script: Step[], agents: Agent[]): Derived {
   const d: Derived = { phase: "discussion", day: 1, dead: [], votes: {}, suspicion: {}, chat: [], timeline: [] };
   let prevPhase: Phase | null = null;
-  for (let i = 0; i <= upto && i < SCRIPT.length; i++) {
-    const s = SCRIPT[i];
+  for (let i = 0; i <= upto && i < script.length; i++) {
+    const s = script[i];
     if (s.phase === "voting" && prevPhase !== "voting") d.votes = {};
     d.phase = s.phase;
     d.day = s.day;
@@ -96,7 +92,7 @@ function replay(upto: number): Derived {
 
     if (s.text) {
       const low = s.text.toLowerCase();
-      for (const a of AGENTS) {
+      for (const a of agents) {
         if (a.id === s.speaker) continue;
         if (low.includes(a.name.toLowerCase())) {
           const bump = s.intent === "accusing" ? 2 : s.intent === "analyzing" || s.intent === "reasoning" ? 1 : 0;
@@ -110,7 +106,7 @@ function replay(upto: number): Derived {
     }
     if (s.eliminate && !d.dead.includes(s.eliminate)) d.dead.push(s.eliminate);
     if (s.text && s.speaker) {
-      const agent = AGENTS.find((a) => a.id === s.speaker)!;
+      const agent = agents.find((a) => a.id === s.speaker)!;
       const mm = String(9 + Math.floor(i / 6)).padStart(2, "0");
       const ss = String((i * 11) % 60).padStart(2, "0");
       d.chat.push({ key: i, agent, step: s, ts: `${mm}:${ss}` });
@@ -148,19 +144,27 @@ function suspicion(v: number): { label: string; color: string } {
 
 /* ═══════════════════════════════ viewer ════════════════════════════════════ */
 export function MafiaViewer() {
+  // Cast + script come from the live hook: it streams a real match when one is
+  // available and otherwise returns the scripted demo unchanged (the default).
+  const { agents, script } = useMafiaLiveScript();
+
+  const N = agents.length;
+  const idxOf = React.useCallback((id: string) => agents.findIndex((a) => a.id === id), [agents]);
+  const seats = React.useMemo(() => agents.map((_, i) => polar(i, agents.length)), [agents]);
+
   const [idx, setIdx] = React.useState(0);
   const [playing, setPlaying] = React.useState(true);
   const [inspect, setInspect] = React.useState<string | null>(null);
   const [seconds, setSeconds] = React.useState(0);
   const [showReveal, setShowReveal] = React.useState(false);
 
-  const lastIdx = SCRIPT.length - 1;
+  const lastIdx = script.length - 1;
   const ended = idx >= lastIdx;
-  const d = React.useMemo(() => replay(idx), [idx]);
-  const alive = AGENTS.filter((a) => !d.dead.includes(a.id));
+  const d = React.useMemo(() => replay(idx, script, agents), [idx, script, agents]);
+  const alive = agents.filter((a) => !d.dead.includes(a.id));
 
   // Execution reveal: pause on a mid-game elimination (not the terminal step).
-  const curStep = SCRIPT[idx];
+  const curStep = script[idx];
   const isExecReveal = !ended && curStep?.phase === "execution" && !!curStep?.eliminate;
   const advance = React.useCallback(() => setIdx((i) => Math.min(i + 1, lastIdx)), [lastIdx]);
 
@@ -168,7 +172,7 @@ export function MafiaViewer() {
   // own advance, so the normal timer stands down while it is showing.
   React.useEffect(() => {
     if (!playing || idx >= lastIdx || isExecReveal) return;
-    const cur = SCRIPT[idx];
+    const cur = script[idx];
     const delay = cur?.phase === "voting" ? 1700 : cur?.phase === "execution" ? 2600 : 3600;
     const t = setTimeout(() => setIdx((i) => Math.min(i + 1, lastIdx)), delay);
     return () => clearTimeout(t);
@@ -222,8 +226,8 @@ export function MafiaViewer() {
   const totalVotes = Object.values(d.votes).reduce((s, v) => s + v.length, 0);
   const mostAccused = Object.entries(d.votes).sort((a, b) => b[1].length - a[1].length)[0];
   const avgResp = Math.round(alive.reduce((s, a) => s + a.responseMs, 0) / Math.max(1, alive.length));
-  const inspected = AGENTS.find((a) => a.id === inspect);
-  const queue = speakingQueue(idx);
+  const inspected = agents.find((a) => a.id === inspect);
+  const queue = speakingQueue(idx, script);
   const hasSpeaker = !!d.speaker && (d.phase === "discussion" || d.phase === "voting") && !ended;
 
   const messages: DiscussionMessage[] = d.chat.map((m) => ({
@@ -238,10 +242,10 @@ export function MafiaViewer() {
   }));
   const activity: DiscussionActivity[] = d.timeline.map((t) => ({ id: t.key, icon: mafiaEventIcon(t.text), text: t.text, ts: `Day ${d.day}` }));
   const discStatus = (agentId: string) => {
-    const a = AGENTS.find((x) => x.id === agentId);
+    const a = agents.find((x) => x.id === agentId);
     return a ? STATUS[MAFIA_STATUS_KEY[statusOf(a)]] : undefined;
   };
-  const typingNames = !ended && d.phase === "discussion" && queue.next ? [AGENTS.find((a) => a.id === queue.next)!.name] : [];
+  const typingNames = !ended && d.phase === "discussion" && queue.next ? [agents.find((a) => a.id === queue.next)!.name] : [];
 
   return (
     <div className="mafia-viewer flex min-h-full flex-col gap-4 rounded-xl p-4 text-fg md:p-5">
@@ -251,13 +255,17 @@ export function MafiaViewer() {
         {/* ── Stage ── */}
         <Panel className="mvx-stage relative flex items-center justify-center overflow-hidden p-3 lg:h-[588px]">
           <PhaseBadge phase={d.phase} />
-          <SpeakingQueue queue={queue} phase={d.phase} ended={ended} />
+          <SpeakingQueue queue={queue} phase={d.phase} ended={ended} agents={agents} />
 
           <div className="relative mx-auto aspect-square w-full max-w-[588px]">
             {/* Onavion walnut strategy table — agents are seated around it */}
             <StrategyTable shape="round" size={0.6} night={d.phase === "night"} topDown className="absolute inset-0" />
             <Stage
               d={d}
+              agents={agents}
+              seats={seats}
+              idxOf={idxOf}
+              n={N}
               statusOf={statusOf}
               seconds={seconds}
               hasSpeaker={hasSpeaker}
@@ -281,7 +289,7 @@ export function MafiaViewer() {
       </div>
 
       {/* ── Timeline (seekable) ── */}
-      <SeekTimeline idx={idx} onSeek={seek} />
+      <SeekTimeline idx={idx} onSeek={seek} script={script} agents={agents} />
 
       {/* ── Live events · Statistics ── */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -292,7 +300,7 @@ export function MafiaViewer() {
               Object.entries(d.votes)
                 .sort((a, b) => b[1].length - a[1].length)
                 .map(([to, froms]) => {
-                  const t = AGENTS.find((x) => x.id === to)!;
+                  const t = agents.find((x) => x.id === to)!;
                   return (
                     <div key={to} className="flex items-center justify-between text-[12px]">
                       <span className="flex items-center gap-2 text-fg-muted">
@@ -330,7 +338,7 @@ export function MafiaViewer() {
             <Stat k="Alive" v={alive.length} />
             <Stat k="Eliminated" v={d.dead.length} />
             <Stat k="Votes cast" v={totalVotes} />
-            <Stat k="Most accused" v={mostAccused ? AGENTS.find((a) => a.id === mostAccused[0])!.name : "—"} />
+            <Stat k="Most accused" v={mostAccused ? agents.find((a) => a.id === mostAccused[0])!.name : "—"} />
             <Stat k="Avg response" v={`${avgResp}ms`} />
           </div>
         </Panel>
@@ -341,28 +349,29 @@ export function MafiaViewer() {
       <AnimatePresence>
         {isExecReveal && curStep?.eliminate && (
           <ExecutionReveal
-            agent={AGENTS.find((a) => a.id === curStep.eliminate)!}
+            agent={agents.find((a) => a.id === curStep.eliminate)!}
+            agents={agents}
             votes={Object.entries(d.votes).flatMap(([to, froms]) => froms.map((from) => ({ from, to })))}
             day={d.day}
             dead={d.dead}
             autoContinue={playing}
-            nextPhaseLabel={SCRIPT[idx + 1]?.phase === "night" ? "Starting Night Phase…" : "Starting Discussion…"}
+            nextPhaseLabel={script[idx + 1]?.phase === "night" ? "Starting Night Phase…" : "Starting Discussion…"}
             onContinue={advance}
           />
         )}
       </AnimatePresence>
 
-      <AnimatePresence>{showReveal && <RoleReveal onReplay={replayMatch} onClose={() => setShowReveal(false)} />}</AnimatePresence>
+      <AnimatePresence>{showReveal && <RoleReveal onReplay={replayMatch} onClose={() => setShowReveal(false)} agents={agents} />}</AnimatePresence>
     </div>
   );
 }
 
 /* ───────────────────────── speaking queue lookahead ───────────────────────── */
-function speakingQueue(idx: number): { now?: string; next?: string; waiting?: string } {
-  const now = SCRIPT[idx]?.speaker;
+function speakingQueue(idx: number, script: Step[]): { now?: string; next?: string; waiting?: string } {
+  const now = script[idx]?.speaker;
   const rest: string[] = [];
-  for (let i = idx + 1; i < SCRIPT.length && rest.length < 2; i++) {
-    const s = SCRIPT[i].speaker;
+  for (let i = idx + 1; i < script.length && rest.length < 2; i++) {
+    const s = script[i].speaker;
     if (s && s !== now && !rest.includes(s)) rest.push(s);
   }
   return { now, next: rest[0], waiting: rest[1] };
@@ -371,6 +380,10 @@ function speakingQueue(idx: number): { now?: string; next?: string; waiting?: st
 /* ══════════════════════════════ the SVG stage ══════════════════════════════ */
 function Stage({
   d,
+  agents,
+  seats,
+  idxOf,
+  n,
   statusOf,
   seconds,
   hasSpeaker,
@@ -378,6 +391,10 @@ function Stage({
   onSelect,
 }: {
   d: Derived;
+  agents: Agent[];
+  seats: { x: number; y: number; ox: number; oy: number }[];
+  idxOf: (id: string) => number;
+  n: number;
   statusOf: (a: Agent) => SeatState;
   seconds: number;
   hasSpeaker: boolean;
@@ -433,7 +450,7 @@ function Stage({
       <circle cx="500" cy="500" r={R_TABLE - 26} fill="url(#mvxCenter)" className="mvx-breathe" />
 
       {/* speaker light beam toward center (under seats) */}
-      {hasSpeaker && d.speaker && <Beam fromIdx={idxOf(d.speaker)} color={AGENTS[idxOf(d.speaker)].color} />}
+      {hasSpeaker && d.speaker && <Beam fromIdx={idxOf(d.speaker)} color={agents[idxOf(d.speaker)].color} n={n} />}
 
       {/* night — the walnut dims via StrategyTable; keep the moon accent */}
       {night && (
@@ -454,8 +471,8 @@ function Stage({
               const a = idxOf(from);
               const b = idxOf(to);
               if (a < 0 || b < 0) return null;
-              const { d: path, ex, ey } = votePath(a, b, j);
-              const color = AGENTS[a].color;
+              const { d: path, ex, ey } = votePath(a, b, j, n);
+              const color = agents[a].color;
               return (
                 <g key={`${from}-${to}`}>
                   {/* dark halo underneath for legibility on the walnut, then the colored line */}
@@ -470,11 +487,11 @@ function Stage({
       )}
 
       {/* seats */}
-      {AGENTS.map((a, i) => (
+      {agents.map((a, i) => (
         <Seat
           key={a.id}
           agent={a}
-          seat={SEATS[i]}
+          seat={seats[i]}
           state={statusOf(a)}
           votes={d.votes[a.id]?.length ?? 0}
           susp={d.suspicion[a.id] ?? 0}
@@ -486,8 +503,8 @@ function Stage({
   );
 }
 
-function Beam({ fromIdx, color }: { fromIdx: number; color: string }) {
-  const p = polar(fromIdx);
+function Beam({ fromIdx, color, n }: { fromIdx: number; color: string; n: number }) {
+  const p = polar(fromIdx, n);
   const dx = C - p.x;
   const dy = C - p.y;
   const len = Math.hypot(dx, dy) || 1;
@@ -683,9 +700,9 @@ function SeatLabels({ x, y, above, name, dev, chipLabel, chipColor }: { x: numbe
   );
 }
 
-function votePath(fromIdx: number, toIdx: number, j: number) {
-  const p = polar(fromIdx);
-  const q = polar(toIdx);
+function votePath(fromIdx: number, toIdx: number, j: number, n: number) {
+  const p = polar(fromIdx, n);
+  const q = polar(toIdx, n);
   const dx = q.x - p.x;
   const dy = q.y - p.y;
   const len = Math.hypot(dx, dy) || 1;
@@ -707,11 +724,11 @@ function votePath(fromIdx: number, toIdx: number, j: number) {
 }
 
 /* ───────────────────────── speaking-queue floating card ────────────────────── */
-function SpeakingQueue({ queue, phase, ended }: { queue: { now?: string; next?: string; waiting?: string }; phase: Phase; ended: boolean }) {
+function SpeakingQueue({ queue, phase, ended, agents }: { queue: { now?: string; next?: string; waiting?: string }; phase: Phase; ended: boolean; agents: Agent[] }) {
   if (ended || phase === "night" || !queue.now) return null;
   const row = (label: string, id: string | undefined, dim?: boolean) => {
     if (!id) return null;
-    const a = AGENTS.find((x) => x.id === id)!;
+    const a = agents.find((x) => x.id === id)!;
     return (
       <div className={cn("flex items-center gap-2", dim && "opacity-60")}>
         <span className="w-12 shrink-0 font-mono text-[9px] uppercase tracking-wider text-fg-muted">{label}</span>
@@ -739,23 +756,23 @@ function SpeakingQueue({ queue, phase, ended }: { queue: { now?: string; next?: 
 
 /* ═══════════════════════════ Discord-style chat ════════════════════════════ */
 /* ═════════════════════════════ seek timeline ═══════════════════════════════ */
-function SeekTimeline({ idx, onSeek }: { idx: number; onSeek: (i: number) => void }) {
-  const events = SCRIPT.map((s, i) => ({ i, s })).filter((e) => e.s.event);
+function SeekTimeline({ idx, onSeek, script, agents }: { idx: number; onSeek: (i: number) => void; script: Step[]; agents: Agent[] }) {
+  const events = script.map((s, i) => ({ i, s })).filter((e) => e.s.event);
   return (
     <Panel className="p-4">
       <div className="flex items-center justify-between">
         <PanelTitle icon={Clock}>Timeline · click to replay</PanelTitle>
         <span className="font-mono text-[10px] text-fg-muted">
-          {idx + 1}/{SCRIPT.length}
+          {idx + 1}/{script.length}
         </span>
       </div>
       {/* segmented scrubber */}
       <div className="mt-3 flex gap-[3px]">
-        {SCRIPT.map((s, i) => (
+        {script.map((s, i) => (
           <button
             key={i}
             onClick={() => onSeek(i)}
-            title={s.event ?? `${PHASE_LABEL[s.phase]}${s.speaker ? ` · ${AGENTS.find((a) => a.id === s.speaker)?.name}` : ""}`}
+            title={s.event ?? `${PHASE_LABEL[s.phase]}${s.speaker ? ` · ${agents.find((a) => a.id === s.speaker)?.name}` : ""}`}
             className={cn("h-2 flex-1 rounded-full transition-all", i <= idx ? "opacity-100" : "opacity-30 hover:opacity-60")}
             style={{ background: i === idx ? "#e6e6ee" : PHASE_COLOR[s.phase] }}
           />
@@ -784,6 +801,7 @@ function SeekTimeline({ idx, onSeek }: { idx: number; onSeek: (i: number) => voi
 /* ═════════════════════════════ execution reveal ════════════════════════════ */
 function ExecutionReveal({
   agent,
+  agents,
   votes,
   day,
   dead,
@@ -792,6 +810,7 @@ function ExecutionReveal({
   onContinue,
 }: {
   agent: Agent;
+  agents: Agent[];
   votes: { from: string; to: string }[];
   day: number;
   dead: string[];
@@ -804,7 +823,7 @@ function ExecutionReveal({
   const [stage, setStage] = React.useState(0); // 0 counting · 1 flipped · 2 result · 3 next
 
   const votesReceived = votes.filter((v) => v.to === agent.id).length;
-  const aliveList = AGENTS.filter((a) => !dead.includes(a.id));
+  const aliveList = agents.filter((a) => !dead.includes(a.id));
   const mafiaLeft = aliveList.filter((a) => ROLE_META[a.role].side === "mafia").length;
   const civLeft = aliveList.length - mafiaLeft;
 
@@ -924,8 +943,8 @@ function ExecutionReveal({
           <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">Vote Results</p>
           <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
             {votes.map((v, i) => {
-              const from = AGENTS.find((a) => a.id === v.from)!;
-              const to = AGENTS.find((a) => a.id === v.to)!;
+              const from = agents.find((a) => a.id === v.from)!;
+              const to = agents.find((a) => a.id === v.to)!;
               const hit = v.to === agent.id;
               return (
                 <motion.div key={`${v.from}-${v.to}-${i}`} initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 + i * 0.05 }} className={cn("flex items-center gap-1.5 text-[11px]", hit ? "text-fg" : "text-fg-muted")}>
@@ -951,7 +970,7 @@ function ExecutionReveal({
 
         {/* remaining players */}
         <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5">
-          {AGENTS.map((a) => {
+          {agents.map((a) => {
             const out = dead.includes(a.id);
             return (
               <span
@@ -991,7 +1010,7 @@ function RevealStat({ k, v, tone }: { k: string; v: React.ReactNode; tone?: stri
 }
 
 /* ═════════════════════════════ end-game reveal ═════════════════════════════ */
-function RoleReveal({ onReplay, onClose }: { onReplay: () => void; onClose: () => void }) {
+function RoleReveal({ onReplay, onClose, agents }: { onReplay: () => void; onClose: () => void; agents: Agent[] }) {
   const town = OUTCOME.winningSide === "town";
   return (
     <motion.div className="fixed inset-0 z-50 flex items-center justify-center p-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} role="dialog" aria-modal="true">
@@ -1014,7 +1033,7 @@ function RoleReveal({ onReplay, onClose }: { onReplay: () => void; onClose: () =
         </div>
 
         <motion.div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4" initial="hide" animate="show" variants={{ show: { transition: { staggerChildren: 0.14 } } }}>
-          {AGENTS.map((a) => {
+          {agents.map((a) => {
             const r = ROLE_META[a.role];
             return (
               <motion.div
