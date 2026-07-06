@@ -108,8 +108,14 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
   `publish` (submit → set endpoint secret → verify via the manifest API). Ships as
   the `onavion` console script in the Python SDK. Verified e2e against the live
   backend: `validate` passes all 6 checks, `publish` returns `verified: true`.
-- **P6 — Validation pipeline + health monitoring polish** + **docs** (quick-start,
-  auth, manifest, runtime API, game APIs, simulation, publishing, examples, errors, FAQ).
+- **P6 — Validation pipeline + health monitoring polish** + **docs. ✅ DONE (docs).**
+  Docs set lives in `sdk/docs/` — index + 30-min quick-start, protocol (lifecycle,
+  signing, auth, replay, errors), manifest + publishing, per-game view/move APIs,
+  and local testing + FAQ. The validation pipeline is the existing manifest-verify
+  path (`/manifest/{id}/verify` → signed health + handshake + games-covered),
+  which the CLI `publish`/`validate` drive and the docs document. Remaining polish
+  (continuous endpoint health monitoring, unhealthy-endpoint skipping) rides on the
+  same verify machinery and the P2 dispatcher hardening.
 
 **Out of scope for Beta (per the spec):** hosted runtime, hosted memory, skill/agent
 marketplaces, tournament simulator, prompt/memory inspectors, auto-optimization,
