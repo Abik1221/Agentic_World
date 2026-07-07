@@ -159,8 +159,13 @@ func run() error {
 	if cfg.HCaptchaSecret != "" {
 		captcha = identity.NewHCaptcha(cfg.HCaptchaSecret)
 	}
-	if cfg.IsProd() && cfg.XBearerToken == "" {
-		log.Warn("X_BEARER_TOKEN unset in a prod-like env: onboarding is using the DEV claim verifier — DO NOT run real onboarding like this")
+	// X-claim (tweet) onboarding needs a real X verifier; only DevClaimVerifier
+	// (auto-approve) exists today, so it is DEV-ONLY. In prod we fail closed: the
+	// X-claim register/verify routes return 503 and onboarding goes through
+	// email/password + magic-link. Phase 6 wires the real verifier and flips this on.
+	xClaimEnabled := !cfg.IsProd()
+	if cfg.IsProd() {
+		log.Info("X-claim onboarding disabled in prod (no real verifier yet); using email/password + magic-link")
 	}
 
 	jwt := auth.NewJWT(cfg.JWTSigningKey, cfg.DashboardTokenTTL)
@@ -177,7 +182,7 @@ func run() error {
 	limiter := store.NewRateLimiter(st.Redis)
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
 	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
-	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL, !cfg.IsProd())
+	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled)
 
 	// Agent manifests: the metadata contract a developer submits per agent
 	// version (info, supported games, hosted endpoint, runtime, model, SDK). The

@@ -20,9 +20,10 @@ type Handler struct {
 	registerRL func(http.Handler) http.Handler
 	loginRL    func(http.Handler) http.Handler
 	dev        bool // non-prod: surface the magic-link token in the response (no email wired)
+	xClaim     bool // X-claim (tweet) onboarding available (needs a real verifier)
 }
 
-func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL func(http.Handler) http.Handler, dev bool) *Handler {
+func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL func(http.Handler) http.Handler, dev, xClaim bool) *Handler {
 	noop := func(n http.Handler) http.Handler { return n }
 	if registerRL == nil {
 		registerRL = noop // no-op fallback
@@ -30,7 +31,7 @@ func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL fun
 	if loginRL == nil {
 		loginRL = noop
 	}
-	return &Handler{svc: svc, authn: authn, registerRL: registerRL, loginRL: loginRL, dev: dev}
+	return &Handler{svc: svc, authn: authn, registerRL: registerRL, loginRL: loginRL, dev: dev, xClaim: xClaim}
 }
 
 // Register is an httpx.Mount: it attaches all identity routes with their guards.
@@ -71,7 +72,22 @@ func (h *Handler) Register(r chi.Router) {
 	})
 }
 
+// xClaimGuard fails closed when X-claim onboarding isn't available (prod without
+// a real X verifier). It steers callers to the email/password path instead of
+// silently auto-verifying a fake identity via the dev verifier.
+func (h *Handler) xClaimGuard(w http.ResponseWriter) bool {
+	if h.xClaim {
+		return true
+	}
+	httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "x_onboarding_unavailable",
+		"Onboarding via X is not available here. Create your account with email and password (POST /v1/auth/signup)."))
+	return false
+}
+
 func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
+	if !h.xClaimGuard(w) {
+		return
+	}
 	var in struct {
 		AgentName   string `json:"agent_name"`
 		Description string `json:"description"`
@@ -94,6 +110,9 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {
+	if !h.xClaimGuard(w) {
+		return
+	}
 	token := r.URL.Query().Get("claim_token")
 	if token == "" {
 		httpx.Error(w, errInvalid("claim_token query parameter is required"))
