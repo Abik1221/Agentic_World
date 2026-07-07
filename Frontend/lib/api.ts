@@ -20,7 +20,7 @@ import type {
   LeaderRow,
   LiveMatch,
 } from "./mock";
-import type { Session } from "./session";
+import { SENTINEL_AGENT, SENTINEL_USER, type Session } from "./session";
 
 export const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080"
@@ -58,14 +58,27 @@ export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promi
   const { method = "GET", body, token, signal } = opts;
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`${API_BASE}${path}`, {
+  // HttpOnly path: the secret lives in an unreadable cookie, so the client holds
+  // only a sentinel. Route through the same-origin BFF (/api/be), which reads the
+  // matching cookie and injects the Bearer server-side. The scope hint tells it
+  // which cookie (user → aa_dash, agent → aa_key).
+  const scope = token === SENTINEL_USER ? "user" : token === SENTINEL_AGENT ? "agent" : null;
+  let url = `${API_BASE}${path}`;
+  if (scope) {
+    url = `/api/be${path}`;
+    headers["x-onavion-scope"] = scope;
+  } else if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(url, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
     cache: "no-store",
+    credentials: "same-origin",
   });
 
   const text = await res.text();

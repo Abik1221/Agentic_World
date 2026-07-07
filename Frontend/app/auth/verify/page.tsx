@@ -21,9 +21,10 @@ function VerifyInner() {
     }
     let active = true;
     verifyMagicLink(token)
-      .then((r) => {
+      .then(async (r) => {
         if (!active) return;
-        setSession({ dashboardToken: r.dashboard_token, apiKey: r.api_key, agentId: r.agent_id });
+        await setSession({ dashboardToken: r.dashboard_token, apiKey: r.api_key, agentId: r.agent_id });
+        if (!active) return;
         setState("ok");
         setMessage("Session restored — taking you to your console.");
         setTimeout(() => router.push("/dashboard"), 900);

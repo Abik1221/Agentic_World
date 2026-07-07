@@ -41,7 +41,7 @@ function VerifyPending({ onVerified }: { onVerified: (c: VerifyResult) => void }
     try {
       const res = await verifyClaim(claim);
       if (res?.api_key) {
-        setSession({ apiKey: res.api_key, agentId: res.agent_id, dashboardToken: res.dashboard_token });
+        await setSession({ apiKey: res.api_key, agentId: res.agent_id, dashboardToken: res.dashboard_token });
         onVerified(res);
       } else {
         setError("Claim still pending. Post your tweet, then try again.");

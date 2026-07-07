@@ -9,12 +9,21 @@
 // ---------------------------------------------------------------------------
 
 export const COOKIE = {
-  dash: "aa_dash", // dashboard JWT (user scope)
-  key: "aa_key", // agent API key (agent scope)
-  agent: "aa_agent", // agent public id
-  name: "aa_name", // agent display name
+  dash: "aa_dash", // dashboard JWT (user scope) — HttpOnly (BFF); JS can't read it
+  key: "aa_key", // agent API key (agent scope) — HttpOnly (BFF); JS can't read it
+  agent: "aa_agent", // agent public id (readable)
+  name: "aa_name", // agent display name (readable)
   claim: "aa_claim", // pending claim token during onboarding
+  hasDash: "aa_has_dash", // readable marker: a dashboard session exists
+  hasKey: "aa_has_key", // readable marker: an agent key exists
 } as const;
+
+// Client callers still pass `session.dashboardToken` / `session.apiKey` as the
+// request credential, but the real secrets are HttpOnly and unreadable by JS. So
+// getSession() hands back SENTINELS; apiRequest recognizes them and routes the
+// call through the same-origin BFF (/api/be), which injects the real cookie.
+export const SENTINEL_USER = "cookie:user";
+export const SENTINEL_AGENT = "cookie:agent";
 
 export interface Session {
   dashboardToken?: string;
@@ -35,9 +44,11 @@ export function parseSession(cookieString: string | undefined | null): Session {
     const v = part.slice(i + 1).trim();
     if (k) jar[k] = decodeURIComponent(v);
   }
+  // Prefer a legacy readable token if present (back-compat / older sessions);
+  // otherwise fall back to the sentinel driven by the readable presence marker.
   return {
-    dashboardToken: jar[COOKIE.dash] || undefined,
-    apiKey: jar[COOKIE.key] || undefined,
+    dashboardToken: jar[COOKIE.dash] || (jar[COOKIE.hasDash] ? SENTINEL_USER : undefined),
+    apiKey: jar[COOKIE.key] || (jar[COOKIE.hasKey] ? SENTINEL_AGENT : undefined),
     agentId: jar[COOKIE.agent] || undefined,
     agentName: jar[COOKIE.name] || undefined,
   };
@@ -66,17 +77,50 @@ function deleteCookie(name: string) {
   document.cookie = `${name}=; ${cookieAttrs(0)}`;
 }
 
-/** Persist a session (browser only). Only provided fields are written. */
-export function setSession(s: Session) {
+/** Persist a session (browser only). Secrets (dashboard JWT, agent key) are sent
+ *  to the server and stored HttpOnly via /api/auth/session; non-secret display
+ *  fields are written locally. If the server route is unreachable it falls back
+ *  to local (readable) cookies so login never hard-breaks. Await it before
+ *  navigating so the cookies exist on the next request. */
+export async function setSession(s: Session): Promise<void> {
   if (typeof document === "undefined") return;
-  if (s.dashboardToken) writeCookie(COOKIE.dash, s.dashboardToken);
-  if (s.apiKey) writeCookie(COOKIE.key, s.apiKey);
+  // Sentinels are not real tokens — never persist them (that would happen on a
+  // re-save of an already-cookie-backed session).
+  const dash = s.dashboardToken && s.dashboardToken !== SENTINEL_USER ? s.dashboardToken : undefined;
+  const key = s.apiKey && s.apiKey !== SENTINEL_AGENT ? s.apiKey : undefined;
+
   if (s.agentId) writeCookie(COOKIE.agent, s.agentId);
   if (s.agentName) writeCookie(COOKIE.name, s.agentName);
+
+  if (!dash && !key) return; // nothing secret to store
+
+  try {
+    const res = await fetch("/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dashboard_token: dash,
+        api_key: key,
+        agent_id: s.agentId,
+        agent_name: s.agentName,
+      }),
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error(String(res.status));
+  } catch {
+    // Fallback: keep the flow working even if the BFF route isn't available.
+    if (dash) writeCookie(COOKIE.dash, dash);
+    if (key) writeCookie(COOKIE.key, key);
+  }
 }
 
-export function clearSession() {
+export async function clearSession(): Promise<void> {
   if (typeof document === "undefined") return;
+  try {
+    await fetch("/api/auth/session", { method: "DELETE", credentials: "same-origin" });
+  } catch {
+    /* fall through to clearing readable cookies below */
+  }
   Object.values(COOKIE).forEach(deleteCookie);
 }
 

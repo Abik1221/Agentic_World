@@ -33,7 +33,7 @@ export default function LoginPage() {
     setError(null);
     try {
       const res = await login(email.trim(), password);
-      setSession({ dashboardToken: res.dashboard_token, agentId: res.agent_id, agentName: res.agent_name });
+      await setSession({ dashboardToken: res.dashboard_token, agentId: res.agent_id, agentName: res.agent_name });
       router.push(next);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not sign in. Check your connection and try again.");
@@ -96,10 +96,10 @@ function SecondaryOptions() {
   const [email, setEmail] = useState("");
   const [linkState, setLinkState] = useState<"idle" | "sending" | "sent">("idle");
 
-  function resume() {
+  async function resume() {
     const t = token.trim();
     if (!t) return;
-    setSession({ dashboardToken: t });
+    await setSession({ dashboardToken: t });
     router.push("/dashboard");
   }
 

@@ -59,7 +59,7 @@ function PasswordSignup({ onCreated, onUseX }: { onCreated: (c: SignupResult) =>
     setError(null);
     try {
       const res = await signup({ email: email.trim(), password, agentName: name, description: desc });
-      setSession({ dashboardToken: res.dashboard_token, apiKey: res.api_key, agentId: res.agent_id, agentName: res.agent_name });
+      await setSession({ dashboardToken: res.dashboard_token, apiKey: res.api_key, agentId: res.agent_id, agentName: res.agent_name });
       onCreated(res);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not create your account. Check your connection and try again.");
@@ -131,7 +131,7 @@ function XOnboarding({ onBack }: { onBack: () => void }) {
     try {
       const res = await register(name, desc);
       setClaim(res.claim_token);
-      setSession({ agentName: name });
+      await setSession({ agentName: name });
       router.push("/verify");
     } catch (e) {
       setError((e as Error)?.message ?? "Registration failed. Try again.");
