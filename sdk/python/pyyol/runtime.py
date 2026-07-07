@@ -44,6 +44,16 @@ REGISTER, PING, RESPONSE, ACK = "register", "ping", "response", "ack"
 PROTOCOL_VERSION = "1.0"
 
 
+def _version_tuple(v: str) -> tuple:
+    """Parse a dotted version into a comparable int tuple; unparseable ⇒ (0,)
+    so a garbage `latest_sdk` never triggers a spurious upgrade nudge."""
+    try:
+        core = v.strip().lstrip("v").split("-", 1)[0].split("+", 1)[0]
+        return tuple(int(p) for p in core.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
 class ConnectorError(RuntimeError):
     """Terminal connector failure (e.g. auth rejected) — not retried."""
 
@@ -85,6 +95,7 @@ class RuntimeConnector:
         self._connect = _connect
         self._stop = threading.Event()
         self._turn_no = 0
+        self._nudged = False  # print the "upgrade available" notice at most once
 
     # --- lifecycle emit (file log + live console, never secrets) --------------
 
@@ -92,6 +103,20 @@ class RuntimeConnector:
         # File/debug log (what `pyyol logs` tails) + the live terminal console.
         log.log(level, "%s %s", kind, msg)
         self.console.emit(kind, msg, **fields)
+
+    def _maybe_nudge(self, latest: Any) -> None:
+        # The gateway echoes the newest published version on the registered frame.
+        # Print a one-line upgrade hint at most once (not on every reconnect).
+        if self._nudged or not isinstance(latest, str) or not latest:
+            return
+        if _version_tuple(latest) > _version_tuple(__version__):
+            self._nudged = True
+            self._emit(
+                "upgrade",
+                f"a new pyyol {latest} is available (you have {__version__}) — "
+                "upgrade with `pip install -U pyyol`",
+                level=logging.WARNING,
+            )
 
     def _security_check(self) -> None:
         # The register token authenticates the socket; over plaintext ws:// to a
@@ -166,6 +191,7 @@ class RuntimeConnector:
                     "version": self.version,
                     "games": self.games,
                     "sdk_version": __version__,
+                    "sdk_language": "python",
                 }
             )
             reg = _recv(ws)
@@ -173,6 +199,7 @@ class RuntimeConnector:
                 raise ConnectorError(f"register rejected: {reg.get('error')} ({reg.get('reason')})")
             if reg.get("t") != REGISTERED:
                 raise ConnectorError(f"expected registered, got {reg.get('t')!r}")
+            self._maybe_nudge(reg.get("latest_sdk"))
             self._emit(
                 "connected",
                 "ready — playing as this agent",

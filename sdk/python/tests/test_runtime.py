@@ -264,3 +264,34 @@ def test_handler_error_sends_error_response():
     )
     resp = next(f for f in ws.sent if f["t"] == "response" and f["id"] == "r9")
     assert resp.get("error")  # signals the platform to apply its fallback
+
+
+def test_register_sends_sdk_language_and_newer_latest_triggers_one_nudge():
+    a = _agent()
+    console = RecordingConsole()
+    ws = _run_session(
+        a,
+        [
+            {"t": "hello"},
+            {"t": "registered", "agent_id": "ag", "latest_sdk": "9.9.9"},
+        ],
+        console=console,
+    )
+    assert ws.sent[0]["sdk_language"] == "python"
+    upgrades = [e for e in console.events if e[0] == "upgrade"]
+    assert len(upgrades) == 1
+    assert "9.9.9" in upgrades[0][1]
+
+
+def test_older_or_equal_latest_triggers_no_nudge():
+    a = _agent()
+    console = RecordingConsole()
+    _run_session(
+        a,
+        [
+            {"t": "hello"},
+            {"t": "registered", "agent_id": "ag", "latest_sdk": "0.0.1"},
+        ],
+        console=console,
+    )
+    assert [e for e in console.events if e[0] == "upgrade"] == []

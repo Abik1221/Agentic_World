@@ -54,7 +54,7 @@ func Defaults(cfg *config.Config) *Snapshot {
 		Flags: map[string]FeatureFlag{},
 		// Empty supported-versions => the engine keeps its own built-in manifest
 		// gate until the Documentation Service publishes an authoritative list.
-		SDK:   SDKRequirements{MinSDKVersions: map[string]string{}},
+		SDK:   SDKRequirements{MinSDKVersions: map[string]string{}, LatestSDKVersions: map[string]string{}},
 		Games: nil,
 	}
 }

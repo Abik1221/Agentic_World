@@ -51,6 +51,12 @@ type Options struct {
 	// non-browser client so there is no meaningful origin, but browsers testing the
 	// endpoint would be rejected otherwise).
 	AllowInsecureOrigin bool
+	// SDKVersionInfo, if set, returns the newest published and minimum-supported
+	// SDK version for a client language ("python"/"js"), read live per connect.
+	// The gateway echoes `latest` on the registered frame (upgrade nudge) and, if
+	// `min` is set and the client is older, refuses the connection. Both empty ⇒
+	// no floor and no nudge. Nil ⇒ feature off entirely.
+	SDKVersionInfo func(language string) (latest, min string)
 }
 
 func (o Options) withDefaults() Options {
@@ -197,6 +203,22 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 		return
 	}
 
+	// Upgrade nudge / version floor (additive; only when configured). `latest` is
+	// echoed on the registered frame so the SDK can suggest an upgrade; if `min`
+	// is set and the client is older, the connection is refused with a clear error.
+	var latestSDK, minSDK string
+	if g.opts.SDKVersionInfo != nil {
+		latestSDK, minSDK = g.opts.SDKVersionInfo(reg.SDKLanguage)
+		if minSDK != "" && reg.SDKVersion != "" && versionLess(reg.SDKVersion, minSDK) {
+			_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{
+				T: FrameError, Error: "sdk_too_old",
+				Reason: "pyyol >= " + minSDK + " required — upgrade with `pip install -U pyyol` (or `npm update pyyol`)",
+			})
+			_ = ws.Close(websocket.StatusPolicyViolation, "sdk too old")
+			return
+		}
+	}
+
 	c := &conn{
 		gw:         g,
 		ws:         ws,
@@ -214,8 +236,8 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 	g.register(c)
 	defer g.unregister(c)
 
-	_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{T: FrameRegistered, AgentID: agentID, Version: ProtocolVersion})
-	g.log.Info("agentgw: agent connected", "agent", agentID, "name", reg.AgentName, "games", reg.Games, "sdk", reg.SDKVersion)
+	_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{T: FrameRegistered, AgentID: agentID, Version: ProtocolVersion, LatestSDK: latestSDK, MinSDK: minSDK})
+	g.log.Info("agentgw: agent connected", "agent", agentID, "name", reg.AgentName, "games", reg.Games, "sdk", reg.SDKVersion, "sdk_lang", reg.SDKLanguage)
 
 	// Writer + heartbeat run in the background; the read loop drives the lifetime.
 	var wg sync.WaitGroup

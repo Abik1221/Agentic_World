@@ -139,9 +139,14 @@ type FeatureFlag struct {
 
 // SDKRequirements is the Documentation-Service-driven version compatibility gate.
 type SDKRequirements struct {
-	SupportedManifestVersions []string          `json:"supported_manifest_versions"`
-	MinSDKVersions            map[string]string `json:"min_sdk_versions"`
-	DocsBaseURL               string            `json:"docs_base_url"`
+	SupportedManifestVersions []string `json:"supported_manifest_versions"`
+	// MinSDKVersions is the minimum supported SDK version per language
+	// ("python"/"js"); a connecting agent below it is refused. Empty ⇒ no floor.
+	MinSDKVersions map[string]string `json:"min_sdk_versions"`
+	// LatestSDKVersions is the newest published SDK version per language; the
+	// gateway echoes it so the SDK can print a one-line "upgrade available" notice.
+	LatestSDKVersions map[string]string `json:"latest_sdk_versions"`
+	DocsBaseURL       string            `json:"docs_base_url"`
 }
 
 // Game is a registered game and its live engine version.

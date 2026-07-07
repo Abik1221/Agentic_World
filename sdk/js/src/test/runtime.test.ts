@@ -99,3 +99,35 @@ test("bad token is terminal", async () => {
   });
   await assert.rejects(conn.run(), (e) => e instanceof ConnectorError);
 });
+
+test("register sends sdk_language and a newer latest_sdk triggers one nudge", async () => {
+  const notices: string[] = [];
+  let ws!: FakeWS;
+  const conn = new RuntimeConnector(goofAgent(), {
+    url: "ws://x", agentId: "ag", token: "s", reconnect: false,
+    onNotice: (m) => notices.push(m),
+    WebSocketImpl: class extends FakeWS {
+      constructor(_u: string) {
+        super([{ t: "hello" }, { t: "registered", agent_id: "ag", latest_sdk: "9.9.9" }]);
+        ws = this;
+      }
+    } as any,
+  });
+  await conn.run();
+  assert.equal(ws.sent.find((f) => f.t === "register").sdk_language, "js");
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /9\.9\.9/);
+});
+
+test("an older-or-equal latest_sdk triggers no nudge", async () => {
+  const notices: string[] = [];
+  const conn = new RuntimeConnector(goofAgent(), {
+    url: "ws://x", reconnect: false,
+    onNotice: (m) => notices.push(m),
+    WebSocketImpl: class extends FakeWS {
+      constructor(_u: string) { super([{ t: "hello" }, { t: "registered", latest_sdk: "0.0.1" }]); }
+    } as any,
+  });
+  await conn.run();
+  assert.equal(notices.length, 0);
+});

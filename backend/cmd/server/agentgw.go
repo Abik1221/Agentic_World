@@ -10,6 +10,7 @@ import (
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/platformcfg"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -63,9 +64,18 @@ func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID st
 }
 
 // newAgentGateway builds the WSS agent gateway wired to the agent-key resolver
-// (login credential) and the manifest secret store (publish fallback).
-func newAgentGateway(resolver secretResolver, keys keyResolver, log *slog.Logger) *agentgw.Gateway {
-	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, log: log}, agentgw.Options{}, log)
+// (login credential) and the manifest secret store (publish fallback). When a
+// platform-config provider is supplied, the gateway learns the latest/minimum
+// SDK version per language (live) for the upgrade nudge + too-old refusal.
+func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg.Provider, log *slog.Logger) *agentgw.Gateway {
+	opts := agentgw.Options{}
+	if cfg != nil {
+		opts.SDKVersionInfo = func(language string) (latest, min string) {
+			sdk := cfg.Get().SDK
+			return sdk.LatestSDKVersions[language], sdk.MinSDKVersions[language]
+		}
+	}
+	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, log: log}, opts, log)
 }
 
 // mountAgentStatus serves GET /v1/agent/status?agent_id=… — is my agent connected

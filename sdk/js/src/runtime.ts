@@ -45,6 +45,9 @@ export interface RuntimeOptions {
   maxBackoffMs?: number;
   /** Inject a WebSocket implementation (defaults to globalThis.WebSocket). */
   WebSocketImpl?: WebSocketCtor;
+  /** Called (once per process) with a one-line notice when the gateway reports a
+   *  newer SDK is available. Defaults to console.warn. */
+  onNotice?: (message: string) => void;
 }
 
 /** Terminal connector failure (e.g. auth rejected) — not retried. */
@@ -52,9 +55,44 @@ export class ConnectorError extends Error {}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Parse a dotted version into a comparable number array; unparseable ⇒ [0] so a
+ *  garbage latest_sdk never triggers a spurious nudge. */
+function versionParts(v: string): number[] {
+  const core = v.trim().replace(/^v/, "").split(/[-+]/)[0];
+  const parts = core.split(".").map((p) => Number(p));
+  return parts.some((n) => !Number.isFinite(n)) ? [0] : parts;
+}
+
+/** True if a is strictly older than b (numeric field-by-field). */
+function isOlder(a: string, b: string): boolean {
+  const pa = versionParts(a);
+  const pb = versionParts(b);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
 export class RuntimeConnector {
   private stopped = false;
+  private nudged = false; // print the "upgrade available" notice at most once
   constructor(private agent: Agent, private opts: RuntimeOptions) {}
+
+  /** The gateway echoes the newest published version on the registered frame.
+   *  Print a one-line upgrade hint at most once (not on every reconnect). */
+  private maybeNudge(latest: unknown): void {
+    if (this.nudged || typeof latest !== "string" || !latest) return;
+    if (isOlder(SDK_VERSION, latest)) {
+      this.nudged = true;
+      const notify = this.opts.onNotice ?? ((m: string) => console.warn(m));
+      notify(
+        `a new pyyol ${latest} is available (you have ${SDK_VERSION}) — upgrade with \`npm update pyyol\``,
+      );
+    }
+  }
 
   /** Connect and serve until stopped, reconnecting with exponential backoff. */
   async run(): Promise<void> {
@@ -124,10 +162,11 @@ export class RuntimeConnector {
         send({
           t: REGISTER, agent_id: this.opts.agentId ?? "", token: this.opts.token ?? "",
           agent_name: this.opts.name ?? "pyyol-agent", version: this.opts.version ?? "1.0.0",
-          games: this.opts.games ?? [], sdk_version: SDK_VERSION,
+          games: this.opts.games ?? [], sdk_version: SDK_VERSION, sdk_language: "js",
         });
         break;
       case REGISTERED:
+        this.maybeNudge(frame.latest_sdk);
         onRegistered();
         break;
       case ERROR:

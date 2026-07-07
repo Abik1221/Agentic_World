@@ -37,12 +37,17 @@ type Frame struct {
 	ID string `json:"id,omitempty"`
 
 	// --- register (agent -> gateway, first frame) ---
-	AgentID    string   `json:"agent_id,omitempty"`
-	Token      string   `json:"token,omitempty"`
-	AgentName  string   `json:"agent_name,omitempty"`
-	Version    string   `json:"version,omitempty"`
-	Games      []string `json:"games,omitempty"`
-	SDKVersion string   `json:"sdk_version,omitempty"`
+	AgentID     string   `json:"agent_id,omitempty"`
+	Token       string   `json:"token,omitempty"`
+	AgentName   string   `json:"agent_name,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	Games       []string `json:"games,omitempty"`
+	SDKVersion  string   `json:"sdk_version,omitempty"`
+	SDKLanguage string   `json:"sdk_language,omitempty"` // "python" | "js" — picks the version bucket
+
+	// --- upgrade nudge (gateway -> agent, on registered; additive/optional) ---
+	LatestSDK string `json:"latest_sdk,omitempty"` // newest published version for the client's language
+	MinSDK    string `json:"min_sdk,omitempty"`    // minimum supported floor for the client's language
 
 	// --- lifecycle (gateway -> agent) / response (agent -> gateway) ---
 	MatchID string          `json:"match_id,omitempty"`
