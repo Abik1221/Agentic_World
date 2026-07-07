@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { KeyRound, Lock, ShieldCheck } from "lucide-react";
-import { createApiKey, revokeApiKey, setSigningKey } from "@/lib/api";
+import { createApiKey, revokeApiKey, setSigningKey, fetchApiKeys, type ApiKeyInfo } from "@/lib/api";
 import { getSession } from "@/lib/session";
 import { cn } from "@/lib/cn";
 import { Button, Card, CardHeader, PageHeader } from "@/components/console/primitives";
@@ -18,11 +18,21 @@ export default function KeysPage() {
   const [msg, setMsg] = React.useState<{ t: "ok" | "err"; m: string } | null>(null);
   const [prefix, setPrefix] = React.useState("");
   const [pubkey, setPubkey] = React.useState("");
+  const [keys, setKeys] = React.useState<ApiKeyInfo[] | null>(null);
+
+  const loadKeys = React.useCallback(() => {
+    const s = getSession();
+    if (!s.dashboardToken) return;
+    fetchApiKeys(s)
+      .then(setKeys)
+      .catch(() => setKeys([]));
+  }, []);
 
   React.useEffect(() => {
     const s = getSession();
     if (s.agentId) setAgentId(s.agentId);
-  }, []);
+    loadKeys();
+  }, [loadKeys]);
 
   function guard() {
     const s = getSession();
@@ -45,7 +55,8 @@ export default function KeysPage() {
     try {
       const r = await createApiKey(s, agentId.trim());
       setNewKey(r.api_key);
-      setMsg({ t: "ok", m: "New key minted. Copy it now — it is shown once." });
+      setMsg({ t: "ok", m: "New key minted — the previous key is now revoked. Copy this one; it is shown once." });
+      loadKeys();
     } catch (e) {
       setMsg({ t: "err", m: (e as Error)?.message ?? "Rotate failed." });
     } finally {
@@ -53,22 +64,24 @@ export default function KeysPage() {
     }
   }
 
-  async function revoke() {
+  async function revokeByPrefix(pfx: string) {
     const s = guard();
     if (!s) return;
-    if (!prefix.trim()) return setMsg({ t: "err", m: "Key prefix is required." });
+    if (!pfx) return setMsg({ t: "err", m: "Key prefix is required." });
     setBusy("revoke");
     setMsg(null);
     try {
-      await revokeApiKey(s, prefix.trim());
-      setMsg({ t: "ok", m: `Revoked key ${prefix.trim()}.` });
+      await revokeApiKey(s, pfx);
+      setMsg({ t: "ok", m: `Revoked key ${pfx}.` });
       setPrefix("");
+      loadKeys();
     } catch (e) {
       setMsg({ t: "err", m: (e as Error)?.message ?? "Revoke failed." });
     } finally {
       setBusy(null);
     }
   }
+  const revoke = () => revokeByPrefix(prefix.trim());
 
   async function signing() {
     const s = guard();
@@ -144,9 +157,65 @@ export default function KeysPage() {
         </Card>
       </div>
 
+      {/* Key inventory — audit by last-used, revoke by row. */}
+      <Card className="p-5">
+        <CardHeader title="Your keys" subtitle="One key is active per agent — rotating or `onavion login` revokes the rest" />
+        {keys === null ? (
+          <p className="mt-3 font-mono text-[12px] text-fg-muted">loading…</p>
+        ) : keys.length === 0 ? (
+          <p className="mt-3 text-sm text-fg-muted">No keys yet. Rotate above or run <code className="font-mono text-brand">onavion login</code>.</p>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead>
+                <tr className="border-b border-line font-mono text-[10px] uppercase tracking-widest text-fg-muted">
+                  <th className="py-2 text-left">Key</th>
+                  <th className="py-2 text-left">Agent</th>
+                  <th className="py-2 text-left">Created</th>
+                  <th className="py-2 text-left">Last used</th>
+                  <th className="py-2 text-right">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {keys.map((k) => {
+                  const revoked = Boolean(k.revoked_at);
+                  return (
+                    <tr key={k.prefix} className={cn("border-b border-line/50", revoked && "opacity-50")}>
+                      <td className="py-2.5 font-mono text-[12px] text-fg">{k.prefix}…</td>
+                      <td className="py-2.5 font-mono text-[11px] text-fg-muted">{k.agent}</td>
+                      <td className="py-2.5 font-mono text-[11px] text-fg-muted">{fmtDate(k.created_at)}</td>
+                      <td className="py-2.5 font-mono text-[11px] text-fg-muted">{k.last_used_at ? fmtDate(k.last_used_at) : "never"}</td>
+                      <td className="py-2.5 text-right">
+                        {revoked ? (
+                          <span className="font-mono text-[11px] text-fg-muted">revoked</span>
+                        ) : (
+                          <button
+                            onClick={() => revokeByPrefix(k.prefix)}
+                            disabled={busy !== null}
+                            className="font-mono text-[11px] text-danger hover:underline disabled:opacity-50"
+                          >
+                            Revoke
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
       <div className="flex items-center gap-2 rounded-lg border border-warn/20 bg-warn/5 px-3 py-2 font-mono text-[11px] text-warn">
         <ShieldCheck className="h-3.5 w-3.5" /> Owner scope only — agent keys cannot reach these endpoints
       </div>
     </div>
   );
+}
+
+function fmtDate(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }

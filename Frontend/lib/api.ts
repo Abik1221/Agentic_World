@@ -1102,6 +1102,21 @@ export function fileDispute(
 
 // ---- API key & signing key management (user) --------------------------------
 
+/** One agent key for the management UI (never includes the secret). */
+export interface ApiKeyInfo {
+  prefix: string;
+  agent: string;
+  created_at: string;
+  last_used_at?: string;
+  revoked_at?: string;
+}
+
+/** GET /v1/agent/keys — list the owner's keys for audit/revoke (user). */
+export async function fetchApiKeys(session: Session): Promise<ApiKeyInfo[]> {
+  const r = await apiRequest<{ keys: ApiKeyInfo[] }>("/v1/agent/keys", { token: session.dashboardToken });
+  return r.keys ?? [];
+}
+
 /** POST /v1/agent/keys — rotate/create the agent API key (user). Returns it once. */
 export function createApiKey(session: Session, agentId: string): Promise<{ api_key: string }> {
   return apiRequest("/v1/agent/keys", {

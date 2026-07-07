@@ -60,6 +60,7 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/config", h.updateConfig)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/me", h.me)
+		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agent/keys", h.listKeys)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/keys", h.createKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/agent/keys/{prefix}", h.revokeKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/signing-key", h.setSigningKey)
@@ -201,9 +202,22 @@ func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"user_id": p.UserPublicID,
+		"user_id":  p.UserPublicID,
 		"agent_id": p.AgentPublicID, // empty when using dashboard token only
 	})
+}
+
+func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	keys, err := h.svc.ListKeys(r.Context(), p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if keys == nil {
+		keys = []KeyInfo{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"keys": keys})
 }
 
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {

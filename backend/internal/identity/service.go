@@ -243,6 +243,11 @@ func (s *Service) RevokeKey(ctx context.Context, ownerPublicID, prefix string) e
 	return s.repo.RevokeKey(ctx, ownerPublicID, prefix)
 }
 
+// ListKeys returns the owner's agent keys for auditing (prefix + timestamps).
+func (s *Service) ListKeys(ctx context.Context, ownerPublicID string) ([]KeyInfo, error) {
+	return s.repo.ListKeys(ctx, ownerPublicID)
+}
+
 // UpdateConfig writes an agent's spending limits. Only the owner (user scope)
 // reaches this; the route guard enforces that, this enforces ownership + validity.
 func (s *Service) UpdateConfig(ctx context.Context, ownerPublicID, agentPublicID string, l Limits) error {

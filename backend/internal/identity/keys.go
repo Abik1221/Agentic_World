@@ -13,6 +13,7 @@ import (
 // API key shape: "sk_arena_<lookup>_<secret>".
 //   - lookup: a public, unique segment used to find the key row (stored plaintext)
 //   - secret: the part that is bcrypt-hashed (with a server pepper) and never stored
+//
 // Lookup keeps authentication O(1) (index on prefix) without scanning hashes.
 var keyEnc = base32.StdEncoding.WithPadding(base32.NoPadding)
 

@@ -38,6 +38,10 @@ type Repo interface {
 	// RevokeKey revokes a key by its prefix if it belongs to an agent the user owns.
 	RevokeKey(ctx context.Context, ownerPublicID, prefix string) error
 
+	// ListKeys returns the owner's agent keys (newest first) for the key-management
+	// UI, so keys can be audited by last-used and revoked by prefix.
+	ListKeys(ctx context.Context, ownerPublicID string) ([]KeyInfo, error)
+
 	// UpdateLimits writes the agent's limits iff ownerPublicID owns the agent.
 	UpdateLimits(ctx context.Context, agentPublicID, ownerPublicID string, l Limits) error
 

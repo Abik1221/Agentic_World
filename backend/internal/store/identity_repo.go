@@ -169,6 +169,29 @@ func (r *IdentityRepo) InsertKey(ctx context.Context, agentPublicID, ownerPublic
 	return nil
 }
 
+func (r *IdentityRepo) ListKeys(ctx context.Context, ownerPublicID string) ([]identity.KeyInfo, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT k.key_prefix, a.public_id, k.created_at, k.last_used_at, k.revoked_at
+		 FROM agent_keys k
+		 JOIN agents a ON a.id = k.agent_id
+		 JOIN users  u ON u.id = a.owner_user_id
+		 WHERE u.public_id = $1
+		 ORDER BY k.created_at DESC`, ownerPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []identity.KeyInfo
+	for rows.Next() {
+		var k identity.KeyInfo
+		if err := rows.Scan(&k.Prefix, &k.AgentPublicID, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
 func (r *IdentityRepo) InsertKeyRotating(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
