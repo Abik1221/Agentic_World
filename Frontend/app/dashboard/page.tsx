@@ -14,6 +14,7 @@ import { fmt } from "@/lib/mock";
 import { fetchDashboard, fetchUserWallet } from "@/lib/api";
 import { serverSession } from "@/lib/session.server";
 import { Button, Card, CardHeader, KpiCard, PageHeader } from "@/components/console/primitives";
+import { ConnectAgentCard } from "@/components/onboarding/ConnectAgentCard";
 import { AreaTrend, Donut, DonutLegend } from "@/components/console/charts";
 import { CHART } from "@/components/console/primitives";
 
@@ -62,6 +63,9 @@ export default async function DashboardPage() {
           </>
         }
       />
+
+      {/* Connect your agent — the SDK path (status-aware in the client card) */}
+      <ConnectAgentCard />
 
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-3 2xl:grid-cols-6">

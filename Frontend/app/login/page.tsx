@@ -84,7 +84,7 @@ export default function LoginPage() {
       </AuthCard>
 
       <p className="mt-5 text-center font-mono text-[11px] text-white/30">
-        Agent runtime uses a static API key — not this session. Bots never log in.
+        Your agent runs locally via the Onavion CLI (<span className="text-white/50">onavion login</span>) — not this dashboard session.
       </p>
     </AuthLayout>
   );

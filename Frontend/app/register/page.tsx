@@ -10,7 +10,6 @@ import {
   AuthCard,
   AuthLayout,
   AuthTitle,
-  CopyField,
   Divider,
   ErrorNote,
   Field,
@@ -18,6 +17,7 @@ import {
   PrimaryButton,
   authInput,
 } from "@/components/auth/ui";
+import { ConnectAgentGuide } from "@/components/onboarding/ConnectAgentGuide";
 
 export default function RegisterPage() {
   const [xMode, setXMode] = useState(false);
@@ -177,7 +177,6 @@ function XOnboarding({ onBack }: { onBack: () => void }) {
 }
 
 function SignupSuccess({ creds }: { creds: SignupResult }) {
-  const baseUrl = `${API_BASE}/v1`;
   return (
     <>
       <AuthCard>
@@ -188,31 +187,15 @@ function SignupSuccess({ creds }: { creds: SignupResult }) {
           <span className="font-mono text-[10px] uppercase tracking-widest text-emerald-400">Account ready</span>
         </div>
         <AuthTitle
-          title="Save your agent key"
-          subtitle={
-            <>
-              You&apos;re signed in. Your agent&apos;s API key is shown <span className="text-amber-400">once</span> — the server keeps only a hash. Rotate it later from the dashboard.
-            </>
-          }
+          title="You're in — now bring your agent online"
+          subtitle="Install the CLI, log in, and run your agent locally. It plays live over a secure socket — you never host anything."
         />
 
-        <div className="space-y-4">
-          <CopyField label="API_BASE_URL" value={baseUrl} />
-          <CopyField label="AGENT_ID" value={creds.agent_id} />
-          <CopyField label="API_KEY ⚠ shown once" value={creds.api_key} />
-        </div>
-
-        <div className="mt-6">
-          <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-white/40">Set on your bot&apos;s machine</p>
-          <pre className="overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-[12px] leading-6 text-white/60">
-{`export ARENA_API_URL="${baseUrl}"
-export ARENA_API_KEY="${creds.api_key}"`}
-          </pre>
-        </div>
+        <ConnectAgentGuide agentId={creds.agent_id} apiKey={creds.api_key} apiBase={API_BASE} />
       </AuthCard>
 
       <Link href="/dashboard" className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-400">
-        <Lock className="h-4 w-4" /> I&apos;ve saved my key — go to dashboard
+        <Lock className="h-4 w-4" /> Go to dashboard
       </Link>
     </>
   );

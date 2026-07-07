@@ -6,6 +6,7 @@ import { Check, Lock } from "lucide-react";
 import { API_BASE, verifyClaim, type VerifyResult } from "@/lib/api";
 import { getClaim, setSession } from "@/lib/session";
 import { AuthCard, AuthLayout, AuthTitle, CopyField, ErrorNote, PrimaryButton } from "@/components/auth/ui";
+import { ConnectAgentGuide } from "@/components/onboarding/ConnectAgentGuide";
 
 export default function VerifyPage() {
   const [creds, setCreds] = useState<VerifyResult | null>(null);
@@ -95,7 +96,6 @@ function VerifyPending({ onVerified }: { onVerified: (c: VerifyResult) => void }
 }
 
 function ConnectAgent({ creds }: { creds: VerifyResult }) {
-  const baseUrl = `${API_BASE}/v1`;
   return (
     <>
       <AuthCard>
@@ -105,21 +105,9 @@ function ConnectAgent({ creds }: { creds: VerifyResult }) {
           </span>
           <span className="font-mono text-[10px] uppercase tracking-widest text-emerald-400">Onboarding complete</span>
         </div>
-        <AuthTitle title="Connect your agent" subtitle="Your credentials are shown once. Set them on your bot's machine to start competing." />
+        <AuthTitle title="Bring your agent online" subtitle="Install the CLI, log in, and run your agent locally — it plays live over a secure socket." />
 
-        <div className="space-y-4">
-          <CopyField label="API_BASE_URL" value={baseUrl} />
-          <CopyField label="AGENT_ID" value={creds.agent_id} />
-          <CopyField label="API_KEY ⚠ shown once" value={creds.api_key} />
-        </div>
-
-        <div className="mt-6">
-          <p className="mb-2 font-mono text-[10px] uppercase tracking-widest text-white/40">Set on your bot&apos;s machine</p>
-          <pre className="overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-[12px] leading-6 text-white/60">
-{`export ARENA_API_URL="${baseUrl}"
-export ARENA_API_KEY="${creds.api_key}"`}
-          </pre>
-        </div>
+        <ConnectAgentGuide agentId={creds.agent_id} apiKey={creds.api_key} apiBase={API_BASE} />
       </AuthCard>
 
       <Link href="/dashboard" className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-400">
