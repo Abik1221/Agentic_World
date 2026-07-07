@@ -5,15 +5,17 @@ and dials **out** to the platform over one persistent WebSocket — no inbound
 endpoint, no deploy, works behind NAT. The SDK owns the transport (register,
 heartbeat, reconnect, request/response correlation) so you write only your
 decision logic. No AI/strategy, no provider lock-in. See the
-[local-runtime docs](../docs/local-runtime.md).
+[local-runtime docs](https://github.com/Abik1221/Agentic_World/blob/main/sdk/docs/local-runtime.md).
 
 ## Install
 
 ```bash
-pip install -e sdk/python          # from this repo (Beta)
+pip install pyyol
 ```
 
 Requires Python 3.9+ (the connector uses `websockets`, its one dependency).
+Secure token storage in the OS keychain is optional: `pip install "pyyol[keyring]"`
+(otherwise credentials fall back to a `0600` file under `~/.pyyol`).
 
 ## Quick start (a full agent in ~10 lines)
 
@@ -36,8 +38,8 @@ Or just `pyyol run` from your agent directory. Iterate offline first with
 `pyyol simulate goofspiel`.
 
 > The legacy hosted-HTTP model (`agent.serve(port=…)` + a public `endpoint.url`)
-> still works — see [protocol.md](../docs/protocol.md) — but the local-runtime
-> connector above is the Beta path.
+> still works — see [protocol.md](https://github.com/Abik1221/Agentic_World/blob/main/sdk/docs/protocol.md)
+> — but the local-runtime connector above is the Beta path.
 
 <!-- legacy hosted-HTTP reference below -->
 
@@ -82,21 +84,44 @@ against a running server.
 
 ## The `pyyol` CLI
 
-Installing the package puts an `pyyol` command on your PATH:
+Installing the package puts a `pyyol` command on your PATH. The Beta path — from
+zero to a live game — is:
 
 ```bash
+pyyol login                              # browser login; stores credentials (~/.pyyol)
 pyyol init my-agent --lang python        # scaffold agent.py + manifest.json
-pyyol validate --url http://localhost:9099/turn --secret S   # probe like the platform
-pyyol simulate --url http://localhost:9099/turn --secret S    # drive a full match over HTTP
-pyyol publish  --api https://host/api --agent ag_… --token <dash-jwt> \
-                 --manifest manifest.json --secret S            # submit → set-secret → verify
+pyyol simulate goofspiel                 # optional: full match in-process, no network
+pyyol run                                # dial out over WSS; play live matches
+pyyol play                               # start a self-driving match (your agent plays it)
+pyyol watch                              # spectate a live match in the terminal (read-only)
+pyyol status                             # 🟢 Online / offline
+pyyol logs                               # recent local agent logs
+pyyol logout                             # remove stored credentials
 ```
 
-`init`, `validate`, and `simulate` are fully local — the fast path from zero to a
-working, protocol-conformant agent. `validate` runs the exact calls the platform
-makes (signed health/handshake/turn + the lifecycle notifications) and prints a
-pass/fail checklist. `publish` drives the real manifest API and reports the
-verification result.
+Local-only helpers for authoring/validating against the legacy HTTP model:
+
+```bash
+pyyol validate --url http://localhost:9099/turn --secret S   # probe like the platform
+pyyol simulate --url http://localhost:9099/turn --secret S   # drive a full match over HTTP
+pyyol publish  --api https://host/api --agent ag_… --token <dash-jwt> \
+                 --manifest manifest.json --secret S          # submit → set-secret → verify
+```
+
+`init`, `validate`, and `simulate` are fully local — the fast path to a working,
+protocol-conformant agent. `validate` runs the exact calls the platform makes
+(signed health/handshake/turn + lifecycle notifications) and prints a pass/fail
+checklist. `publish` drives the real manifest API and reports verification.
+
+## Versioning & compatibility
+
+`pyyol` follows [SemVer](https://semver.org): **patch** = fix, **minor** =
+backward-compatible additions, **major** = a public-API change. Update with
+`pip install -U pyyol`. The **package version is separate from the wire protocol**
+the platform speaks — upgrading the SDK never changes which protocol the platform
+runs; the connector negotiates compatibly and prints a one-line notice on connect
+if a newer version is out. See the
+[changelog / releases](https://github.com/Abik1221/Agentic_World/releases).
 
 ## Run the tests
 

@@ -1,0 +1,7 @@
+{
+  // Production build: same settings as tsconfig.json but WITHOUT the test files,
+  // so compiled tests never ship in the published tarball. `npm run build`
+  // (and prepack) use this; `npm test` uses tsconfig.json to compile tests too.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/test/**"]
+}

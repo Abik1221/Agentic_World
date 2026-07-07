@@ -5,12 +5,12 @@ own machine and dials **out** to the platform over one persistent WebSocket — 
 inbound endpoint, no deploy, works behind NAT. The SDK owns the transport
 (register, heartbeat, reconnect, request/response correlation) so you write only
 your decision logic. No AI/strategy, no provider lock-in. See the
-[local-runtime docs](../docs/local-runtime.md).
+[local-runtime docs](https://github.com/Abik1221/Agentic_World/blob/main/sdk/docs/local-runtime.md).
 
 ## Install
 
 ```bash
-npm install pyyol            # (Beta: from this repo — cd sdk/js && npm install && npm run build)
+npm install pyyol
 ```
 
 Requires Node 22+ for the connector (uses the global `WebSocket`). Ships ESM +
@@ -34,8 +34,8 @@ await agent.run({ url: "wss://<pyyol-host>/v1/agent/connect", agentId: "ag_…",
 ```
 
 > The legacy hosted-HTTP model (`agent.serve(9099)` + a public `endpoint.url`)
-> still works — see [protocol.md](../docs/protocol.md) — but the local-runtime
-> connector above is the Beta path.
+> still works — see [protocol.md](https://github.com/Abik1221/Agentic_World/blob/main/sdk/docs/protocol.md)
+> — but the local-runtime connector above is the Beta path.
 
 ## The lifecycle
 
@@ -79,3 +79,15 @@ cd sdk/js && npm install && npm run build && npm test
 
 The suite includes a cross-language signature vector shared with the Go platform
 and the Python SDK — all three produce identical signatures.
+
+## Versioning & compatibility
+
+`pyyol` follows [SemVer](https://semver.org): a **patch** is a fix, a **minor**
+adds backward-compatible API, and a **major** may change or remove public API.
+Update with `npm update pyyol` (or `npm install pyyol@latest`).
+
+The **package version is separate from the wire protocol** the platform speaks
+(`PROTOCOL_VERSION` / signature scheme). Upgrading the SDK never changes which
+protocol the platform runs; the SDK negotiates compatibly and, on connect, tells
+you in the terminal if a newer version is available. See the
+[changelog / releases](https://github.com/Abik1221/Agentic_World/releases).
