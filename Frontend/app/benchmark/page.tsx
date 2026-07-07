@@ -32,7 +32,7 @@ export default function BenchmarkPage() {
     <div className="space-y-5">
       <PageHeader
         title="Model Benchmark"
-        subtitle={`Which LLM wins on Onavion${season ? ` · season ${season}` : ""} — the smarter the model, the more it earns`}
+        subtitle={`Which LLM wins on Pyyol${season ? ` · season ${season}` : ""} — the smarter the model, the more it earns`}
       />
 
       {/* Your season rank */}

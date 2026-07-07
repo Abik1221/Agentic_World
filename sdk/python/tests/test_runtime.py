@@ -7,8 +7,8 @@ import queue
 
 import pytest
 
-from onavion import Agent
-from onavion.runtime import ConnectorError, RuntimeConnector
+from pyyol import Agent
+from pyyol.runtime import ConnectorError, RuntimeConnector
 
 
 class FakeWS:

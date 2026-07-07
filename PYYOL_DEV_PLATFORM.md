@@ -1,4 +1,4 @@
-# Onavion Beta Developer Platform — Architecture Ruling & Build Plan
+# Pyyol Beta Developer Platform — Architecture Ruling & Build Plan
 
 _Design doc for the Beta Developer Platform (SDK + CLI + push protocol + docs)._
 _Scope lock: **official SDKs for JS/TS + Python only**; the wire protocol stays
@@ -66,7 +66,7 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
 - Replay (append-only `match_events` + `/v1/{game}/{id}/replay`), spectator SSE.
 - Internal event bus / transactional outbox (the foundation for webhook dispatch).
 
-**Missing vs the Onavion Beta spec:**
+**Missing vs the Pyyol Beta spec:**
 1. **Full push lifecycle** — we have a single `/play`; the spec wants
    `/initialize` + `/turn` + `/event` + `/game-end`.
 2. ~~**Async webhook dispatcher** for `/event` + `/game-end` off the outbox~~ ✅
@@ -77,7 +77,7 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
    bearer token + Ed25519 *move* signing, not the spec's per-request HMAC).
 4. **Official SDKs (JS/TS + Python only)** — auth/HMAC, typed models, event parsing,
    response serialization, local simulation harness, config helpers. (No AI logic.)
-5. **`onavion` CLI** — `init`, `login`, `run`, `simulate {mafia|monopoly|goofspiel}`,
+5. **`pyyol` CLI** — `init`, `login`, `run`, `simulate {mafia|monopoly|goofspiel}`,
    `validate`, `publish`.
 6. **Docs set** — quick start → publish, targeting <30 min to first live game.
 
@@ -111,12 +111,12 @@ outbox) and to all internal fan-out. No WebSockets at the agent boundary.
   platform's `SignRequest`** (shared cross-language test vector), a full simulated
   match drives the whole lifecycle, and tampered/replayed requests are rejected.
   Living under `sdk/{python,js}`.
-- **P5 — `onavion` CLI + local simulator. ✅ DONE.** `init` (scaffold py/js agent +
+- **P5 — `pyyol` CLI + local simulator. ✅ DONE.** `init` (scaffold py/js agent +
   schema-valid manifest), `validate` (probe a running endpoint with the exact
   signed calls the platform makes — health/handshake/turn + lifecycle — as a
   pass/fail checklist), `simulate` (drive a full Goofspiel match over HTTP), and
   `publish` (submit → set endpoint secret → verify via the manifest API). Ships as
-  the `onavion` console script in the Python SDK. Verified e2e against the live
+  the `pyyol` console script in the Python SDK. Verified e2e against the live
   backend: `validate` passes all 6 checks, `publish` returns `verified: true`.
 - **P6 — Validation pipeline + health monitoring polish** + **docs. ✅ DONE (docs).**
   Docs set lives in `sdk/docs/` — index + 30-min quick-start, protocol (lifecycle,

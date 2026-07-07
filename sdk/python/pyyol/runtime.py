@@ -1,4 +1,4 @@
-"""The Onavion Runtime Connector — the local-runtime transport.
+"""The Pyyol Runtime Connector — the local-runtime transport.
 
 Your agent runs on your own machine and dials OUT over a single persistent
 WebSocket to the platform. The platform pushes match lifecycle down that socket
@@ -10,14 +10,14 @@ reconnection with exponential backoff, request/response correlation, and
 dispatching frames to the handlers you registered on your ``Agent``. It contains
 no game logic — your ``@agent.on_turn`` handler returns the move.
 
-    from onavion import Agent
+    from pyyol import Agent
     agent = Agent(supported_games=["goofspiel"], name="OlympAI")
 
     @agent.on_turn("goofspiel")
     def decide(v):
         return {"round": v.round, "card": max(v.legal_actions)}
 
-    agent.run(url="wss://onavion.example/v1/agent/connect", agent_id="ag_…", token="…")
+    agent.run(url="wss://pyyol.example/v1/agent/connect", agent_id="ag_…", token="…")
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .console import Console
 
-log = logging.getLogger("onavion")
+log = logging.getLogger("pyyol")
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
@@ -62,7 +62,7 @@ class RuntimeConnector:
         url: str,
         agent_id: str = "",
         token: str = "",
-        name: str = "onavion-agent",
+        name: str = "pyyol-agent",
         games: Optional[List[str]] = None,
         version: str = "1.0.0",
         heartbeat_interval: float = 10.0,
@@ -89,7 +89,7 @@ class RuntimeConnector:
     # --- lifecycle emit (file log + live console, never secrets) --------------
 
     def _emit(self, kind: str, msg: str, level: int = logging.INFO, **fields: Any) -> None:
-        # File/debug log (what `onavion logs` tails) + the live terminal console.
+        # File/debug log (what `pyyol logs` tails) + the live terminal console.
         log.log(level, "%s %s", kind, msg)
         self.console.emit(kind, msg, **fields)
 
@@ -167,7 +167,7 @@ class RuntimeConnector:
             # 2. heartbeat thread — keeps liveness green even during a slow turn.
             hb_stop = threading.Event()
             hb = threading.Thread(
-                target=self._heartbeat, args=(send, hb_stop), daemon=True, name="onavion-heartbeat")
+                target=self._heartbeat, args=(send, hb_stop), daemon=True, name="pyyol-heartbeat")
             hb.start()
 
             # 3. read/dispatch loop (runs on this thread until the socket closes).

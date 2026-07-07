@@ -1,4 +1,4 @@
-"""Typed models for the Onavion push protocol.
+"""Typed models for the Pyyol push protocol.
 
 The lifecycle envelopes (initialize / event / game-end) are fully typed. Game
 turn views are typed for their common fields; complex nested state (e.g. the

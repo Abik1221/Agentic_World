@@ -1,11 +1,11 @@
-"""Tests for `onavion watch` / `play` helpers — spectating is strictly read-only,
+"""Tests for `pyyol watch` / `play` helpers — spectating is strictly read-only,
 so these assert the SSE stream renders and that we resolve endpoints correctly.
 There is intentionally no move-input path to test: the human never plays."""
 
 import argparse
 
-from onavion import cli
-from onavion.credentials import Credentials
+from pyyol import cli
+from pyyol.credentials import Credentials
 
 
 class RecordingConsole:

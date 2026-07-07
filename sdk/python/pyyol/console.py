@@ -1,4 +1,4 @@
-"""Live terminal rendering for ``onavion run``.
+"""Live terminal rendering for ``pyyol run``.
 
 The connector emits one lifecycle event per milestone (connected, match found,
 turn, decision, event, game finished, reconnecting, …). A Console turns those into
@@ -65,7 +65,7 @@ class PrettyConsole(Console):
         return f"\033[{code}m{text}\033[0m"
 
     def banner(self, name: str, url: str) -> None:
-        line = f"onavion · {name}"
+        line = f"pyyol · {name}"
         self.stream.write(self._c(line, "1") + f"   {self._c(url, '90')}\n")
         self.stream.write(self._c("─" * 74, "90") + "\n")
         self.stream.flush()

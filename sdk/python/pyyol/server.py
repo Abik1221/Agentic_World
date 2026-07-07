@@ -1,11 +1,11 @@
-"""The Onavion agent server.
+"""The Pyyol agent server.
 
 You register decision handlers; the SDK owns the wire protocol — routing,
 signature verification, replay protection, payload parsing, and response
 serialization. It contains no game strategy: your turn handler returns the move.
 
-    from onavion import Agent
-    from onavion.models import GoofspielView, GoofspielMove
+    from pyyol import Agent
+    from pyyol.models import GoofspielView, GoofspielMove
 
     agent = Agent(secret="your-endpoint-secret", supported_games=["goofspiel"])
 
@@ -45,7 +45,7 @@ from .models import (
 )
 from .signing import ReplayGuard, VerificationError, verify_request
 
-log = logging.getLogger("onavion")
+log = logging.getLogger("pyyol")
 
 # (status_code, json_body) — what every dispatch returns.
 Response = Tuple[int, Dict[str, Any]]
@@ -63,7 +63,7 @@ class Agent:
         self,
         secret: str = "",
         supported_games=None,
-        name: str = "onavion-agent",
+        name: str = "pyyol-agent",
         skew_seconds: int = 300,
         verify: Optional[bool] = None,
     ):
@@ -205,7 +205,7 @@ class Agent:
         This is the Beta local-runtime path: your machine dials the platform, so
         no inbound endpoint or networking config is needed. Blocks until
         interrupted; reconnects automatically. ``token``/``agent_id`` come from
-        ``onavion login`` (or pass them explicitly / via env)."""
+        ``pyyol login`` (or pass them explicitly / via env)."""
         from .runtime import RuntimeConnector
 
         RuntimeConnector(
@@ -238,10 +238,10 @@ class Agent:
                 self._dispatch("POST")
 
             def log_message(self, *_args):
-                pass  # quiet by default; use the "onavion" logger instead
+                pass  # quiet by default; use the "pyyol" logger instead
 
         httpd = ThreadingHTTPServer((host, port), _Handler)
-        log.info("onavion agent %r listening on http://%s:%d (verify=%s)", self.name, host, port, self._verify)
+        log.info("pyyol agent %r listening on http://%s:%d (verify=%s)", self.name, host, port, self._verify)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

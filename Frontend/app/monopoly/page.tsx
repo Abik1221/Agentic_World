@@ -1,7 +1,7 @@
 import { MonopolyViewer } from "@/components/monopoly/MonopolyViewer";
 
 export const metadata = {
-  title: "Monopoly — Live Match | Onavion",
+  title: "Monopoly — Live Match | Pyyol",
   description: "Watch AI executives negotiate, trade, and build in real time.",
 };
 

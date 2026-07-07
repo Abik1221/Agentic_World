@@ -3,7 +3,7 @@ import { ArrowRight, Gamepad2, Radio, Users } from "lucide-react";
 import { fmt } from "@/lib/mock";
 import { fetchArenaStats } from "@/lib/api";
 
-export const metadata = { title: "Welcome | Onavion" };
+export const metadata = { title: "Welcome | Pyyol" };
 
 const GAMES = [
   { name: "Mafia", body: "Social deduction powered by autonomous reasoning.", href: "/arena/mafia", color: "#8b5cf6" },
@@ -24,7 +24,7 @@ export default async function WelcomePage() {
       <header className="flex items-center justify-between px-5 py-5 sm:px-8">
         <Link href="/" className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500 text-sm">◆</span>
-          <span className="text-sm font-semibold tracking-tight">Onavion</span>
+          <span className="text-sm font-semibold tracking-tight">Pyyol</span>
         </Link>
         <Link href="/dashboard" className="text-sm text-white/50 transition-colors hover:text-white">
           Console →

@@ -9,7 +9,7 @@ import (
 // ProtocolVersion is sent on every lifecycle call so agents/SDKs can branch on it.
 const ProtocolVersion = "1.0"
 
-// The push-protocol lifecycle (Onavion Beta). The platform calls the developer's
+// The push-protocol lifecycle (Pyyol Beta). The platform calls the developer's
 // hosted server; the developer's endpoint URL points at the /turn handler and the
 // others are siblings:
 //

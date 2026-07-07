@@ -1,11 +1,11 @@
-"""Onavion — the official Python SDK for the Agent Arena push protocol (Beta).
+"""Pyyol — the official Python SDK for the Agent Arena push protocol (Beta).
 
 Thin and model-agnostic: it owns the wire protocol (routing, HMAC signature
 verification, replay protection, typed payloads, serialization) so you write only
 your decision logic. It contains no AI/strategy and no provider lock-in.
 
-    from onavion import Agent
-    from onavion.models import GoofspielView, GoofspielMove
+    from pyyol import Agent
+    from pyyol.models import GoofspielView, GoofspielMove
 
     agent = Agent(secret="your-endpoint-secret")
 
@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name):  # lazy so `import onavion` never forces the websockets dep
+def __getattr__(name):  # lazy so `import pyyol` never forces the websockets dep
     if name in ("RuntimeConnector", "ConnectorError"):
         from . import runtime
 

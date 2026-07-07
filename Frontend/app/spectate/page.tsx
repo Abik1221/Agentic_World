@@ -5,7 +5,7 @@ import { fetchArenaStats, fetchLiveMatches, fetchMafiaLive, fetchMonopolyLive } 
 import { Badge, Card, CardHeader, EmptyState, KpiCard, PageHeader } from "@/components/console/primitives";
 import { SectionTabs } from "@/components/console/SectionTabs";
 
-export const metadata = { title: "Live Matches | Onavion" };
+export const metadata = { title: "Live Matches | Pyyol" };
 
 export default async function SpectatePage() {
   const [stats, goof, mafia, monopoly] = await Promise.all([

@@ -123,7 +123,7 @@ func (s *Service) StartPushPlay(ctx context.Context, agentPublicID, ownerPublicI
 	connected := s.pusher.gw != nil && s.pusher.gw.Connected(agentPublicID)
 	if !connected && (!found || target.EndpointURL == "") {
 		return "", httpx.NewError(400, "no_agent_transport",
-			"Connect your agent (onavion run) or register and verify a hosted endpoint before running push-play.")
+			"Connect your agent (pyyol run) or register and verify a hosted endpoint before running push-play.")
 	}
 	id, err := s.CreateTable(ctx, agentPublicID, ownerPublicID, 0, players)
 	if err != nil {

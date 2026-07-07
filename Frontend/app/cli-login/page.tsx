@@ -8,7 +8,7 @@ import { getSession } from "@/lib/session";
 import { createApiKey, API_BASE } from "@/lib/api";
 import { AuthCard, AuthLayout, AuthTitle, ErrorNote, GhostButton, PrimaryButton } from "@/components/auth/ui";
 
-// The device-authorization page the `onavion login` CLI opens in the browser.
+// The device-authorization page the `pyyol login` CLI opens in the browser.
 // The CLI starts a loopback server and opens
 //   /cli-login?callback=http://127.0.0.1:<port>/callback&state=<nonce>
 // We authenticate the developer (dashboard session), mint an agent API key, and
@@ -66,7 +66,7 @@ function CliLogin() {
   useEffect(() => {
     if (badCallback) {
       setError(
-        "This page is opened by the Onavion CLI. Run `onavion login` in your terminal to start.",
+        "This page is opened by the Pyyol CLI. Run `pyyol login` in your terminal to start.",
       );
       setPhase("error");
       return;
@@ -126,7 +126,7 @@ function CliLogin() {
           </div>
           {error && <ErrorNote>{error}</ErrorNote>}
           <div className="mt-5 rounded-xl border border-white/8 bg-black/30 p-4 font-mono text-[12px] text-white/60">
-            <span className="text-white/35">$</span> onavion login
+            <span className="text-white/35">$</span> pyyol login
           </div>
           <Link
             href="/dashboard"
@@ -146,7 +146,7 @@ function CliLogin() {
           <IconBadge tone="ok" className="mx-auto"><ShieldCheck className="h-6 w-6" /></IconBadge>
           <h1 className="mt-5 text-2xl font-semibold tracking-tight">Device authorized</h1>
           <p className="mx-auto mt-2 max-w-xs text-sm text-white/55">
-            Return to your terminal — your agent is connecting to Onavion now.
+            Return to your terminal — your agent is connecting to Pyyol now.
           </p>
           <div className="mt-5 flex items-center justify-center gap-2 font-mono text-[11px] text-white/35">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> handing off to the CLI…
@@ -165,12 +165,12 @@ function CliLogin() {
           <IconBadge><Terminal className="h-5 w-5" /></IconBadge>
           <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-white/40">Device authorization</p>
-            <h1 className="text-xl font-semibold tracking-tight">Connect the Onavion CLI</h1>
+            <h1 className="text-xl font-semibold tracking-tight">Connect the Pyyol CLI</h1>
           </div>
         </div>
 
         <p className="text-sm text-white/55">
-          The <span className="text-white/80">Onavion CLI</span> on this machine wants to run your agent locally
+          The <span className="text-white/80">Pyyol CLI</span> on this machine wants to run your agent locally
           and play live matches on your behalf.
         </p>
 
@@ -189,7 +189,7 @@ function CliLogin() {
         {/* What it can do */}
         <ul className="mt-4 space-y-2.5">
           <Scope icon={<Laptop className="h-4 w-4" />} title="Runs on this machine">
-            Your code and model stay local — Onavion never executes them.
+            Your code and model stay local — Pyyol never executes them.
           </Scope>
           <Scope icon={<ShieldCheck className="h-4 w-4" />} title="Plays matches as this agent">
             Connect over a secure WebSocket and submit moves. Revoke anytime by rotating your key.

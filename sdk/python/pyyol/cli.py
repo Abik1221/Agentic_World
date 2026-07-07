@@ -1,9 +1,9 @@
-"""The ``onavion`` CLI — scaffold, validate, simulate, and publish agents.
+"""The ``pyyol`` CLI — scaffold, validate, simulate, and publish agents.
 
-    onavion init my-agent --lang python      # scaffold a runnable starter
-    onavion validate --url http://localhost:9099/turn --secret S
-    onavion simulate --url http://localhost:9099/turn --secret S --game goofspiel
-    onavion publish  --api https://.../api --agent ag_… --token <dash-jwt> \\
+    pyyol init my-agent --lang python      # scaffold a runnable starter
+    pyyol validate --url http://localhost:9099/turn --secret S
+    pyyol simulate --url http://localhost:9099/turn --secret S --game goofspiel
+    pyyol publish  --api https://.../api --agent ag_… --token <dash-jwt> \\
                      --manifest manifest.json --secret S
 
 `init`, `validate`, and `simulate` are fully local (no platform needed) and are
@@ -120,7 +120,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         except Exception as e:  # noqa: BLE001
             checks.append((name, False, str(e)))
 
-    print(f"onavion validate — {url}\n")
+    print(f"pyyol validate — {url}\n")
     all_ok = True
     for name, ok, detail in checks:
         mark = OK if ok else BAD
@@ -211,7 +211,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     agent = args.agent or (creds.agent_id if creds else "")
     token = args.token or (creds.access_token if creds else "")
     if not (api and agent and token):
-        print(f"{BAD} need --api, --agent and --token (or `onavion login` first)", file=sys.stderr)
+        print(f"{BAD} need --api, --agent and --token (or `pyyol login` first)", file=sys.stderr)
         return 2
     with open(args.manifest, "rb") as f:
         manifest = f.read()
@@ -295,7 +295,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     creds = credentials.load()
     if creds is None or not creds.access_token:
-        print(f"{BAD} not logged in — run `onavion login` first", file=sys.stderr)
+        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
         return 2
     api = (args.api or creds.url).rstrip("/")
     agent_id = args.agent or creds.agent_id
@@ -329,7 +329,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
     path = args.file or os.path.join(credentials.config_dir(), "logs", "agent.log")
     if not os.path.exists(path):
-        print(f"no logs yet at {path} (run `onavion run` to generate them)")
+        print(f"no logs yet at {path} (run `pyyol run` to generate them)")
         return 0
     with open(path) as f:
         lines = f.readlines()
@@ -341,7 +341,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 # --- play / watch (start a match, spectate — the AGENT plays, never the human) --
 
 # Which endpoint starts a self-driving match per game. The developer's connected
-# agent (onavion run) plays it; this only *starts* it. There is deliberately no
+# agent (pyyol run) plays it; this only *starts* it. There is deliberately no
 # move-input path anywhere in the CLI — a human never plays for the agent.
 _PLAY_PATH = {
     "goofspiel": "/v1/sandbox/pushplay",
@@ -354,12 +354,12 @@ _TERMINAL_EVENTS = {"match_finished", "victory", "game_over", "game_finished", "
 
 
 def _http_base(args: argparse.Namespace, creds) -> str:
-    """Resolve the HTTP API base for /v1/... calls: --api, ONAVION_API, the
+    """Resolve the HTTP API base for /v1/... calls: --api, PYYOL_API, the
     logged-in api url, else derived from the WSS connect url (ws→http)."""
     if getattr(args, "api", ""):
         return args.api.rstrip("/")
-    if os.environ.get("ONAVION_API"):
-        return os.environ["ONAVION_API"].rstrip("/")
+    if os.environ.get("PYYOL_API"):
+        return os.environ["PYYOL_API"].rstrip("/")
     if creds and creds.url:
         return creds.url.rstrip("/")
     if creds and creds.connect_url:
@@ -370,18 +370,18 @@ def _http_base(args: argparse.Namespace, creds) -> str:
 
 
 def cmd_play(args: argparse.Namespace) -> int:
-    """Start a self-driving match. Your connected agent (onavion run) plays it —
+    """Start a self-driving match. Your connected agent (pyyol run) plays it —
     this command only kicks it off, then optionally spectates."""
     from . import credentials
 
     creds = credentials.load()
-    token = args.token or (creds.access_token if creds else "") or os.environ.get("ONAVION_TOKEN", "")
+    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
     if not token:
-        print(f"{BAD} not logged in — run `onavion login` first", file=sys.stderr)
+        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
         return 2
     base = _http_base(args, creds)
     if not base:
-        print(f"{BAD} no API url — pass --api or run `onavion login`", file=sys.stderr)
+        print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
         return 2
 
     body = {}
@@ -394,7 +394,7 @@ def cmd_play(args: argparse.Namespace) -> int:
     if st not in (200, 201):
         code = resp.get("code") or resp.get("error") or ""
         if "transport" in str(code) or "no_agent" in str(code):
-            print(f"{BAD} your agent isn't connected. In another terminal run `onavion run`, then retry.", file=sys.stderr)
+            print(f"{BAD} your agent isn't connected. In another terminal run `pyyol run`, then retry.", file=sys.stderr)
         else:
             print(f"{BAD} could not start match ({st}): {resp}", file=sys.stderr)
         return 1
@@ -403,7 +403,7 @@ def cmd_play(args: argparse.Namespace) -> int:
     if args.watch and match_id:
         print("  spectating (read-only) — Ctrl-C to stop\n")
         return _watch(base, match_id, args)
-    print(f"    watch it:  onavion watch {match_id}")
+    print(f"    watch it:  pyyol watch {match_id}")
     return 0
 
 
@@ -415,10 +415,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
     creds = credentials.load()
     base = _http_base(args, creds)
     if not base:
-        print(f"{BAD} no API url — pass --api or run `onavion login`", file=sys.stderr)
+        print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
         return 2
     if not args.match:
-        print(f"{BAD} usage: onavion watch <match_id>", file=sys.stderr)
+        print(f"{BAD} usage: pyyol watch <match_id>", file=sys.stderr)
         return 2
     return _watch(base, args.match, args)
 
@@ -506,7 +506,7 @@ def _api_post(url: str, token: str, body):
 # --- run (connect the local agent over WSS) ------------------------------------
 
 def _log_file_handler():
-    """Attach a file handler so `onavion logs` has content. Propagation is off so
+    """Attach a file handler so `pyyol logs` has content. Propagation is off so
     the file is the only logger sink — the live feed is the Console (stdout)."""
     import logging
 
@@ -516,7 +516,7 @@ def _log_file_handler():
     os.makedirs(d, exist_ok=True)
     handler = logging.FileHandler(os.path.join(d, "agent.log"))
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger = logging.getLogger("onavion")
+    logger = logging.getLogger("pyyol")
     logger.setLevel(logging.INFO)
     logger.propagate = False
     logger.addHandler(handler)
@@ -530,16 +530,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     from . import credentials
 
     creds = credentials.load()
-    url = args.url or os.environ.get("ONAVION_URL", "") or (creds.connect_url if creds else "")
+    url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
     if not url:
-        print(f"{BAD} no platform URL — pass --url, set ONAVION_URL, or run `onavion login`", file=sys.stderr)
+        print(f"{BAD} no platform URL — pass --url, set PYYOL_URL, or run `pyyol login`", file=sys.stderr)
         return 2
-    agent_id = args.agent or os.environ.get("ONAVION_AGENT_ID", "") or (creds.agent_id if creds else "")
-    token = args.token or os.environ.get("ONAVION_TOKEN", "") or (creds.access_token if creds else "")
+    agent_id = args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
+    token = args.token or os.environ.get("PYYOL_TOKEN", "") or (creds.access_token if creds else "")
     _log_file_handler()
 
     # Load the agent module and find the `Agent` instance (var name configurable).
-    spec = importlib.util.spec_from_file_location("_onavion_user_agent", args.file)
+    spec = importlib.util.spec_from_file_location("_pyyol_user_agent", args.file)
     if spec is None or spec.loader is None:
         print(f"{BAD} cannot load {args.file}", file=sys.stderr)
         return 2
@@ -568,10 +568,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 _PY_STARTER = '''\
 import os
-from onavion import Agent
-from onavion.models import GoofspielView, GoofspielMove
+from pyyol import Agent
+from pyyol.models import GoofspielView, GoofspielMove
 
-agent = Agent(secret=os.environ.get("ONAVION_SECRET", ""), supported_games=["goofspiel"], name="{name}")
+agent = Agent(secret=os.environ.get("PYYOL_SECRET", ""), supported_games=["goofspiel"], name="{name}")
 
 @agent.on_turn("goofspiel")
 def decide(view: GoofspielView) -> GoofspielMove:
@@ -583,9 +583,9 @@ if __name__ == "__main__":
 '''
 
 _JS_STARTER = '''\
-import {{ Agent }} from "onavion";
+import {{ Agent }} from "pyyol";
 
-const agent = new Agent({{ secret: process.env.ONAVION_SECRET, supportedGames: ["goofspiel"], name: "{name}" }});
+const agent = new Agent({{ secret: process.env.PYYOL_SECRET, supportedGames: ["goofspiel"], name: "{name}" }});
 
 agent.onTurn("goofspiel", (v) => ({{ round: v.round, card: Math.min(...v.legal_actions) }}));
 
@@ -642,18 +642,18 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"    {mpath}")
     print("\nNext:")
     if lang == "python":
-        print(f"    pip install onavion && python {path}")
+        print(f"    pip install pyyol && python {path}")
     else:
-        print(f"    npm install onavion && node {path}")
-    print(f"    onavion validate --url http://localhost:9099/turn --secret <your-secret>")
+        print(f"    npm install pyyol && node {path}")
+    print(f"    pyyol validate --url http://localhost:9099/turn --secret <your-secret>")
     return 0
 
 
 # --- entry point ---------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="onavion", description="Agent Arena developer CLI (Beta)")
-    p.add_argument("--version", action="version", version=f"onavion {__version__}")
+    p = argparse.ArgumentParser(prog="pyyol", description="Agent Arena developer CLI (Beta)")
+    p.add_argument("--version", action="version", version=f"pyyol {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     pi = sub.add_parser("init", help="scaffold a starter agent + manifest")
@@ -692,16 +692,16 @@ def build_parser() -> argparse.ArgumentParser:
     pst.set_defaults(func=cmd_status)
 
     plg = sub.add_parser("logs", help="show recent local agent logs")
-    plg.add_argument("--file", default="", help="log file path (defaults to ~/.onavion/logs/agent.log)")
+    plg.add_argument("--file", default="", help="log file path (defaults to ~/.pyyol/logs/agent.log)")
     plg.add_argument("-n", type=int, default=50, help="number of trailing lines")
     plg.set_defaults(func=cmd_logs)
 
     pr = sub.add_parser("run", help="connect your local agent to the platform over WSS")
     pr.add_argument("--file", default="agent.py", help="path to your agent module")
     pr.add_argument("--var", default="agent", help="the Agent variable name in that module")
-    pr.add_argument("--url", default="", help="platform connect URL (or ONAVION_URL)")
-    pr.add_argument("--agent", default="", help="agent public id (or ONAVION_AGENT_ID)")
-    pr.add_argument("--token", default="", help="access token (or ONAVION_TOKEN)")
+    pr.add_argument("--url", default="", help="platform connect URL (or PYYOL_URL)")
+    pr.add_argument("--agent", default="", help="agent public id (or PYYOL_AGENT_ID)")
+    pr.add_argument("--token", default="", help="access token (or PYYOL_TOKEN)")
     pr.add_argument("--json", action="store_true", help="emit one JSON object per line (for piping)")
     pr.add_argument("--quiet", action="store_true", help="only milestones (connect / match / result)")
     pr.add_argument("--no-color", action="store_true", help="disable ANSI color")
@@ -719,7 +719,7 @@ def build_parser() -> argparse.ArgumentParser:
     ppl.set_defaults(func=cmd_play)
 
     pw = sub.add_parser("watch", help="spectate a live match in the terminal (read-only)")
-    pw.add_argument("match", help="match id (from `onavion play` or the dashboard)")
+    pw.add_argument("match", help="match id (from `pyyol play` or the dashboard)")
     pw.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
     pw.add_argument("--json", action="store_true", help="emit one JSON object per line")
     pw.add_argument("--no-color", action="store_true")

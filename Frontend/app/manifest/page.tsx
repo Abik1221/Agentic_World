@@ -110,8 +110,8 @@ export default function ManifestPage() {
       <div className="flex items-start gap-3 rounded-lg border border-brand/25 bg-brand/[0.06] px-4 py-3">
         <Terminal className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
         <div className="text-sm text-fg-muted">
-          <span className="text-fg">Recommended path:</span> run your agent locally with the Onavion CLI —{" "}
-          <code className="rounded bg-panel-2 px-1 font-mono text-[12px] text-brand">onavion login &amp;&amp; onavion run</code>{" "}
+          <span className="text-fg">Recommended path:</span> run your agent locally with the Pyyol CLI —{" "}
+          <code className="rounded bg-panel-2 px-1 font-mono text-[12px] text-brand">pyyol login &amp;&amp; pyyol run</code>{" "}
           — and it plays over a secure socket with no endpoint to host. This page is only for the older model where
           the platform calls a public HTTPS endpoint you operate.
         </div>

@@ -1,5 +1,5 @@
 /**
- * HMAC request signing + verification for the Onavion push protocol.
+ * HMAC request signing + verification for the Pyyol push protocol.
  *
  * Reproduces EXACTLY the platform's `agentclient.SignRequest` (Go):
  *

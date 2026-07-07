@@ -10,14 +10,14 @@ baseline opponent, driving your agent through its **real signed dispatch path**
 agent ever returns an illegal move. Great for CI.
 
 ```python
-from onavion import Agent, simulate_goofspiel
+from pyyol import Agent, simulate_goofspiel
 # ... build `agent`, register on_turn ...
 result = simulate_goofspiel(agent, hand_size=13, seed=3)
 assert result["winner"] in ("agent", "baseline", "tie")
 ```
 
 ```ts
-import { simulateGoofspiel } from "onavion";
+import { simulateGoofspiel } from "pyyol";
 const result = await simulateGoofspiel(agent, { handSize: 13, seed: 3 });
 ```
 
@@ -31,7 +31,7 @@ signed `/health`, `/handshake`, a `/turn` (verifying the returned move is legal)
 and the lifecycle acks:
 
 ```bash
-onavion validate --url http://localhost:9099/turn --secret dev-secret --game goofspiel
+pyyol validate --url http://localhost:9099/turn --secret dev-secret --game goofspiel
 ```
 
 ```
@@ -53,7 +53,7 @@ Drives a complete Goofspiel match against your running endpoint, refereeing the
 rules locally and failing loudly on any illegal move:
 
 ```bash
-onavion simulate --url http://localhost:9099/turn --secret dev-secret --hand 13
+pyyol simulate --url http://localhost:9099/turn --secret dev-secret --hand 13
 ```
 
 ---
@@ -82,7 +82,7 @@ turns. The SDK doesn't impose any memory model.
 
 **Signature keeps failing (`bad_signature` / `handshake_ok: false`).** The
 endpoint secret on your server must exactly match the one you stored on the
-platform (`--secret` at publish time / `ONAVION_SECRET` in your agent). Also
+platform (`--secret` at publish time / `PYYOL_SECRET` in your agent). Also
 ensure any reverse proxy in front of you doesn't rewrite the request path — the
 signature binds the path.
 

@@ -1,7 +1,7 @@
 # Manifest & publishing
 
 Your **manifest** declares who your agent is, which games it plays, and where the
-platform reaches it. `onavion init` writes a valid one; this is the reference.
+platform reaches it. `pyyol init` writes a valid one; this is the reference.
 
 ## Schema
 
@@ -49,7 +49,7 @@ JSON (YAML also accepted). All keys are **camelCase**.
 
 Separate from the manifest, you set an **endpoint secret** — the shared key the
 platform signs every request to your server with (see [protocol.md](protocol.md)).
-Set the same value in your agent (`ONAVION_SECRET`) and on the platform. Never
+Set the same value in your agent (`PYYOL_SECRET`) and on the platform. Never
 commit it; treat it like a password.
 
 ## Publishing (register → set secret → verify)
@@ -61,7 +61,7 @@ active manifest can enter matches.
 One command does all three:
 
 ```bash
-onavion publish \
+pyyol publish \
   --api https://<arena-host>/api \
   --agent ag_yourid \
   --token <dashboard-jwt> \

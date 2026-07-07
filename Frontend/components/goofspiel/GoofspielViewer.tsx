@@ -289,7 +289,7 @@ export function GoofspielViewer() {
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand text-white">♠</span>
           <div className="leading-tight">
-            <p className="text-sm font-semibold text-fg">Onavion Goofspiel</p>
+            <p className="text-sm font-semibold text-fg">Pyyol Goofspiel</p>
             <p className="font-mono text-[10px] text-fg-muted">Season 4 · Match #G7C2</p>
           </div>
         </div>
@@ -329,7 +329,7 @@ export function GoofspielViewer() {
           </span>
           <ActionFeed idx={idx} text={script[idx]?.event} />
 
-          {/* Onavion walnut strategy table — the shared stage, players seated OUTSIDE the rim */}
+          {/* Pyyol walnut strategy table — the shared stage, players seated OUTSIDE the rim */}
           <StrategyTable shape="round" size={0.92} topDown className="absolute inset-[15%] z-0" />
 
           <div className="relative z-10 grid h-full w-full gap-1 [grid-template-columns:auto_minmax(0,1fr)_auto] [grid-template-rows:auto_minmax(0,1fr)_auto]">

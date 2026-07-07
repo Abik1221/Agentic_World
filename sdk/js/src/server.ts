@@ -1,13 +1,13 @@
 /**
- * The Onavion agent server.
+ * The Pyyol agent server.
  *
  * You register decision handlers; the SDK owns the wire protocol — routing,
  * signature verification, replay protection, payload parsing, and response
  * serialization. It contains no game strategy: your turn handler returns the move.
  *
- *     import { Agent } from "onavion";
+ *     import { Agent } from "pyyol";
  *
- *     const agent = new Agent({ secret: process.env.ONAVION_SECRET });
+ *     const agent = new Agent({ secret: process.env.PYYOL_SECRET });
  *     agent.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.min(...v.legal_actions) }));
  *     agent.serve(9099);
  *
@@ -64,7 +64,7 @@ export class Agent {
   constructor(opts: AgentOptions = {}) {
     this.secret = opts.secret ?? "";
     this.supportedGames = opts.supportedGames ?? [...SUPPORTED_GAMES];
-    this.name = opts.name ?? "onavion-agent";
+    this.name = opts.name ?? "pyyol-agent";
     this.skew = opts.skewSeconds ?? 300;
     this.verify = opts.verify ?? Boolean(this.secret);
   }
@@ -182,7 +182,7 @@ export class Agent {
     });
     server.listen(port, host, () => {
       // eslint-disable-next-line no-console
-      console.log(`onavion agent "${this.name}" listening on http://${host}:${port} (verify=${this.verify})`);
+      console.log(`pyyol agent "${this.name}" listening on http://${host}:${port} (verify=${this.verify})`);
     });
     return server;
   }

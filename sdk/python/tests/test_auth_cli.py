@@ -6,12 +6,12 @@ import urllib.request
 
 import pytest
 
-from onavion import credentials, login
+from pyyol import credentials, login
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("ONAVION_HOME", str(tmp_path))
+    monkeypatch.setenv("PYYOL_HOME", str(tmp_path))
     # Force the file fallback so the test is deterministic regardless of a host keyring.
     monkeypatch.setattr(credentials, "_try_keyring", lambda: None)
     return tmp_path

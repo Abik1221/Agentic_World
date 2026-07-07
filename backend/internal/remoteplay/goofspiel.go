@@ -29,7 +29,7 @@ import (
 // History makes the view SELF-CONTAINED and replayable: every resolved round is
 // included from this seat's perspective (both cards are open after resolution),
 // so an agent can reconstruct the whole match from a single turn payload without
-// having to have caught every async /event. Since Onavion runs no AI, the whole
+// having to have caught every async /event. Since Pyyol runs no AI, the whole
 // point is to hand each agent everything its own reasoning could need.
 type GoofspielView struct {
 	Game         string      `json:"game"`

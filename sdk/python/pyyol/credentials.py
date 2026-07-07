@@ -1,6 +1,6 @@
-"""Local credential storage for the ``onavion`` CLI.
+"""Local credential storage for the ``pyyol`` CLI.
 
-Credentials from ``onavion login`` are stored securely: the access/refresh
+Credentials from ``pyyol login`` are stored securely: the access/refresh
 tokens go into the OS secret store via the optional ``keyring`` package
 (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux) when
 it is installed; otherwise they fall back to a ``0600`` file under the config
@@ -20,16 +20,16 @@ import stat
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-SERVICE = "onavion"
+SERVICE = "pyyol"
 _KEYRING_KEY = "access_token"
 
 
 def config_dir() -> str:
-    """The onavion config directory. Override with ``ONAVION_HOME`` (tests, CI)."""
-    base = os.environ.get("ONAVION_HOME")
+    """The pyyol config directory. Override with ``PYYOL_HOME`` (tests, CI)."""
+    base = os.environ.get("PYYOL_HOME")
     if base:
         return base
-    return os.path.join(os.path.expanduser("~"), ".onavion")
+    return os.path.join(os.path.expanduser("~"), ".pyyol")
 
 
 def _cred_path() -> str:

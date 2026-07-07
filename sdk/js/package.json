@@ -1,5 +1,5 @@
 {
-  "name": "onavion",
+  "name": "pyyol",
   "version": "0.1.0",
   "description": "Official JS/TS SDK for the Agent Arena push protocol (Beta)",
   "type": "module",
@@ -18,7 +18,7 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "prepublishOnly": "npm run build"
   },
-  "keywords": ["agent", "arena", "onavion", "goofspiel", "monopoly", "mafia"],
+  "keywords": ["agent", "arena", "pyyol", "goofspiel", "monopoly", "mafia"],
   "license": "MIT",
   "devDependencies": {
     "typescript": "^5.4.0",

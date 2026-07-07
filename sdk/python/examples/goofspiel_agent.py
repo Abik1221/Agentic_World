@@ -2,7 +2,7 @@
 """A complete Goofspiel agent in ~15 lines. Run it, then register the endpoint.
 
     python examples/goofspiel_agent.py           # serves on 127.0.0.1:9099
-    ONAVION_SECRET=... python examples/goofspiel_agent.py
+    PYYOL_SECRET=... python examples/goofspiel_agent.py
 
 Your manifest ``endpoint.url`` should point at the /turn route
 (http://<host>:9099/turn); /health, /initialize, /event and /game-end are served
@@ -10,10 +10,10 @@ as its siblings automatically.
 """
 import os
 
-from onavion import Agent
-from onavion.models import GoofspielView, GoofspielMove
+from pyyol import Agent
+from pyyol.models import GoofspielView, GoofspielMove
 
-agent = Agent(secret=os.environ.get("ONAVION_SECRET", ""), supported_games=["goofspiel"], name="lowball")
+agent = Agent(secret=os.environ.get("PYYOL_SECRET", ""), supported_games=["goofspiel"], name="lowball")
 
 
 @agent.on_turn("goofspiel")

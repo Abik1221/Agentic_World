@@ -1,4 +1,4 @@
-/** Tests for the onavion JS/TS SDK. Run: npm run build && npm test. */
+/** Tests for the pyyol JS/TS SDK. Run: npm run build && npm test. */
 import assert from "node:assert/strict";
 import test from "node:test";
 

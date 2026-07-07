@@ -18,8 +18,8 @@ import (
 const pyAgentScript = `
 import os, sys, logging
 logging.basicConfig(level=logging.INFO)
-sys.path.insert(0, os.environ["ONAVION_SDK"])
-from onavion import Agent
+sys.path.insert(0, os.environ["PYYOL_SDK"])
+from pyyol import Agent
 
 agent = Agent(supported_games=["goofspiel"], name="py-e2e")
 
@@ -39,7 +39,7 @@ def on_end(n):
     game_over["done"] = True
     print("GAME_END_RECEIVED", flush=True)
 
-agent.run(url=os.environ["ONAVION_URL"], agent_id="ag_py", token="secret",
+agent.run(url=os.environ["PYYOL_URL"], agent_id="ag_py", token="secret",
           heartbeat_interval=0.5, reconnect=False)
 `
 
@@ -67,7 +67,7 @@ func TestCrossLangPythonAgentDrivesMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, py, scriptPath)
-	cmd.Env = append(os.Environ(), "ONAVION_URL="+wsURL, "ONAVION_SDK="+sdkPath, "PYTHONUNBUFFERED=1")
+	cmd.Env = append(os.Environ(), "PYYOL_URL="+wsURL, "PYYOL_SDK="+sdkPath, "PYTHONUNBUFFERED=1")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -109,11 +109,11 @@ func TestCrossLangPythonAgentDrivesMatch(t *testing.T) {
 // jsAgentScript is a minimal developer agent using the real JS/TS SDK (built
 // dist). It dials the gateway over WSS via the connector and bids high.
 const jsAgentScript = `
-const { Agent } = await import(process.env.ONAVION_JS);
+const { Agent } = await import(process.env.PYYOL_JS);
 const agent = new Agent({ supportedGames: ["goofspiel"], name: "js-e2e" });
 agent.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.max(...v.legal_actions) }));
 agent.onGameEnd(() => { console.log("GAME_END_RECEIVED"); });
-await agent.run({ url: process.env.ONAVION_URL, agentId: "ag_js", token: "secret", heartbeatMs: 500, reconnect: false });
+await agent.run({ url: process.env.PYYOL_URL, agentId: "ag_js", token: "secret", heartbeatMs: 500, reconnect: false });
 `
 
 // TestCrossLangJSAgentDrivesMatch is the JS counterpart of the Python e2e: the
@@ -136,7 +136,7 @@ func TestCrossLangJSAgentDrivesMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, scriptPath)
-	cmd.Env = append(os.Environ(), "ONAVION_URL="+wsURL, "ONAVION_JS="+distIndex)
+	cmd.Env = append(os.Environ(), "PYYOL_URL="+wsURL, "PYYOL_JS="+distIndex)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -212,7 +212,7 @@ func pythonSDKPath(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(p, "onavion", "runtime.py")); err != nil {
+	if _, err := os.Stat(filepath.Join(p, "pyyol", "runtime.py")); err != nil {
 		t.Skipf("python SDK not found at %s; skipping cross-language e2e", p)
 	}
 	return p

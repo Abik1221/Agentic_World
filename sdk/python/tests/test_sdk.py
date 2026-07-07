@@ -1,4 +1,4 @@
-"""Tests for the onavion Python SDK. Run: pytest (from sdk/python)."""
+"""Tests for the pyyol Python SDK. Run: pytest (from sdk/python)."""
 import sys
 import time
 from pathlib import Path
@@ -7,8 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 
-from onavion import Agent, VerificationError, compute_signature, simulate_goofspiel, verify_request
-from onavion.signing import ReplayGuard
+from pyyol import Agent, VerificationError, compute_signature, simulate_goofspiel, verify_request
+from pyyol.signing import ReplayGuard
 
 
 # A fixed vector shared with the Go platform and the JS SDK — all three MUST agree.
@@ -72,7 +72,7 @@ def test_replay_rejected():
 def test_illegal_move_fails_loudly():
     a = Agent(secret="", supported_games=["goofspiel"])
     a.on_turn("goofspiel")(lambda v: {"card": 999})  # never in hand
-    from onavion import SimulationError
+    from pyyol import SimulationError
 
     with pytest.raises(SimulationError):
         simulate_goofspiel(a, hand_size=5)

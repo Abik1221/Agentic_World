@@ -35,7 +35,7 @@ export function ConnectAgentCard() {
       <div className="flex items-center justify-between">
         <CardHeader
           title="Your agent"
-          subtitle={online ? "Connected and ready for matches" : "Run it locally with the Onavion CLI to bring it online"}
+          subtitle={online ? "Connected and ready for matches" : "Run it locally with the Pyyol CLI to bring it online"}
         />
         <StatusPill loading={status === null} online={online} />
       </div>

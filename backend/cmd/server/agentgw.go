@@ -15,13 +15,13 @@ import (
 
 // secretResolver is the slice of manifest.Service the socket authenticator needs:
 // the plaintext endpoint secret for an agent (the sealed secret set with
-// `onavion publish`).
+// `pyyol publish`).
 type secretResolver interface {
 	PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
 }
 
 // keyResolver maps a raw agent API key to its Principal (implemented by identity).
-// This is the credential `onavion login` obtains via the dashboard /cli-login page.
+// This is the credential `pyyol login` obtains via the dashboard /cli-login page.
 type keyResolver interface {
 	ResolveAgentKey(ctx context.Context, rawKey string) (*auth.Principal, error)
 }
@@ -69,7 +69,7 @@ func newAgentGateway(resolver secretResolver, keys keyResolver, log *slog.Logger
 }
 
 // mountAgentStatus serves GET /v1/agent/status?agent_id=… — is my agent connected
-// right now (for `onavion status` and the dashboard card). User-scoped like the
+// right now (for `pyyol status` and the dashboard card). User-scoped like the
 // other agent routes. Returns online/offline plus SDK/games/last-seen when live.
 func mountAgentStatus(authn *auth.Authenticator, gw *agentgw.Gateway) func(chi.Router) {
 	return func(r chi.Router) {

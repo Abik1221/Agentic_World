@@ -293,7 +293,7 @@ export function MafiaViewer() {
           <SpeakingQueue queue={queue} phase={d.phase} ended={ended} agents={agents} />
 
           <div className="relative mx-auto aspect-square w-full max-w-[588px]">
-            {/* Onavion walnut strategy table — agents are seated around it */}
+            {/* Pyyol walnut strategy table — agents are seated around it */}
             <StrategyTable shape="round" size={0.6} night={d.phase === "night"} topDown className="absolute inset-0" />
             <Stage
               d={d}
@@ -502,7 +502,7 @@ function Stage({
         </filter>
       </defs>
 
-      {/* The Onavion walnut StrategyTable renders behind this SVG — only the
+      {/* The Pyyol walnut StrategyTable renders behind this SVG — only the
           brand spotlight sits on the wood so the table shows through. */}
       <circle cx="500" cy="500" r={R_TABLE - 26} fill="url(#mvxCenter)" className="mvx-breathe" />
 
@@ -1159,7 +1159,7 @@ function Header({ phase, day, seconds, alive, dead, playing, ended, onToggle }: 
       <div className="flex items-center gap-2">
         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand text-white">◆</span>
         <div className="leading-tight">
-          <p className="text-sm font-semibold text-fg">Onavion Mafia</p>
+          <p className="text-sm font-semibold text-fg">Pyyol Mafia</p>
           <p className="font-mono text-[10px] text-fg-muted">Season 4 · Match #A3F9</p>
         </div>
       </div>

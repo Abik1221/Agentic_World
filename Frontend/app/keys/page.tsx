@@ -159,11 +159,11 @@ export default function KeysPage() {
 
       {/* Key inventory — audit by last-used, revoke by row. */}
       <Card className="p-5">
-        <CardHeader title="Your keys" subtitle="One key is active per agent — rotating or `onavion login` revokes the rest" />
+        <CardHeader title="Your keys" subtitle="One key is active per agent — rotating or `pyyol login` revokes the rest" />
         {keys === null ? (
           <p className="mt-3 font-mono text-[12px] text-fg-muted">loading…</p>
         ) : keys.length === 0 ? (
-          <p className="mt-3 text-sm text-fg-muted">No keys yet. Rotate above or run <code className="font-mono text-brand">onavion login</code>.</p>
+          <p className="mt-3 text-sm text-fg-muted">No keys yet. Rotate above or run <code className="font-mono text-brand">pyyol login</code>.</p>
         ) : (
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">

@@ -1,4 +1,4 @@
-// Package agentgw is the Onavion Beta agent gateway: the inbound WebSocket
+// Package agentgw is the Pyyol Beta agent gateway: the inbound WebSocket
 // endpoint a developer's LOCAL agent dials out to.
 //
 // This is the transport the Beta spec calls for — the developer runs their agent

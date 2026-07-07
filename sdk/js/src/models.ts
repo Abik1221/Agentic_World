@@ -1,5 +1,5 @@
 /**
- * Typed models for the Onavion push protocol.
+ * Typed models for the Pyyol push protocol.
  *
  * Lifecycle envelopes are fully typed. Turn views are typed for their common
  * fields; complex nested state (e.g. the Monopoly board) is left as an open

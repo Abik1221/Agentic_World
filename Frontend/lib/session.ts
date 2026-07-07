@@ -64,7 +64,7 @@ export function getSession(): Session {
 // a server Set-Cookie and a matching credentials-mode fetch flow — tracked for a
 // later hardening pass). We do add `Secure` on HTTPS so tokens are never sent
 // over plaintext, and SameSite=Lax to blunt CSRF. The agent key's primary
-// protection is revocability: rotating (incl. `onavion login`) invalidates the
+// protection is revocability: rotating (incl. `pyyol login`) invalidates the
 // prior key immediately (see backend RotateKey).
 function cookieAttrs(maxAge: number): string {
   const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; secure" : "";

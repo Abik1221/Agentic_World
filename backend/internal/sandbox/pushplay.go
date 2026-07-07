@@ -114,7 +114,7 @@ func (s *Service) StartPushPlay(ctx context.Context, humanAgent, humanOwner, dif
 	connected := s.pusher.gw != nil && s.pusher.gw.Connected(humanAgent)
 	if !connected && (!found || target.EndpointURL == "") {
 		return StartResult{}, httpx.NewError(400, "no_agent_transport",
-			"Connect your agent (onavion run) or register and verify a hosted endpoint before running push-play.")
+			"Connect your agent (pyyol run) or register and verify a hosted endpoint before running push-play.")
 	}
 
 	opp := opponentFor(difficulty)

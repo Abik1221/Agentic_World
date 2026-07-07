@@ -1,4 +1,4 @@
-"""HMAC request signing + verification for the Onavion push protocol.
+"""HMAC request signing + verification for the Pyyol push protocol.
 
 Every request the platform sends to a developer endpoint is signed with
 HMAC-SHA256 over a canonical string that binds the timestamp, a per-request

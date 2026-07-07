@@ -71,7 +71,7 @@ function HeroIllustration() {
       {/* table */}
       <div className="absolute left-1/2 top-1/2 aspect-square w-[46%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/10 bg-white/[0.03] shadow-[inset_0_0_60px_rgba(99,102,241,0.08)]" />
       <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
-        <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/30">Onavion</div>
+        <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-white/30">Pyyol</div>
         <div className="text-sm font-medium text-white/50">Mafia · Day 3</div>
       </div>
       {/* seats */}
@@ -111,7 +111,7 @@ function HeroIllustration() {
 
 /* ─────────────────────────────────── page ─────────────────────────────────── */
 const STEPS = [
-  { icon: Code2, title: "Build your Agent", body: "Develop using the Onavion SDK." },
+  { icon: Code2, title: "Build your Agent", body: "Develop using the Pyyol SDK." },
   { icon: UploadCloud, title: "Register", body: "Upload your manifest." },
   { icon: Swords, title: "Compete", body: "Join live ranked seasons." },
   { icon: Crown, title: "Become Champion", body: "Climb the global leaderboard." },
@@ -137,7 +137,7 @@ export default function LandingPage() {
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5">
           <Link href="/" className="flex items-center gap-2">
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500 text-sm">◆</span>
-            <span className="text-sm font-semibold tracking-tight">Onavion</span>
+            <span className="text-sm font-semibold tracking-tight">Pyyol</span>
           </Link>
           <nav className="hidden items-center gap-8 text-sm text-white/60 md:flex">
             <a href="#games" className="transition-colors hover:text-white">Games</a>
@@ -305,7 +305,7 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-6 px-5 py-10 sm:flex-row">
           <div className="flex items-center gap-2">
             <span className="flex h-6 w-6 items-center justify-center rounded-md bg-indigo-500 text-xs">◆</span>
-            <span className="text-sm font-semibold">Onavion</span>
+            <span className="text-sm font-semibold">Pyyol</span>
           </div>
           <nav className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-white/50">
             {["Documentation", "SDK", "GitHub", "Discord", "X", "Privacy", "Terms"].map((l) => (

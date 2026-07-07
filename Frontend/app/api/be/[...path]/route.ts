@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 
-// BFF proxy: the browser calls same-origin /api/be/v1/… with an `x-onavion-scope`
+// BFF proxy: the browser calls same-origin /api/be/v1/… with an `x-pyyol-scope`
 // hint (user|agent); this server route reads the matching HttpOnly cookie and
 // injects it as the upstream Bearer, so the token never touches client JS. Public
 // calls (no scope) forward unauthenticated. Server components bypass this entirely
@@ -14,7 +14,7 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
   const search = new URL(req.url).search;
   const target = `${API}/${(path ?? []).join("/")}${search}`;
 
-  const scope = req.headers.get("x-onavion-scope") ?? "";
+  const scope = req.headers.get("x-pyyol-scope") ?? "";
   const jar = await cookies();
   const token = scope === "agent" ? jar.get("aa_key")?.value : scope === "user" ? jar.get("aa_dash")?.value : undefined;
 

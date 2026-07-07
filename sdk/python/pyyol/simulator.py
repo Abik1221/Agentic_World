@@ -10,7 +10,7 @@ Two ways to exercise an agent:
 
 * :class:`LocalClient` signs and sends lifecycle requests to a *running* agent
   server over HTTP, exactly as the platform would. Use it to smoke-test a deployed
-  endpoint (the ``onavion`` CLI uses it too).
+  endpoint (the ``pyyol`` CLI uses it too).
 
 The simulator contains game *rules* for Goofspiel only (to referee a match); it
 contains no strategy — your handler decides every move.

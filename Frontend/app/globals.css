@@ -1234,7 +1234,7 @@ body {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   ONAVION CONSOLE — design system mirrored from the Super Admin dashboard.
+   PYYOL CONSOLE — design system mirrored from the Super Admin dashboard.
    Dark indigo console: near-black canvas, panel cards, indigo brand, mono labels.
    Distinct token names (canvas/panel/brand/…) so nothing collides with the
    legacy cream/broadcast tokens above. Components under components/console use
@@ -1494,7 +1494,7 @@ body {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   Onavion Strategy Table (st-*) — shared luxury walnut surface for every game.
+   Pyyol Strategy Table (st-*) — shared luxury walnut surface for every game.
    ══════════════════════════════════════════════════════════════════════════ */
 @keyframes st-breathe { 0%, 100% { opacity: .82; } 50% { opacity: 1; } }
 .st-breathe { animation: st-breathe 7s ease-in-out infinite; }

@@ -11,7 +11,7 @@ import { serverSession } from "@/lib/session.server";
 import { Card, CardHeader, PageHeader } from "@/components/console/primitives";
 import { SectionTabs } from "@/components/console/SectionTabs";
 
-export const metadata = { title: "Rankings | Onavion" };
+export const metadata = { title: "Rankings | Pyyol" };
 
 const PODIUM = [
   { icon: Crown, tone: "text-warn", ring: "border-warn/40 bg-warn/10" },

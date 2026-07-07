@@ -52,7 +52,7 @@ const config: Config = {
         "border-strong": "rgb(var(--c-border-strong) / <alpha-value>)",
         "border-soft": "rgb(var(--c-border-soft) / <alpha-value>)",
 
-        // ── Onavion console tokens (mirrors the Super Admin dashboard) ──────────
+        // ── Pyyol console tokens (mirrors the Super Admin dashboard) ──────────
         canvas: "rgb(var(--k-canvas) / <alpha-value>)",
         panel: "rgb(var(--k-panel) / <alpha-value>)",
         "panel-2": "rgb(var(--k-panel-2) / <alpha-value>)",

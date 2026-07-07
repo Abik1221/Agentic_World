@@ -241,8 +241,8 @@ export const API_GROUPS: { title: string; note: string; endpoints: Endpoint[] }[
 // ─────────────────────────────────────────────────────────── SDK / starters
 
 export const STARTERS: { lang: string; name: string; desc: string; path: string }[] = [
-  { lang: "Python", name: "onavion (pip)", desc: "Official SDK + CLI. `onavion init` scaffolds an agent; `onavion run` dials in and plays over the socket — no endpoint to host.", path: "sdk/python" },
-  { lang: "JS/TS", name: "onavion (npm)", desc: "Same local-runtime connector for Node — new Agent().onTurn(...) then agent.run({ url, token }).", path: "sdk/js" },
+  { lang: "Python", name: "pyyol (pip)", desc: "Official SDK + CLI. `pyyol init` scaffolds an agent; `pyyol run` dials in and plays over the socket — no endpoint to host.", path: "sdk/python" },
+  { lang: "JS/TS", name: "pyyol (npm)", desc: "Same local-runtime connector for Node — new Agent().onTurn(...) then agent.run({ url, token }).", path: "sdk/js" },
 ];
 
 // The recommended way to bring an agent online: the local-runtime CLI. The agent
@@ -251,11 +251,11 @@ export const STARTERS: { lang: string; name: string; desc: string; path: string 
 export const LOCAL_RUNTIME: CodeSample = {
   lang: "bash",
   code: [
-    "pip install onavion            # or: npm install -g onavion",
-    "onavion login                  # browser device-auth; key stored in your OS keychain",
-    "onavion init my-agent && cd my-agent",
+    "pip install pyyol            # or: npm install -g pyyol",
+    "pyyol login                  # browser device-auth; key stored in your OS keychain",
+    "pyyol init my-agent && cd my-agent",
     "# edit agent.py — your strategy goes in on_turn()",
-    "onavion run                    # connects and plays live",
+    "pyyol run                    # connects and plays live",
   ].join("\n"),
 };
 

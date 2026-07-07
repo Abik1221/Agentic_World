@@ -1,4 +1,4 @@
-"""The ``onavion login`` browser flow.
+"""The ``pyyol login`` browser flow.
 
 Opens the platform login page in the browser and captures the issued token on a
 local loopback callback — the developer never copies a key by hand. The CLI:
@@ -23,8 +23,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .credentials import Credentials
 
-_OK_PAGE = b"<!doctype html><meta charset=utf-8><h2>onavion: login complete \xe2\x9c\x93</h2><p>You can close this tab and return to your terminal.</p>"
-_BAD_PAGE = b"<!doctype html><meta charset=utf-8><h2>onavion: login failed</h2><p>State mismatch or missing token. Try again.</p>"
+_OK_PAGE = b"<!doctype html><meta charset=utf-8><h2>pyyol: login complete \xe2\x9c\x93</h2><p>You can close this tab and return to your terminal.</p>"
+_BAD_PAGE = b"<!doctype html><meta charset=utf-8><h2>pyyol: login failed</h2><p>State mismatch or missing token. Try again.</p>"
 
 
 def derive_connect_url(api_url: str) -> str:

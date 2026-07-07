@@ -1,7 +1,7 @@
 /**
  * A complete Goofspiel agent. Build the SDK (`npm run build`), then:
  *
- *     ONAVION_SECRET=... node --loader ts-node/esm examples/goofspiel-agent.ts
+ *     PYYOL_SECRET=... node --loader ts-node/esm examples/goofspiel-agent.ts
  *     # or compile and run dist/
  *
  * Point your manifest `endpoint.url` at the /turn route (http://<host>:9099/turn);
@@ -11,7 +11,7 @@ import { Agent } from "../src/index.js";
 import type { GoofspielView } from "../src/index.js";
 
 const agent = new Agent({
-  secret: process.env.ONAVION_SECRET ?? "",
+  secret: process.env.PYYOL_SECRET ?? "",
   supportedGames: ["goofspiel"],
   name: "lowball",
 });

@@ -13,7 +13,7 @@ export function Topbar() {
     <header className="sticky top-0 z-40 flex h-14 items-center gap-4 border-b border-line bg-canvas/95 px-6 backdrop-blur-sm">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 font-mono text-[11px] text-fg-muted">
-        <span>Onavion</span>
+        <span>Pyyol</span>
         {parent && (
           <>
             <span className="text-fg-muted/50">›</span>

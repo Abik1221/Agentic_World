@@ -67,7 +67,7 @@ export async function apiRequest<T>(path: string, opts: RequestOpts = {}): Promi
   let url = `${API_BASE}${path}`;
   if (scope) {
     url = `/api/be${path}`;
-    headers["x-onavion-scope"] = scope;
+    headers["x-pyyol-scope"] = scope;
   } else if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }

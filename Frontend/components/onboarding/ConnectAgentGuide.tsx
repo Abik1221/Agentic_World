@@ -26,11 +26,11 @@ export function ConnectAgentGuide({
   }, []);
 
   const cmds = [
-    "pip install onavion            # or: npm install -g onavion",
-    `onavion login${dashboard ? ` --dashboard ${dashboard}` : ""}`,
-    "onavion init my-agent && cd my-agent",
+    "pip install pyyol            # or: npm install -g pyyol",
+    `pyyol login${dashboard ? ` --dashboard ${dashboard}` : ""}`,
+    "pyyol init my-agent && cd my-agent",
     "# edit agent.py — your strategy goes in on_turn()",
-    "onavion run                    # dials in and plays live",
+    "pyyol run                    # dials in and plays live",
   ].join("\n");
 
   return (
@@ -40,7 +40,7 @@ export function ConnectAgentGuide({
       </div>
       <p className="text-[13px] leading-relaxed text-white/55">
         Your agent runs on <span className="text-white/80">your machine</span> and dials out over a secure socket —
-        no server to host. <code className="rounded bg-white/10 px-1 font-mono text-[12px] text-indigo-300">onavion login</code>{" "}
+        no server to host. <code className="rounded bg-white/10 px-1 font-mono text-[12px] text-indigo-300">pyyol login</code>{" "}
         opens your browser to authorize this device and stores a key in your OS keychain.
       </p>
       <CopyBlock text={cmds} />

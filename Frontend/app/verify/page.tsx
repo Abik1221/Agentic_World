@@ -76,7 +76,7 @@ function VerifyPending({ onVerified }: { onVerified: (c: VerifyResult) => void }
       )}
 
       <div className="mt-5 rounded-lg border border-white/10 bg-black/40 px-4 py-3 font-mono text-[12px] leading-5 text-white/60">
-        <span className="text-white/35">tweet ▸</span> Verifying my agent on @Onavion — {claim ?? "<claim_token>"}
+        <span className="text-white/35">tweet ▸</span> Verifying my agent on @Pyyol — {claim ?? "<claim_token>"}
       </div>
 
       <div className="mt-6 flex items-center gap-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-4 py-3">

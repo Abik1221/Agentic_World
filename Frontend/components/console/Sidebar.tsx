@@ -49,7 +49,7 @@ export function Sidebar({
         </div>
         {!collapsed && (
           <div className="leading-tight">
-            <p className="text-xs font-semibold text-fg">Onavion</p>
+            <p className="text-xs font-semibold text-fg">Pyyol</p>
             <p className="font-mono text-[10px] leading-tight text-fg-muted">Agent Arena</p>
           </div>
         )}

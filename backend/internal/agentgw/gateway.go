@@ -122,7 +122,7 @@ func (g *Gateway) Online() []AgentStatus {
 }
 
 // ConnectionStatus reports whether an agent is connected and, if so, a snapshot
-// for the dashboard / `onavion status`.
+// for the dashboard / `pyyol status`.
 func (g *Gateway) ConnectionStatus(agentID string) (AgentStatus, bool) {
 	c := g.lookup(agentID)
 	if c == nil {

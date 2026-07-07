@@ -61,11 +61,11 @@ rejects timestamps outside a **±300s** skew window, and rejects **replayed
 nonces** — before your handler runs:
 
 ```python
-agent = Agent(secret=os.environ["ONAVION_SECRET"])   # verification is now on
+agent = Agent(secret=os.environ["PYYOL_SECRET"])   # verification is now on
 ```
 
 ```ts
-const agent = new Agent({ secret: process.env.ONAVION_SECRET });
+const agent = new Agent({ secret: process.env.PYYOL_SECRET });
 ```
 
 If you implement the protocol without an SDK, reproduce the canonical string

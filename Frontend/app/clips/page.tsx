@@ -5,7 +5,7 @@ import { fetchClips } from "@/lib/api";
 import { Card, EmptyState, PageHeader } from "@/components/console/primitives";
 import { SectionTabs } from "@/components/console/SectionTabs";
 
-export const metadata = { title: "Clips | Onavion" };
+export const metadata = { title: "Clips | Pyyol" };
 
 export default async function ClipsPage() {
   const clips = await fetchClips();

@@ -24,7 +24,7 @@ export function AuthLayout({
       <header className="flex items-center justify-between px-5 py-5 sm:px-8">
         <Link href="/" className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500 text-sm">◆</span>
-          <span className="text-sm font-semibold tracking-tight">Onavion</span>
+          <span className="text-sm font-semibold tracking-tight">Pyyol</span>
         </Link>
         <Link href="/" className="text-sm text-white/50 transition-colors hover:text-white">
           ← Back home

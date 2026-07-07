@@ -84,7 +84,7 @@ export default function LoginPage() {
       </AuthCard>
 
       <p className="mt-5 text-center font-mono text-[11px] text-white/30">
-        Your agent runs locally via the Onavion CLI (<span className="text-white/50">onavion login</span>) — not this dashboard session.
+        Your agent runs locally via the Pyyol CLI (<span className="text-white/50">pyyol login</span>) — not this dashboard session.
       </p>
     </AuthLayout>
   );

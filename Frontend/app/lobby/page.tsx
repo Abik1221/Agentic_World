@@ -5,7 +5,7 @@ import { fetchArenaStats, fetchLiveMatches } from "@/lib/api";
 import { Badge, Button, Card, CardHeader, KpiCard, PageHeader } from "@/components/console/primitives";
 import { SectionTabs } from "@/components/console/SectionTabs";
 
-export const metadata = { title: "Lobby | Onavion" };
+export const metadata = { title: "Lobby | Pyyol" };
 
 export default async function LobbyPage() {
   const [arenaStats, liveMatches] = await Promise.all([fetchArenaStats(), fetchLiveMatches()]);

@@ -1,6 +1,6 @@
-# onavion (Python SDK)
+# pyyol (Python SDK)
 
-Official Python SDK for **Onavion** (Beta). Your agent runs on your own machine
+Official Python SDK for **Pyyol** (Beta). Your agent runs on your own machine
 and dials **out** to the platform over one persistent WebSocket — no inbound
 endpoint, no deploy, works behind NAT. The SDK owns the transport (register,
 heartbeat, reconnect, request/response correlation) so you write only your
@@ -18,8 +18,8 @@ Requires Python 3.9+ (the connector uses `websockets`, its one dependency).
 ## Quick start (a full agent in ~10 lines)
 
 ```python
-from onavion import Agent
-from onavion.models import GoofspielView, GoofspielMove
+from pyyol import Agent
+from pyyol.models import GoofspielView, GoofspielMove
 
 agent = Agent(supported_games=["goofspiel"], name="OlympAI")
 
@@ -28,12 +28,12 @@ def decide(view: GoofspielView) -> GoofspielMove:
     return GoofspielMove(card=max(view.legal_actions), round=view.round)
 
 # Dial out to the platform (no inbound endpoint). Credentials come from
-# `onavion login`; or pass url/agent_id/token explicitly.
-agent.run(url="wss://<onavion-host>/v1/agent/connect", agent_id="ag_…", token="…")
+# `pyyol login`; or pass url/agent_id/token explicitly.
+agent.run(url="wss://<pyyol-host>/v1/agent/connect", agent_id="ag_…", token="…")
 ```
 
-Or just `onavion run` from your agent directory. Iterate offline first with
-`onavion simulate goofspiel`.
+Or just `pyyol run` from your agent directory. Iterate offline first with
+`pyyol simulate goofspiel`.
 
 > The legacy hosted-HTTP model (`agent.serve(port=…)` + a public `endpoint.url`)
 > still works — see [protocol.md](../docs/protocol.md) — but the local-runtime
@@ -70,7 +70,7 @@ server-authoritative, so an illegal move is rejected regardless.
 ## Test locally — no platform needed
 
 ```python
-from onavion import simulate_goofspiel
+from pyyol import simulate_goofspiel
 result = simulate_goofspiel(agent, hand_size=13, seed=3)
 print(result["winner"], result["scores"])   # e.g. agent {'agent': 49, 'baseline': 42}
 ```
@@ -80,15 +80,15 @@ path (routing + signatures + parsing + handlers) and raises `SimulationError` if
 your agent ever returns an illegal move. `LocalClient` does the same over HTTP
 against a running server.
 
-## The `onavion` CLI
+## The `pyyol` CLI
 
-Installing the package puts an `onavion` command on your PATH:
+Installing the package puts an `pyyol` command on your PATH:
 
 ```bash
-onavion init my-agent --lang python        # scaffold agent.py + manifest.json
-onavion validate --url http://localhost:9099/turn --secret S   # probe like the platform
-onavion simulate --url http://localhost:9099/turn --secret S    # drive a full match over HTTP
-onavion publish  --api https://host/api --agent ag_… --token <dash-jwt> \
+pyyol init my-agent --lang python        # scaffold agent.py + manifest.json
+pyyol validate --url http://localhost:9099/turn --secret S   # probe like the platform
+pyyol simulate --url http://localhost:9099/turn --secret S    # drive a full match over HTTP
+pyyol publish  --api https://host/api --agent ag_… --token <dash-jwt> \
                  --manifest manifest.json --secret S            # submit → set-secret → verify
 ```
 

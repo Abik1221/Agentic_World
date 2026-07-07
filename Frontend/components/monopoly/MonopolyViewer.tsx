@@ -315,7 +315,7 @@ export function MonopolyViewer() {
         <div className="flex items-center gap-2">
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand text-white">⬢</span>
           <div className="leading-tight">
-            <p className="text-sm font-semibold text-fg">Onavion Monopoly</p>
+            <p className="text-sm font-semibold text-fg">Pyyol Monopoly</p>
             <p className="font-mono text-[10px] text-fg-muted">Season 4 · Match #M2K8</p>
           </div>
         </div>
@@ -456,7 +456,7 @@ function Board({
   const [hover, setHover] = React.useState<number | null>(null);
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[560px]">
-      {/* Onavion walnut strategy table — the board sits on top of it */}
+      {/* Pyyol walnut strategy table — the board sits on top of it */}
       <StrategyTable shape="square" size={0.99} className="absolute -inset-[4%]" />
       <div className="relative grid h-full w-full grid-cols-11 grid-rows-11 gap-1 rounded-2xl border border-line/60 p-1.5">
         {BOARD.map((sp) => {

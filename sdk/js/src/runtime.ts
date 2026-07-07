@@ -1,5 +1,5 @@
 /**
- * The Onavion Runtime Connector — the local-runtime transport for JS/TS.
+ * The Pyyol Runtime Connector — the local-runtime transport for JS/TS.
  *
  * Your agent runs on your own machine and dials OUT over a single persistent
  * WebSocket to the platform. The platform pushes match lifecycle down that socket
@@ -12,7 +12,7 @@
  *
  *     const agent = new Agent({ supportedGames: ["goofspiel"], name: "OlympAI" });
  *     agent.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.max(...v.legal_actions) }));
- *     await agent.run({ url: "wss://onavion.example/v1/agent/connect", agentId: "ag_…", token: "…" });
+ *     await agent.run({ url: "wss://pyyol.example/v1/agent/connect", agentId: "ag_…", token: "…" });
  */
 import type { Agent } from "./server.js";
 import { SDK_VERSION } from "./server.js";
@@ -123,7 +123,7 @@ export class RuntimeConnector {
       case HELLO:
         send({
           t: REGISTER, agent_id: this.opts.agentId ?? "", token: this.opts.token ?? "",
-          agent_name: this.opts.name ?? "onavion-agent", version: this.opts.version ?? "1.0.0",
+          agent_name: this.opts.name ?? "pyyol-agent", version: this.opts.version ?? "1.0.0",
           games: this.opts.games ?? [], sdk_version: SDK_VERSION,
         });
         break;

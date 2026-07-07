@@ -1,6 +1,6 @@
 "use client";
 
-// Onavion Strategy Table — the shared luxury surface every game is played on.
+// Pyyol Strategy Table — the shared luxury surface every game is played on.
 // A pure-SVG dark-walnut table (round · oval · square · rectangular) with layered
 // 3D depth (top surface → bevel → lower edge → ambient + floor shadow), fine SVG
 // wood grain, an above-lit center spotlight, and an optional "night" dimming.
