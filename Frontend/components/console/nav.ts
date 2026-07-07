@@ -65,6 +65,7 @@ export const NAV: NavItem[] = [
       { label: "Quick Play", href: "/play" },
       { label: "Ranked", href: "/ranked" },
       { label: "Rankings", href: "/rankings" },
+      { label: "Model Benchmark", href: "/benchmark" },
       { label: "Tournaments", href: "/tournaments" },
     ],
   },

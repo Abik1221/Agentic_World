@@ -23,6 +23,48 @@ type Repo interface {
 	// it records the roll and, iff newly rolled, emits a season.rolled event in the
 	// same transaction. champion may be "" (no matches). Returns whether it rolled.
 	RollSeason(ctx context.Context, season int, champion string) (rolled bool, err error)
+
+	// ModelBenchmark aggregates the season's competitive results by the agents'
+	// DECLARED model (provider+model from their manifest — self-reported, never
+	// verified). Only models with >= minGames total games are returned.
+	ModelBenchmark(ctx context.Context, season, minGames int) ([]ModelStat, error)
+
+	// AgentStanding returns one agent's place in the season (rank, totals, declared
+	// model). found=false when the agent has no rating row this season.
+	AgentStanding(ctx context.Context, season int, agentPublicID string) (standing Standing, found bool, err error)
+}
+
+// ModelStat is one declared model's aggregate performance for a season. The
+// provider/model are developer-declared (a "claimed" model), so the UI labels
+// them as such. WinRate/Games are computed by the service.
+type ModelStat struct {
+	Provider string  `json:"provider"`
+	Model    string  `json:"model"`
+	Agents   int     `json:"agents"`
+	Games    int     `json:"games"`
+	Wins     int     `json:"wins"`
+	Losses   int     `json:"losses"`
+	Ties     int     `json:"ties"`
+	AvgElo   int     `json:"avg_elo"`
+	CoinsWon int64   `json:"coins_won"`
+	WinRate  float64 `json:"win_rate"`
+}
+
+// Standing is one agent's season position (for "your rank this season").
+type Standing struct {
+	Season        int    `json:"season"`
+	Rank          int    `json:"rank"`
+	Total         int    `json:"total"`
+	AgentPublicID string `json:"agent"`
+	Name          string `json:"name"`
+	Elo           int    `json:"elo"`
+	Wins          int    `json:"wins"`
+	Losses        int    `json:"losses"`
+	Ties          int    `json:"ties"`
+	CoinsEarned   int64  `json:"coins_earned"`
+	Streak        int    `json:"current_streak"`
+	Provider      string `json:"provider,omitempty"`
+	Model         string `json:"model,omitempty"`
 }
 
 // ApplyInput is the resolved rating update for one finished match. Index 0/1 are

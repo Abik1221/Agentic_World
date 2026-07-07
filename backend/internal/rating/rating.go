@@ -226,6 +226,39 @@ func (s *Service) Leaderboard(ctx context.Context, season, offset, limit int) (L
 	return page, nil
 }
 
+// BenchmarkPage is the "which model wins" board for the current season.
+type BenchmarkPage struct {
+	Season int         `json:"season"`
+	Models []ModelStat `json:"models"`
+}
+
+// ModelBenchmark ranks declared models by season performance. minGames defaults
+// to 1 (a model must have actually played). Games + WinRate are computed here so
+// the store stays a plain aggregation.
+func (s *Service) ModelBenchmark(ctx context.Context, minGames int) (BenchmarkPage, error) {
+	if minGames <= 0 {
+		minGames = 1
+	}
+	season := s.CurrentSeason()
+	models, err := s.repo.ModelBenchmark(ctx, season, minGames)
+	if err != nil {
+		return BenchmarkPage{}, err
+	}
+	for i := range models {
+		m := &models[i]
+		m.Games = m.Wins + m.Losses + m.Ties
+		if decisive := m.Wins + m.Losses; decisive > 0 {
+			m.WinRate = float64(m.Wins) / float64(decisive)
+		}
+	}
+	return BenchmarkPage{Season: season, Models: models}, nil
+}
+
+// Standing returns an agent's rank + totals in the current season.
+func (s *Service) Standing(ctx context.Context, agentPublicID string) (Standing, bool, error) {
+	return s.repo.AgentStanding(ctx, s.CurrentSeason(), agentPublicID)
+}
+
 // ── metrics ──────────────────────────────────────────────────────────────────
 
 type metrics struct{ eloUpdates prometheus.Counter }

@@ -23,6 +23,8 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/leaderboard", h.leaderboard)
 	r.Get("/v1/seasons/current", h.currentSeason)
 	r.Get("/v1/seasons/champion", h.seasonChampion)
+	r.Get("/v1/benchmark/models", h.modelBenchmark)
+	r.Get("/v1/rankings/standing", h.standing)
 	if h.allowDevRoll {
 		r.Post("/v1/admin/dev/roll-season", h.devRollSeason)
 	}
@@ -54,6 +56,41 @@ func (h *Handler) seasonChampion(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "public, max-age=30")
 	httpx.JSON(w, http.StatusOK, res)
+}
+
+// modelBenchmark is the public "which LLM wins" board: declared model × avg ELO ×
+// win-rate × coins won, this season. Models are self-reported (claimed), which the
+// UI makes explicit.
+func (h *Handler) modelBenchmark(w http.ResponseWriter, r *http.Request) {
+	minGames, _ := strconv.Atoi(r.URL.Query().Get("min_games"))
+	page, err := h.svc.ModelBenchmark(r.Context(), minGames)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=30")
+	httpx.JSON(w, http.StatusOK, page)
+}
+
+// standing returns one agent's rank + totals for the current season ("your rank").
+// Public: leaderboard position is not sensitive. 404 if the agent hasn't played.
+func (h *Handler) standing(w http.ResponseWriter, r *http.Request) {
+	agent := r.URL.Query().Get("agent")
+	if agent == "" {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "agent_required", "pass ?agent=<public id>"))
+		return
+	}
+	st, found, err := h.svc.Standing(r.Context(), agent)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if !found {
+		httpx.Error(w, httpx.NewError(http.StatusNotFound, "unranked", "this agent has not played a rated match this season"))
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=15")
+	httpx.JSON(w, http.StatusOK, st)
 }
 
 func (h *Handler) leaderboard(w http.ResponseWriter, r *http.Request) {

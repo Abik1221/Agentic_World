@@ -15,6 +15,8 @@ type rollFakeRepo struct {
 	champions  map[int]string // season -> champion agent id
 	rolled     []int          // seasons passed to RollSeason, in order
 	champSeen  map[int]string // season -> champion passed to RollSeason
+	models     []ModelStat    // canned ModelBenchmark result
+	standing   *Standing      // canned AgentStanding result (nil = not found)
 }
 
 func newRollFakeRepo(lastRolled int) *rollFakeRepo {
@@ -34,6 +36,15 @@ func (f *rollFakeRepo) RollSeason(_ context.Context, season int, champion string
 	f.rolled = append(f.rolled, season)
 	f.champSeen[season] = champion
 	return true, nil
+}
+func (f *rollFakeRepo) ModelBenchmark(context.Context, int, int) ([]ModelStat, error) {
+	return f.models, nil
+}
+func (f *rollFakeRepo) AgentStanding(context.Context, int, string) (Standing, bool, error) {
+	if f.standing == nil {
+		return Standing{}, false, nil
+	}
+	return *f.standing, true, nil
 }
 
 // svcAtSeason builds a Service whose current season is `season` (30-day windows).

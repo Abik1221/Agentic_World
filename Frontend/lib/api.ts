@@ -204,6 +204,62 @@ export function fetchLeaderboard(session?: Session): Promise<LeaderRow[]> {
   );
 }
 
+// ---- Model benchmark ("which LLM wins") + your season standing --------------
+// Models are DECLARED in the manifest (self-reported), so the UI labels them
+// "claimed". Backend: GET /v1/benchmark/models, GET /v1/rankings/standing.
+
+export interface ModelStat {
+  provider: string;
+  model: string;
+  agents: number;
+  games: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  avg_elo: number;
+  coins_won: number;
+  win_rate: number; // 0..1
+}
+export interface BenchmarkPage {
+  season: number;
+  models: ModelStat[];
+}
+
+/** GET /v1/benchmark/models — leading models this season (public). */
+export async function fetchModelBenchmark(): Promise<BenchmarkPage> {
+  try {
+    return await apiRequest<BenchmarkPage>("/v1/benchmark/models");
+  } catch {
+    return { season: 0, models: [] };
+  }
+}
+
+export interface Standing {
+  season: number;
+  rank: number;
+  total: number;
+  agent: string;
+  name: string;
+  elo: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  coins_earned: number;
+  current_streak: number;
+  provider?: string;
+  model?: string;
+}
+
+/** GET /v1/rankings/standing?agent= — your rank this season (null if unranked). */
+export async function fetchStanding(agentId: string): Promise<Standing | null> {
+  if (!agentId) return null;
+  try {
+    return await apiRequest<Standing>(`/v1/rankings/standing?agent=${encodeURIComponent(agentId)}`);
+  } catch {
+    return null; // 404 = hasn't played a rated match this season
+  }
+}
+
 // ---- Ranked matchmaking & seasons -------------------------------------------
 // Ranked pairs an agent with another in its ELO band. Entering the queue is
 // agent-scoped (agent API key); reading the current season + champion is public.

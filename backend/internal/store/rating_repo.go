@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 
 	"github.com/agent-arena/arena/internal/events"
@@ -117,6 +118,78 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int)
 		out = append(out, lr)
 	}
 	return out, rows.Err()
+}
+
+// ModelBenchmark groups the season's rated agents by their DECLARED model (the
+// latest non-rejected manifest per agent) and aggregates games/elo/coins. Only
+// models with >= minGames total games are returned, best avg-ELO first.
+func (r *RatingRepo) ModelBenchmark(ctx context.Context, season, minGames int) ([]rating.ModelStat, error) {
+	rows, err := r.db.Query(ctx,
+		`WITH mdl AS (
+		   SELECT DISTINCT ON (agent_id) agent_id,
+		          model_provider AS provider, model_name AS model
+		   FROM agent_manifests
+		   WHERE status <> 'rejected'
+		     AND COALESCE(model_provider,'') <> '' AND COALESCE(model_name,'') <> ''
+		   ORDER BY agent_id, created_at DESC
+		 )
+		 SELECT mdl.provider, mdl.model,
+		        COUNT(*)::int                              AS agents,
+		        COALESCE(SUM(r.wins),0)::int               AS wins,
+		        COALESCE(SUM(r.losses),0)::int             AS losses,
+		        COALESCE(SUM(r.ties),0)::int               AS ties,
+		        COALESCE(ROUND(AVG(r.elo)),0)::int         AS avg_elo,
+		        COALESCE(SUM(r.coins_earned),0)::bigint    AS coins_won
+		 FROM mdl
+		 JOIN agents  a ON a.id = mdl.agent_id AND a.kind <> 'house'
+		 JOIN ratings r ON r.agent_id = mdl.agent_id AND r.season = $1
+		 GROUP BY mdl.provider, mdl.model
+		 HAVING (COALESCE(SUM(r.wins),0)+COALESCE(SUM(r.losses),0)+COALESCE(SUM(r.ties),0)) >= $2
+		 ORDER BY avg_elo DESC, coins_won DESC`, season, minGames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rating.ModelStat
+	for rows.Next() {
+		var s rating.ModelStat
+		if err := rows.Scan(&s.Provider, &s.Model, &s.Agents, &s.Wins, &s.Losses, &s.Ties, &s.AvgElo, &s.CoinsWon); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AgentStanding returns an agent's rank + totals for the season. Rank is 1-based,
+// ordered by ELO desc (ties broken by lower agent_id, matching the leaderboard).
+func (r *RatingRepo) AgentStanding(ctx context.Context, season int, agentPublicID string) (rating.Standing, bool, error) {
+	var s rating.Standing
+	s.Season = season
+	s.AgentPublicID = agentPublicID
+	err := r.db.QueryRow(ctx,
+		`SELECT a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak,
+		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
+		      WHERE r2.season = $1 AND a2.kind <> 'house'
+		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
+		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
+		      WHERE r3.season = $1 AND a3.kind <> 'house') AS total,
+		   COALESCE((SELECT model_provider FROM agent_manifests m WHERE m.agent_id = a.id
+		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
+		   COALESCE((SELECT model_name FROM agent_manifests m WHERE m.agent_id = a.id
+		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), '')
+		 FROM ratings r JOIN agents a ON a.id = r.agent_id
+		 WHERE r.season = $1 AND a.public_id = $2`,
+		season, agentPublicID).
+		Scan(&s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
+			&s.Rank, &s.Total, &s.Provider, &s.Model)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return rating.Standing{}, false, nil
+	}
+	if err != nil {
+		return rating.Standing{}, false, err
+	}
+	return s, true, nil
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
