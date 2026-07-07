@@ -338,6 +338,171 @@ def cmd_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- play / watch (start a match, spectate — the AGENT plays, never the human) --
+
+# Which endpoint starts a self-driving match per game. The developer's connected
+# agent (onavion run) plays it; this only *starts* it. There is deliberately no
+# move-input path anywhere in the CLI — a human never plays for the agent.
+_PLAY_PATH = {
+    "goofspiel": "/v1/sandbox/pushplay",
+    "mafia": "/v1/mafia/pushplay",
+    "monopoly": "/v1/monopoly/pushplay",
+}
+
+# SSE event types that end a match, so `watch` can return control.
+_TERMINAL_EVENTS = {"match_finished", "victory", "game_over", "game_finished", "finished"}
+
+
+def _http_base(args: argparse.Namespace, creds) -> str:
+    """Resolve the HTTP API base for /v1/... calls: --api, ONAVION_API, the
+    logged-in api url, else derived from the WSS connect url (ws→http)."""
+    if getattr(args, "api", ""):
+        return args.api.rstrip("/")
+    if os.environ.get("ONAVION_API"):
+        return os.environ["ONAVION_API"].rstrip("/")
+    if creds and creds.url:
+        return creds.url.rstrip("/")
+    if creds and creds.connect_url:
+        u = urllib.parse.urlsplit(creds.connect_url)
+        scheme = "https" if u.scheme in ("wss", "https") else "http"
+        return urllib.parse.urlunsplit((scheme, u.netloc, "", "", ""))
+    return ""
+
+
+def cmd_play(args: argparse.Namespace) -> int:
+    """Start a self-driving match. Your connected agent (onavion run) plays it —
+    this command only kicks it off, then optionally spectates."""
+    from . import credentials
+
+    creds = credentials.load()
+    token = args.token or (creds.access_token if creds else "") or os.environ.get("ONAVION_TOKEN", "")
+    if not token:
+        print(f"{BAD} not logged in — run `onavion login` first", file=sys.stderr)
+        return 2
+    base = _http_base(args, creds)
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `onavion login`", file=sys.stderr)
+        return 2
+
+    body = {}
+    if args.game == "goofspiel" and args.difficulty:
+        body["difficulty"] = args.difficulty
+    if args.game == "monopoly" and args.players:
+        body["players"] = args.players
+
+    st, resp = _api_post(f"{base}{_PLAY_PATH[args.game]}", token, body)
+    if st not in (200, 201):
+        code = resp.get("code") or resp.get("error") or ""
+        if "transport" in str(code) or "no_agent" in str(code):
+            print(f"{BAD} your agent isn't connected. In another terminal run `onavion run`, then retry.", file=sys.stderr)
+        else:
+            print(f"{BAD} could not start match ({st}): {resp}", file=sys.stderr)
+        return 1
+    match_id = resp.get("match_id") or resp.get("MatchID") or resp.get("id") or ""
+    print(f"{OK} match started: {match_id}  ({args.game}) — your agent is playing it.")
+    if args.watch and match_id:
+        print("  spectating (read-only) — Ctrl-C to stop\n")
+        return _watch(base, match_id, args)
+    print(f"    watch it:  onavion watch {match_id}")
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Spectate a live match in the terminal — READ-ONLY. Renders the event
+    stream; there is no way to influence the game from here."""
+    from . import credentials
+
+    creds = credentials.load()
+    base = _http_base(args, creds)
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `onavion login`", file=sys.stderr)
+        return 2
+    if not args.match:
+        print(f"{BAD} usage: onavion watch <match_id>", file=sys.stderr)
+        return 2
+    return _watch(base, args.match, args)
+
+
+def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
+    from .console import build_console
+
+    console = build_console(mode="json" if getattr(args, "json", False) else "pretty",
+                            color=False if getattr(args, "no_color", False) else None)
+    url = f"{base}/v1/match/{urllib.parse.quote(match_id)}/watch"
+    req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
+    console.emit("match", f"spectating {match_id} (read-only)")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            _render_sse(resp, console)
+    except KeyboardInterrupt:
+        print("\nstopped watching.")
+    except urllib.error.HTTPError as e:
+        print(f"{BAD} watch failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        print(f"{BAD} watch failed: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _render_sse(lines, console) -> None:
+    """Parse a text/event-stream and render each frame via the console (read-only).
+    Returns when the match reaches a terminal event or the stream closes."""
+    event, data = None, []
+    for raw in lines:
+        line = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else raw
+        line = line.rstrip("\r\n")
+        if line == "":  # frame boundary
+            if data:
+                payload = "\n".join(data)
+                try:
+                    obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    obj = {"raw": payload}
+                kind = event or "event"
+                console.emit(kind, _sse_summary(obj), seq=obj.get("seq"))
+                if kind in _TERMINAL_EVENTS:
+                    console.emit("game_end", "match finished")
+                    return
+            event, data = None, []
+            continue
+        if line.startswith(":"):  # keepalive comment
+            continue
+        field, _, value = line.partition(":")
+        value = value.lstrip()
+        if field == "event":
+            event = value
+        elif field == "data":
+            data.append(value)
+        # `id:` is the resume cursor; not needed for display
+
+
+def _sse_summary(obj) -> str:
+    """A short, human line for a spectator event payload."""
+    if not isinstance(obj, dict):
+        return str(obj)
+    for k in ("winner", "text", "action", "card", "phase", "message"):
+        if obj.get(k) not in (None, ""):
+            return f"{k}: {obj[k]}"
+    return json.dumps(obj, separators=(",", ":"))[:70]
+
+
+def _api_post(url: str, token: str, body):
+    data = json.dumps(body).encode() if body else b""
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, (json.loads(raw) if raw else {})
+        except json.JSONDecodeError:
+            return e.code, {"raw": raw.decode(errors="replace")}
+
+
 # --- run (connect the local agent over WSS) ------------------------------------
 
 def _log_file_handler():
@@ -541,6 +706,24 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--quiet", action="store_true", help="only milestones (connect / match / result)")
     pr.add_argument("--no-color", action="store_true", help="disable ANSI color")
     pr.set_defaults(func=cmd_run)
+
+    ppl = sub.add_parser("play", help="start a self-driving match (your agent plays it)")
+    ppl.add_argument("game", choices=["goofspiel", "mafia", "monopoly"])
+    ppl.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
+    ppl.add_argument("--token", default="", help="agent token (defaults to the logged-in one)")
+    ppl.add_argument("--difficulty", default="", help="goofspiel house difficulty (optional)")
+    ppl.add_argument("--players", type=int, default=0, help="monopoly player count (optional)")
+    ppl.add_argument("--watch", action="store_true", help="spectate the match after starting it")
+    ppl.add_argument("--json", action="store_true", help="JSON event lines when spectating")
+    ppl.add_argument("--no-color", action="store_true")
+    ppl.set_defaults(func=cmd_play)
+
+    pw = sub.add_parser("watch", help="spectate a live match in the terminal (read-only)")
+    pw.add_argument("match", help="match id (from `onavion play` or the dashboard)")
+    pw.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
+    pw.add_argument("--json", action="store_true", help="emit one JSON object per line")
+    pw.add_argument("--no-color", action="store_true")
+    pw.set_defaults(func=cmd_watch)
 
     pp = sub.add_parser("publish", help="submit + verify a manifest via the platform API")
     pp.add_argument("--api", default="", help="platform API base, e.g. https://host/api (or from login)")
