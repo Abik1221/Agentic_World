@@ -58,7 +58,16 @@ func (s *Service) quote(coins int64) Quote {
 
 // Available returns the agent's withdrawable winnings and the quote for cashing
 // out `coins` (or all of it when coins <= 0).
-func (s *Service) Available(ctx context.Context, agentPublicID string, coins int64) (int64, Quote, error) {
+func (s *Service) Available(ctx context.Context, callerUserPublicID, agentPublicID string, coins int64) (int64, Quote, error) {
+	// Ownership check (mirrors Request): a user may only read their own agent's
+	// withdrawable balance/quote — this leaks another user's net winnings otherwise.
+	owner, _, err := s.repo.AgentOwner(ctx, agentPublicID)
+	if err != nil {
+		return 0, Quote{}, err
+	}
+	if owner != callerUserPublicID {
+		return 0, Quote{}, ErrForbiddenSelf
+	}
 	avail, err := s.repo.Withdrawable(ctx, agentPublicID)
 	if err != nil {
 		return 0, Quote{}, err

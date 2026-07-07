@@ -99,7 +99,11 @@ func (r *MafiaRepo) Get(ctx context.Context, matchPublicID string) (mafia.Match,
 	m.Seed = seed
 	m.RoundDeadline = deadline
 	if len(stateBytes) > 0 {
-		_ = json.Unmarshal(stateBytes, &m.State)
+		// Authoritative state: a decode error must fail loudly, not silently load a
+		// zero-value (phantom empty) match that Act/view would then operate on.
+		if err := json.Unmarshal(stateBytes, &m.State); err != nil {
+			return mafia.Match{}, err
+		}
 	}
 	players, err := r.loadPlayers(ctx, matchPublicID)
 	if err != nil {

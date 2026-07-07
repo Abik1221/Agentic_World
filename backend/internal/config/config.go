@@ -274,6 +274,12 @@ func (c *Config) validate() error {
 		if c.HCaptchaSecret == "" {
 			errs = append(errs, "HCAPTCHA_SECRET is required in prod/staging (onboarding would otherwise use the dev accept-all captcha)")
 		}
+		// A wildcard CORS origin lets any site read authenticated JSON responses.
+		for _, o := range c.CORSAllowedOrigins {
+			if strings.TrimSpace(o) == "*" {
+				errs = append(errs, "CORS_ALLOWED_ORIGINS must not be \"*\" in prod/staging")
+			}
+		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(errs, "\n  - "))

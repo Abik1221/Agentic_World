@@ -132,7 +132,7 @@ func newSvc(repo payout.Repo, bank payout.Bank, xfer payout.Transferrer) *payout
 func TestQuoteAppliesFeesAndStripeFee(t *testing.T) {
 	repo := newRepo()
 	repo.withdrawable = 1000
-	_, q, err := newSvc(repo, newBank(), &fakeXfer{}).Available(context.Background(), "ag_a", 0)
+	_, q, err := newSvc(repo, newBank(), &fakeXfer{}).Available(context.Background(), "usr_a", "ag_a", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +166,10 @@ func TestRequestRequiresKYCAndCleanAccount(t *testing.T) {
 	notOwner := newRepo()
 	if _, err := newSvc(notOwner, newBank(), &fakeXfer{}).Request(ctx, "usr_other", "ag_a", 500); err != payout.ErrForbiddenSelf {
 		t.Fatalf("non-owner = %v, want ErrForbiddenSelf", err)
+	}
+	// IDOR guard (M6): reading another user's withdrawable balance is forbidden.
+	if _, _, err := newSvc(newRepo(), newBank(), &fakeXfer{}).Available(ctx, "usr_other", "ag_a", 0); err != payout.ErrForbiddenSelf {
+		t.Fatalf("Available non-owner = %v, want ErrForbiddenSelf", err)
 	}
 	indebted := newRepo()
 	indebted.debt = 200

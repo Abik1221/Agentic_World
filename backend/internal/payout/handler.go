@@ -44,6 +44,7 @@ func (h *Handler) Register(r chi.Router) {
 }
 
 func (h *Handler) withdrawable(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
 	agent := r.URL.Query().Get("agent")
 	if agent == "" {
 		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "agent_required", "Specify ?agent="))
@@ -55,7 +56,7 @@ func (h *Handler) withdrawable(w http.ResponseWriter, r *http.Request) {
 			coins = n
 		}
 	}
-	avail, quote, err := h.svc.Available(r.Context(), agent, coins)
+	avail, quote, err := h.svc.Available(r.Context(), p.UserPublicID, agent, coins)
 	if err != nil {
 		httpx.Error(w, err)
 		return

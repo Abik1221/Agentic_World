@@ -41,7 +41,10 @@ func (r *SpectatorRepo) LiveMatches(ctx context.Context) ([]spectator.LiveMatch,
 		}
 		var st gs.State
 		if len(stateBytes) > 0 {
-			_ = json.Unmarshal(stateBytes, &st)
+			// Skip a row with corrupt state rather than list a zero-value phantom.
+			if err := json.Unmarshal(stateBytes, &st); err != nil {
+				continue
+			}
 		}
 		lm.Round = st.Round
 		lm.Scores = st.Scores

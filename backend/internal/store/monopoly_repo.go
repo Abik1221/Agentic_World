@@ -78,7 +78,11 @@ func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.
 	m.Seed = seed
 	m.RoundDeadline = deadline
 	if len(stateBytes) > 0 {
-		_ = json.Unmarshal(stateBytes, &m.State)
+		// Authoritative state: fail loudly on a decode error rather than load a
+		// zero-value (phantom reset) board that PendingSeat/view/Act would trust.
+		if err := json.Unmarshal(stateBytes, &m.State); err != nil {
+			return monopoly.Match{}, err
+		}
 	}
 	m.Players = len(m.State.Players)
 	m.WinnerSeat = m.State.Winner
@@ -233,7 +237,12 @@ func (r *MonopolyRepo) LiveMatches(ctx context.Context) ([]monopoly.LiveMatch, e
 			return nil, err
 		}
 		var st mono.State
-		_ = json.Unmarshal(stateBytes, &st)
+		if len(stateBytes) > 0 {
+			// Skip a row with corrupt state rather than list a zero-value phantom.
+			if err := json.Unmarshal(stateBytes, &st); err != nil {
+				continue
+			}
+		}
 		lm.Title = "Monopoly AI Arena"
 		lm.Agents = agents
 		lm.Players = len(st.Players)
