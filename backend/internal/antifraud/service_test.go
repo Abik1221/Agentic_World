@@ -48,7 +48,10 @@ func (r *fakeRepo) RecordHold(_ context.Context, m, reason string) (bool, error)
 	r.holds[m] = reason
 	return true, nil
 }
-func (r *fakeRepo) ResolveHold(_ context.Context, m, status string) error { r.holds[m] = status; return nil }
+func (r *fakeRepo) ResolveHold(_ context.Context, m, status string) error {
+	r.holds[m] = status
+	return nil
+}
 func (r *fakeRepo) OpenDispute(_ context.Context, in antifraud.DisputeInput) (string, error) {
 	return in.PublicID, nil
 }

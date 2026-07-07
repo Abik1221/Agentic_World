@@ -20,7 +20,7 @@ func TestVersionLess(t *testing.T) {
 		{"1.2.0", "1.10.0", true}, // numeric, not lexical
 		{"1.0.0", "1.0.0", false},
 		{"2.0.0", "1.9.9", false},
-		{"1.0", "1.0.0", false},      // missing patch defaults to 0
+		{"1.0", "1.0.0", false},       // missing patch defaults to 0
 		{"1.0.0-rc1", "1.0.0", false}, // suffix dropped; cores equal
 		{"", "1.0.0", false},          // unparseable ⇒ fail open (not less)
 		{"1.0.0", "garbage", false},   // unparseable ⇒ fail open

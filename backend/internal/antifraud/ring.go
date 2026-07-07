@@ -14,10 +14,10 @@ type Ring struct {
 }
 
 const (
-	ringMinMembers   = 3           // a ring is 3+ agents (pairs are handled by IsColluding)
-	ringEdgeWinR     = 0.70        // looser than the pairwise ban (0.85): rings hide below it
+	ringMinMembers   = 3            // a ring is 3+ agents (pairs are handled by IsColluding)
+	ringEdgeWinR     = 0.70         // looser than the pairwise ban (0.85): rings hide below it
 	ringMinEdgeGames = minPairGames // an edge needs a long-enough series
-	ringSinkShare    = 0.60        // a sink must capture ≥60% of the ring's net winnings
+	ringSinkShare    = 0.60         // a sink must capture ≥60% of the ring's net winnings
 )
 
 type ringEdge struct {
