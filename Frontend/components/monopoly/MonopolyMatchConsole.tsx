@@ -20,6 +20,7 @@ import {
   type MonopolyLogEvent,
 } from "@/lib/api";
 import { getSession } from "@/lib/session";
+import { GameOverModal, type Standing } from "@/components/game/GameOverModal";
 
 const TARGETLESS = new Set([
   "roll", "roll_jail", "pay_jail", "use_jail_card", "end_turn",
@@ -98,6 +99,26 @@ export function MonopolyMatchConsole({
   const finished = view.status === "finished";
   const myReward = view.result?.rewards.find((r) => r.seat === view.yourSeat);
 
+  // Post-match results popup: bankrupt seats are "out", the rest ranked by cash,
+  // the solvent leader wins. Auto-opens once the match finishes.
+  const [resultsOpen, setResultsOpen] = useState(false);
+  useEffect(() => {
+    if (finished) setResultsOpen(true);
+  }, [finished]);
+  const standings = useMemo<Standing[]>(() => {
+    const players = [...(st?.players ?? [])];
+    players.sort((a, b) => Number(a.bankrupt) - Number(b.bankrupt) || b.cash - a.cash);
+    return players.map((p, i) => ({
+      key: String(p.seat),
+      name: `Seat ${p.seat}`,
+      seat: p.seat,
+      you: p.seat === view.yourSeat,
+      rank: i + 1,
+      outcome: (i === 0 && !p.bankrupt ? "winner" : p.bankrupt ? "eliminated" : "survived") as Standing["outcome"],
+      detail: p.bankrupt ? "Bankrupt" : `$${p.cash.toLocaleString()}`,
+    }));
+  }, [st, view.yourSeat]);
+
   const owned = useMemo(() => {
     if (!st) return [] as number[];
     return st.holdings
@@ -121,6 +142,21 @@ export function MonopolyMatchConsole({
 
   return (
     <div className="mt-8 grid gap-5 lg:grid-cols-[1.05fr_1fr]">
+      <GameOverModal
+        open={resultsOpen}
+        onClose={() => setResultsOpen(false)}
+        title="Monopoly · Match Results"
+        banner={finished ? "Last player standing wins" : undefined}
+        standings={standings}
+        footer={
+          <button
+            onClick={() => setResultsOpen(false)}
+            className="rounded-sm border border-border-strong px-4 py-2 font-mono text-[12px] font-semibold uppercase tracking-caps text-ink-dim transition hover:text-ink-primary"
+          >
+            Close
+          </button>
+        }
+      />
       {/* Left: table + action */}
       <div className="grid gap-5">
         <Panel glass className="p-6">

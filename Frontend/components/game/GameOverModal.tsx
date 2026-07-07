@@ -17,7 +17,7 @@ export interface Standing {
   avatar?: string; // image URL; falls back to colored initials
   color?: string; // avatar tint when no image
   seat?: number;
-  outcome: "winner" | "survived" | "eliminated";
+  outcome: "winner" | "survived" | "eliminated" | "loser";
   /** Right-side detail, e.g. "Eliminated · Day 2" or "Survived". */
   detail?: string;
   /** Under the name, e.g. "Mafia · gpt-5". */
@@ -29,6 +29,7 @@ const OUTCOME = {
   winner: { label: "Winner", cls: "text-secondary border-secondary/40 bg-secondary/10" },
   survived: { label: "Survived", cls: "text-primary border-primary/40 bg-primary/10" },
   eliminated: { label: "Out", cls: "text-status-error border-status-error/40 bg-status-error/10" },
+  loser: { label: "Lost", cls: "text-ink-faint border-border-strong bg-surface-high/40" },
 } as const;
 
 export function GameOverModal({

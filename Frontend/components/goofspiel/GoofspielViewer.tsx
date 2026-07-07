@@ -8,6 +8,7 @@ import { DiscussionPanel, STATUS, type DiscussionActivity, type DiscussionMessag
 import { StrategyTable } from "@/components/table/StrategyTable";
 import { GINTENT, type GAgent, type GPhase, type GStep } from "@/lib/goofspiel-demo";
 import { useGoofspielLiveScript } from "@/lib/useGoofspielLiveScript";
+import { GameOverModal, type Standing } from "@/components/game/GameOverModal";
 
 function goofEventIcon(t: string) {
   const s = t.toLowerCase();
@@ -242,6 +243,23 @@ export function GoofspielViewer() {
   const preds = d.phase === "thinking" ? predictions(d.round, d.hands, agents) : null;
   const leader = ranked[0];
   const cardsRemaining = d.hands[agents[0].id]?.length ?? 0;
+
+  const standings = React.useMemo<Standing[]>(() => {
+    const top = d.scores[ranked[0]?.id] ?? 0;
+    return ranked.map((a, i) => {
+      const score = d.scores[a.id] ?? 0;
+      const won = d.winner ? a.id === d.winner : i === 0 && score === top;
+      return {
+        key: a.id,
+        name: a.name,
+        color: a.color,
+        rank: i + 1,
+        outcome: (won ? "winner" : "loser") as Standing["outcome"],
+        detail: `${score} pts · ${d.roundsWon[a.id] ?? 0}W`,
+        sub: a.model,
+      };
+    });
+  }, [ranked, d.scores, d.roundsWon, d.winner]);
   const inspected = agents.find((a) => a.id === inspect);
   const revealed = d.phase === "revealed";
 
@@ -436,7 +454,29 @@ export function GoofspielViewer() {
 
       {inspected && <Inspector agent={inspected} d={d} hand={hand} onClose={() => setInspect(null)} />}
 
-      <AnimatePresence>{showFinal && <FinalCelebration d={d} ranked={ranked} onReplay={replayMatch} onClose={() => setShowFinal(false)} />}</AnimatePresence>
+      <GameOverModal
+        open={showFinal}
+        onClose={() => setShowFinal(false)}
+        title="Goofspiel · Match Results"
+        banner={`${leader?.name ?? "Winner"} takes the match`}
+        standings={standings}
+        footer={
+          <>
+            <button
+              onClick={() => setShowFinal(false)}
+              className="rounded-sm border border-border-strong px-4 py-2 font-mono text-[12px] font-semibold uppercase tracking-caps text-ink-dim transition hover:text-ink-primary"
+            >
+              Close
+            </button>
+            <button
+              onClick={replayMatch}
+              className="rounded-sm bg-primary-container px-4 py-2 font-mono text-[12px] font-semibold uppercase tracking-caps text-on-primary transition hover:bg-primary"
+            >
+              Watch again
+            </button>
+          </>
+        }
+      />
     </div>
   );
 }
