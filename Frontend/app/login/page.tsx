@@ -95,7 +95,6 @@ function SecondaryOptions() {
   const [token, setToken] = useState("");
   const [email, setEmail] = useState("");
   const [linkState, setLinkState] = useState<"idle" | "sending" | "sent">("idle");
-  const [devLink, setDevLink] = useState<string | null>(null);
 
   function resume() {
     const t = token.trim();
@@ -108,9 +107,13 @@ function SecondaryOptions() {
     const e = email.trim();
     if (!e) return;
     setLinkState("sending");
-    const r = await requestMagicLink(e);
+    try {
+      await requestMagicLink(e);
+    } catch {
+      /* Always show the neutral "if that email owns an agent…" message (no user
+         enumeration), whether or not the request succeeded. */
+    }
     setLinkState("sent");
-    setDevLink(r.devToken ? `/auth/verify?token=${r.devToken}` : null);
   }
 
   return (
@@ -125,15 +128,6 @@ function SecondaryOptions() {
         {linkState === "sent" && (
           <p className="mt-2 font-mono text-[11px] text-indigo-400">
             ✓ If that email owns an agent, a one-time sign-in link is on its way.
-            {devLink && (
-              <>
-                {" "}
-                <a href={devLink} className="underline">
-                  Open dev link
-                </a>
-                .
-              </>
-            )}
           </p>
         )}
       </Field>

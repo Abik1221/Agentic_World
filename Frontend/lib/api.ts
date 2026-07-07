@@ -26,7 +26,13 @@ export const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8080"
 ).replace(/\/$/, "");
 
-const STRICT = process.env.NEXT_PUBLIC_API_STRICT === "1";
+// Strict = no mock fallback; a backend error surfaces instead of fake data. ON in
+// production by default (a prod misconfig must fail loudly, never render or "log
+// in" with fabricated data), and opt-in in dev via NEXT_PUBLIC_API_STRICT=1.
+// Set NEXT_PUBLIC_API_STRICT=0 to force the mock UX even in prod (demo builds).
+const STRICT =
+  process.env.NEXT_PUBLIC_API_STRICT === "1" ||
+  (process.env.NODE_ENV === "production" && process.env.NEXT_PUBLIC_API_STRICT !== "0");
 
 export class ApiError extends Error {
   status: number;
@@ -612,26 +618,17 @@ export function register(agentName: string, description: string): Promise<Regist
 }
 
 // ---- Email + password auth (public) -----------------------------------------
-// When the Go API is reachable these hit the real /v1/auth endpoints, so real
-// errors (wrong password, email already taken) surface to the user. When the API
-// is unreachable (backend not running) they fall back to a local DEMO session so
-// the flow is still usable in a frontend-only dev setup — mirroring the mock
-// fallback every other call in this file uses.
-//
-// The distinction is precise: apiRequest throws an ApiError only when the backend
-// *responded* with an error status; a genuine network failure throws a plain
-// TypeError. We rethrow ApiError (and always rethrow under NEXT_PUBLIC_API_STRICT)
-// and only fall back on the network-failure case.
+// Auth ALWAYS hits the real /v1/auth endpoints. Unlike the read-only mock
+// fallbacks elsewhere, auth NEVER fabricates a session: minting fake
+// `dev-dash-…`/`sk_arena_dev_…` credentials on a backend outage would "log the
+// user in" with junk that 401s on every real call and masks a prod misconfig.
+// Any failure (ApiError or a network TypeError) propagates so the UI shows it.
 
 export interface SignupResult {
   dashboard_token: string;
   api_key: string; // shown exactly once
   agent_id: string;
   agent_name: string;
-}
-
-function randId(prefix: string, n = 10): string {
-  return `${prefix}${Math.random().toString(36).slice(2, 2 + n)}`;
 }
 
 /** POST /v1/auth/signup — create an email+password owner + agent (rate-limited). */
@@ -641,26 +638,15 @@ export async function signup(input: {
   agentName: string;
   description?: string;
 }): Promise<SignupResult> {
-  try {
-    return await apiRequest<SignupResult>("/v1/auth/signup", {
-      method: "POST",
-      body: {
-        email: input.email,
-        password: input.password,
-        agent_name: input.agentName,
-        description: input.description ?? "",
-      },
-    });
-  } catch (err) {
-    if (STRICT || err instanceof ApiError) throw err; // backend spoke — respect it
-    // Offline/dev fallback: mint a local demo session so sign-up still works.
-    return {
-      dashboard_token: randId("dev-dash-"),
-      api_key: randId("sk_arena_dev_", 14),
-      agent_id: randId("ag_"),
+  return apiRequest<SignupResult>("/v1/auth/signup", {
+    method: "POST",
+    body: {
+      email: input.email,
+      password: input.password,
       agent_name: input.agentName,
-    };
-  }
+      description: input.description ?? "",
+    },
+  });
 }
 
 export interface LoginResult {
@@ -670,21 +656,13 @@ export interface LoginResult {
 }
 
 /** POST /v1/auth/login — email+password sign-in, returns a dashboard session. */
-export async function login(email: string, password: string): Promise<LoginResult> {
-  try {
-    return await apiRequest<LoginResult>("/v1/auth/login", {
-      method: "POST",
-      body: { email, password },
-    });
-  } catch (err) {
-    if (STRICT || err instanceof ApiError) throw err; // e.g. 401 wrong password
-    // Offline/dev fallback: accept the credentials locally so the console opens.
-    return {
-      dashboard_token: randId("dev-dash-"),
-      agent_id: randId("ag_"),
-      agent_name: email.split("@")[0] || "agent",
-    };
-  }
+export function login(email: string, password: string): Promise<LoginResult> {
+  // No offline fallback — see the signup note. A failed login must surface, never
+  // silently open the console with a fabricated session.
+  return apiRequest<LoginResult>("/v1/auth/login", {
+    method: "POST",
+    body: { email, password },
+  });
 }
 
 export interface VerifyResult {
@@ -1830,34 +1808,22 @@ export async function fetchNotifications(session?: Session): Promise<Notificatio
 
 export interface MagicLinkResult {
   sent: boolean;
-  devToken?: string; // dev/offline fallback only — never returned by prod backend
 }
 
 /** POST /v1/auth/magic-link — email a one-time sign-in link (passwordless recovery). */
 export async function requestMagicLink(email: string): Promise<MagicLinkResult> {
-  try {
-    await apiRequest("/v1/auth/magic-link", { method: "POST", body: { email } });
-    return { sent: true };
-  } catch {
-    // Offline/demo fallback: hand back a dev token so the verify page is testable.
-    const devToken = `dev-${Math.random().toString(36).slice(2, 10)}`;
-    return { sent: true, devToken };
-  }
+  // Real endpoint only — no dev token fabrication (auth never fakes credentials).
+  await apiRequest("/v1/auth/magic-link", { method: "POST", body: { email } });
+  return { sent: true };
 }
 
 /** GET /v1/auth/magic-link/verify — consume a link, returning a fresh session. */
-export async function verifyMagicLink(
+export function verifyMagicLink(
   token: string,
 ): Promise<{ dashboard_token: string; api_key?: string; agent_id?: string }> {
-  try {
-    return await apiRequest<{ dashboard_token: string; api_key?: string; agent_id?: string }>(
-      `/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`,
-    );
-  } catch (err) {
-    // Demo fallback: accept dev tokens so the recovery UX is exercisable offline.
-    if (token.startsWith("dev-")) return { dashboard_token: token };
-    throw err;
-  }
+  return apiRequest<{ dashboard_token: string; api_key?: string; agent_id?: string }>(
+    `/v1/auth/magic-link/verify?token=${encodeURIComponent(token)}`,
+  );
 }
 
 // ── Monopoly (AI-vs-AI property strategy) ───────────────────────────────────
