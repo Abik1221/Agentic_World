@@ -33,6 +33,11 @@ type Config struct {
 
 	// HTTP
 	CORSAllowedOrigins []string
+	// TrustedProxyCount is how many reverse proxies (edge/LB) sit in front of the
+	// app. The client IP is read as the Nth-from-the-right X-Forwarded-For entry
+	// (the address our own trusted hops vouch for), so a client can't spoof it by
+	// prepending forged entries. Default 1 (a single LB).
+	TrustedProxyCount int
 
 	// Auth & onboarding (Stage 1)
 	JWTSigningKey     string
@@ -148,6 +153,7 @@ func Load() (*Config, error) {
 		RedisURL:    l.required("REDIS_URL"),
 
 		CORSAllowedOrigins: l.csv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+		TrustedProxyCount:  l.intVal("TRUSTED_PROXY_COUNT", 1),
 
 		JWTSigningKey:     l.required("JWT_SIGNING_KEY"),
 		APIKeyPepper:      l.required("API_KEY_PEPPER"),
@@ -256,6 +262,17 @@ func (c *Config) validate() error {
 		}
 		if strings.Contains(c.APIKeyPepper, "dev-only") {
 			errs = append(errs, "API_KEY_PEPPER must not be a dev placeholder in prod/staging")
+		}
+		// Fail closed: the platform config bus signs rake/fees/rewards config with
+		// this key. Without it the verifier is nil and every snapshot "verifies"
+		// (accepts forged config). Require it in prod rather than boot unauthenticated.
+		if c.PlatformAdminPublicKey == "" {
+			errs = append(errs, "PLATFORM_ADMIN_PUBLIC_KEY is required in prod/staging (config bus would otherwise accept unsigned/forged config)")
+		}
+		// Fail closed: without a captcha secret the dev accept-all captcha is used,
+		// removing the only non-rate-limit anti-automation control on onboarding.
+		if c.HCaptchaSecret == "" {
+			errs = append(errs, "HCAPTCHA_SECRET is required in prod/staging (onboarding would otherwise use the dev accept-all captcha)")
 		}
 	}
 	if len(errs) > 0 {

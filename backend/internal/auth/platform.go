@@ -76,14 +76,29 @@ func (v *PlatformVerifier) Verify(token string) (*Principal, error) {
 		return nil, errors.New("auth: unexpected platform token issuer")
 	}
 	now := time.Now().Unix()
-	if c.Exp != 0 && now >= c.Exp {
+	// Require an expiry: a token with no exp previously never expired, making a
+	// leaked super-admin credential permanent. Also cap the lifetime so an
+	// over-long exp can't be minted around the policy.
+	if c.Exp == 0 {
+		return nil, errors.New("auth: platform token missing exp")
+	}
+	if now >= c.Exp {
 		return nil, errors.New("auth: platform token expired")
 	}
-	if c.Iat != 0 && now < c.Iat-60 {
-		return nil, errors.New("auth: platform token not yet valid")
+	if c.Iat != 0 {
+		if now < c.Iat-60 {
+			return nil, errors.New("auth: platform token not yet valid")
+		}
+		if c.Exp-c.Iat > int64(maxPlatformTokenAge/time.Second) {
+			return nil, errors.New("auth: platform token lifetime exceeds max")
+		}
 	}
 	return &Principal{Scope: ScopePlatform, UserPublicID: c.Sub}, nil
 }
+
+// maxPlatformTokenAge bounds how long a super-admin platform token may live, so a
+// leaked token has a limited blast radius even if minted with a distant exp.
+const maxPlatformTokenAge = 24 * time.Hour
 
 // platformCredential extracts the token from an "Authorization: Platform <token>"
 // header, or "" if the header is absent or uses a different scheme.

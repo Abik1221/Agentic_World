@@ -56,6 +56,20 @@ func TestValidate(t *testing.T) {
 			c.JWTSigningKey = "short"
 			c.APIKeyPepper = "real-pepper"
 		}, "JWT_SIGNING_KEY"},
+		{"prod requires platform admin key", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.HCaptchaSecret = "hc-secret"
+			// PlatformAdminPublicKey left empty -> must be rejected (fail closed).
+		}, "PLATFORM_ADMIN_PUBLIC_KEY"},
+		{"prod requires captcha secret", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.PlatformAdminPublicKey = "some-key"
+			// HCaptchaSecret left empty -> must be rejected (fail closed).
+		}, "HCAPTCHA_SECRET"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

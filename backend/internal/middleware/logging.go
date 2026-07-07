@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -36,15 +37,37 @@ func Logging(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// ClientIP returns the best-effort client IP, honoring X-Forwarded-For set by a
-// trusted edge/LB. Used for logging, captcha, and rate-limit keys.
+// trustedProxyCount is how many reverse proxies (edge/LB) sit in front of the app;
+// set once at startup via SetTrustedProxies. Read-only afterward.
+var trustedProxyCount = 1
+
+// SetTrustedProxies configures the number of trusted front proxies (clamped >=1).
+func SetTrustedProxies(n int) {
+	if n < 1 {
+		n = 1
+	}
+	trustedProxyCount = n
+}
+
+// ClientIP returns the best-effort client IP. X-Forwarded-For is a list where each
+// hop APPENDS the address it received from, so the rightmost entries are the ones
+// our own trusted proxies added. We take the entry `trustedProxyCount` from the
+// right — the address our infra vouches for — which a client cannot forge by
+// prepending values (the old code trusted the leftmost, attacker-controlled entry).
+// Falls back to the direct peer when XFF is absent or too short.
 func ClientIP(r *http.Request) string {
-	// Trust the edge/LB to set X-Forwarded-For; take the first hop if present.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
+		parts := strings.Split(xff, ",")
+		n := trustedProxyCount
+		if n > len(parts) {
+			n = len(parts)
 		}
-		return strings.TrimSpace(xff)
+		if ip := strings.TrimSpace(parts[len(parts)-n]); ip != "" {
+			return ip
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }

@@ -179,6 +179,9 @@ func run() error {
 	}
 	authn := auth.NewAuthenticator(idSvc, jwt, platformAuth, log)
 
+	// Client IP is read as the Nth-from-the-right X-Forwarded-For hop so it can't
+	// be spoofed to bypass rate limits (see middleware.ClientIP).
+	middleware.SetTrustedProxies(cfg.TrustedProxyCount)
 	limiter := store.NewRateLimiter(st.Redis)
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
 	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
