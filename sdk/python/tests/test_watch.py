@@ -25,10 +25,22 @@ def test_render_sse_parses_and_stops_on_terminal():
     # with a keepalive comment, ending in a terminal event.
     stream = [
         b": keepalive\n",
-        b"id: 1\n", b"event: round_revealed\n", b'data: {"seq":1,"card":7}\n', b"\n",
-        b"id: 2\n", b"event: message\n", b'data: {"seq":2,"text":"hello"}\n', b"\n",
-        b"id: 3\n", b"event: victory\n", b'data: {"seq":3,"winner":0}\n', b"\n",
-        b"id: 4\n", b"event: after_end\n", b'data: {"seq":4}\n', b"\n",  # must NOT be rendered
+        b"id: 1\n",
+        b"event: round_revealed\n",
+        b'data: {"seq":1,"card":7}\n',
+        b"\n",
+        b"id: 2\n",
+        b"event: message\n",
+        b'data: {"seq":2,"text":"hello"}\n',
+        b"\n",
+        b"id: 3\n",
+        b"event: victory\n",
+        b'data: {"seq":3,"winner":0}\n',
+        b"\n",
+        b"id: 4\n",
+        b"event: after_end\n",
+        b'data: {"seq":4}\n',
+        b"\n",  # must NOT be rendered
     ]
     cli._render_sse(iter(stream), console)
 
@@ -43,7 +55,9 @@ def test_render_sse_parses_and_stops_on_terminal():
 def test_render_sse_handles_multiline_data_and_bad_json():
     console = RecordingConsole()
     stream = [
-        b"event: chunk\n", b"data: not-json\n", b"\n",
+        b"event: chunk\n",
+        b"data: not-json\n",
+        b"\n",
     ]
     cli._render_sse(iter(stream), console)
     assert console.events and console.events[0][0] == "chunk"

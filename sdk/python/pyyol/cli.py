@@ -38,12 +38,18 @@ BAD = "✗"
 
 # --- HTTP helper (signed, stdlib) ---------------------------------------------
 
+
 def _rfc3339() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _request(url: str, method: str, secret: str, payload: Optional[Dict[str, Any]],
-             sign_path: Optional[str] = None) -> tuple[int, Dict[str, Any]]:
+def _request(
+    url: str,
+    method: str,
+    secret: str,
+    payload: Optional[Dict[str, Any]],
+    sign_path: Optional[str] = None,
+) -> tuple[int, Dict[str, Any]]:
     """Send a (optionally signed) request. ``sign_path`` is the path the signature
     binds; defaults to the URL's path."""
     from urllib.parse import urlsplit
@@ -58,7 +64,9 @@ def _request(url: str, method: str, secret: str, payload: Optional[Dict[str, Any
         ts = _rfc3339()
         headers[TIMESTAMP_HEADER] = ts
         headers[REQUEST_ID_HEADER] = nonce
-        headers[SIGNATURE_HEADER] = f"{SIGNATURE_VERSION}={compute_signature(secret, ts, nonce, method, path, body)}"
+        headers[SIGNATURE_HEADER] = (
+            f"{SIGNATURE_VERSION}={compute_signature(secret, ts, nonce, method, path, body)}"
+        )
         headers["Authorization"] = "Bearer " + secret
     req = urllib.request.Request(url, data=body or None, method=method, headers=headers)
     try:
@@ -81,6 +89,7 @@ def _sibling(url: str, name: str) -> str:
 
 # --- validate ------------------------------------------------------------------
 
+
 def cmd_validate(args: argparse.Namespace) -> int:
     url, secret = args.url, args.secret or ""
     checks: List[tuple[str, bool, str]] = []
@@ -95,8 +104,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     # 2. handshake (signed POST)
     try:
-        st, body = _request(_sibling(url, "handshake"), "POST", secret,
-                            {"platform": "agent-arena", "protocol": "1.0"})
+        st, body = _request(
+            _sibling(url, "handshake"),
+            "POST",
+            secret,
+            {"platform": "agent-arena", "protocol": "1.0"},
+        )
         acc = st == 200 and bool(body.get("accepted"))
         games = ",".join(body.get("supportedGames", []) or [])
         checks.append(("handshake", acc, f"{st} accepted={body.get('accepted')} games=[{games}]"))
@@ -126,43 +139,82 @@ def cmd_validate(args: argparse.Namespace) -> int:
         mark = OK if ok else BAD
         all_ok = all_ok and ok
         print(f"  {mark} {name:<12} {detail}")
-    print("\n" + ("PASS — endpoint speaks the push protocol." if all_ok
-                   else "FAIL — fix the checks marked ✗ above."))
+    print(
+        "\n"
+        + (
+            "PASS — endpoint speaks the push protocol."
+            if all_ok
+            else "FAIL — fix the checks marked ✗ above."
+        )
+    )
     return 0 if all_ok else 1
 
 
 def _synthetic_turn(game: str):
     """Return (view, legal, is_legal_move_fn) for a probe turn."""
     if game == "monopoly":
-        view = {"game": "monopoly", "match_id": "validate", "seat": 0, "phase": "roll",
-                "legal_actions": ["roll", "end_turn"], "state": {"players": [], "phase": "roll"}}
+        view = {
+            "game": "monopoly",
+            "match_id": "validate",
+            "seat": 0,
+            "phase": "roll",
+            "legal_actions": ["roll", "end_turn"],
+            "state": {"players": [], "phase": "roll"},
+        }
         return view, ["roll", "end_turn"], lambda m: m.get("action") in ("roll", "end_turn")
     if game == "mafia":
-        view = {"game": "mafia", "match_id": "validate", "your_seat": 1, "your_role": "villager",
-                "day": 1, "phase": "day", "alive": {"1": True, "2": True, "3": True},
-                "legal": ["vote"], "public": [], "private": []}
+        view = {
+            "game": "mafia",
+            "match_id": "validate",
+            "your_seat": 1,
+            "your_role": "villager",
+            "day": 1,
+            "phase": "day",
+            "alive": {"1": True, "2": True, "3": True},
+            "legal": ["vote"],
+            "public": [],
+            "private": [],
+        }
         return view, ["vote"], lambda m: m.get("action") == "vote"
     # goofspiel (default)
-    view = {"game": "goofspiel", "match_id": "validate", "seat": 0, "round": 0,
-            "current_prize": 5, "prize_pool": 5, "your_hand": [1, 2, 3, 4, 5],
-            "scores": [0, 0], "legal_actions": [1, 2, 3, 4, 5]}
+    view = {
+        "game": "goofspiel",
+        "match_id": "validate",
+        "seat": 0,
+        "round": 0,
+        "current_prize": 5,
+        "prize_pool": 5,
+        "your_hand": [1, 2, 3, 4, 5],
+        "scores": [0, 0],
+        "legal_actions": [1, 2, 3, 4, 5],
+    }
     return view, [1, 2, 3, 4, 5], lambda m: m.get("card") in [1, 2, 3, 4, 5]
 
 
 def _lifecycle_probes(game: str):
     return [
-        ("initialize", {"protocol": "1.0", "match_id": "validate", "game": game, "seat": 0, "players": 2}),
-        ("event", {"protocol": "1.0", "match_id": "validate", "game": game, "seq": 1, "type": "probe"}),
+        (
+            "initialize",
+            {"protocol": "1.0", "match_id": "validate", "game": game, "seat": 0, "players": 2},
+        ),
+        (
+            "event",
+            {"protocol": "1.0", "match_id": "validate", "game": game, "seq": 1, "type": "probe"},
+        ),
         ("game-end", {"protocol": "1.0", "match_id": "validate", "game": game, "result": {}}),
     ]
 
 
 # --- simulate (drive a running endpoint over HTTP) -----------------------------
 
+
 def cmd_simulate(args: argparse.Namespace) -> int:
     if args.game != "goofspiel":
-        print(f"simulate currently supports goofspiel (got {args.game!r}); "
-              f"use `validate` for a single-turn check of any game.", file=sys.stderr)
+        print(
+            f"simulate currently supports goofspiel (got {args.game!r}); "
+            f"use `validate` for a single-turn check of any game.",
+            file=sys.stderr,
+        )
         return 2
     url, secret = args.url, args.secret or ""
     hand = args.hand
@@ -172,13 +224,25 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     scores = [0, 0]
     carried = 0
 
-    _request(_sibling(url, "initialize"), "POST", secret,
-             {"protocol": "1.0", "match_id": "sim", "game": "goofspiel", "seat": 0, "players": 2})
+    _request(
+        _sibling(url, "initialize"),
+        "POST",
+        secret,
+        {"protocol": "1.0", "match_id": "sim", "game": "goofspiel", "seat": 0, "players": 2},
+    )
     for rnd, prize in enumerate(prizes):
         pool = prize + carried
-        view = {"game": "goofspiel", "match_id": "sim", "seat": 0, "round": rnd,
-                "current_prize": prize, "prize_pool": pool, "your_hand": list(dev_hand),
-                "scores": list(scores), "legal_actions": list(dev_hand)}
+        view = {
+            "game": "goofspiel",
+            "match_id": "sim",
+            "seat": 0,
+            "round": rnd,
+            "current_prize": prize,
+            "prize_pool": pool,
+            "your_hand": list(dev_hand),
+            "scores": list(scores),
+            "legal_actions": list(dev_hand),
+        }
         st, move = _request(url, "POST", secret, view)
         card = move.get("card")
         if st != 200 or card not in dev_hand:
@@ -188,20 +252,28 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         dev_hand.remove(card)
         opp_hand.remove(opp)
         if card > opp:
-            scores[0] += pool; carried = 0
+            scores[0] += pool
+            carried = 0
         elif opp > card:
-            scores[1] += pool; carried = 0
+            scores[1] += pool
+            carried = 0
         else:
             carried = pool
     winner = "agent" if scores[0] > scores[1] else "baseline" if scores[1] > scores[0] else "tie"
-    _request(_sibling(url, "game-end"), "POST", secret,
-             {"protocol": "1.0", "match_id": "sim", "game": "goofspiel",
-              "result": {"scores": scores}})
-    print(f"simulate goofspiel ({hand} rounds): winner={winner} scores agent={scores[0]} baseline={scores[1]}")
+    _request(
+        _sibling(url, "game-end"),
+        "POST",
+        secret,
+        {"protocol": "1.0", "match_id": "sim", "game": "goofspiel", "result": {"scores": scores}},
+    )
+    print(
+        f"simulate goofspiel ({hand} rounds): winner={winner} scores agent={scores[0]} baseline={scores[1]}"
+    )
     return 0
 
 
 # --- publish (submit -> set secret -> verify) ----------------------------------
+
 
 def cmd_publish(args: argparse.Namespace) -> int:
     from . import credentials
@@ -217,8 +289,12 @@ def cmd_publish(args: argparse.Namespace) -> int:
         manifest = f.read()
 
     def api_req(method: str, path: str, body: Optional[bytes], ctype: str = "application/json"):
-        req = urllib.request.Request(api + path, data=body, method=method,
-                                     headers={"Authorization": "Bearer " + token, "Content-Type": ctype})
+        req = urllib.request.Request(
+            api + path,
+            data=body,
+            method=method,
+            headers={"Authorization": "Bearer " + token, "Content-Type": ctype},
+        )
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 raw = resp.read()
@@ -235,8 +311,11 @@ def cmd_publish(args: argparse.Namespace) -> int:
     print(f"{OK} manifest submitted: {mid}")
 
     if args.secret:
-        st, r = api_req("PUT", f"/v1/agents/{agent}/manifest/{mid}/endpoint-secret",
-                        json.dumps({"token": args.secret}).encode())
+        st, r = api_req(
+            "PUT",
+            f"/v1/agents/{agent}/manifest/{mid}/endpoint-secret",
+            json.dumps({"token": args.secret}).encode(),
+        )
         if st != 200:
             print(f"{BAD} set endpoint secret failed ({st}): {r}", file=sys.stderr)
             return 1
@@ -251,14 +330,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 # --- login / logout ------------------------------------------------------------
 
+
 def cmd_login(args: argparse.Namespace) -> int:
     from . import credentials, login
 
     # Explicit token paste (headless/CI fallback) — normal onboarding uses the browser.
     if args.token:
         creds = credentials.Credentials(
-            url=args.api, connect_url=args.connect or login.derive_connect_url(args.api),
-            agent_id=args.agent, access_token=args.token)
+            url=args.api,
+            connect_url=args.connect or login.derive_connect_url(args.api),
+            agent_id=args.agent,
+            access_token=args.token,
+        )
         backend = credentials.save(creds)
         print(f"{OK} stored credentials ({backend})")
         return 0
@@ -290,6 +373,7 @@ def cmd_logout(_args: argparse.Namespace) -> int:
 
 # --- status / logs -------------------------------------------------------------
 
+
 def cmd_status(args: argparse.Namespace) -> int:
     from . import credentials
 
@@ -304,12 +388,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 2
     req = urllib.request.Request(
         f"{api}/v1/agent/status?agent_id={urllib.parse.quote(agent_id)}",
-        headers={"Authorization": "Bearer " + creds.access_token})
+        headers={"Authorization": "Bearer " + creds.access_token},
+    )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as e:
-        print(f"{BAD} status failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr)
+        print(
+            f"{BAD} status failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr
+        )
         return 1
     except Exception as e:  # noqa: BLE001
         print(f"{BAD} status failed: {e}", file=sys.stderr)
@@ -333,7 +420,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
         return 0
     with open(path) as f:
         lines = f.readlines()
-    for line in lines[-args.n:]:
+    for line in lines[-args.n :]:
         sys.stdout.write(line)
     return 0
 
@@ -394,7 +481,10 @@ def cmd_play(args: argparse.Namespace) -> int:
     if st not in (200, 201):
         code = resp.get("code") or resp.get("error") or ""
         if "transport" in str(code) or "no_agent" in str(code):
-            print(f"{BAD} your agent isn't connected. In another terminal run `pyyol run`, then retry.", file=sys.stderr)
+            print(
+                f"{BAD} your agent isn't connected. In another terminal run `pyyol run`, then retry.",
+                file=sys.stderr,
+            )
         else:
             print(f"{BAD} could not start match ({st}): {resp}", file=sys.stderr)
         return 1
@@ -426,8 +516,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
     from .console import build_console
 
-    console = build_console(mode="json" if getattr(args, "json", False) else "pretty",
-                            color=False if getattr(args, "no_color", False) else None)
+    console = build_console(
+        mode="json" if getattr(args, "json", False) else "pretty",
+        color=False if getattr(args, "no_color", False) else None,
+    )
     url = f"{base}/v1/match/{urllib.parse.quote(match_id)}/watch"
     req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
     console.emit("match", f"spectating {match_id} (read-only)")
@@ -437,7 +529,9 @@ def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nstopped watching.")
     except urllib.error.HTTPError as e:
-        print(f"{BAD} watch failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr)
+        print(
+            f"{BAD} watch failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr
+        )
         return 1
     except Exception as e:  # noqa: BLE001
         print(f"{BAD} watch failed: {e}", file=sys.stderr)
@@ -489,8 +583,12 @@ def _sse_summary(obj) -> str:
 
 def _api_post(url: str, token: str, body):
     data = json.dumps(body).encode() if body else b""
-    req = urllib.request.Request(url, data=data, method="POST",
-                                 headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = resp.read()
@@ -504,6 +602,7 @@ def _api_post(url: str, token: str, body):
 
 
 # --- run (connect the local agent over WSS) ------------------------------------
+
 
 def _log_file_handler():
     """Attach a file handler so `pyyol logs` has content. Propagation is off so
@@ -532,9 +631,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     creds = credentials.load()
     url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
     if not url:
-        print(f"{BAD} no platform URL — pass --url, set PYYOL_URL, or run `pyyol login`", file=sys.stderr)
+        print(
+            f"{BAD} no platform URL — pass --url, set PYYOL_URL, or run `pyyol login`",
+            file=sys.stderr,
+        )
         return 2
-    agent_id = args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
+    agent_id = (
+        args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
+    )
     token = args.token or os.environ.get("PYYOL_TOKEN", "") or (creds.access_token if creds else "")
     _log_file_handler()
 
@@ -547,7 +651,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     spec.loader.exec_module(mod)
     agent = getattr(mod, args.var, None)
     if agent is None:
-        print(f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)", file=sys.stderr)
+        print(
+            f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)",
+            file=sys.stderr,
+        )
         return 2
 
     from .console import build_console
@@ -566,7 +673,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 # --- init (scaffold) -----------------------------------------------------------
 
-_PY_STARTER = '''\
+_PY_STARTER = """\
 import os
 from pyyol import Agent
 from pyyol.models import GoofspielView, GoofspielMove
@@ -580,9 +687,9 @@ def decide(view: GoofspielView) -> GoofspielMove:
 
 if __name__ == "__main__":
     agent.serve(port=int(os.environ.get("PORT", "9099")))
-'''
+"""
 
-_JS_STARTER = '''\
+_JS_STARTER = """\
 import {{ Agent }} from "pyyol";
 
 const agent = new Agent({{ secret: process.env.PYYOL_SECRET, supportedGames: ["goofspiel"], name: "{name}" }});
@@ -590,7 +697,7 @@ const agent = new Agent({{ secret: process.env.PYYOL_SECRET, supportedGames: ["g
 agent.onTurn("goofspiel", (v) => ({{ round: v.round, card: Math.min(...v.legal_actions) }}));
 
 agent.serve(Number(process.env.PORT ?? 9099));
-'''
+"""
 
 # Matches the platform manifest schema (schema.go): manifestVersion "1.0", a
 # nested `agent` block, endpoint.authentication == "bearer-token", camelCase keys.
@@ -645,11 +752,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"    pip install pyyol && python {path}")
     else:
         print(f"    npm install pyyol && node {path}")
-    print(f"    pyyol validate --url http://localhost:9099/turn --secret <your-secret>")
+    print("    pyyol validate --url http://localhost:9099/turn --secret <your-secret>")
     return 0
 
 
 # --- entry point ---------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pyyol", description="Agent Arena developer CLI (Beta)")
@@ -676,7 +784,9 @@ def build_parser() -> argparse.ArgumentParser:
     ps.set_defaults(func=cmd_simulate)
 
     pl = sub.add_parser("login", help="log in via the browser and store credentials")
-    pl.add_argument("--dashboard", default="", help="dashboard base URL (opens {dashboard}/cli-login)")
+    pl.add_argument(
+        "--dashboard", default="", help="dashboard base URL (opens {dashboard}/cli-login)"
+    )
     pl.add_argument("--api", default="", help="platform API base URL to record")
     pl.add_argument("--connect", default="", help="override the WSS connect URL")
     pl.add_argument("--agent", default="", help="agent public id (if known)")
@@ -692,7 +802,9 @@ def build_parser() -> argparse.ArgumentParser:
     pst.set_defaults(func=cmd_status)
 
     plg = sub.add_parser("logs", help="show recent local agent logs")
-    plg.add_argument("--file", default="", help="log file path (defaults to ~/.pyyol/logs/agent.log)")
+    plg.add_argument(
+        "--file", default="", help="log file path (defaults to ~/.pyyol/logs/agent.log)"
+    )
     plg.add_argument("-n", type=int, default=50, help="number of trailing lines")
     plg.set_defaults(func=cmd_logs)
 
@@ -702,8 +814,12 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--url", default="", help="platform connect URL (or PYYOL_URL)")
     pr.add_argument("--agent", default="", help="agent public id (or PYYOL_AGENT_ID)")
     pr.add_argument("--token", default="", help="access token (or PYYOL_TOKEN)")
-    pr.add_argument("--json", action="store_true", help="emit one JSON object per line (for piping)")
-    pr.add_argument("--quiet", action="store_true", help="only milestones (connect / match / result)")
+    pr.add_argument(
+        "--json", action="store_true", help="emit one JSON object per line (for piping)"
+    )
+    pr.add_argument(
+        "--quiet", action="store_true", help="only milestones (connect / match / result)"
+    )
     pr.add_argument("--no-color", action="store_true", help="disable ANSI color")
     pr.set_defaults(func=cmd_run)
 
@@ -726,7 +842,9 @@ def build_parser() -> argparse.ArgumentParser:
     pw.set_defaults(func=cmd_watch)
 
     pp = sub.add_parser("publish", help="submit + verify a manifest via the platform API")
-    pp.add_argument("--api", default="", help="platform API base, e.g. https://host/api (or from login)")
+    pp.add_argument(
+        "--api", default="", help="platform API base, e.g. https://host/api (or from login)"
+    )
     pp.add_argument("--agent", default="", help="agent public id (ag_…) (or from login)")
     pp.add_argument("--token", default="", help="dashboard JWT / access token (or from login)")
     pp.add_argument("--manifest", required=True, help="path to manifest.json")

@@ -1,4 +1,5 @@
 """Tests for the pyyol Python SDK. Run: pytest (from sdk/python)."""
+
 import sys
 import time
 from pathlib import Path
@@ -50,8 +51,13 @@ def test_health_is_unsigned():
 def test_tampered_signature_rejected():
     a = _agent()
     status, body = a.handle(
-        "POST", "/turn",
-        {"X-Arena-Signature": "v1=deadbeef", "X-Arena-Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "X-Arena-Request-Id": "x"},
+        "POST",
+        "/turn",
+        {
+            "X-Arena-Signature": "v1=deadbeef",
+            "X-Arena-Timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "X-Arena-Request-Id": "x",
+        },
         b'{"game":"goofspiel"}',
     )
     assert status == 401 and body["reason"] == "bad_signature"

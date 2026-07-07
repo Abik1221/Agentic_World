@@ -38,8 +38,8 @@ def _cred_path() -> str:
 
 @dataclass
 class Credentials:
-    url: str = ""            # platform API/base URL
-    connect_url: str = ""    # WSS connect URL (derived if empty)
+    url: str = ""  # platform API/base URL
+    connect_url: str = ""  # WSS connect URL (derived if empty)
     agent_id: str = ""
     access_token: str = ""
     refresh_token: str = ""

@@ -98,8 +98,11 @@ class RuntimeConnector:
         # non-local host it would be exposed. Warn loudly (but never print it).
         host = urlsplit(self.url).hostname or ""
         if self.url.startswith("ws://") and host not in _LOCAL_HOSTS:
-            self._emit("warn", f"insecure transport: {self.url} sends your token in cleartext — use wss://",
-                       level=logging.WARNING)
+            self._emit(
+                "warn",
+                f"insecure transport: {self.url} sends your token in cleartext — use wss://",
+                level=logging.WARNING,
+            )
 
     # --- public API -----------------------------------------------------------
 
@@ -120,8 +123,12 @@ class RuntimeConnector:
                 if not self.reconnect or self._stop.is_set():
                     self._emit("disconnected", "connection closed", level=logging.WARNING)
                     raise
-                self._emit("reconnecting", f"connection lost — retrying in {backoff:.0f}s",
-                           level=logging.WARNING, reason=str(e))
+                self._emit(
+                    "reconnecting",
+                    f"connection lost — retrying in {backoff:.0f}s",
+                    level=logging.WARNING,
+                    reason=str(e),
+                )
                 if self._stop.wait(backoff):
                     break
                 backoff = min(backoff * 2, self.max_backoff)
@@ -150,24 +157,35 @@ class RuntimeConnector:
             hello = _recv(ws)
             if hello.get("t") != HELLO:
                 raise ConnectorError(f"expected hello, got {hello.get('t')!r}")
-            send({
-                "t": REGISTER, "agent_id": self.agent_id, "token": self.token,
-                "agent_name": self.name, "version": self.version,
-                "games": self.games, "sdk_version": __version__,
-            })
+            send(
+                {
+                    "t": REGISTER,
+                    "agent_id": self.agent_id,
+                    "token": self.token,
+                    "agent_name": self.name,
+                    "version": self.version,
+                    "games": self.games,
+                    "sdk_version": __version__,
+                }
+            )
             reg = _recv(ws)
             if reg.get("t") == ERROR:
                 raise ConnectorError(f"register rejected: {reg.get('error')} ({reg.get('reason')})")
             if reg.get("t") != REGISTERED:
                 raise ConnectorError(f"expected registered, got {reg.get('t')!r}")
-            self._emit("connected", "ready — playing as this agent",
-                       agent=reg.get("agent_id") or self.agent_id, games=",".join(self.games))
+            self._emit(
+                "connected",
+                "ready — playing as this agent",
+                agent=reg.get("agent_id") or self.agent_id,
+                games=",".join(self.games),
+            )
             self._emit("waiting", "waiting for a match…")
 
             # 2. heartbeat thread — keeps liveness green even during a slow turn.
             hb_stop = threading.Event()
             hb = threading.Thread(
-                target=self._heartbeat, args=(send, hb_stop), daemon=True, name="pyyol-heartbeat")
+                target=self._heartbeat, args=(send, hb_stop), daemon=True, name="pyyol-heartbeat"
+            )
             hb.start()
 
             # 3. read/dispatch loop (runs on this thread until the socket closes).
@@ -203,8 +221,13 @@ class RuntimeConnector:
         elif t == INITIALIZE:
             payload = frame.get("payload") or {}
             self._turn_no = 0
-            self._emit("match", f"{payload.get('game', '')} match started",
-                       match=payload.get("match_id"), seat=payload.get("seat"), role=payload.get("role"))
+            self._emit(
+                "match",
+                f"{payload.get('game', '')} match started",
+                match=payload.get("match_id"),
+                seat=payload.get("seat"),
+                role=payload.get("role"),
+            )
             ack = self.agent.ack_initialize(payload)
             send({"t": RESPONSE, "id": frame.get("id", ""), "payload": ack})
         elif t == EVENT:
@@ -213,14 +236,18 @@ class RuntimeConnector:
         elif t == GAME_END:
             result = frame.get("payload")
             self._emit("game_end", _summarize_result(result), match=frame.get("match_id"))
-            self.agent.notify_game_end({
-                "match_id": frame.get("match_id", ""),
-                "game": frame.get("game", ""),
-                "result": result,
-            })
+            self.agent.notify_game_end(
+                {
+                    "match_id": frame.get("match_id", ""),
+                    "game": frame.get("game", ""),
+                    "result": result,
+                }
+            )
             self._emit("waiting", "waiting for a match…")
         elif t == ERROR:
-            self._emit("error", f"{frame.get('error')} ({frame.get('reason')})", level=logging.WARNING)
+            self._emit(
+                "error", f"{frame.get('error')} ({frame.get('reason')})", level=logging.WARNING
+            )
         else:
             log.debug("ignoring frame %r", t)
 
@@ -237,7 +264,9 @@ class RuntimeConnector:
             send({"t": RESPONSE, "id": rid, "payload": move})
         else:
             # Signal an error so the platform applies its deterministic fallback.
-            self._emit("error", f"turn {self._turn_no}: handler error → fallback", level=logging.WARNING)
+            self._emit(
+                "error", f"turn {self._turn_no}: handler error → fallback", level=logging.WARNING
+            )
             send({"t": RESPONSE, "id": rid, "error": move.get("error", "handler_error")})
 
     @staticmethod

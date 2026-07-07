@@ -127,8 +127,13 @@ class Agent:
         if self._verify:
             try:
                 verify_request(
-                    self.secret, headers, method, path, body,
-                    skew_seconds=self._skew, replay_guard=self._replay,
+                    self.secret,
+                    headers,
+                    method,
+                    path,
+                    body,
+                    skew_seconds=self._skew,
+                    replay_guard=self._replay,
                 )
             except VerificationError as e:
                 log.warning("signature rejected: %s", e.reason)
@@ -186,7 +191,9 @@ class Agent:
 
     def ack_initialize(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Run the initialize handler and return the ack dict."""
-        ack = self._on_initialize(InitializeRequest.from_dict(data)) if self._on_initialize else None
+        ack = (
+            self._on_initialize(InitializeRequest.from_dict(data)) if self._on_initialize else None
+        )
         return ack if isinstance(ack, dict) else {"ready": True, "display_name": self.name}
 
     def notify_event(self, data: Dict[str, Any]) -> None:
@@ -209,8 +216,13 @@ class Agent:
         from .runtime import RuntimeConnector
 
         RuntimeConnector(
-            self, url=url, agent_id=agent_id, token=token,
-            name=self.name, games=self.supported_games, **kwargs,
+            self,
+            url=url,
+            agent_id=agent_id,
+            token=token,
+            name=self.name,
+            games=self.supported_games,
+            **kwargs,
         ).run()
 
     # --- built-in HTTP server ---
@@ -241,7 +253,13 @@ class Agent:
                 pass  # quiet by default; use the "pyyol" logger instead
 
         httpd = ThreadingHTTPServer((host, port), _Handler)
-        log.info("pyyol agent %r listening on http://%s:%d (verify=%s)", self.name, host, port, self._verify)
+        log.info(
+            "pyyol agent %r listening on http://%s:%d (verify=%s)",
+            self.name,
+            host,
+            port,
+            self._verify,
+        )
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

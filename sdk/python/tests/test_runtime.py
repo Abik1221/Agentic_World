@@ -47,8 +47,16 @@ def _agent():
 
 def _run_session(agent, incoming, **kw):
     ws = FakeWS(incoming)
-    conn = RuntimeConnector(agent, url="ws://x", agent_id="ag", token="s",
-                            games=["goofspiel"], heartbeat_interval=100, _connect=lambda *a, **k: ws, **kw)
+    conn = RuntimeConnector(
+        agent,
+        url="ws://x",
+        agent_id="ag",
+        token="s",
+        games=["goofspiel"],
+        heartbeat_interval=100,
+        _connect=lambda *a, **k: ws,
+        **kw,
+    )
     try:
         conn._session()
     except ConnectionError:
@@ -57,14 +65,24 @@ def _run_session(agent, incoming, **kw):
 
 
 def test_register_handshake_and_turn():
-    turn_view = {"game": "goofspiel", "round": 2, "your_hand": [3, 7, 9],
-                 "legal_actions": [3, 7, 9], "current_prize": 5, "prize_pool": 5,
-                 "scores": [0, 0], "seat": 0}
-    ws = _run_session(_agent(), [
-        {"t": "hello", "version": "1.0"},
-        {"t": "registered", "agent_id": "ag"},
-        {"t": "turn", "id": "r1", "payload": turn_view},
-    ])
+    turn_view = {
+        "game": "goofspiel",
+        "round": 2,
+        "your_hand": [3, 7, 9],
+        "legal_actions": [3, 7, 9],
+        "current_prize": 5,
+        "prize_pool": 5,
+        "scores": [0, 0],
+        "seat": 0,
+    }
+    ws = _run_session(
+        _agent(),
+        [
+            {"t": "hello", "version": "1.0"},
+            {"t": "registered", "agent_id": "ag"},
+            {"t": "turn", "id": "r1", "payload": turn_view},
+        ],
+    )
     # First sent frame is the register with capabilities.
     reg = ws.sent[0]
     assert reg["t"] == "register" and reg["games"] == ["goofspiel"] and reg["token"] == "s"
@@ -74,10 +92,14 @@ def test_register_handshake_and_turn():
 
 
 def test_ping_gets_pong():
-    ws = _run_session(_agent(), [
-        {"t": "hello"}, {"t": "registered", "agent_id": "ag"},
-        {"t": "ping", "id": "hb1"},
-    ])
+    ws = _run_session(
+        _agent(),
+        [
+            {"t": "hello"},
+            {"t": "registered", "agent_id": "ag"},
+            {"t": "ping", "id": "hb1"},
+        ],
+    )
     assert any(f["t"] == "pong" and f["id"] == "hb1" for f in ws.sent)
 
 
@@ -93,13 +115,27 @@ def test_event_and_game_end_callbacks_fire():
     def on_end(n):
         got["end"] = n.result
 
-    _run_session(a, [
-        {"t": "hello"}, {"t": "registered", "agent_id": "ag"},
-        {"t": "event", "game": "goofspiel", "match_id": "m", "seq": 4,
-         "kind": "round_revealed", "payload": {"prize": 5}},
-        {"t": "game_end", "game": "goofspiel", "match_id": "m",
-         "payload": {"winner": 0, "scores": [7, 3]}},
-    ])
+    _run_session(
+        a,
+        [
+            {"t": "hello"},
+            {"t": "registered", "agent_id": "ag"},
+            {
+                "t": "event",
+                "game": "goofspiel",
+                "match_id": "m",
+                "seq": 4,
+                "kind": "round_revealed",
+                "payload": {"prize": 5},
+            },
+            {
+                "t": "game_end",
+                "game": "goofspiel",
+                "match_id": "m",
+                "payload": {"winner": 0, "scores": [7, 3]},
+            },
+        ],
+    )
     assert got["events"] == [("round_revealed", 4)]
     assert got["end"] == {"winner": 0, "scores": [7, 3]}
 
@@ -127,15 +163,50 @@ class RecordingConsole:
 def test_console_receives_lifecycle_events():
     a = _agent()
     console = RecordingConsole()
-    ws = FakeWS([
-        {"t": "hello"}, {"t": "registered", "agent_id": "ag"},
-        {"t": "initialize", "id": "i1", "payload": {"match_id": "m1", "game": "goofspiel", "seat": 0}},
-        {"t": "turn", "id": "t1", "payload": {"game": "goofspiel", "round": 1, "your_hand": [3, 7, 9], "legal_actions": [3, 7, 9]}},
-        {"t": "event", "game": "goofspiel", "match_id": "m1", "seq": 1, "kind": "round_revealed", "payload": {}},
-        {"t": "game_end", "game": "goofspiel", "match_id": "m1", "payload": {"winner": 0, "coins_delta": 18}},
-    ])
-    conn = RuntimeConnector(a, url="ws://x", agent_id="ag", token="s", games=["goofspiel"],
-                            console=console, _connect=lambda *args, **kw: ws)
+    ws = FakeWS(
+        [
+            {"t": "hello"},
+            {"t": "registered", "agent_id": "ag"},
+            {
+                "t": "initialize",
+                "id": "i1",
+                "payload": {"match_id": "m1", "game": "goofspiel", "seat": 0},
+            },
+            {
+                "t": "turn",
+                "id": "t1",
+                "payload": {
+                    "game": "goofspiel",
+                    "round": 1,
+                    "your_hand": [3, 7, 9],
+                    "legal_actions": [3, 7, 9],
+                },
+            },
+            {
+                "t": "event",
+                "game": "goofspiel",
+                "match_id": "m1",
+                "seq": 1,
+                "kind": "round_revealed",
+                "payload": {},
+            },
+            {
+                "t": "game_end",
+                "game": "goofspiel",
+                "match_id": "m1",
+                "payload": {"winner": 0, "coins_delta": 18},
+            },
+        ]
+    )
+    conn = RuntimeConnector(
+        a,
+        url="ws://x",
+        agent_id="ag",
+        token="s",
+        games=["goofspiel"],
+        console=console,
+        _connect=lambda *args, **kw: ws,
+    )
     try:
         conn._session()
     except ConnectionError:
@@ -145,8 +216,8 @@ def test_console_receives_lifecycle_events():
     # Connected → waiting → match → decision → event → game_end → waiting.
     assert kinds == ["connected", "waiting", "match", "decision", "event", "game_end", "waiting"]
     decision = next(e for e in console.events if e[0] == "decision")
-    assert "bid 9" in decision[1]           # the move is summarized
-    assert "ms" in decision[2]              # latency is captured
+    assert "bid 9" in decision[1]  # the move is summarized
+    assert "ms" in decision[2]  # latency is captured
     # No event ever carries the token/secret.
     assert all("s" not in str(f.values()) or "token" not in f for _, _, f in console.events)
 
@@ -154,16 +225,22 @@ def test_console_receives_lifecycle_events():
 def test_insecure_ws_warns_without_leaking_token():
     a = _agent()
     console = RecordingConsole()
-    conn = RuntimeConnector(a, url="ws://example.com/connect", token="supersecret",
-                            games=["goofspiel"], reconnect=False, console=console,
-                            _connect=lambda *args, **kw: FakeWS([{"t": "hello"}, {"t": "registered"}]))
+    conn = RuntimeConnector(
+        a,
+        url="ws://example.com/connect",
+        token="supersecret",
+        games=["goofspiel"],
+        reconnect=False,
+        console=console,
+        _connect=lambda *args, **kw: FakeWS([{"t": "hello"}, {"t": "registered"}]),
+    )
     try:
         conn.run()
     except Exception:
         pass
     warn = next((e for e in console.events if e[0] == "warn"), None)
     assert warn is not None and "cleartext" in warn[1]
-    assert "supersecret" not in warn[1]     # never leak the token
+    assert "supersecret" not in warn[1]  # never leak the token
 
 
 def test_handler_error_sends_error_response():
@@ -173,9 +250,17 @@ def test_handler_error_sends_error_response():
     def boom(v):
         raise RuntimeError("strategy blew up")
 
-    ws = _run_session(a, [
-        {"t": "hello"}, {"t": "registered", "agent_id": "ag"},
-        {"t": "turn", "id": "r9", "payload": {"game": "goofspiel", "legal_actions": [1], "your_hand": [1]}},
-    ])
+    ws = _run_session(
+        a,
+        [
+            {"t": "hello"},
+            {"t": "registered", "agent_id": "ag"},
+            {
+                "t": "turn",
+                "id": "r9",
+                "payload": {"game": "goofspiel", "legal_actions": [1], "your_hand": [1]},
+            },
+        ],
+    )
     resp = next(f for f in ws.sent if f["t"] == "response" and f["id"] == "r9")
     assert resp.get("error")  # signals the platform to apply its fallback

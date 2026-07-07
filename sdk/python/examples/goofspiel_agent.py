@@ -8,12 +8,15 @@ Your manifest ``endpoint.url`` should point at the /turn route
 (http://<host>:9099/turn); /health, /initialize, /event and /game-end are served
 as its siblings automatically.
 """
+
 import os
 
 from pyyol import Agent
 from pyyol.models import GoofspielView, GoofspielMove
 
-agent = Agent(secret=os.environ.get("PYYOL_SECRET", ""), supported_games=["goofspiel"], name="lowball")
+agent = Agent(
+    secret=os.environ.get("PYYOL_SECRET", ""), supported_games=["goofspiel"], name="lowball"
+)
 
 
 @agent.on_turn("goofspiel")

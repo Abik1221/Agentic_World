@@ -51,7 +51,9 @@ def canonical_string(timestamp: str, nonce: str, method: str, path: str, body: b
     return "\n".join([timestamp, nonce, method.upper(), path, body_hash])
 
 
-def compute_signature(secret: str, timestamp: str, nonce: str, method: str, path: str, body: bytes) -> str:
+def compute_signature(
+    secret: str, timestamp: str, nonce: str, method: str, path: str, body: bytes
+) -> str:
     """Return the hex HMAC-SHA256 signature for a request."""
     signing = canonical_string(timestamp, nonce, method, path, body).encode()
     return hmac.new(secret.encode(), signing, hashlib.sha256).hexdigest()

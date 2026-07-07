@@ -12,7 +12,7 @@ Nothing here contains game strategy or AI logic; these are pure data shapes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 PROTOCOL_VERSION = "1.0"
 
@@ -23,6 +23,7 @@ SUPPORTED_GAMES = (GOOFSPIEL, MONOPOLY, MAFIA)
 
 
 # --- Lifecycle envelopes -------------------------------------------------------
+
 
 @dataclass
 class InitializeRequest:
@@ -88,6 +89,7 @@ class GameEndNotification:
 
 
 # --- Turn views (per game) -----------------------------------------------------
+
 
 @dataclass
 class GoofspielView:
@@ -199,6 +201,7 @@ def parse_view(d: Dict[str, Any]):
 
 
 # --- Moves (what a turn handler returns) ---------------------------------------
+
 
 @dataclass
 class GoofspielMove:

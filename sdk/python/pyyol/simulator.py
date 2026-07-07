@@ -33,7 +33,9 @@ from .signing import (
 )
 
 
-def _signed_headers(secret: str, method: str, path: str, body: bytes, nonce: str, ts: str) -> Dict[str, str]:
+def _signed_headers(
+    secret: str, method: str, path: str, body: bytes, nonce: str, ts: str
+) -> Dict[str, str]:
     """Build the headers the platform sends, with a valid signature when a secret
     is configured (matching agentclient)."""
     headers = {
@@ -93,18 +95,32 @@ def simulate_goofspiel(
     seq = 0
 
     # Lifecycle: initialize.
-    _post(agent, secret, "/initialize", {
-        "protocol": PROTOCOL_VERSION, "match_id": "sim-goofspiel",
-        "game": GOOFSPIEL, "seat": 0, "players": 2,
-    }, seq)
+    _post(
+        agent,
+        secret,
+        "/initialize",
+        {
+            "protocol": PROTOCOL_VERSION,
+            "match_id": "sim-goofspiel",
+            "game": GOOFSPIEL,
+            "seat": 0,
+            "players": 2,
+        },
+        seq,
+    )
     seq += 1
 
     for rnd, prize in enumerate(prizes):
         pool = prize + carried
         view = {
-            "game": GOOFSPIEL, "match_id": "sim-goofspiel", "seat": 0,
-            "round": rnd, "current_prize": prize, "prize_pool": pool,
-            "your_hand": list(dev_hand), "scores": list(scores),
+            "game": GOOFSPIEL,
+            "match_id": "sim-goofspiel",
+            "seat": 0,
+            "round": rnd,
+            "current_prize": prize,
+            "prize_pool": pool,
+            "your_hand": list(dev_hand),
+            "scores": list(scores),
             "legal_actions": list(dev_hand),
         }
         resp = _post(agent, secret, turn_path, view, seq)
@@ -112,9 +128,7 @@ def simulate_goofspiel(
 
         dev_card = resp.get("card")
         if dev_card not in dev_hand:
-            raise SimulationError(
-                f"round {rnd}: agent bid {dev_card!r}, not in hand {dev_hand}"
-            )
+            raise SimulationError(f"round {rnd}: agent bid {dev_card!r}, not in hand {dev_hand}")
         opp_card = _baseline_bid(opp_hand, pool)
 
         dev_hand.remove(dev_card)
@@ -131,20 +145,37 @@ def simulate_goofspiel(
             carried = pool  # tie — the pool carries into the next round
 
         # Lifecycle: async event that the round resolved.
-        _post(agent, secret, "/event", {
-            "protocol": PROTOCOL_VERSION, "match_id": "sim-goofspiel", "game": GOOFSPIEL,
-            "seq": rnd, "type": "round_revealed",
-            "payload": {"prize": prize, "dev_card": dev_card, "opp_card": opp_card},
-        }, seq)
+        _post(
+            agent,
+            secret,
+            "/event",
+            {
+                "protocol": PROTOCOL_VERSION,
+                "match_id": "sim-goofspiel",
+                "game": GOOFSPIEL,
+                "seq": rnd,
+                "type": "round_revealed",
+                "payload": {"prize": prize, "dev_card": dev_card, "opp_card": opp_card},
+            },
+            seq,
+        )
         seq += 1
 
     winner = 0 if scores[0] > scores[1] else 1 if scores[1] > scores[0] else -1
 
     # Lifecycle: game-end.
-    _post(agent, secret, "/game-end", {
-        "protocol": PROTOCOL_VERSION, "match_id": "sim-goofspiel", "game": GOOFSPIEL,
-        "result": {"winner_seat": winner, "scores": scores},
-    }, seq)
+    _post(
+        agent,
+        secret,
+        "/game-end",
+        {
+            "protocol": PROTOCOL_VERSION,
+            "match_id": "sim-goofspiel",
+            "game": GOOFSPIEL,
+            "result": {"winner_seat": winner, "scores": scores},
+        },
+        seq,
+    )
 
     return {
         "winner": "agent" if winner == 0 else "baseline" if winner == 1 else "tie",
@@ -172,7 +203,9 @@ class LocalClient:
         return self._request("GET", "/health", None)
 
     def handshake(self) -> Dict[str, Any]:
-        return self._request("POST", "/handshake", {"platform": "agent-arena", "protocol": PROTOCOL_VERSION})
+        return self._request(
+            "POST", "/handshake", {"platform": "agent-arena", "protocol": PROTOCOL_VERSION}
+        )
 
     def turn(self, view: Dict[str, Any], turn_path: str = "/turn") -> Dict[str, Any]:
         return self._request("POST", turn_path, view)
@@ -186,8 +219,14 @@ class LocalClient:
         body = json.dumps(payload).encode() if payload is not None else b""
         nonce = f"cli_{int(time.time() * 1000)}"
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        headers = _signed_headers(self.secret, method, path, body, nonce, ts) if payload is not None else {}
-        req = urllib.request.Request(self.base_url + path, data=body or None, method=method, headers=headers)
+        headers = (
+            _signed_headers(self.secret, method, path, body, nonce, ts)
+            if payload is not None
+            else {}
+        )
+        req = urllib.request.Request(
+            self.base_url + path, data=body or None, method=method, headers=headers
+        )
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
         return json.loads(raw) if raw else {}

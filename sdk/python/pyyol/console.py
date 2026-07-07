@@ -36,7 +36,16 @@ _STYLE = {
 }
 
 # Milestones shown even in --quiet mode.
-_QUIET_KINDS = {"connected", "reconnected", "match", "game_end", "disconnected", "error", "warn", "reconnecting"}
+_QUIET_KINDS = {
+    "connected",
+    "reconnected",
+    "match",
+    "game_end",
+    "disconnected",
+    "error",
+    "warn",
+    "reconnecting",
+}
 
 
 class Console:
@@ -52,7 +61,9 @@ class Console:
 class PrettyConsole(Console):
     """Human-readable colored feed."""
 
-    def __init__(self, color: Optional[bool] = None, quiet: bool = False, stream: Optional[TextIO] = None):
+    def __init__(
+        self, color: Optional[bool] = None, quiet: bool = False, stream: Optional[TextIO] = None
+    ):
         self.stream = stream or sys.stdout
         self.quiet = quiet
         if color is None:
@@ -98,7 +109,10 @@ class JsonConsole(Console):
         self._write(kind, msg, **fields)
 
     def _write(self, kind: str, msg: str, **fields: Any) -> None:
-        rec: Dict[str, Any] = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": kind}
+        rec: Dict[str, Any] = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": kind,
+        }
         if msg:
             rec["msg"] = msg
         rec.update({k: v for k, v in fields.items() if v is not None})
@@ -106,7 +120,9 @@ class JsonConsole(Console):
         self.stream.flush()
 
 
-def build_console(mode: str = "pretty", quiet: bool = False, color: Optional[bool] = None) -> Console:
+def build_console(
+    mode: str = "pretty", quiet: bool = False, color: Optional[bool] = None
+) -> Console:
     """Factory used by the CLI: mode is ``pretty`` | ``json``."""
     if mode == "json":
         return JsonConsole()

@@ -20,8 +20,12 @@ def home(tmp_path, monkeypatch):
 def test_save_load_clear_roundtrip(home):
     assert credentials.load() is None
     creds = credentials.Credentials(
-        url="https://host/api", connect_url="wss://host/v1/agent/connect",
-        agent_id="ag_1", access_token="tok", refresh_token="ref")
+        url="https://host/api",
+        connect_url="wss://host/v1/agent/connect",
+        agent_id="ag_1",
+        access_token="tok",
+        refresh_token="ref",
+    )
     backend = credentials.save(creds)
     assert backend == "file"
 
@@ -34,6 +38,7 @@ def test_save_load_clear_roundtrip(home):
     # File must be private (0600).
     import os
     import stat
+
     mode = stat.S_IMODE(os.stat(home / "credentials.json").st_mode)
     assert mode == 0o600
 
@@ -43,7 +48,9 @@ def test_save_load_clear_roundtrip(home):
 
 def test_derive_connect_url():
     assert login.derive_connect_url("https://host/api") == "wss://host/v1/agent/connect"
-    assert login.derive_connect_url("http://localhost:8080") == "ws://localhost:8080/v1/agent/connect"
+    assert (
+        login.derive_connect_url("http://localhost:8080") == "ws://localhost:8080/v1/agent/connect"
+    )
     assert login.derive_connect_url("") == ""
 
 
@@ -58,8 +65,9 @@ def test_login_flow_captures_token_over_loopback(home):
         cb = f"{callback}?token=cli-token-xyz&state={state}&agent_id=ag_99&connect_url=wss://host/v1/agent/connect"
         urllib.request.urlopen(cb, timeout=5).read()
 
-    creds = login.run_login_flow("https://dash.example", api_url="https://host/api",
-                                 timeout=5, _opener=fake_opener)
+    creds = login.run_login_flow(
+        "https://dash.example", api_url="https://host/api", timeout=5, _opener=fake_opener
+    )
     assert creds.access_token == "cli-token-xyz"
     assert creds.agent_id == "ag_99"
     assert creds.connect_url == "wss://host/v1/agent/connect"
