@@ -27,10 +27,14 @@ import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from . import __version__
+from .console import Console
 
 log = logging.getLogger("onavion")
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
 
 # Frame types — byte-identical to the Go gateway (internal/agentgw/frame.go).
 HELLO, REGISTERED, PONG = "hello", "registered", "pong"
@@ -64,6 +68,7 @@ class RuntimeConnector:
         heartbeat_interval: float = 10.0,
         reconnect: bool = True,
         max_backoff: float = 30.0,
+        console: Optional[Console] = None,
         _connect=None,  # injectable for tests (defaults to websockets.sync.client.connect)
     ):
         self.agent = agent
@@ -76,13 +81,32 @@ class RuntimeConnector:
         self.heartbeat_interval = heartbeat_interval
         self.reconnect = reconnect
         self.max_backoff = max_backoff
+        self.console = console or Console()  # silent base unless the CLI installs one
         self._connect = _connect
         self._stop = threading.Event()
+        self._turn_no = 0
+
+    # --- lifecycle emit (file log + live console, never secrets) --------------
+
+    def _emit(self, kind: str, msg: str, level: int = logging.INFO, **fields: Any) -> None:
+        # File/debug log (what `onavion logs` tails) + the live terminal console.
+        log.log(level, "%s %s", kind, msg)
+        self.console.emit(kind, msg, **fields)
+
+    def _security_check(self) -> None:
+        # The register token authenticates the socket; over plaintext ws:// to a
+        # non-local host it would be exposed. Warn loudly (but never print it).
+        host = urlsplit(self.url).hostname or ""
+        if self.url.startswith("ws://") and host not in _LOCAL_HOSTS:
+            self._emit("warn", f"insecure transport: {self.url} sends your token in cleartext — use wss://",
+                       level=logging.WARNING)
 
     # --- public API -----------------------------------------------------------
 
     def run(self) -> None:
         """Connect and serve until interrupted, reconnecting with backoff."""
+        self.console.banner(self.name, self.url)
+        self._security_check()
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -94,8 +118,10 @@ class RuntimeConnector:
                 break
             except Exception as e:  # noqa: BLE001 — any transport error is retryable
                 if not self.reconnect or self._stop.is_set():
+                    self._emit("disconnected", "connection closed", level=logging.WARNING)
                     raise
-                log.warning("connection lost (%s); reconnecting in %.1fs", e, backoff)
+                self._emit("reconnecting", f"connection lost — retrying in {backoff:.0f}s",
+                           level=logging.WARNING, reason=str(e))
                 if self._stop.wait(backoff):
                     break
                 backoff = min(backoff * 2, self.max_backoff)
@@ -134,7 +160,9 @@ class RuntimeConnector:
                 raise ConnectorError(f"register rejected: {reg.get('error')} ({reg.get('reason')})")
             if reg.get("t") != REGISTERED:
                 raise ConnectorError(f"expected registered, got {reg.get('t')!r}")
-            log.info("connected to %s as %s (games=%s)", self.url, reg.get("agent_id") or self.agent_id, self.games)
+            self._emit("connected", "ready — playing as this agent",
+                       agent=reg.get("agent_id") or self.agent_id, games=",".join(self.games))
+            self._emit("waiting", "waiting for a match…")
 
             # 2. heartbeat thread — keeps liveness green even during a slow turn.
             hb_stop = threading.Event()
@@ -173,29 +201,43 @@ class RuntimeConnector:
         elif t == TURN:
             self._handle_turn(frame, send)
         elif t == INITIALIZE:
-            ack = self.agent.ack_initialize(frame.get("payload") or {})
+            payload = frame.get("payload") or {}
+            self._turn_no = 0
+            self._emit("match", f"{payload.get('game', '')} match started",
+                       match=payload.get("match_id"), seat=payload.get("seat"), role=payload.get("role"))
+            ack = self.agent.ack_initialize(payload)
             send({"t": RESPONSE, "id": frame.get("id", ""), "payload": ack})
         elif t == EVENT:
+            self._emit("event", frame.get("kind", "event"), seq=frame.get("seq"))
             self.agent.notify_event(self._event_dict(frame))
         elif t == GAME_END:
+            result = frame.get("payload")
+            self._emit("game_end", _summarize_result(result), match=frame.get("match_id"))
             self.agent.notify_game_end({
                 "match_id": frame.get("match_id", ""),
                 "game": frame.get("game", ""),
-                "result": frame.get("payload"),
+                "result": result,
             })
+            self._emit("waiting", "waiting for a match…")
         elif t == ERROR:
-            log.warning("gateway error: %s (%s)", frame.get("error"), frame.get("reason"))
+            self._emit("error", f"{frame.get('error')} ({frame.get('reason')})", level=logging.WARNING)
         else:
             log.debug("ignoring frame %r", t)
 
     def _handle_turn(self, frame: Dict[str, Any], send) -> None:
         view = frame.get("payload") or {}
+        self._turn_no += 1
+        game = view.get("game", "")
+        started = time.perf_counter()
         status, move = self.agent.decide_turn(view)
+        ms = int((time.perf_counter() - started) * 1000)
         rid = frame.get("id", "")
         if status == 200:
+            self._emit("decision", f"turn {self._turn_no}: {_summarize_move(game, move)}", ms=ms)
             send({"t": RESPONSE, "id": rid, "payload": move})
         else:
             # Signal an error so the platform applies its deterministic fallback.
+            self._emit("error", f"turn {self._turn_no}: handler error → fallback", level=logging.WARNING)
             send({"t": RESPONSE, "id": rid, "error": move.get("error", "handler_error")})
 
     @staticmethod
@@ -216,3 +258,38 @@ def _recv(ws) -> Dict[str, Any]:
         msg = msg.decode("utf-8")
     obj = json.loads(msg)
     return obj if isinstance(obj, dict) else {}
+
+
+def _summarize_move(game: str, move: Any) -> str:
+    """A short, human-readable description of the move for the live feed."""
+    if not isinstance(move, dict):
+        return str(move)
+    if game == "goofspiel" and "card" in move:
+        return f"bid {move['card']}"
+    action = move.get("action")
+    if action:
+        extra = ""
+        if move.get("target"):
+            extra = f" → {move['target']}"
+        elif move.get("property"):
+            extra = f" #{move['property']}"
+        if move.get("text"):
+            extra += f' "{str(move["text"])[:40]}"'
+        return f"{action}{extra}"
+    return json.dumps(move, separators=(",", ":"))[:60]
+
+
+def _summarize_result(result: Any) -> str:
+    """A short outcome summary for the game_end line."""
+    if not isinstance(result, dict):
+        return "game finished"
+    inner = result.get("result") if isinstance(result.get("result"), dict) else result
+    bits = []
+    winner = inner.get("winner")
+    if winner is not None:
+        bits.append(f"winner: {winner}")
+    for k in ("coins_delta", "your_coins", "coins"):
+        if inner.get(k):
+            bits.append(f"{k}={inner[k]}")
+            break
+    return "game finished" + (" · " + " · ".join(str(b) for b in bits) if bits else "")

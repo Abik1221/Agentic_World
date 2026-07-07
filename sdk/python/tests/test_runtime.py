@@ -111,6 +111,61 @@ def test_bad_token_is_terminal():
         conn._session()
 
 
+class RecordingConsole:
+    """Captures the lifecycle events the connector emits, for assertions."""
+
+    def __init__(self):
+        self.events = []
+
+    def banner(self, name, url):
+        pass
+
+    def emit(self, kind, msg, **fields):
+        self.events.append((kind, msg, fields))
+
+
+def test_console_receives_lifecycle_events():
+    a = _agent()
+    console = RecordingConsole()
+    ws = FakeWS([
+        {"t": "hello"}, {"t": "registered", "agent_id": "ag"},
+        {"t": "initialize", "id": "i1", "payload": {"match_id": "m1", "game": "goofspiel", "seat": 0}},
+        {"t": "turn", "id": "t1", "payload": {"game": "goofspiel", "round": 1, "your_hand": [3, 7, 9], "legal_actions": [3, 7, 9]}},
+        {"t": "event", "game": "goofspiel", "match_id": "m1", "seq": 1, "kind": "round_revealed", "payload": {}},
+        {"t": "game_end", "game": "goofspiel", "match_id": "m1", "payload": {"winner": 0, "coins_delta": 18}},
+    ])
+    conn = RuntimeConnector(a, url="ws://x", agent_id="ag", token="s", games=["goofspiel"],
+                            console=console, _connect=lambda *args, **kw: ws)
+    try:
+        conn._session()
+    except ConnectionError:
+        pass
+
+    kinds = [e[0] for e in console.events]
+    # Connected → waiting → match → decision → event → game_end → waiting.
+    assert kinds == ["connected", "waiting", "match", "decision", "event", "game_end", "waiting"]
+    decision = next(e for e in console.events if e[0] == "decision")
+    assert "bid 9" in decision[1]           # the move is summarized
+    assert "ms" in decision[2]              # latency is captured
+    # No event ever carries the token/secret.
+    assert all("s" not in str(f.values()) or "token" not in f for _, _, f in console.events)
+
+
+def test_insecure_ws_warns_without_leaking_token():
+    a = _agent()
+    console = RecordingConsole()
+    conn = RuntimeConnector(a, url="ws://example.com/connect", token="supersecret",
+                            games=["goofspiel"], reconnect=False, console=console,
+                            _connect=lambda *args, **kw: FakeWS([{"t": "hello"}, {"t": "registered"}]))
+    try:
+        conn.run()
+    except Exception:
+        pass
+    warn = next((e for e in console.events if e[0] == "warn"), None)
+    assert warn is not None and "cleartext" in warn[1]
+    assert "supersecret" not in warn[1]     # never leak the token
+
+
 def test_handler_error_sends_error_response():
     a = Agent(supported_games=["goofspiel"])
 

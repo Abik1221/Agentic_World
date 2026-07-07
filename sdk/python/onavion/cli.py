@@ -341,7 +341,8 @@ def cmd_logs(args: argparse.Namespace) -> int:
 # --- run (connect the local agent over WSS) ------------------------------------
 
 def _log_file_handler():
-    """Attach a file handler so `onavion logs` has content."""
+    """Attach a file handler so `onavion logs` has content. Propagation is off so
+    the file is the only logger sink — the live feed is the Console (stdout)."""
     import logging
 
     from . import credentials
@@ -352,6 +353,7 @@ def _log_file_handler():
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger = logging.getLogger("onavion")
     logger.setLevel(logging.INFO)
+    logger.propagate = False
     logger.addHandler(handler)
 
 
@@ -383,9 +385,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)", file=sys.stderr)
         return 2
 
-    print(f"onavion run — connecting {args.file}:{args.var} to {url}")
+    from .console import build_console
+
+    console = build_console(
+        mode="json" if args.json else "pretty",
+        quiet=args.quiet,
+        color=False if args.no_color else None,
+    )
     try:
-        agent.run(url=url, agent_id=agent_id, token=token)
+        agent.run(url=url, agent_id=agent_id, token=token, console=console)
     except KeyboardInterrupt:
         print("\nstopped.")
     return 0
@@ -529,6 +537,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--url", default="", help="platform connect URL (or ONAVION_URL)")
     pr.add_argument("--agent", default="", help="agent public id (or ONAVION_AGENT_ID)")
     pr.add_argument("--token", default="", help="access token (or ONAVION_TOKEN)")
+    pr.add_argument("--json", action="store_true", help="emit one JSON object per line (for piping)")
+    pr.add_argument("--quiet", action="store_true", help="only milestones (connect / match / result)")
+    pr.add_argument("--no-color", action="store_true", help="disable ANSI color")
     pr.set_defaults(func=cmd_run)
 
     pp = sub.add_parser("publish", help="submit + verify a manifest via the platform API")
