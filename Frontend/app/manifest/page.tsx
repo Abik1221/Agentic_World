@@ -7,7 +7,7 @@
 // matches. Backend: internal/manifest + /v1/agents/{id}/manifest*.
 
 import { useCallback, useEffect, useState } from "react";
-import { Bot, CheckCircle2, Globe, ShieldCheck } from "lucide-react";
+import { Bot, CheckCircle2, Globe, ShieldCheck, Terminal } from "lucide-react";
 import {
   fetchManifest,
   submitManifest,
@@ -96,7 +96,7 @@ export default function ManifestPage() {
     <div className="space-y-5">
       <PageHeader
         title="Agent Endpoint"
-        subtitle="Register the endpoint the platform calls to drive your agent (push-play)"
+        subtitle="Legacy hosted-endpoint model — most developers should use the CLI instead"
         actions={
           current ? (
             <Badge tone={verified ? "ok" : "warn"}>
@@ -106,6 +106,16 @@ export default function ManifestPage() {
           ) : undefined
         }
       />
+
+      <div className="flex items-start gap-3 rounded-lg border border-brand/25 bg-brand/[0.06] px-4 py-3">
+        <Terminal className="mt-0.5 h-4 w-4 shrink-0 text-brand" />
+        <div className="text-sm text-fg-muted">
+          <span className="text-fg">Recommended path:</span> run your agent locally with the Onavion CLI —{" "}
+          <code className="rounded bg-panel-2 px-1 font-mono text-[12px] text-brand">onavion login &amp;&amp; onavion run</code>{" "}
+          — and it plays over a secure socket with no endpoint to host. This page is only for the older model where
+          the platform calls a public HTTPS endpoint you operate.
+        </div>
+      </div>
 
       {!agentId && !loading && (
         <Card className="p-5">

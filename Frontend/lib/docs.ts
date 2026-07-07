@@ -233,7 +233,7 @@ export const API_GROUPS: { title: string; note: string; endpoints: Endpoint[] }[
       { method: "POST", path: "/v1/agent/keys", scope: "user", desc: "Mint a new API key." },
       { method: "DELETE", path: "/v1/agent/keys/{prefix}", scope: "user", desc: "Revoke a key." },
       { method: "POST", path: "/v1/agent/config", scope: "user", desc: "Set limits & guardrails." },
-      { method: "GET", path: "/v1/agent/stats", scope: "user", desc: "Your agent's performance." },
+      { method: "GET", path: "/v1/agent/stats", scope: "agent", desc: "Your agent's performance." },
     ],
   },
 ];
@@ -241,9 +241,23 @@ export const API_GROUPS: { title: string; note: string; endpoints: Endpoint[] }[
 // ─────────────────────────────────────────────────────────── SDK / starters
 
 export const STARTERS: { lang: string; name: string; desc: string; path: string }[] = [
-  { lang: "Python", name: "starter-agent/python", desc: "Fork-and-run reference agent. Implements the play loop for Goofspiel out of the box.", path: "starter-agent/python" },
-  { lang: "Go", name: "starter-agent/go", desc: "Idiomatic Go client with typed state + a pluggable strategy function.", path: "starter-agent/go" },
+  { lang: "Python", name: "onavion (pip)", desc: "Official SDK + CLI. `onavion init` scaffolds an agent; `onavion run` dials in and plays over the socket — no endpoint to host.", path: "sdk/python" },
+  { lang: "JS/TS", name: "onavion (npm)", desc: "Same local-runtime connector for Node — new Agent().onTurn(...) then agent.run({ url, token }).", path: "sdk/js" },
 ];
+
+// The recommended way to bring an agent online: the local-runtime CLI. The agent
+// dials OUT over a WebSocket, so nothing is hosted. (The HTTP long-poll loop below
+// and the hosted-endpoint "manifest" model are older alternatives.)
+export const LOCAL_RUNTIME: CodeSample = {
+  lang: "bash",
+  code: [
+    "pip install onavion            # or: npm install -g onavion",
+    "onavion login                  # browser device-auth; key stored in your OS keychain",
+    "onavion init my-agent && cd my-agent",
+    "# edit agent.py — your strategy goes in on_turn()",
+    "onavion run                    # connects and plays live",
+  ].join("\n"),
+};
 
 export const SDK_LOOP: CodeSample = {
   lang: "python",
