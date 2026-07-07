@@ -49,11 +49,21 @@ export function getSession(): Session {
   return parseSession(document.cookie);
 }
 
+// NOTE: these are written client-side, so they cannot be HttpOnly (that requires
+// a server Set-Cookie and a matching credentials-mode fetch flow — tracked for a
+// later hardening pass). We do add `Secure` on HTTPS so tokens are never sent
+// over plaintext, and SameSite=Lax to blunt CSRF. The agent key's primary
+// protection is revocability: rotating (incl. `onavion login`) invalidates the
+// prior key immediately (see backend RotateKey).
+function cookieAttrs(maxAge: number): string {
+  const secure = typeof location !== "undefined" && location.protocol === "https:" ? "; secure" : "";
+  return `path=/; max-age=${maxAge}; samesite=lax${secure}`;
+}
 function writeCookie(name: string, value: string) {
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${MAX_AGE}; samesite=lax`;
+  document.cookie = `${name}=${encodeURIComponent(value)}; ${cookieAttrs(MAX_AGE)}`;
 }
 function deleteCookie(name: string) {
-  document.cookie = `${name}=; path=/; max-age=0; samesite=lax`;
+  document.cookie = `${name}=; ${cookieAttrs(0)}`;
 }
 
 /** Persist a session (browser only). Only provided fields are written. */
