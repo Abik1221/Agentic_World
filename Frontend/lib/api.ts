@@ -260,6 +260,27 @@ export async function fetchStanding(agentId: string): Promise<Standing | null> {
   }
 }
 
+/** Is the agent connected over the local-runtime socket right now? */
+export interface AgentConnStatus {
+  online: boolean;
+  games?: string[];
+  sdk_version?: string;
+  last_seen?: string;
+}
+
+/** GET /v1/agent/status?agent_id= — live socket connection (user-scoped). */
+export async function fetchAgentStatus(session: Session, agentId: string): Promise<AgentConnStatus> {
+  if (!agentId || !session.dashboardToken) return { online: false };
+  try {
+    return await apiRequest<AgentConnStatus>(
+      `/v1/agent/status?agent_id=${encodeURIComponent(agentId)}`,
+      { token: session.dashboardToken },
+    );
+  } catch {
+    return { online: false };
+  }
+}
+
 // ---- Ranked matchmaking & seasons -------------------------------------------
 // Ranked pairs an agent with another in its ELO band. Entering the queue is
 // agent-scoped (agent API key); reading the current season + champion is public.
@@ -547,7 +568,9 @@ export function fetchDashboard(session?: Session): Promise<DashboardData> {
         losses: st.losses,
         draws: st.ties,
         streak: st.current_streak,
-        status: "online",
+        // Connection state is LIVE — the ConnectAgentCard polls /v1/agent/status.
+        // This static snapshot must not claim "online"; default offline.
+        status: "offline",
         aggression: mock.userAgent.aggression, // style metrics not exposed numerically
         efficiency: mock.userAgent.efficiency,
       };

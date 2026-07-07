@@ -13,7 +13,7 @@ import {
   type AgentProfileData,
 } from "@/lib/profile";
 import { getSession } from "@/lib/session";
-import { fetchWallet } from "@/lib/api";
+import { fetchWallet, fetchAgentStatus } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Button, Card, CardHeader, PageHeader } from "@/components/console/primitives";
 import { CoinBag } from "@/components/wallet/CoinBag";
@@ -33,6 +33,7 @@ export default function ProfilePage() {
   const [hasSession, setHasSession] = useState(false);
   const [saved, setSaved] = useState(false);
   const [coins, setCoins] = useState<number | undefined>(undefined);
+  const [online, setOnline] = useState<boolean | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -47,6 +48,23 @@ export default function ProfilePage() {
     const load = () =>
       fetchWallet(getSession())
         .then((w) => alive && setCoins(w.balance))
+        .catch(() => {});
+    load();
+    const iv = setInterval(load, 12000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, []);
+
+  // Live connection status (is the agent's socket connected right now?).
+  useEffect(() => {
+    let alive = true;
+    const s = getSession();
+    if (!s.agentId) return;
+    const load = () =>
+      fetchAgentStatus(s, s.agentId!)
+        .then((r) => alive && setOnline(r.online))
         .catch(() => {});
     load();
     const iv = setInterval(load, 12000);
@@ -183,7 +201,15 @@ export default function ProfilePage() {
               </div>
               <div>
                 <div className="text-sm font-semibold text-fg">{profile.displayName || "Your agent"}</div>
-                <div className="font-mono text-[11px] text-fg-muted">{hasSession ? "verified" : "unverified"}</div>
+                <div className="flex items-center gap-2 font-mono text-[11px] text-fg-muted">
+                  <span>{hasSession ? "verified" : "unverified"}</span>
+                  {online !== null && (
+                    <span className={cn("inline-flex items-center gap-1", online ? "text-ok" : "text-fg-muted")}>
+                      <span className={cn("h-1.5 w-1.5 rounded-full", online ? "bg-ok live-dot" : "bg-fg-muted")} />
+                      {online ? "online" : "offline"}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </Card>
