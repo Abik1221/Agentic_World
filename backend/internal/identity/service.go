@@ -219,8 +219,11 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 	return LoginResult{DashboardToken: dash, AgentID: rec.AgentPublicID, AgentName: rec.AgentName}, nil
 }
 
-// RotateKey issues a fresh API key for an agent the caller owns. The raw key is
-// returned once; existing keys remain valid until explicitly revoked.
+// RotateKey issues a fresh API key for an agent the caller owns and REVOKES any
+// prior keys atomically, so exactly one key is ever active. The raw key is
+// returned once. (This is what makes the UI's "minting a new key invalidates the
+// previous one immediately" true, and stops `onavion login` from leaking
+// unbounded live keys.)
 func (s *Service) RotateKey(ctx context.Context, ownerPublicID, agentPublicID string) (string, error) {
 	if _, err := s.repo.AgentByOwner(ctx, agentPublicID, ownerPublicID); err != nil {
 		return "", ErrForbiddenOwner
@@ -229,7 +232,7 @@ func (s *Service) RotateKey(ctx context.Context, ownerPublicID, agentPublicID st
 	if err != nil {
 		return "", err
 	}
-	if err := s.repo.InsertKey(ctx, agentPublicID, ownerPublicID, key.Prefix, key.Hash); err != nil {
+	if err := s.repo.InsertKeyRotating(ctx, agentPublicID, ownerPublicID, key.Prefix, key.Hash); err != nil {
 		return "", err
 	}
 	return key.Raw, nil

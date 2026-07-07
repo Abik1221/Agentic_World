@@ -169,6 +169,38 @@ func (r *IdentityRepo) InsertKey(ctx context.Context, agentPublicID, ownerPublic
 	return nil
 }
 
+func (r *IdentityRepo) InsertKeyRotating(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Revoke every live key for this agent (owner-scoped) first.
+	if _, err := tx.Exec(ctx,
+		`UPDATE agent_keys SET revoked_at = now()
+		 WHERE revoked_at IS NULL AND agent_id IN (
+		     SELECT a.id FROM agents a JOIN users u ON u.id = a.owner_user_id
+		     WHERE a.public_id = $1 AND u.public_id = $2)`,
+		agentPublicID, ownerPublicID); err != nil {
+		return err
+	}
+	// Then mint the replacement, re-checking ownership.
+	ct, err := tx.Exec(ctx,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope)
+		 SELECT a.id, $3, $4, 'agent'
+		 FROM agents a JOIN users u ON u.id = a.owner_user_id
+		 WHERE a.public_id = $1 AND u.public_id = $2`,
+		agentPublicID, ownerPublicID, prefix, hash)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return identity.ErrForbiddenOwner
+	}
+	return tx.Commit(ctx)
+}
+
 func (r *IdentityRepo) SetSigningKey(ctx context.Context, agentPublicID, ownerPublicID, pubkey string) error {
 	ct, err := r.db.Exec(ctx,
 		`UPDATE agents SET signing_pubkey = $3, updated_at = now()

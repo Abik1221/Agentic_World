@@ -30,6 +30,11 @@ type Repo interface {
 	// InsertKey adds a new key to an agent owned by ownerPublicID (ownership checked).
 	InsertKey(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error
 
+	// InsertKeyRotating atomically revokes the agent's existing live keys and inserts
+	// a fresh one — so rotation truly REPLACES (at most one active key per agent),
+	// matching the "minting a new key invalidates the previous one" contract.
+	InsertKeyRotating(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error
+
 	// RevokeKey revokes a key by its prefix if it belongs to an agent the user owns.
 	RevokeKey(ctx context.Context, ownerPublicID, prefix string) error
 
