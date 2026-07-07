@@ -34,8 +34,13 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(user).Post("/v1/wallet/topup", h.topup)
 		r.With(user).Post("/v1/wallet/topup/confirm", h.confirm)
 		r.With(user).Post("/v1/payouts/onboard", h.onboard)
-		// Dev-only: manually confirm a dev checkout (useful for testing error handling)
-		r.With(user).Post("/v1/admin/dev/confirm-checkout", h.devConfirmCheckout)
+		// Dev-only: manually confirm a dev checkout (useful for testing error
+		// handling when webhooks are delayed/lost). NEVER mounted in prod — there
+		// it would let any logged-in user mint coins with no Stripe charge. The
+		// handler also re-checks DevMode as defense-in-depth.
+		if h.svc.cfg.DevMode {
+			r.With(user).Post("/v1/admin/dev/confirm-checkout", h.devConfirmCheckout)
+		}
 	})
 	r.Post("/v1/webhooks/stripe", h.webhook)
 }
@@ -116,6 +121,12 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 // In production this is not available; real purchases are confirmed via Stripe webhooks.
 // This endpoint is useful for testing error handling when webhooks are delayed/lost.
 func (h *Handler) devConfirmCheckout(w http.ResponseWriter, r *http.Request) {
+	// Defense-in-depth: this route is only mounted in DevMode, but never mint
+	// coins outside dev even if it were somehow reachable.
+	if !h.svc.cfg.DevMode {
+		httpx.Error(w, httpx.ErrNotFound)
+		return
+	}
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
 		SessionID string `json:"session_id"`
