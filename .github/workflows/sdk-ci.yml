@@ -1,0 +1,96 @@
+name: sdk-ci
+
+# Tests both SDKs on every change under sdk/. Path-filtered so backend-only PRs
+# don't trigger it. Release publishing lives in release-python.yml / release-js.yml.
+on:
+  push:
+    branches: [main]
+    paths: ["sdk/**", ".github/workflows/sdk-ci.yml"]
+  pull_request:
+    paths: ["sdk/**", ".github/workflows/sdk-ci.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  python-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest
+
+  python-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pipx run ruff check .
+      - run: pipx run ruff format --check .
+
+  python-pack:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build twine
+      - run: python -m build
+      - run: twine check dist/*
+
+  js-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    defaults:
+      run:
+        working-directory: sdk/js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "${{ matrix.node }}"
+      - run: npm ci
+      - run: npm test
+
+  js-lint-and-pack:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npx tsc --noEmit -p tsconfig.json
+      - run: npm run build
+      - name: SDK_VERSION matches package.json (no drift)
+        run: |
+          node -e "import('./dist/version.js').then(m=>{const v=require('./package.json').version;if(m.SDK_VERSION!==v){console.error('drift: '+m.SDK_VERSION+' != '+v);process.exit(1)}})"
+      - name: npm pack excludes tests, includes LICENSE
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e "const f=require('/tmp/pack.json')[0].files.map(x=>x.path); const t=f.filter(p=>/test/.test(p)); if(t.length){console.error('test files leaked:',t);process.exit(1)} if(!f.includes('LICENSE')){console.error('LICENSE missing from tarball');process.exit(1)}"
