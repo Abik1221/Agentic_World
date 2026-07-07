@@ -29,17 +29,18 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		user := auth.RequireScope(auth.ScopeUser)
-		// Admin routes additionally admit the Super Admin's Platform service token
-		// (the per-handler IsAdmin check still gates the action); user-owned routes
-		// stay user-only.
-		admin := auth.RequireScopeAny(auth.ScopeUser, auth.ScopePlatform)
+		// `get` is owner-or-admin (the handler checks ownership), so it admits any
+		// logged-in user + the Platform token. The /v1/admin/* actions are
+		// admin-only and enforced at the router so authz can't be forgotten.
+		ownerOrAdmin := auth.RequireScopeAny(auth.ScopeUser, auth.ScopePlatform)
+		adminOnly := auth.RequirePlatformOrAdmin(h.admins)
 		r.With(user).Get("/v1/wallet/withdrawable", h.withdrawable)
 		r.With(user).Get("/v1/withdrawals", h.list)
 		r.With(user).Post("/v1/withdrawals", h.request)
-		r.With(admin).Get("/v1/withdrawals/{id}", h.get)
-		r.With(admin).Get("/v1/admin/withdrawals", h.adminList)
-		r.With(admin).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
-		r.With(admin).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
+		r.With(ownerOrAdmin).Get("/v1/withdrawals/{id}", h.get)
+		r.With(adminOnly).Get("/v1/admin/withdrawals", h.adminList)
+		r.With(adminOnly).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
+		r.With(adminOnly).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
 	})
 }
 

@@ -149,6 +149,22 @@ func (g *Gateway) releaseSlot(ip string) {
 	}
 }
 
+// safeGo runs a background loop with panic recovery: a nil-deref or other panic in
+// writeLoop/heartbeatLoop logs and unwinds this connection instead of crashing the
+// whole process (only the request goroutine is covered by the HTTP recover mw).
+func (g *Gateway) safeGo(wg *sync.WaitGroup, name string, fn func()) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				g.log.Error("agentgw: background loop panicked", "loop", name, "panic", r)
+			}
+		}()
+		fn()
+	}()
+}
+
 func (g *Gateway) clientIP(r *http.Request) string {
 	if g.opts.ClientIP != nil {
 		return g.opts.ClientIP(r)
@@ -307,9 +323,8 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 
 	// Writer + heartbeat run in the background; the read loop drives the lifetime.
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); c.writeLoop(ctx) }()
-	go func() { defer wg.Done(); c.heartbeatLoop(ctx) }()
+	g.safeGo(&wg, "write", func() { c.writeLoop(ctx) })
+	g.safeGo(&wg, "heartbeat", func() { c.heartbeatLoop(ctx) })
 
 	c.readLoop(ctx)
 	c.close(websocket.StatusNormalClosure, "")

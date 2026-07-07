@@ -14,7 +14,6 @@ var seasonEpoch = time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Config tunes the rating system.
 type Config struct {
-	K            int           // ELO volatility factor (default 32)
 	SeasonLength time.Duration // length of one season (default 30 days)
 }
 
@@ -43,9 +42,6 @@ type Service struct {
 
 // New builds the rating service.
 func New(repo Repo, clock platform.Clock, cfg Config, reg *prometheus.Registry) *Service {
-	if cfg.K <= 0 {
-		cfg.K = 32
-	}
 	if cfg.SeasonLength <= 0 {
 		cfg.SeasonLength = 30 * 24 * time.Hour
 	}
@@ -172,9 +168,9 @@ func (s *Service) championOf(ctx context.Context, season int) (string, error) {
 	return rows[0].AgentPublicID, nil
 }
 
-// Elo returns an agent's current-season rating, or the 1200 baseline if it has
-// no rating row yet (unrated agents matchmake from the baseline). Used by
-// matchmaking to pair within a skill band.
+// Elo returns an agent's current-season rating, or the 1500 baseline (the Glicko
+// center) if it has no rating row yet — unrated agents matchmake from the
+// baseline. Used by matchmaking to pair within a skill band.
 func (s *Service) Elo(ctx context.Context, agentPublicID string) (int, error) {
 	return s.repo.AgentElo(ctx, agentPublicID, s.CurrentSeason())
 }

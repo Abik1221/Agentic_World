@@ -54,9 +54,14 @@ func (s *Service) Allow(ctx context.Context, matchPublicID string) (bool, error)
 	ids := make([]string, 0, len(agents))
 	owners := map[string]bool{}
 	sameOwner := false
+	unresolvedOwner := false
 	for _, a := range agents {
 		ids = append(ids, a.AgentPublicID)
-		if a.OwnerPublicID != "" && owners[a.OwnerPublicID] {
+		if a.OwnerPublicID == "" {
+			unresolvedOwner = true // can't confirm distinct owners -> can't clear collusion
+			continue
+		}
+		if owners[a.OwnerPublicID] {
 			sameOwner = true
 		}
 		owners[a.OwnerPublicID] = true
@@ -68,10 +73,16 @@ func (s *Service) Allow(ctx context.Context, matchPublicID string) (bool, error)
 		}
 		return s.hold(ctx, matchPublicID, "same_owner"), nil
 	}
+	// Fail closed: a missing owner id means we can't prove the seats are different
+	// owners, so hold for review rather than clear a possibly-colluding payout.
+	if unresolvedOwner {
+		return s.hold(ctx, matchPublicID, "owner_unresolved"), nil
+	}
 
 	flagged, err := s.repo.AnyFlagged(ctx, ids)
 	if err != nil {
 		s.log.Error("antifraud: flag lookup failed; holding payout", "match", matchPublicID, "error", err)
+		_, _ = s.repo.RecordHold(ctx, matchPublicID, "flag_error")
 		return false, nil
 	}
 	if flagged {

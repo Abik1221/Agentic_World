@@ -72,7 +72,6 @@ type Config struct {
 	AgentEndpointSecretKey string
 
 	// Ratings (Stage 7)
-	RatingK      int           // ELO volatility factor
 	SeasonLength time.Duration // length of one ranked season
 
 	// Engagement (Stage 8)
@@ -175,7 +174,6 @@ func Load() (*Config, error) {
 		AgentVerifyMaxBodyBytes: int64(l.intVal("AGENT_VERIFY_MAX_BODY_BYTES", 65536)),
 		AgentEndpointSecretKey:  l.str("AGENT_ENDPOINT_SECRET_KEY", ""),
 
-		RatingK:      l.intVal("RATING_K", 32),
 		SeasonLength: l.dur("SEASON_LENGTH", 30*24*time.Hour),
 
 		ClipCDNBase: l.str("CLIP_CDN_BASE", "https://cdn.local/clips"),

@@ -28,8 +28,9 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		user := auth.RequireScope(auth.ScopeUser)
-		// Admin routes also admit the Super Admin Platform token (IsAdmin still gates).
-		admin := auth.RequireScopeAny(auth.ScopeUser, auth.ScopePlatform)
+		// Admin authorization is enforced at the router (Platform token or an
+		// allowlisted user) so it can't be forgotten in a handler.
+		admin := auth.RequirePlatformOrAdmin(h.admins)
 		r.With(user).Post("/v1/disputes", h.report)
 		r.With(admin).Post("/v1/admin/disputes/{id}/resolve", h.resolve)
 		r.With(admin).Get("/v1/admin/agent/{id}/timing", h.timing)
