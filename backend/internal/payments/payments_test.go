@@ -44,7 +44,7 @@ func (f *fakeCoiner) Topup(_ context.Context, _ string, coins int64, key string)
 	f.credited += coins
 	return nil
 }
-func (f *fakeCoiner) Reverse(_ context.Context, _ string, coins int64, key string) error {
+func (f *fakeCoiner) Reverse(_ context.Context, _, _ string, coins int64, key string) error {
 	if f.reverseErr != nil {
 		return f.reverseErr
 	}
@@ -61,10 +61,31 @@ type fakeRepo struct {
 	processed map[string]bool
 	owner     string
 	connectID string
+	purchases map[string]payments.Purchase // keyed by PaymentIntent
 }
 
 func newRepo() *fakeRepo {
-	return &fakeRepo{events: map[string]payments.StoredEvent{}, processed: map[string]bool{}, owner: "usr_a"}
+	return &fakeRepo{
+		events:    map[string]payments.StoredEvent{},
+		processed: map[string]bool{},
+		owner:     "usr_a",
+		purchases: map[string]payments.Purchase{},
+	}
+}
+
+func (r *fakeRepo) RecordPurchase(_ context.Context, p payments.Purchase) error {
+	if p.PaymentIntentID == "" {
+		return nil
+	}
+	if _, ok := r.purchases[p.PaymentIntentID]; !ok { // idempotent upsert
+		r.purchases[p.PaymentIntentID] = p
+	}
+	return nil
+}
+
+func (r *fakeRepo) PurchaseByPaymentIntent(_ context.Context, pi string) (payments.Purchase, bool, error) {
+	p, ok := r.purchases[pi]
+	return p, ok, nil
 }
 
 func (r *fakeRepo) InsertEvent(_ context.Context, id, typ string, payload []byte) (bool, error) {
@@ -146,6 +167,33 @@ func eventJSONStatus(id, typ, sessionID, agent string, coins int64, paymentStatu
 	return b
 }
 
+// chargeEventJSON builds a charge.refunded / dispute.created event. A refund puts
+// the reversed cents in amount_refunded; a dispute puts the disputed cents in amount.
+func chargeEventJSON(id, typ, paymentIntent string, cents int64) []byte {
+	obj := map[string]any{"id": "ch_x", "payment_intent": paymentIntent}
+	if typ == payments.EventDisputeCreated {
+		obj["amount"] = cents
+	} else {
+		obj["amount_refunded"] = cents
+	}
+	ev := map[string]any{"id": id, "type": typ, "data": map[string]any{"object": obj}}
+	b, _ := json.Marshal(ev)
+	return b
+}
+
+// completionWithPI builds a paid checkout completion carrying a payment_intent, so
+// processing it both credits coins AND records the purchase for later clawback.
+func completionWithPI(id, sessionID, paymentIntent, agent string, coins, cents int64) []byte {
+	ev := map[string]any{"id": id, "type": payments.EventCheckoutCompleted,
+		"data": map[string]any{"object": map[string]any{
+			"id": sessionID, "amount_total": cents, "payment_status": "paid",
+			"payment_intent": paymentIntent,
+			"metadata":       map[string]string{"agent": agent, "user": "usr_a", "coins": strconv.FormatInt(coins, 10)},
+		}}}
+	b, _ := json.Marshal(ev)
+	return b
+}
+
 func codeOf(err error) string {
 	var ae *httpx.APIError
 	if errors.As(err, &ae) {
@@ -210,13 +258,68 @@ func TestWebhookRejectsBadSignature(t *testing.T) {
 
 func TestWebhookRefundReverses(t *testing.T) {
 	coiner := newCoiner()
-	svc := newSvc(coiner, newRepo())
-	body := eventJSON("evt_3", payments.EventChargeRefunded, "ch_3", "ag_a", 100)
+	repo := newRepo()
+	svc := newSvc(coiner, repo)
+	// Credit a real purchase first (records the payment_intent -> purchase mapping).
+	credit := completionWithPI("evt_c", "cs_3", "pi_3", "ag_a", 100, 500)
+	if err := svc.HandleWebhook(context.Background(), credit, sign(credit, clockT.Unix())); err != nil {
+		t.Fatalf("completion webhook: %v", err)
+	}
+	// Full refund of the charge -> reverse all coins, mapped by payment_intent.
+	body := chargeEventJSON("evt_3", payments.EventChargeRefunded, "pi_3", 500)
 	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
 		t.Fatalf("refund webhook: %v", err)
 	}
 	if coiner.reversed != 100 {
 		t.Fatalf("reversed = %d, want 100", coiner.reversed)
+	}
+}
+
+// A partial refund reverses coins proportional to the refunded amount.
+func TestWebhookPartialRefundReversesProportional(t *testing.T) {
+	coiner := newCoiner()
+	repo := newRepo()
+	repo.purchases["pi_5"] = payments.Purchase{PaymentIntentID: "pi_5", UserPublicID: "usr_a", AgentPublicID: "ag_a", Coins: 100, AmountCents: 500}
+	svc := newSvc(coiner, repo)
+	body := chargeEventJSON("evt_5", payments.EventChargeRefunded, "pi_5", 250) // half
+	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+		t.Fatalf("partial refund: %v", err)
+	}
+	if coiner.reversed != 50 {
+		t.Fatalf("reversed = %d, want 50 (half of 100)", coiner.reversed)
+	}
+}
+
+// A refund/dispute for a payment_intent we never recorded reverses nothing (and
+// does not error) — the old code silently kept the coins; now it's explicit.
+func TestWebhookRefundUnknownPurchaseReversesNothing(t *testing.T) {
+	coiner := newCoiner()
+	svc := newSvc(coiner, newRepo())
+	body := chargeEventJSON("evt_6", payments.EventChargeRefunded, "pi_unknown", 500)
+	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+		t.Fatalf("unknown refund: %v", err)
+	}
+	if coiner.reversed != 0 {
+		t.Fatalf("reversed = %d, want 0 for an unmapped payment_intent", coiner.reversed)
+	}
+}
+
+// Disputed-then-refunded (two distinct event ids, same payment_intent) must claw
+// back at most once — the reversal is keyed on the PaymentIntent, not the event id.
+func TestWebhookDisputeThenRefundClawsBackOnce(t *testing.T) {
+	coiner := newCoiner()
+	repo := newRepo()
+	repo.purchases["pi_7"] = payments.Purchase{PaymentIntentID: "pi_7", UserPublicID: "usr_a", AgentPublicID: "ag_a", Coins: 100, AmountCents: 500}
+	svc := newSvc(coiner, repo)
+	dispute := chargeEventJSON("evt_d", payments.EventDisputeCreated, "pi_7", 500)
+	refund := chargeEventJSON("evt_r", payments.EventChargeRefunded, "pi_7", 500)
+	for _, body := range [][]byte{dispute, refund} {
+		if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+			t.Fatalf("webhook: %v", err)
+		}
+	}
+	if coiner.reversed != 100 {
+		t.Fatalf("reversed = %d, want 100 (exactly once across dispute+refund)", coiner.reversed)
 	}
 }
 

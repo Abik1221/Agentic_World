@@ -11,7 +11,7 @@ type UserSummary struct {
 	LockedBalance       int64          `json:"locked_balance"`
 	PendingBalance      int64          `json:"pending_balance"`
 	LifetimeDeposits    int64          `json:"lifetime_deposits"`
-	LifetimeWithdrawals   int64          `json:"lifetime_withdrawals"`
+	LifetimeWithdrawals int64          `json:"lifetime_withdrawals"`
 	TournamentWinnings  int64          `json:"tournament_winnings"`
 	LifetimeEarnings    int64          `json:"lifetime_earnings"`
 	Agents              []AgentBalance `json:"agents"`

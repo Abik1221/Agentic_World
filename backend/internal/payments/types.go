@@ -92,7 +92,25 @@ type Event struct {
 	AmountCents    int64
 	PaymentStatus  string // checkout session payment_status: paid|unpaid|no_payment_required
 	PayoutsEnabled bool   // account.updated: connected account can now receive payouts
+	// PaymentIntentID links a checkout session to its charge/dispute (all three
+	// carry it). It is the key of the coin_purchases mapping used for clawback.
+	PaymentIntentID string
+	// AmountRefunded is the refunded/disputed cents on a charge.refunded /
+	// charge.dispute.created event (drives proportional partial-refund clawback).
+	AmountRefunded int64
 	Payload        []byte
+}
+
+// Purchase is a settled top-up recorded at credit time, keyed by PaymentIntent,
+// so a later refund/dispute (whose event carries only payment_intent) can be
+// clawed back with the right coins/user/agent.
+type Purchase struct {
+	PaymentIntentID string
+	SessionID       string
+	UserPublicID    string
+	AgentPublicID   string
+	Coins           int64
+	AmountCents     int64
 }
 
 // Gateway is the Stripe boundary. DevGateway implements it offline; StripeGateway
@@ -111,7 +129,10 @@ type Gateway interface {
 // Coiner moves coins via the ledger. Satisfied by wallet.Service.
 type Coiner interface {
 	Topup(ctx context.Context, userPublicID string, coins int64, idemKey string) error
-	Reverse(ctx context.Context, userPublicID string, coins int64, idemKey string) error
+	// Reverse claws back `coins` from the user's treasury on a refund/chargeback;
+	// any shortfall (already spent) is booked as bad debt AND recorded against
+	// agentPublicID so the payout debt-gate can block that agent's next cash-out.
+	Reverse(ctx context.Context, userPublicID, agentPublicID string, coins int64, idemKey string) error
 }
 
 // PayoutReconciler handles the payout side of Stripe events (transfer reversals),
@@ -130,6 +151,13 @@ type Repo interface {
 	InsertEvent(ctx context.Context, id, typ string, payload []byte) (alreadySeen bool, err error)
 	MarkProcessed(ctx context.Context, id string) error
 	UnprocessedEvents(ctx context.Context, limit int) ([]StoredEvent, error)
+	// RecordPurchase persists a settled top-up keyed by PaymentIntent (idempotent
+	// upsert) so a later refund/dispute can be clawed back. No-op when the
+	// PaymentIntent id is empty (e.g. DevGateway/legacy sessions).
+	RecordPurchase(ctx context.Context, p Purchase) error
+	// PurchaseByPaymentIntent returns the recorded purchase for a PaymentIntent,
+	// or found=false if none (e.g. a refund we can't map).
+	PurchaseByPaymentIntent(ctx context.Context, paymentIntentID string) (Purchase, bool, error)
 	OwnerOfAgent(ctx context.Context, agentPublicID string) (string, error)
 	StripeConnectID(ctx context.Context, userPublicID string) (string, error)
 	SetStripeConnectID(ctx context.Context, userPublicID, connectID string) error
@@ -158,6 +186,8 @@ func parseEvent(payload []byte) (Event, error) {
 		ID             string            `json:"id"`
 		AmountTotal    int64             `json:"amount_total"`
 		Amount         int64             `json:"amount"`
+		AmountRefunded int64             `json:"amount_refunded"`
+		PaymentIntent  string            `json:"payment_intent"`
 		PaymentStatus  string            `json:"payment_status"`
 		PayoutsEnabled bool              `json:"payouts_enabled"`
 		Metadata       map[string]string `json:"metadata"`
@@ -169,16 +199,24 @@ func parseEvent(payload []byte) (Event, error) {
 	if cents == 0 {
 		cents = obj.Amount
 	}
+	// Refunded/disputed amount: charge.refunded carries amount_refunded; a dispute
+	// object carries the disputed amount in `amount`.
+	refunded := obj.AmountRefunded
+	if refunded == 0 && env.Type == EventDisputeCreated {
+		refunded = obj.Amount
+	}
 	return Event{
-		ID:             env.ID,
-		Type:           env.Type,
-		ObjectID:       obj.ID,
-		AgentPublicID:  obj.Metadata["agent"],
-		UserPublicID:   obj.Metadata["user"],
-		Coins:          coins,
-		AmountCents:    cents,
-		PaymentStatus:  obj.PaymentStatus,
-		PayoutsEnabled: obj.PayoutsEnabled,
-		Payload:        payload,
+		ID:              env.ID,
+		Type:            env.Type,
+		ObjectID:        obj.ID,
+		AgentPublicID:   obj.Metadata["agent"],
+		UserPublicID:    obj.Metadata["user"],
+		Coins:           coins,
+		AmountCents:     cents,
+		PaymentStatus:   obj.PaymentStatus,
+		PayoutsEnabled:  obj.PayoutsEnabled,
+		PaymentIntentID: obj.PaymentIntent,
+		AmountRefunded:  refunded,
+		Payload:         payload,
 	}, nil
 }

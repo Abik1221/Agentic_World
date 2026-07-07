@@ -52,11 +52,11 @@ func (s *Service) SetPayoutGate(g PayoutGate) { s.gate = g }
 // ── metrics ──────────────────────────────────────────────────────────────────
 
 type metrics struct {
-	staked        prometheus.Counter
-	rake          prometheus.Counter
-	heldPayouts   prometheus.Counter
+	staked         prometheus.Counter
+	rake           prometheus.Counter
+	heldPayouts    prometheus.Counter
 	chargebackDebt prometheus.Counter
-	limitBlock    *prometheus.CounterVec
+	limitBlock     *prometheus.CounterVec
 }
 
 func newMetrics(reg *prometheus.Registry) *metrics {

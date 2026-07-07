@@ -205,6 +205,21 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 		if err := s.Coiner.Topup(ctx, ev.UserPublicID, ev.Coins, "topup:"+ev.ObjectID); err != nil {
 			return err
 		}
+		// Record the purchase keyed by PaymentIntent so a later refund/dispute
+		// (whose event carries only payment_intent) can be clawed back. Idempotent
+		// upsert; skipped when there is no PaymentIntent (DevGateway/legacy).
+		if ev.PaymentIntentID != "" {
+			if err := s.Repo.RecordPurchase(ctx, Purchase{
+				PaymentIntentID: ev.PaymentIntentID,
+				SessionID:       ev.ObjectID,
+				UserPublicID:    ev.UserPublicID,
+				AgentPublicID:   ev.AgentPublicID,
+				Coins:           ev.Coins,
+				AmountCents:     ev.AmountCents,
+			}); err != nil {
+				return err
+			}
+		}
 		s.m.topups.Inc()
 		s.m.topupCoins.Add(float64(ev.Coins))
 		return nil
@@ -232,13 +247,35 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 		return s.payoutRec.OnAccountUpdated(ctx, ev.ObjectID, ev.PayoutsEnabled)
 
 	case EventChargeRefunded, EventDisputeCreated:
-		if ev.UserPublicID == "" || ev.Coins <= 0 {
+		// The charge/dispute object has no coins/user metadata (Stripe doesn't copy
+		// PaymentIntent metadata to it) — only payment_intent. Resolve the recorded
+		// purchase by PaymentIntent to know how many coins to reverse and from whom.
+		if ev.PaymentIntentID == "" {
+			s.log.Warn("refund/dispute without payment_intent; cannot map to a purchase", "event", ev.ID, "type", ev.Type)
 			return nil
 		}
-		// Reverse recovers what the user still holds and books any shortfall as
-		// chargeback debt (wallet never goes negative); it self-handles the
-		// can't-fully-claw-back case, so there's no special error to branch on.
-		return s.Coiner.Reverse(ctx, ev.UserPublicID, ev.Coins, "reversal:"+ev.ID)
+		p, found, err := s.Repo.PurchaseByPaymentIntent(ctx, ev.PaymentIntentID)
+		if err != nil {
+			return err
+		}
+		if !found || p.Coins <= 0 {
+			s.log.Warn("refund/dispute for an unknown purchase; nothing to reverse", "event", ev.ID, "payment_intent", ev.PaymentIntentID)
+			return nil
+		}
+		// Reverse coins proportional to the refunded amount (full refund ⇒ all
+		// coins). Fall back to the full purchase for a dispute with no amount.
+		coins := p.Coins
+		if ev.AmountRefunded > 0 && p.AmountCents > 0 && ev.AmountRefunded < p.AmountCents {
+			coins = p.Coins * ev.AmountRefunded / p.AmountCents
+		}
+		if coins <= 0 {
+			return nil
+		}
+		// Idempotency keyed on the PaymentIntent (NOT the event id): a
+		// disputed-then-refunded purchase produces two event ids but must claw back
+		// at most once. Reverse recovers what the user still holds and books any
+		// shortfall as bad debt + per-agent chargeback debt (wallet never negative).
+		return s.Coiner.Reverse(ctx, p.UserPublicID, p.AgentPublicID, coins, "reversal:"+ev.PaymentIntentID)
 
 	case EventPaymentSucceeded:
 		// Crediting happens on checkout.session.completed (same purchase, one key).

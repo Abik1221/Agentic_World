@@ -208,7 +208,10 @@ func (s *Service) credit(ctx context.Context, agentPublicID string, coins int64,
 }
 
 // Reverse claws back a previously credited top-up on a Stripe refund/chargeback.
-func (s *Service) Reverse(ctx context.Context, userPublicID string, coins int64, idemKey string) error {
+// Any shortfall (coins already spent, so the treasury can't cover the full claw)
+// is booked to bad debt in the ledger AND recorded against agentPublicID so the
+// payout debt-gate blocks that agent's next cash-out until the debt is repaid.
+func (s *Service) Reverse(ctx context.Context, userPublicID, agentPublicID string, coins int64, idemKey string) error {
 	bal, err := s.ledger.UserBalance(ctx, userPublicID)
 	if err != nil {
 		return err
@@ -233,14 +236,22 @@ func (s *Service) Reverse(ctx context.Context, userPublicID string, coins int64,
 	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindReversal,
 		Key:      idemKey,
-		Metadata: map[string]any{"user": userPublicID, "coins": coins, "recovered": recovered, "debt": shortfall},
+		Metadata: map[string]any{"user": userPublicID, "agent": agentPublicID, "coins": coins, "recovered": recovered, "debt": shortfall},
 		Postings: postings,
 	})
 	if err != nil {
 		return err
 	}
+	// Only on first application (res.Applied) so a redelivered reversal doesn't
+	// double-count the debt; and only when we know which agent to attribute it to.
 	if res.Applied && shortfall > 0 {
 		s.m.chargebackDebt.Add(float64(shortfall))
+		if agentPublicID != "" {
+			// Per-agent debt gates that agent's next payout. Best-effort: the ledger
+			// has already booked the bad debt authoritatively, so a failure here
+			// (recoverable by reconciliation) must not fail the clawback itself.
+			_ = s.repo.RecordDebt(ctx, agentPublicID, shortfall)
+		}
 	}
 	return nil
 }

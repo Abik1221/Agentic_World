@@ -56,6 +56,45 @@ func (r *PaymentsRepo) UnprocessedEvents(ctx context.Context, limit int) ([]paym
 	return out, rows.Err()
 }
 
+// RecordPurchase upserts the settled top-up keyed by PaymentIntent (idempotent:
+// a redelivered completion event is a no-op), so a later refund/dispute can map
+// payment_intent -> {user, agent, coins, amount} for clawback.
+func (r *PaymentsRepo) RecordPurchase(ctx context.Context, p payments.Purchase) error {
+	if p.PaymentIntentID == "" {
+		return nil
+	}
+	var agent *string
+	if p.AgentPublicID != "" {
+		agent = &p.AgentPublicID
+	}
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO coin_purchases
+		   (payment_intent, session_id, user_public_id, agent_public_id, coins, amount_cents)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (payment_intent) DO NOTHING`,
+		p.PaymentIntentID, p.SessionID, p.UserPublicID, agent, p.Coins, p.AmountCents)
+	return err
+}
+
+func (r *PaymentsRepo) PurchaseByPaymentIntent(ctx context.Context, paymentIntentID string) (payments.Purchase, bool, error) {
+	var p payments.Purchase
+	var agent *string
+	err := r.db.QueryRow(ctx,
+		`SELECT payment_intent, session_id, user_public_id, agent_public_id, coins, amount_cents
+		 FROM coin_purchases WHERE payment_intent = $1`, paymentIntentID).
+		Scan(&p.PaymentIntentID, &p.SessionID, &p.UserPublicID, &agent, &p.Coins, &p.AmountCents)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payments.Purchase{}, false, nil
+	}
+	if err != nil {
+		return payments.Purchase{}, false, err
+	}
+	if agent != nil {
+		p.AgentPublicID = *agent
+	}
+	return p, true, nil
+}
+
 func (r *PaymentsRepo) OwnerOfAgent(ctx context.Context, agentPublicID string) (string, error) {
 	var owner string
 	err := r.db.QueryRow(ctx,

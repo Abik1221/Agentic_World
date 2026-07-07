@@ -24,7 +24,7 @@ func (f *fakeLedger) Post(_ context.Context, t ledger.Txn) (ledger.ApplyResult, 
 	f.posts = append(f.posts, t)
 	return ledger.ApplyResult{PublicID: "txn_x", Applied: true}, nil
 }
-func (f *fakeLedger) Balance(context.Context, string) (int64, error) { return f.balance, nil }
+func (f *fakeLedger) Balance(context.Context, string) (int64, error)     { return f.balance, nil }
 func (f *fakeLedger) UserBalance(context.Context, string) (int64, error) { return f.balance, nil }
 func (f *fakeLedger) History(context.Context, string, int) ([]ledger.Line, error) {
 	return nil, nil
@@ -56,8 +56,8 @@ func (f *fakeRepo) LossSince(context.Context, string, time.Time) (int64, error) 
 func (f *fakeRepo) LossCountSince(context.Context, string, time.Time) (int, error) {
 	return f.lossCount, nil
 }
-func (f *fakeRepo) ActiveMatchCount(context.Context, string) (int, error) { return f.active, nil }
-func (f *fakeRepo) OwnerOf(context.Context, string) (string, error)       { return f.owner, nil }
+func (f *fakeRepo) ActiveMatchCount(context.Context, string) (int, error)  { return f.active, nil }
+func (f *fakeRepo) OwnerOf(context.Context, string) (string, error)        { return f.owner, nil }
 func (f *fakeRepo) OutstandingDebt(context.Context, string) (int64, error) { return f.debt, nil }
 func (f *fakeRepo) RecordDebt(_ context.Context, _ string, coins int64) error {
 	f.debt += coins
@@ -74,9 +74,9 @@ func (f *fakeRepo) UserLifetimeStats(context.Context, string) (wallet.LifetimeSt
 	return wallet.LifetimeStats{}, nil
 }
 func (f *fakeRepo) OwnerAgents(context.Context, string) ([]wallet.AgentRow, error) { return nil, nil }
-func (f *fakeRepo) StakedInActiveMatches(context.Context, string) (int64, error)    { return 0, nil }
-func (f *fakeRepo) PendingWithdrawalCoins(context.Context, string) (int64, error) { return 0, nil }
-func (f *fakeRepo) WithdrawableCoins(context.Context, string) (int64, error)      { return 0, nil }
+func (f *fakeRepo) StakedInActiveMatches(context.Context, string) (int64, error)   { return 0, nil }
+func (f *fakeRepo) PendingWithdrawalCoins(context.Context, string) (int64, error)  { return 0, nil }
+func (f *fakeRepo) WithdrawableCoins(context.Context, string) (int64, error)       { return 0, nil }
 
 func newSvc(l *fakeLedger, r *fakeRepo) *wallet.Service {
 	return wallet.New(l, r, platform.FixedClock{T: time.Unix(1_700_000_000, 0).UTC()},
@@ -186,7 +186,8 @@ func TestRefundReturnsEveryStake(t *testing.T) {
 
 func TestReversePartialClawbackBooksDebt(t *testing.T) {
 	fl := &fakeLedger{balance: 30}
-	if err := newSvc(fl, &fakeRepo{}).Reverse(context.Background(), "usr_a", 100, "reversal:evt_1"); err != nil {
+	repo := &fakeRepo{}
+	if err := newSvc(fl, repo).Reverse(context.Background(), "usr_a", "ag_a", 100, "reversal:pi_1"); err != nil {
 		t.Fatalf("Reverse: %v", err)
 	}
 	txn := fl.posts[0]
@@ -196,6 +197,10 @@ func TestReversePartialClawbackBooksDebt(t *testing.T) {
 	}
 	if got := amountFor(txn, ledger.SystemWallet(ledger.SysBadDebt)); got != -70 {
 		t.Fatalf("bad debt = %d, want -70", got)
+	}
+	// The shortfall is also recorded as per-agent debt so the payout gate fires.
+	if repo.debt != 70 {
+		t.Fatalf("recorded agent debt = %d, want 70", repo.debt)
 	}
 }
 

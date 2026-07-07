@@ -97,22 +97,22 @@ func (s *Service) CheckJoin(ctx context.Context, agentPublicID string, bid int64
 // View is the `/v1/wallet` read model: balance, the configured limits, current
 // usage, and the headroom that remains before each limit would block a join.
 type View struct {
-	Agent   string       `json:"agent"`
-	Balance int64        `json:"balance"`
-	Limits  AgentLimits  `json:"limits"`
-	Usage   Usage        `json:"usage"`
+	Agent   string      `json:"agent"`
+	Balance int64       `json:"balance"`
+	Limits  AgentLimits `json:"limits"`
+	Usage   Usage       `json:"usage"`
 }
 
 // Usage is the live limit utilisation for an agent.
 type Usage struct {
-	LossToday        int64 `json:"loss_today"`
-	LossSession      int64 `json:"loss_session"`
-	ActiveMatches    int   `json:"active_matches"`
-	RecentLosses     int   `json:"recent_losses"`     // within the cooldown window
-	InCooldown       bool  `json:"in_cooldown"`
-	DailyHeadroom    int64 `json:"daily_headroom"`    // coins still loseable today
-	SessionHeadroom  int64 `json:"session_headroom"`
-	ConcurrentFree   int   `json:"concurrent_free"`   // additional matches joinable now
+	LossToday       int64 `json:"loss_today"`
+	LossSession     int64 `json:"loss_session"`
+	ActiveMatches   int   `json:"active_matches"`
+	RecentLosses    int   `json:"recent_losses"` // within the cooldown window
+	InCooldown      bool  `json:"in_cooldown"`
+	DailyHeadroom   int64 `json:"daily_headroom"` // coins still loseable today
+	SessionHeadroom int64 `json:"session_headroom"`
+	ConcurrentFree  int   `json:"concurrent_free"` // additional matches joinable now
 }
 
 // View assembles the agent's wallet view (balance + limits + usage).
