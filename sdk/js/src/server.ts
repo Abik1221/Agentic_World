@@ -27,7 +27,10 @@ import {
 } from "./models.js";
 import { Headers, ReplayGuard, VerificationError, verifyRequest } from "./signing.js";
 
-export const SDK_VERSION = "0.1.0";
+// Single source of truth: the generated version.ts (from package.json). Imported
+// for local use below and re-exported so `import { SDK_VERSION } from "pyyol"` works.
+import { SDK_VERSION } from "./version.js";
+export { SDK_VERSION };
 
 export interface AgentOptions {
   /** Manifest endpoint secret — the shared key the platform signs with. When set
