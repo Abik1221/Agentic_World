@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -57,6 +58,14 @@ type Options struct {
 	// `min` is set and the client is older, refuses the connection. Both empty ⇒
 	// no floor and no nudge. Nil ⇒ feature off entirely.
 	SDKVersionInfo func(language string) (latest, min string)
+	// MaxConns caps total concurrent sockets (pre- and post-auth); MaxConnsPerIP
+	// caps them per client IP. Both defend the pre-auth window against a socket
+	// flood (each socket holds goroutines + buffers). Defaults 5000 / 20.
+	MaxConns      int
+	MaxConnsPerIP int
+	// ClientIP extracts the real client IP for the per-IP cap. Nil ⇒ RemoteAddr
+	// host. Set to middleware.ClientIP so the cap isn't defeated behind the LB.
+	ClientIP func(*http.Request) string
 }
 
 func (o Options) withDefaults() Options {
@@ -72,6 +81,12 @@ func (o Options) withDefaults() Options {
 	if o.WriteTimeout <= 0 {
 		o.WriteTimeout = 10 * time.Second
 	}
+	if o.MaxConns <= 0 {
+		o.MaxConns = 5000
+	}
+	if o.MaxConnsPerIP <= 0 {
+		o.MaxConnsPerIP = 20
+	}
 	return o
 }
 
@@ -83,6 +98,10 @@ type Gateway struct {
 
 	mu    sync.RWMutex
 	conns map[string]*conn // agentID -> current live connection (latest wins)
+
+	connMu  sync.Mutex     // guards the accept-slot counters below
+	active  int            // total accepted sockets (pre- and post-auth)
+	ipConns map[string]int // per-client-IP accepted socket count
 }
 
 // AgentStatus is a snapshot of a connected agent for the dashboard / status CLI.
@@ -100,11 +119,44 @@ func New(auth Authenticator, opts Options, log *slog.Logger) *Gateway {
 		log = slog.Default()
 	}
 	return &Gateway{
-		auth:  auth,
-		opts:  opts.withDefaults(),
-		log:   log,
-		conns: make(map[string]*conn),
+		auth:    auth,
+		opts:    opts.withDefaults(),
+		log:     log,
+		conns:   make(map[string]*conn),
+		ipConns: make(map[string]int),
 	}
+}
+
+// acquireSlot reserves an accept slot for ip, enforcing the global and per-IP
+// caps. It returns false (no slot taken) when either cap is hit.
+func (g *Gateway) acquireSlot(ip string) bool {
+	g.connMu.Lock()
+	defer g.connMu.Unlock()
+	if g.active >= g.opts.MaxConns || g.ipConns[ip] >= g.opts.MaxConnsPerIP {
+		return false
+	}
+	g.active++
+	g.ipConns[ip]++
+	return true
+}
+
+func (g *Gateway) releaseSlot(ip string) {
+	g.connMu.Lock()
+	defer g.connMu.Unlock()
+	g.active--
+	if g.ipConns[ip]--; g.ipConns[ip] <= 0 {
+		delete(g.ipConns, ip)
+	}
+}
+
+func (g *Gateway) clientIP(r *http.Request) string {
+	if g.opts.ClientIP != nil {
+		return g.opts.ClientIP(r)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // Connected reports whether the agent currently has a live socket.
@@ -154,6 +206,15 @@ func (g *Gateway) lookup(agentID string) *conn {
 // connect route (e.g. GET /v1/agent/connect).
 func (g *Gateway) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Enforce connection caps BEFORE upgrading, so a flood is rejected without
+		// allocating a socket, goroutines, or buffers.
+		ip := g.clientIP(r)
+		if !g.acquireSlot(ip) {
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
+			return
+		}
+		defer g.releaseSlot(ip)
+
 		acceptOpts := &websocket.AcceptOptions{}
 		if g.opts.AllowInsecureOrigin {
 			acceptOpts.InsecureSkipVerify = true
@@ -163,8 +224,10 @@ func (g *Gateway) Handler() http.HandlerFunc {
 			g.log.Warn("agentgw: accept failed", "err", err)
 			return
 		}
-		// Generous read limit: mafia turn views carry the full transcript.
-		ws.SetReadLimit(1 << 20) // 1 MiB
+		// Small pre-auth read limit: an unauthenticated client only needs to send a
+		// tiny register frame. serve() raises it to 1 MiB after a successful
+		// register (mafia turn views carry the full transcript).
+		ws.SetReadLimit(64 << 10) // 64 KiB
 		g.serve(r.Context(), ws)
 	}
 }
@@ -236,6 +299,9 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 	g.register(c)
 	defer g.unregister(c)
 
+	// Authenticated: raise the read limit for large in-game turn views (mafia
+	// transcripts). The pre-auth limit was intentionally small (see Handler).
+	ws.SetReadLimit(1 << 20) // 1 MiB
 	_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{T: FrameRegistered, AgentID: agentID, Version: ProtocolVersion, LatestSDK: latestSDK, MinSDK: minSDK})
 	g.log.Info("agentgw: agent connected", "agent", agentID, "name", reg.AgentName, "games", reg.Games, "sdk", reg.SDKVersion, "sdk_lang", reg.SDKLanguage)
 
