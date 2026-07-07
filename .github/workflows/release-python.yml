@@ -1,0 +1,84 @@
+name: release-python
+
+# Publishes the pyyol Python SDK to PyPI on a `py-vX.Y.Z` tag, via PyPI Trusted
+# Publishing (OIDC) — no API token stored. A workflow_dispatch run publishes to
+# TestPyPI instead (dry_run defaults true) so you can rehearse before a real tag.
+#
+# One-time setup (PyPI + TestPyPI → Publishing → Add a trusted publisher):
+#   project: pyyol · owner: Abik1221 · repo: Agentic_World
+#   workflow: release-python.yml · environment: pypi (TestPyPI: testpypi)
+on:
+  push:
+    tags: ["py-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Publish to TestPyPI instead of PyPI"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+      - name: Run full test suite (fail closed)
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pytest
+      - name: Assert tag == package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#py-v}"
+          VER="$(python -c 'import pyyol, sys; sys.stdout.write(pyyol.__version__)')"
+          echo "tag=$TAG version=$VER"
+          test "$TAG" = "$VER" || { echo "::error::tag $TAG != package version $VER"; exit 1; }
+      - name: Build sdist + wheel
+        run: python -m build
+      - name: twine check
+        run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: sdk/python/dist/
+
+  publish-testpypi:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write # OIDC — no stored token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC — no stored token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -16,4 +16,6 @@ export const SDK_VERSION = ${JSON.stringify(pkg.version)};
 `;
 
 writeFileSync(out, body);
-console.log(`genversion: wrote src/version.ts (SDK_VERSION = ${pkg.version})`);
+// Log to stderr so it never contaminates machine-readable stdout (e.g. the
+// `npm pack --json` output the release/CI leak-check parses; prepack runs this).
+console.error(`genversion: wrote src/version.ts (SDK_VERSION = ${pkg.version})`);

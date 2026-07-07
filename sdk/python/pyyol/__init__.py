@@ -16,7 +16,7 @@ your decision logic. It contains no AI/strategy and no provider lock-in.
     agent.serve(port=9099)
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 from .server import Agent
 from .signing import VerificationError, compute_signature, verify_request

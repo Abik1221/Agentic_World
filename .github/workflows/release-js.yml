@@ -1,0 +1,63 @@
+name: release-js
+
+# Publishes the pyyol JS/TS SDK to npm on a `js-vX.Y.Z` tag, with provenance via
+# OIDC Trusted Publishing (no NODE_AUTH_TOKEN needed; requires npm >= 11.5.1). A
+# workflow_dispatch run does `npm publish --dry-run` only (dry_run defaults true).
+#
+# One-time setup: on npmjs.com → package `pyyol` → Settings → Trusted Publisher,
+# point it at Abik1221/Agentic_World, workflow release-js.yml. (Fallback: set an
+# NPM_TOKEN repo secret and uncomment the env line on the publish step.)
+on:
+  push:
+    tags: ["js-v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "npm publish --dry-run only (no real publish)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC provenance + trusted publishing
+      contents: read
+    defaults:
+      run:
+        working-directory: sdk/js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm ci
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
+      - name: Full test suite (fail closed)
+        run: npm test
+      - name: Assert tag == package.json version and SDK_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#js-v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG package.json=$PKG"
+          test "$TAG" = "$PKG" || { echo "::error::tag $TAG != package.json $PKG"; exit 1; }
+          npm run build
+          node -e "import('./dist/version.js').then(m=>{if(m.SDK_VERSION!==require('./package.json').version){console.error('::error::SDK_VERSION drift');process.exit(1)}})"
+      - name: Pack + assert tests excluded, LICENSE included
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e "const f=require('/tmp/pack.json')[0].files.map(x=>x.path); const t=f.filter(p=>/test/.test(p)); if(t.length){console.error('::error::test files leaked:',t);process.exit(1)} if(!f.includes('LICENSE')){console.error('::error::LICENSE missing');process.exit(1)}"
+      - name: Dry run
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: npm publish --dry-run
+      - name: Publish to npm (provenance)
+        if: startsWith(github.ref, 'refs/tags/js-v')
+        run: npm publish --provenance --access public
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}  # fallback if trusted publishing is not enabled
