@@ -1,0 +1,80 @@
+name: backend-e2e
+
+# End-to-end launch gate: boots the real server against live Postgres + Redis and
+# runs the integration-tagged harness (money flow signup→topup→stake→settle→
+# withdraw, agent loop, cert gate, badges, profile) plus the live-Redis tests.
+# These need real infra, so they're gated behind //go:build integration and run
+# here (not in the unit `ci` job). Path-filtered to backend changes.
+on:
+  push:
+    branches: [main]
+    paths: ["backend/**", ".github/workflows/backend-e2e.yml"]
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend-e2e.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: arena_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Server + test connection strings (service containers are reachable on localhost).
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/arena_test?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+      REDIS_TEST_URL: redis://localhost:6379/1
+      JWT_SIGNING_KEY: e2e-signing-key-at-least-32-bytes-long!!
+      API_KEY_PEPPER: e2e-pepper
+      ENV: local # dev claim verifier + mint enabled so the money-flow harness runs
+      ALLOW_MINT: "true"
+      AUTO_MIGRATE: "true" # apply migrations in-process on boot
+      PORT: "8080"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - name: Build server
+        run: go build -o /tmp/arena-server ./cmd/server
+      - name: Start server (applies migrations on boot)
+        run: |
+          /tmp/arena-server &
+          echo $! > /tmp/arena.pid
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/healthz >/dev/null; then echo "up after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::server did not become healthy"; exit 1
+      - name: Integration harness (HTTP, black-box)
+        env:
+          BASE_URL: http://localhost:8080
+        run: go test -tags=integration -count=1 ./tests/integration/...
+      - name: Live-Redis integration tests
+        run: go test -tags=integration -count=1 ./internal/store/... ./internal/platformcfg/...
+      - name: Stop server
+        if: always()
+        run: kill "$(cat /tmp/arena.pid)" || true
