@@ -118,7 +118,7 @@ func (r *MonopolyRepo) loadAgents(ctx context.Context, matchPublicID string) ([]
 }
 
 func (r *MonopolyRepo) Advance(ctx context.Context, matchPublicID string, state mono.State, deadline *time.Time, events []mono.Event) error {
-	return r.tx(ctx, func(tx pgx.Tx) error {
+	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
 			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, updated_at=now()
@@ -132,10 +132,17 @@ func (r *MonopolyRepo) Advance(ctx context.Context, matchPublicID string, state 
 		}
 		return insertMonopolyEvents(ctx, tx, matchID, events)
 	})
+	// A racing writer inserted the same (match_id, seq) first — surface as a
+	// retryable concurrent-update so the service can re-read and retry (this is
+	// what makes the Redis lock a fast-path rather than a correctness requirement).
+	if isUniqueViolation(err) {
+		return monopoly.ErrConcurrentUpdate
+	}
+	return err
 }
 
 func (r *MonopolyRepo) Finish(ctx context.Context, matchPublicID string, state mono.State, winnerSeat int, replayHash string, agents []monopoly.Player, events []mono.Event) error {
-	return r.tx(ctx, func(tx pgx.Tx) error {
+	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
 			`UPDATE matches SET status='finished', state=$2::jsonb, round_deadline=NULL,
@@ -161,6 +168,10 @@ func (r *MonopolyRepo) Finish(ctx context.Context, matchPublicID string, state m
 		}
 		return insertMonopolyEvents(ctx, tx, matchID, events)
 	})
+	if isUniqueViolation(err) {
+		return monopoly.ErrConcurrentUpdate
+	}
+	return err
 }
 
 func (r *MonopolyRepo) ListActiveExpired(ctx context.Context, game string, now time.Time, limit int) ([]string, error) {

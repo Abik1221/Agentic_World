@@ -92,7 +92,7 @@ type AgentView struct {
 	MatchID  string          `json:"match_id"`
 	Status   string          `json:"status"`
 	YourSeat int             `json:"your_seat"`
-	Turn     int             `json:"turn"`      // seat the engine is waiting on
+	Turn     int             `json:"turn"` // seat the engine is waiting on
 	YourTurn bool            `json:"your_turn"`
 	Phase    string          `json:"phase"`
 	Legal    []string        `json:"legal,omitempty"`

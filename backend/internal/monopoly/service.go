@@ -3,6 +3,7 @@ package monopoly
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"strconv"
 	"time"
 
@@ -124,16 +125,35 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 
 // Act applies one action for the calling agent, then auto-advances every bot
 // seat until it is an agent's turn again (or the match ends).
+//
+// Concurrency model (mirrors Goofspiel): the Redis lock is a FAST PATH that
+// avoids wasted retries when held. Correctness comes from optimistic concurrency —
+// the UNIQUE(match_id, seq) event-log constraint rejects a racing writer
+// (ErrConcurrentUpdate) and we re-read + retry. So a Redis outage degrades to a
+// few extra retries, never a stuck/lost/double-applied move.
 func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action) (AgentView, error) {
-	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
-	if err != nil {
-		return AgentView{}, err
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
 	}
-	if !ok {
-		return AgentView{}, ErrBusy
-	}
-	defer release()
+	// (lerr != nil — Redis unreachable: proceed lockless, relying on the OCC retry.)
 
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, act)
+		if errors.Is(err, ErrConcurrentUpdate) {
+			continue // another writer advanced first; re-read and retry
+		}
+		return view, err
+	}
+	return AgentView{}, ErrBusy // retries exhausted under heavy contention
+}
+
+// tryAct is one optimistic-concurrency attempt: read the snapshot, validate, step,
+// persist. A racing writer surfaces as ErrConcurrentUpdate for Act's retry loop.
+func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
@@ -158,7 +178,7 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 	events = append(events, botEvents...)
 
 	if err := s.persist(ctx, m, state, events); err != nil {
-		return AgentView{}, err
+		return AgentView{}, err // ErrConcurrentUpdate bubbles to Act's retry loop
 	}
 	m, err = s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -230,11 +250,14 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 }
 
 func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error {
-	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
-	if err != nil || !ok {
-		return err
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return nil // another instance holds it; skip this round
+		}
+		defer release()
 	}
-	defer release()
+	// (lerr != nil — Redis unreachable: proceed lockless so a timeout still fires;
+	// OCC on persist protects against a racing writer.)
 
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil || m.Status != StatusActive {
@@ -253,7 +276,11 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	if len(events) == 0 {
 		return nil
 	}
-	return s.persist(ctx, m, state, events)
+	// A racing live move advanced the match first — the forced timeout is moot.
+	if err := s.persist(ctx, m, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {

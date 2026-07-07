@@ -1,6 +1,7 @@
 package monopoly
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/httpx"
@@ -14,4 +15,8 @@ var (
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	ErrIllegalAction = httpx.NewError(http.StatusBadRequest, "illegal_action", "That action is not legal in the current phase.")
 	ErrBadConfig     = httpx.NewError(http.StatusBadRequest, "bad_config", "Invalid table configuration.")
+	// ErrConcurrentUpdate is returned by the repo when a racing writer advanced the
+	// match first (UNIQUE(match_id,seq) violation). The service re-reads and retries;
+	// it is the optimistic-concurrency signal that makes the Redis lock optional.
+	ErrConcurrentUpdate = errors.New("monopoly: concurrent update")
 )

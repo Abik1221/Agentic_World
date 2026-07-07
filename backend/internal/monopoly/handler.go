@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/auth"
+	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
 )
