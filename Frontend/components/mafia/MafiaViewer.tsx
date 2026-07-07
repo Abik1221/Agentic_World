@@ -28,6 +28,7 @@ import {
   type Step,
 } from "@/lib/mafia-demo";
 import { useMafiaLiveScript } from "@/lib/useMafiaLiveScript";
+import { GameOverModal, type Standing } from "@/components/game/GameOverModal";
 
 function mafiaEventIcon(t: string) {
   const s = t.toLowerCase();
@@ -187,6 +188,40 @@ export function MafiaViewer() {
     const t = setTimeout(() => setShowReveal(true), 800);
     return () => clearTimeout(t);
   }, [ended]);
+
+  const standings = React.useMemo<Standing[]>(() => {
+    // The day each eliminated agent went out, from the timeline.
+    const elimDay: Record<string, number> = {};
+    for (const st of script) {
+      if (st.eliminate && elimDay[st.eliminate] === undefined) elimDay[st.eliminate] = st.day;
+    }
+    const rows = agents.map((a) => {
+      const meta = ROLE_META[a.role];
+      const won = meta.side === OUTCOME.winningSide;
+      const out = elimDay[a.id] !== undefined;
+      return {
+        key: a.id,
+        name: a.name,
+        color: a.color,
+        seat: idxOf(a.id) + 1,
+        outcome: (won ? "winner" : out ? "eliminated" : "survived") as Standing["outcome"],
+        detail: out ? `Eliminated · Day ${elimDay[a.id]}` : "Survived to the end",
+        sub: `${meta.label} · ${a.model}`,
+        _won: won,
+        _out: out,
+        _day: elimDay[a.id] ?? 99,
+      };
+    });
+    // Winners first; among losers, those who survived longer rank higher.
+    rows.sort(
+      (x, y) =>
+        Number(y._won) - Number(x._won) ||
+        Number(!x._out) - Number(!y._out) ||
+        y._day - x._day ||
+        x.name.localeCompare(y.name),
+    );
+    return rows.map((r, i) => ({ ...r, rank: i + 1 }));
+  }, [agents, script, idxOf]);
 
   // Cosmetic phase timer.
   React.useEffect(() => {
@@ -361,7 +396,29 @@ export function MafiaViewer() {
         )}
       </AnimatePresence>
 
-      <AnimatePresence>{showReveal && <RoleReveal onReplay={replayMatch} onClose={() => setShowReveal(false)} agents={agents} />}</AnimatePresence>
+      <GameOverModal
+        open={showReveal}
+        onClose={() => setShowReveal(false)}
+        title="Mafia · Match Results"
+        banner={OUTCOME.headline}
+        standings={standings}
+        footer={
+          <>
+            <button
+              onClick={() => setShowReveal(false)}
+              className="rounded-sm border border-border-strong px-4 py-2 font-mono text-[12px] font-semibold uppercase tracking-caps text-ink-dim transition hover:text-ink-primary"
+            >
+              Close
+            </button>
+            <button
+              onClick={replayMatch}
+              className="rounded-sm bg-primary-container px-4 py-2 font-mono text-[12px] font-semibold uppercase tracking-caps text-on-primary transition hover:bg-primary"
+            >
+              Watch again
+            </button>
+          </>
+        }
+      />
     </div>
   );
 }
