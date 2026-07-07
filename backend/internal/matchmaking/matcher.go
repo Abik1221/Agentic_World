@@ -8,9 +8,10 @@ import (
 // Matcher is the background pairing loop. On each tick it scans the waiting queue,
 // groups by bid, and greedily pairs compatible agents (different owner, ratings
 // within a wait-widened band, oldest first). It mirrors the match sweeper's shape:
-// a single goroutine, safe to run on every instance (pairing is serialized by the
-// match creation + MarkMatched writes; a double-pair would just fail the second
-// CreatePaired/MarkMatched harmlessly).
+// a single goroutine, safe to run on every instance — each pairing first does an
+// atomic ClaimPair (waiting -> claimed, all-or-nothing, row-locked) and only then
+// escrows via CreatePaired, so two instances racing the same waiting snapshot can
+// never both escrow the same pair (the loser's ClaimPair returns false).
 type Matcher struct {
 	svc      *Service
 	interval time.Duration
@@ -79,15 +80,33 @@ func (m *Matcher) pairPool(ctx context.Context, pool []Entry, now time.Time) {
 			if !withinBand(a, b, now, m.svc.cfg) {
 				continue
 			}
+			// Reserve BOTH queue rows before escrowing any stake. If the claim
+			// doesn't land (another tick/instance already took one of them), skip
+			// to the next candidate — never escrow on an unclaimed pair.
+			claimed, err := m.svc.repo.ClaimPair(ctx, a.AgentPublicID, b.AgentPublicID)
+			if err != nil {
+				m.svc.log.Error("matchmaker claim failed", "a", a.AgentPublicID, "b", b.AgentPublicID, "error", err)
+				continue
+			}
+			if !claimed {
+				continue
+			}
 			matchID, err := m.svc.pairer.CreatePaired(ctx, a.AgentPublicID, a.OwnerPublicID, b.AgentPublicID, b.OwnerPublicID, a.Bid)
 			if err != nil {
-				// One side can't currently afford/limits/eligibility — skip this
-				// pairing; both stay queued and are retried next tick.
+				// One side can't currently afford/limits/eligibility — release the
+				// claim so both re-enter the pool and are retried next tick.
+				if rerr := m.svc.repo.ReleasePair(ctx, a.AgentPublicID, b.AgentPublicID); rerr != nil {
+					m.svc.log.Error("matchmaker release failed", "a", a.AgentPublicID, "b", b.AgentPublicID, "error", rerr)
+				}
 				m.svc.log.Warn("matchmaker pairing failed", "a", a.AgentPublicID, "b", b.AgentPublicID, "error", err)
 				continue
 			}
 			if err := m.svc.repo.MarkMatched(ctx, a.AgentPublicID, b.AgentPublicID, matchID); err != nil {
-				m.svc.log.Error("matchmaker mark-matched failed", "match", matchID, "error", err)
+				// The match exists and both stakes are escrowed; the rows stay
+				// 'claimed' (not re-paired — Waiting() only returns 'waiting'), so
+				// there is no double escrow. The agents just won't read match_id
+				// from the queue until reconciliation. Log loudly.
+				m.svc.log.Error("matchmaker mark-matched failed (match live, rows left claimed)", "match", matchID, "error", err)
 			}
 			m.svc.m.paired.Inc()
 			used[i], used[j] = true, true

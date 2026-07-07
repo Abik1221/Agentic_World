@@ -84,11 +84,80 @@ func (r *MatchmakingRepo) Waiting(ctx context.Context, limit int) ([]matchmaking
 	return out, rows.Err()
 }
 
+// ClaimPair reserves both entries (waiting -> claimed) all-or-nothing. It locks
+// the two rows FOR UPDATE in public_id order (deadlock-safe) and only claims when
+// BOTH are still waiting, so two concurrent matcher instances racing the same
+// snapshot can never both escrow — the loser sees 'claimed' and returns false.
+func (r *MatchmakingRepo) ClaimPair(ctx context.Context, agentA, agentB string) (bool, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	ids := []string{agentA, agentB}
+	rows, err := tx.Query(ctx,
+		`SELECT q.status
+		 FROM matchmaking_queue q
+		 JOIN agents a ON a.id = q.agent_id
+		 WHERE a.public_id = ANY($1)
+		 ORDER BY a.public_id
+		 FOR UPDATE`, ids)
+	if err != nil {
+		return false, err
+	}
+	total, waiting := 0, 0
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			rows.Close()
+			return false, err
+		}
+		total++
+		if status == "waiting" {
+			waiting++
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if total != 2 || waiting != 2 {
+		return false, nil // one side already claimed/matched/dequeued
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE matchmaking_queue
+		 SET status = 'claimed', updated_at = now()
+		 WHERE agent_id IN (SELECT id FROM agents WHERE public_id = ANY($1))`,
+		ids); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ReleasePair returns a claimed pair to waiting (used when escrow fails).
+func (r *MatchmakingRepo) ReleasePair(ctx context.Context, agentA, agentB string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE matchmaking_queue
+		 SET status = 'waiting', updated_at = now()
+		 WHERE agent_id IN (SELECT id FROM agents WHERE public_id = ANY($1))
+		   AND status = 'claimed'`,
+		[]string{agentA, agentB})
+	return err
+}
+
 func (r *MatchmakingRepo) MarkMatched(ctx context.Context, agentA, agentB, matchPublicID string) error {
+	// Only promotes a pair this matcher holds (status='claimed'), so it can never
+	// flip a waiting/re-queued entry that another tick is about to pair.
 	_, err := r.db.Exec(ctx,
 		`UPDATE matchmaking_queue
 		 SET status = 'matched', match_id = $2, updated_at = now()
-		 WHERE agent_id IN (SELECT id FROM agents WHERE public_id = ANY($1))`,
+		 WHERE agent_id IN (SELECT id FROM agents WHERE public_id = ANY($1))
+		   AND status = 'claimed'`,
 		[]string{agentA, agentB}, matchPublicID)
 	return err
 }

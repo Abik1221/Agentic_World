@@ -46,7 +46,14 @@ type Repo interface {
 	Delete(ctx context.Context, agentPublicID string) error
 	// Waiting returns up to limit waiting entries ordered by (bid, enqueued_at).
 	Waiting(ctx context.Context, limit int) ([]Entry, error)
-	// MarkMatched flips both agents' entries to matched with the match public id.
+	// ClaimPair atomically reserves both agents' entries (waiting -> claimed) iff
+	// BOTH are currently waiting, returning true only then. This is the
+	// mutual-exclusion point that must succeed BEFORE any stake is escrowed, so a
+	// pair is never double-escrowed across ticks or matcher instances.
+	ClaimPair(ctx context.Context, agentA, agentB string) (bool, error)
+	// ReleasePair returns a claimed pair to waiting (used when escrow fails).
+	ReleasePair(ctx context.Context, agentA, agentB string) error
+	// MarkMatched flips both agents' claimed entries to matched with the match id.
 	MarkMatched(ctx context.Context, agentA, agentB, matchPublicID string) error
 }
 
