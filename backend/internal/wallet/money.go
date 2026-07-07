@@ -202,9 +202,22 @@ func (s *Service) credit(ctx context.Context, agentPublicID string, coins int64,
 		return err
 	}
 	if res.Applied && repay > 0 {
-		_ = s.repo.RepayDebt(ctx, agentPublicID, repay)
+		bestEffortDebt(func() error { return s.repo.RepayDebt(ctx, agentPublicID, repay) })
 	}
 	return nil
+}
+
+// bestEffortDebt runs a per-agent debts-table adjustment with a bounded retry. The
+// ledger (bad_debt) is authoritative for accounting; the debts counter only drives
+// the payout gate, so a transient failure is safe-side — it over-blocks a payout
+// (never loses money) and is reconcilable. We retry to close the transient window
+// rather than swallow a single attempt, but never fail the money op on it.
+func bestEffortDebt(fn func() error) {
+	for i := 0; i < 3; i++ {
+		if err := fn(); err == nil {
+			return
+		}
+	}
 }
 
 // Reverse claws back a previously credited top-up on a Stripe refund/chargeback.
@@ -247,10 +260,12 @@ func (s *Service) Reverse(ctx context.Context, userPublicID, agentPublicID strin
 	if res.Applied && shortfall > 0 {
 		s.m.chargebackDebt.Add(float64(shortfall))
 		if agentPublicID != "" {
-			// Per-agent debt gates that agent's next payout. Best-effort: the ledger
-			// has already booked the bad debt authoritatively, so a failure here
-			// (recoverable by reconciliation) must not fail the clawback itself.
-			_ = s.repo.RecordDebt(ctx, agentPublicID, shortfall)
+			// Per-agent debt gates that agent's next payout. Best-effort (bounded
+			// retry): the ledger has already booked the bad debt authoritatively, so
+			// a failure here (recoverable by reconciliation) must not fail the clawback.
+			ag := agentPublicID
+			amt := shortfall
+			bestEffortDebt(func() error { return s.repo.RecordDebt(ctx, ag, amt) })
 		}
 	}
 	return nil

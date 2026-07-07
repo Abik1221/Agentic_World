@@ -533,20 +533,43 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	}
 
 	// Sandbox is unrated and off the growth path: skip ratings, clips, and
-	// notifications. Competitive matches update skill ratings (idempotent on the
-	// match id, so a finalize retry after a crash re-applies safely) and fire the
-	// engagement hooks off the hot path.
+	// notifications. Competitive matches update skill ratings and fire the
+	// engagement hooks off the hot path. The match is already durably finished +
+	// settled here, and Rate is idempotent on the match id (rating_updates marker),
+	// so a transient rater error must not silently drop the leaderboard update:
+	// retry a few times before surfacing it (nothing re-drives finalize once the
+	// match is Finished — Act/HandleTimeout early-return on non-active).
 	if m.Mode != ModeSandbox {
 		rr := RatingResult{MatchPublicID: m.PublicID, WinnerSeat: state.Winner}
 		for _, p := range players {
 			rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
 		}
-		if err := s.rater.Rate(ctx, rr); err != nil {
+		if err := rateWithRetry(ctx, s.rater, rr, 3, 50*time.Millisecond); err != nil {
 			return nil, err
 		}
 		s.finish.MatchFinished(ctx, m.PublicID)
 	}
 	return players, nil
+}
+
+// rateWithRetry applies the (idempotent) rating with a bounded retry so a transient
+// error right after the match commits doesn't lose the leaderboard/Elo update. It
+// honors context cancellation between attempts.
+func rateWithRetry(ctx context.Context, rater Rater, rr RatingResult, attempts int, backoff time.Duration) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		if err = rater.Rate(ctx, rr); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // HandleTimeout forces a missing seat to play (deterministically) once its window
