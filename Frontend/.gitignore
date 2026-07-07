@@ -5,3 +5,7 @@
 .DS_Store
 .env*.local
 .next-dev/
+
+# stray Next build dir from a relative NEXT_DIST_DIR (never commit build output)
+/tmp/
+tmp/
