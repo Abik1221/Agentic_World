@@ -83,6 +83,13 @@ type Repo interface {
 	// ConsumeMagicLink atomically marks a valid (unconsumed, unexpired) token used
 	// and returns its owner (+ agent), or ErrNotFound.
 	ConsumeMagicLink(ctx context.Context, tokenHash string) (MagicLink, error)
+
+	// UpsertUserFromPrivy find-or-creates the owner for a verified Privy identity,
+	// keyed on privy_user_id (linking an existing same-email account that has no
+	// Privy id yet), opens their treasury wallet, and stores the login profile
+	// hints. Returns the owner's public id and whether a new user was created.
+	// in.UserPublicID is used ONLY when inserting a new user. No agent is created.
+	UpsertUserFromPrivy(ctx context.Context, in PrivyUpsertInput) (userPublicID string, created bool, err error)
 }
 
 // CreateAccountInput carries everything CreateAccount needs in one atomic call.

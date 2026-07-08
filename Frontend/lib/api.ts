@@ -678,6 +678,35 @@ export function login(email: string, password: string): Promise<LoginResult> {
   });
 }
 
+// ---- Privy auth (social / email / Solana wallet) ----------------------------
+// Privy authenticates the user (its own themed popup); the backend verifies the
+// Privy access token and exchanges it for our dashboard session. The `profile`
+// fields are non-authoritative display hints captured at login (email, connected
+// wallet, avatar) — only the Privy user id is proven server-side.
+
+export interface PrivyProfileHints {
+  email?: string;
+  wallet_address?: string;
+  wallet_provider?: string;
+  display_name?: string;
+  avatar_url?: string;
+}
+
+export interface PrivyLoginResult {
+  dashboard_token: string;
+  user_id: string;
+  created: boolean;
+}
+
+/** POST /v1/auth/privy — exchange a verified Privy access token for a session. */
+export function privyLogin(token: string, profile: PrivyProfileHints = {}): Promise<PrivyLoginResult> {
+  // Like the other auth calls: no mock fallback — a failed exchange must surface.
+  return apiRequest<PrivyLoginResult>("/v1/auth/privy", {
+    method: "POST",
+    body: { token, profile },
+  });
+}
+
 export interface VerifyResult {
   api_key: string;
   agent_id: string;
@@ -1046,8 +1075,10 @@ export interface Withdrawal {
   gross_cents: number;
   stripe_fee_cents: number;
   net_cents: number;
-  status: string;
-  transfer_id?: string;
+  chain?: string; // "solana" | "stripe"
+  dest_wallet?: string; // Solana payout destination
+  status: string; // requested|processing|broadcasted|paid|rejected|failed
+  transfer_id?: string; // Stripe transfer id / Solana tx signature
   requested_at: string;
 }
 
@@ -1055,9 +1086,13 @@ export interface Withdrawal {
 export function fetchWithdrawable(
   session: Session,
   agentId?: string,
+  coins?: number,
 ): Promise<{ withdrawable_coins: number; quote: WithdrawQuote | null }> {
   const agent = agentId ?? session.agentId;
-  const q = agent ? `?agent=${encodeURIComponent(agent)}` : "";
+  const params = new URLSearchParams();
+  if (agent) params.set("agent", agent);
+  if (coins && coins > 0) params.set("coins", String(coins));
+  const q = params.toString() ? `?${params.toString()}` : "";
   return withFallback(
     "wallet/withdrawable",
     () =>
@@ -2090,4 +2125,74 @@ export async function monopolyAct(
     body: act,
   });
   return mapMonopolyView(v);
+}
+
+// ---- Solana USDC deposits (Beta wallet pipeline P2) -------------------------
+// A deposit session returns everything the client needs to build the Solana Pay
+// transfer (recipient wallet, USDC mint, reference, amount) + a ready pay_url for
+// the QR. The backend listener credits the treasury once the transfer finalizes;
+// the client polls GET /v1/deposits/{id} for the status transition.
+
+export interface DepositSession {
+  deposit_id: string;
+  reference: string;
+  recipient: string; // platform wallet (Solana Pay recipient)
+  spl_token: string; // USDC mint
+  asset: string;
+  amount_base: number; // token base units (USDC = 6 decimals)
+  coins_expected: number;
+  status: "pending" | "detected" | "completed" | "expired" | "failed";
+  tx_signature?: string;
+  amount_received?: number;
+  coins_credited?: number;
+  pay_url: string;
+  created_at: string;
+  expires_at: string;
+}
+
+/** POST /v1/deposits — open a deposit session for `amountUsdc` USDC. No mock
+ *  fallback: a failure (incl. 503 when deposits are disabled) must surface. */
+export function createDeposit(session: Session, amountUsdc: number): Promise<DepositSession> {
+  return apiRequest<DepositSession>("/v1/deposits", {
+    method: "POST",
+    token: session.dashboardToken,
+    body: { amount_usdc: amountUsdc },
+  });
+}
+
+/** GET /v1/deposits/{id} — poll a deposit session's status. */
+export function getDeposit(session: Session, id: string): Promise<DepositSession> {
+  return apiRequest<DepositSession>(`/v1/deposits/${encodeURIComponent(id)}`, {
+    token: session.dashboardToken,
+  });
+}
+
+// ---- Notification feed (persisted: deposits, withdrawals, match results) -----
+
+export interface NotificationFeedItem {
+  kind: string;
+  ref: string;
+  payload: Record<string, unknown>;
+  read: boolean;
+  created_at: string;
+}
+
+/** GET /v1/notifications/feed — recent persisted notifications (newest first). */
+export function fetchNotificationFeed(session: Session, limit = 20): Promise<NotificationFeedItem[]> {
+  return withFallback(
+    "notifications/feed",
+    async () => {
+      const r = await apiRequest<{ notifications: NotificationFeedItem[] }>(
+        `/v1/notifications/feed?limit=${limit}`,
+        { token: session.dashboardToken },
+      );
+      return r.notifications ?? [];
+    },
+    [],
+  );
+}
+
+/** POST /v1/notifications/read — mark all notifications read. */
+export function markNotificationsRead(session: Session): Promise<{ marked_read: number }> {
+  return apiRequest("/v1/notifications/read", { method: "POST", token: session.dashboardToken });
 }

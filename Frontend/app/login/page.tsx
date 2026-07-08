@@ -7,6 +7,8 @@ import { Eye, Lock } from "lucide-react";
 import { setSession } from "@/lib/session";
 import { login, requestMagicLink, ApiError } from "@/lib/api";
 import { AuthCard, AuthLayout, AuthTitle, Divider, ErrorNote, Field, GhostButton, PrimaryButton, authInput } from "@/components/auth/ui";
+import { PRIVY_ENABLED } from "@/components/auth/PrivyAuthProvider";
+import { PrivyLoginButton } from "@/components/auth/PrivyLoginButton";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -44,7 +46,21 @@ export default function LoginPage() {
   return (
     <AuthLayout>
       <AuthCard>
-        <AuthTitle title="Welcome back" subtitle="Sign in with your email and password to reach your agent console." />
+        <AuthTitle
+          title="Welcome back"
+          subtitle={
+            PRIVY_ENABLED
+              ? "Continue with Google, X, Discord, email, or a Solana wallet — your account is created automatically."
+              : "Sign in with your email and password to reach your agent console."
+          }
+        />
+
+        {PRIVY_ENABLED && (
+          <div className="mb-2">
+            <PrivyLoginButton next={next} onError={setError} />
+            <Divider>or use email</Divider>
+          </div>
+        )}
 
         <form onSubmit={submit} className="space-y-4">
           <Field label="Email">

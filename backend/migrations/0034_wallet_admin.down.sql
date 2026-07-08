@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE wallets DROP COLUMN IF EXISTS frozen;
+DROP TABLE IF EXISTS wallet_settings;
+
+COMMIT;

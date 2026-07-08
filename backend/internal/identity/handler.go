@@ -17,13 +17,14 @@ import (
 type Handler struct {
 	svc        *Service
 	authn      *auth.Authenticator
+	privy      *auth.PrivyVerifier // nil ⇒ Privy login disabled (503)
 	registerRL func(http.Handler) http.Handler
 	loginRL    func(http.Handler) http.Handler
 	dev        bool // non-prod: surface the magic-link token in the response (no email wired)
 	xClaim     bool // X-claim (tweet) onboarding available (needs a real verifier)
 }
 
-func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL func(http.Handler) http.Handler, dev, xClaim bool) *Handler {
+func NewHandler(svc *Service, authn *auth.Authenticator, privy *auth.PrivyVerifier, registerRL, loginRL func(http.Handler) http.Handler, dev, xClaim bool) *Handler {
 	noop := func(n http.Handler) http.Handler { return n }
 	if registerRL == nil {
 		registerRL = noop // no-op fallback
@@ -31,7 +32,7 @@ func NewHandler(svc *Service, authn *auth.Authenticator, registerRL, loginRL fun
 	if loginRL == nil {
 		loginRL = noop
 	}
-	return &Handler{svc: svc, authn: authn, registerRL: registerRL, loginRL: loginRL, dev: dev, xClaim: xClaim}
+	return &Handler{svc: svc, authn: authn, privy: privy, registerRL: registerRL, loginRL: loginRL, dev: dev, xClaim: xClaim}
 }
 
 // Register is an httpx.Mount: it attaches all identity routes with their guards.
@@ -51,6 +52,9 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.loginRL)
 		r.Post("/v1/auth/login", h.login)
 		r.Post("/v1/auth/magic-link", h.requestMagicLink)
+		// Privy token exchange: verify Privy's access token, find-or-create the
+		// owner, return a dashboard session. Rate-limited alongside login.
+		r.Post("/v1/auth/privy", h.privyLogin)
 	})
 	// Magic-link verify consumes a single-use token (public; the token is the
 	// credential), so it is not IP-rate-limited.
@@ -180,6 +184,61 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		"dashboard_token": res.DashboardToken,
 		"agent_id":        res.AgentID,
 		"agent_name":      res.AgentName,
+	})
+}
+
+// privyLogin exchanges a Privy access token for a dashboard session. The token is
+// verified cryptographically (auth.PrivyVerifier); the optional profile block is
+// non-authoritative display data captured at login. On first login the owner and
+// their treasury wallet are created automatically.
+func (h *Handler) privyLogin(w http.ResponseWriter, r *http.Request) {
+	if !h.privy.Enabled() {
+		httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "privy_unavailable",
+			"Privy login is not configured here. Use email/password (POST /v1/auth/login)."))
+		return
+	}
+	var in struct {
+		Token   string `json:"token"`
+		Profile struct {
+			Email          string `json:"email"`
+			WalletAddress  string `json:"wallet_address"`
+			WalletProvider string `json:"wallet_provider"`
+			DisplayName    string `json:"display_name"`
+			AvatarURL      string `json:"avatar_url"`
+		} `json:"profile"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.Token == "" {
+		httpx.Error(w, errInvalid("token is required"))
+		return
+	}
+	id, err := h.privy.Verify(in.Token)
+	if err != nil {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "invalid_privy_token", "Privy token verification failed."))
+		return
+	}
+	res, err := h.svc.UpsertFromPrivy(r.Context(), id.UserID, PrivyProfile{
+		Email:          in.Profile.Email,
+		WalletAddress:  in.Profile.WalletAddress,
+		WalletProvider: in.Profile.WalletProvider,
+		DisplayName:    in.Profile.DisplayName,
+		AvatarURL:      in.Profile.AvatarURL,
+	})
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	status := http.StatusOK
+	if res.Created {
+		status = http.StatusCreated
+	}
+	httpx.JSON(w, status, map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"user_id":         res.UserPublicID,
+		"created":         res.Created,
 	})
 }
 

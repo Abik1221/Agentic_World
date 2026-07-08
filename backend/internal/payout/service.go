@@ -15,21 +15,42 @@ import (
 type Config struct {
 	CoinCents          int64         // face value of one coin (default 1)
 	SellFeePct         int           // platform cut on withdrawal (default 10)
-	StripeFeePct       int           // Stripe payout fee %, passed to the user
-	StripeFeeFlatCents int64         // flat Stripe payout fee, passed to the user
+	StripeFeePct       int           // network/processing fee %, passed to the user (0 for Solana)
+	StripeFeeFlatCents int64         // flat network/processing fee, passed to the user
 	MinCoins           int64         // minimum withdrawal
 	Clearing           time.Duration // a request must age this long before approval
+	Chain              string        // payout rail: ChainStripe (default) | ChainSolana
 }
 
 // Service runs the request → approve → pay cash-out workflow.
 type Service struct {
-	repo  Repo
-	bank  Bank
-	xfer  Transferrer
-	clock platform.Clock
-	cfg   Config
-	log   *slog.Logger
-	m     *metrics
+	repo      Repo
+	bank      Bank
+	xfer      Transferrer
+	confirmer Confirmer // Solana on-chain confirmation; nil in Stripe mode
+	gate      Gate      // Super Admin withdrawal gate; nil ⇒ no dynamic gate
+	notifier  Notifier  // user notifications; nil ⇒ none
+	clock     platform.Clock
+	cfg       Config
+	log       *slog.Logger
+	m         *metrics
+}
+
+// SetGate wires the Super Admin withdrawal gate (walletadmin). Optional.
+func (s *Service) SetGate(g Gate) { s.gate = g }
+
+// SetNotifier wires the user-notification writer. Optional.
+func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// notify writes a withdrawal notification (best-effort; never blocks the flow).
+func (s *Service) notify(ctx context.Context, owner, kind, withdrawalID string, netCents int64) {
+	if s.notifier == nil || owner == "" {
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{"withdrawal_id": withdrawalID, "net_cents": netCents})
+	if err := s.notifier.Notify(ctx, owner, kind, "withdrawal:"+withdrawalID, payload); err != nil {
+		s.log.Warn("payout: notify failed", "id", withdrawalID, "kind", kind, "error", err)
+	}
 }
 
 func New(repo Repo, bank Bank, xfer Transferrer, clock platform.Clock, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
@@ -42,8 +63,18 @@ func New(repo Repo, bank Bank, xfer Transferrer, clock platform.Clock, cfg Confi
 	if cfg.Clearing <= 0 {
 		cfg.Clearing = 24 * time.Hour
 	}
+	if cfg.Chain == "" {
+		cfg.Chain = ChainStripe
+	}
 	return &Service{repo: repo, bank: bank, xfer: xfer, clock: clock, cfg: cfg, log: log, m: newMetrics(reg)}
 }
+
+// SetConfirmer wires the on-chain confirmation checker (Solana mode). The
+// confirmation watcher (ConfirmBroadcasted) is a no-op until this is set.
+func (s *Service) SetConfirmer(c Confirmer) { s.confirmer = c }
+
+// solana reports whether the service runs on the Solana payout rail.
+func (s *Service) solana() bool { return s.cfg.Chain == ChainSolana }
 
 // quote computes the fee breakdown for withdrawing `coins`. The platform sell fee
 // (in coins) goes to revenue; the Stripe payout fee (in cents) is deducted from
@@ -116,8 +147,26 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 	if owner != callerUserPublicID {
 		return Withdrawal{}, ErrForbiddenSelf
 	}
-	if connect == "" {
+	// Resolve the payout destination for the active rail: a Solana wallet address
+	// (Beta) or a Stripe Connect account.
+	var destWallet string
+	if s.solana() {
+		w, err := s.repo.DestinationWallet(ctx, owner)
+		if err != nil {
+			return Withdrawal{}, err
+		}
+		if w == "" {
+			return Withdrawal{}, ErrNoWallet
+		}
+		destWallet = w
+	} else if connect == "" {
 		return Withdrawal{}, ErrNoKYC
+	}
+	// Super Admin gate: maintenance / withdrawals-disabled / bounds / frozen wallet.
+	if s.gate != nil {
+		if err := s.gate.CheckWithdraw(ctx, owner, coins); err != nil {
+			return Withdrawal{}, err
+		}
 	}
 	if flagged, err := s.repo.AgentFlagged(ctx, agentPublicID); err != nil {
 		return Withdrawal{}, err
@@ -148,7 +197,7 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 		PublicID: platform.NewID("wd"), Agent: agentPublicID, Owner: owner,
 		Coins: coins, FeeCoins: q.FeeCoins, GrossCents: q.GrossCents,
 		StripeFeeCents: q.StripeFeeCents, NetCents: q.NetCents,
-		ConnectAccount: connect, Status: "requested",
+		ConnectAccount: connect, Chain: s.cfg.Chain, DestWallet: destWallet, Status: "requested",
 	}
 	// Lock the coins first, then record the request. If recording fails, release.
 	if err := s.bank.Hold(ctx, w.PublicID, agentPublicID, coins); err != nil {
@@ -163,9 +212,10 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 	return w, nil
 }
 
-// Approve executes a cleared withdrawal: transfer to the connected account, burn
-// the held coins, mark paid. Idempotent (a paid withdrawal re-approves to a no-op;
-// the transfer + burn carry their own idempotency keys).
+// Approve executes a cleared withdrawal. Stripe: transfer → burn → paid, in one
+// step. Solana: claim → broadcast → 'broadcasted' (coins stay held), with a
+// confirmation watcher burning them once the tx finalizes. Idempotent: a paid or
+// in-flight withdrawal re-approves to a no-op.
 func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) error {
 	w, err := s.repo.Get(ctx, publicID)
 	if err != nil {
@@ -174,6 +224,13 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	switch w.Status {
 	case "paid":
 		return nil // idempotent
+	case "processing", "broadcasted":
+		// Solana in-flight: a confirmation watcher finalizes it. Re-approving must
+		// never re-broadcast (double-spend), so treat as an idempotent no-op.
+		if w.Chain == ChainSolana {
+			return nil
+		}
+		return ErrBadState
 	case "requested":
 		// ok
 	default:
@@ -187,6 +244,16 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	} else if flagged {
 		return ErrFlagged
 	}
+	if w.Chain == ChainSolana {
+		return s.approveSolana(ctx, adminUserID, w)
+	}
+	return s.approveStripe(ctx, adminUserID, w)
+}
+
+// approveStripe transfers to the connected account, burns the held coins, and
+// marks the withdrawal paid — synchronous because a Stripe transfer settles at
+// the API call (idempotency-key protected).
+func (s *Service) approveStripe(ctx context.Context, adminUserID string, w Withdrawal) error {
 	// KYC/capabilities must actually be complete before we move money — a Connect
 	// id existing is not enough. Fail closed so the hold stays and the admin can
 	// retry once the payee finishes onboarding.
@@ -195,7 +262,6 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	} else if !ok {
 		return ErrNoKYC
 	}
-
 	transferID, err := s.xfer.Transfer(ctx, w.ConnectAccount, w.NetCents, "wd:"+w.PublicID)
 	if err != nil {
 		// Payout failed: return the held coins and mark it failed for re-request.
@@ -213,7 +279,100 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	s.m.paid.Inc()
 	s.m.paidCents.Add(float64(w.NetCents))
 	s.audit(ctx, adminUserID, "withdrawal_paid", w.PublicID, map[string]any{"transfer": transferID, "net_cents": w.NetCents})
+	s.notify(ctx, w.Owner, "withdrawal_paid", w.PublicID, w.NetCents)
 	return nil
+}
+
+// approveSolana claims the withdrawal (so a retry can't double-broadcast), then
+// broadcasts the USDC transfer. Coins stay HELD in escrow through 'broadcasted';
+// they are burned only once ConfirmBroadcasted sees the tx finalize.
+func (s *Service) approveSolana(ctx context.Context, adminUserID string, w Withdrawal) error {
+	if ok, err := s.xfer.PayoutsEnabled(ctx, w.DestWallet); err != nil {
+		return err
+	} else if !ok {
+		return ErrNoWallet
+	}
+	// Atomic claim BEFORE broadcasting: Solana sends aren't idempotent by key, so a
+	// concurrent/retried approve must be locked out to prevent a double payout.
+	claimed, err := s.repo.SetStatus(ctx, w.PublicID, "requested", "processing", "", "")
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil // another approver claimed it, or it advanced — idempotent
+	}
+	sig, err := s.xfer.Transfer(ctx, w.DestWallet, w.NetCents, "wd:"+w.PublicID)
+	if err != nil {
+		// The broadcast did not happen: release the hold and mark failed.
+		_ = s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins)
+		_, _ = s.repo.SetStatus(ctx, w.PublicID, "processing", "failed", "", err.Error())
+		s.audit(ctx, adminUserID, "withdrawal_failed", w.PublicID, map[string]any{"error": err.Error()})
+		return err
+	}
+	// Broadcast succeeded. Record the signature; coins stay held until the tx
+	// finalizes. If THIS write fails, funds may be in flight — never release; leave
+	// it 'processing' with a loud log for ops reconciliation.
+	if _, err := s.repo.SetStatus(ctx, w.PublicID, "processing", "broadcasted", sig, ""); err != nil {
+		s.log.Error("payout: solana broadcast succeeded but status write failed; needs reconciliation",
+			"id", w.PublicID, "sig", sig, "error", err)
+		return err
+	}
+	s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID,
+		map[string]any{"signature": sig, "net_cents": w.NetCents, "wallet": w.DestWallet})
+	return nil
+}
+
+// ConfirmBroadcasted advances broadcasted Solana withdrawals: on finalized
+// success it burns the held coins and marks paid; on on-chain failure it releases
+// the hold and marks failed. Idempotent (burn/release are keyed on the withdrawal
+// id) and safe to run on a ticker. No-op in Stripe mode / before a confirmer is set.
+func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
+	if s.confirmer == nil {
+		return 0, nil
+	}
+	items, err := s.repo.ListByStatus(ctx, "broadcasted", 100)
+	if err != nil {
+		return 0, err
+	}
+	settled := 0
+	for _, w := range items {
+		finalized, ok, err := s.confirmer.Confirm(ctx, w.TransferID)
+		if err != nil {
+			s.log.Warn("payout: confirm check", "id", w.PublicID, "sig", w.TransferID, "error", err)
+			continue
+		}
+		if !finalized {
+			continue // still confirming
+		}
+		if ok {
+			if err := s.bank.Payout(ctx, w.PublicID, w.Agent, w.Coins, w.FeeCoins); err != nil {
+				s.log.Error("payout: confirm burn", "id", w.PublicID, "error", err)
+				continue
+			}
+			if _, err := s.repo.SetStatus(ctx, w.PublicID, "broadcasted", "paid", w.TransferID, ""); err != nil {
+				s.log.Error("payout: confirm status", "id", w.PublicID, "error", err)
+				continue
+			}
+			s.m.paid.Inc()
+			s.m.paidCents.Add(float64(w.NetCents))
+			s.audit(ctx, "solana:confirm", "withdrawal_paid", w.PublicID, map[string]any{"signature": w.TransferID, "net_cents": w.NetCents})
+			s.notify(ctx, w.Owner, "withdrawal_paid", w.PublicID, w.NetCents)
+		} else {
+			// Finalized but the transaction failed on-chain: give the coins back.
+			if err := s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins); err != nil {
+				s.log.Error("payout: confirm release", "id", w.PublicID, "error", err)
+				continue
+			}
+			if _, err := s.repo.SetStatus(ctx, w.PublicID, "broadcasted", "failed", w.TransferID, "on-chain failure"); err != nil {
+				s.log.Error("payout: confirm fail status", "id", w.PublicID, "error", err)
+				continue
+			}
+			s.audit(ctx, "solana:confirm", "withdrawal_failed", w.PublicID, map[string]any{"signature": w.TransferID, "reason": "on-chain failure"})
+			s.notify(ctx, w.Owner, "withdrawal_failed", w.PublicID, w.NetCents)
+		}
+		settled++
+	}
+	return settled, nil
 }
 
 // OnAccountUpdated reacts to a Stripe account.updated webhook: once a connected

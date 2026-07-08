@@ -44,8 +44,36 @@ type Config struct {
 	APIKeyPepper      string
 	DashboardTokenTTL time.Duration
 	ClaimTTL          time.Duration
-	HCaptchaSecret    string // optional; empty => dev pass-through captcha
-	XBearerToken      string // optional; empty => dev claim verifier (auto-verify)
+
+	// Privy authentication (Beta wallet pipeline P1). Privy is the front door for
+	// social/email/wallet login; the backend verifies its ES256 access token and
+	// exchanges it for a dashboard JWT. Both empty => Privy login disabled (503),
+	// existing email/password + X-claim paths unaffected.
+	PrivyAppID           string // Privy application id (JWT audience)
+	PrivyVerificationKey string // PEM ECDSA P-256 public key from the Privy dashboard
+	HCaptchaSecret       string // optional; empty => dev pass-through captcha
+	XBearerToken         string // optional; empty => dev claim verifier (auto-verify)
+
+	// Solana USDC deposits (Beta wallet pipeline P2). Deposits are enabled only
+	// when the RPC URL + platform owner + platform ATA are all set (see
+	// DepositsEnabled); otherwise /v1/deposits returns 503 and the listener is off.
+	// The coin peg is derived from CoinCents (1 USDC = 100¢ = 100/CoinCents coins).
+	SolanaRPCURL        string
+	SolanaCommitment    string        // finalized (default) | confirmed
+	SolanaUSDCMint      string        // SPL mint accepted for deposits (defaults to mainnet USDC)
+	SolanaPlatformOwner string        // platform wallet (Solana Pay recipient)
+	SolanaPlatformATA   string        // platform USDC token account (deposits must land here)
+	DepositSessionTTL   time.Duration // how long a deposit session stays open
+	DepositMinUSDC      int64         // minimum deposit in whole USDC (0 = no minimum)
+	DepositPollInterval time.Duration // listener cadence
+
+	// Solana withdrawals (Beta wallet pipeline P3). Setting the hot-wallet secret
+	// (base58 private key) alongside the deposit config switches the payout rail to
+	// Solana USDC (see WithdrawalsSolana). The hot wallet is fee-payer + transfer
+	// authority; keep this secret out of logs.
+	SolanaHotWalletSecret   string
+	WithdrawConfirmInterval time.Duration // confirmation watcher cadence
+	WalletReconInterval     time.Duration // wallet reconciliation cadence (drift safety net)
 
 	// Game defaults (consumed from Stage 3)
 	MoveWindow    time.Duration
@@ -131,6 +159,19 @@ type Config struct {
 // IsProd reports whether the service runs in a production-like environment.
 func (c *Config) IsProd() bool { return c.Env == "prod" || c.Env == "staging" }
 
+// DepositsEnabled reports whether Solana USDC deposits are fully configured.
+func (c *Config) DepositsEnabled() bool {
+	return c.SolanaRPCURL != "" && c.SolanaUSDCMint != "" &&
+		c.SolanaPlatformOwner != "" && c.SolanaPlatformATA != ""
+}
+
+// WithdrawalsSolana reports whether cash-out should use the Solana USDC rail:
+// the deposit config plus a hot-wallet secret to sign payouts. When false, the
+// existing Stripe/Dev payout rail is used.
+func (c *Config) WithdrawalsSolana() bool {
+	return c.DepositsEnabled() && c.SolanaHotWalletSecret != ""
+}
+
 // Load reads configuration from the environment, applying defaults, then
 // validates it. All problems are aggregated into a single returned error so the
 // operator sees everything wrong at once.
@@ -160,6 +201,22 @@ func Load() (*Config, error) {
 		ClaimTTL:          l.dur("CLAIM_TTL", 30*time.Minute),
 		HCaptchaSecret:    l.str("HCAPTCHA_SECRET", ""),
 		XBearerToken:      l.str("X_BEARER_TOKEN", ""),
+
+		PrivyAppID:           l.str("PRIVY_APP_ID", ""),
+		PrivyVerificationKey: l.str("PRIVY_VERIFICATION_KEY", ""),
+
+		SolanaRPCURL:        l.str("SOLANA_RPC_URL", ""),
+		SolanaCommitment:    l.str("SOLANA_COMMITMENT", "finalized"),
+		SolanaUSDCMint:      l.str("SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
+		SolanaPlatformOwner: l.str("SOLANA_PLATFORM_OWNER", ""),
+		SolanaPlatformATA:   l.str("SOLANA_PLATFORM_ATA", ""),
+		DepositSessionTTL:   l.dur("DEPOSIT_SESSION_TTL", 30*time.Minute),
+		DepositMinUSDC:      int64(l.intVal("DEPOSIT_MIN_USDC", 1)),
+		DepositPollInterval: l.dur("DEPOSIT_POLL_INTERVAL", 15*time.Second),
+
+		SolanaHotWalletSecret:   l.str("SOLANA_HOT_WALLET_SECRET", ""),
+		WithdrawConfirmInterval: l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
+		WalletReconInterval:     l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
 		MoveWindow:     time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
 		RakePct:        l.intVal("RAKE_PCT", 5),
@@ -250,6 +307,16 @@ func (c *Config) validate() error {
 	// events cannot be verified (and would be rejected anyway).
 	if c.StripeSecretKey != "" && c.StripeWebhookSecret == "" {
 		errs = append(errs, "STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is set")
+	}
+	// Privy login is all-or-nothing: an app id without its verification key (or the
+	// reverse) can't verify tokens, so fail loudly rather than silently disabling.
+	if (c.PrivyAppID == "") != (c.PrivyVerificationKey == "") {
+		errs = append(errs, "PRIVY_APP_ID and PRIVY_VERIFICATION_KEY must be set together (or both empty)")
+	}
+	// Solana deposits: an RPC URL without the platform destination (or vice versa)
+	// can't credit deposits safely — require the full set together.
+	if c.SolanaRPCURL != "" && (c.SolanaPlatformOwner == "" || c.SolanaPlatformATA == "") {
+		errs = append(errs, "SOLANA_RPC_URL requires SOLANA_PLATFORM_OWNER and SOLANA_PLATFORM_ATA (deposit destination)")
 	}
 	if c.IsProd() {
 		if strings.Contains(c.JWTSigningKey, "dev-only") {

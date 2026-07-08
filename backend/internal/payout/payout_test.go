@@ -18,6 +18,7 @@ type fakeRepo struct {
 	withdrawable int64
 	owner        string
 	connect      string
+	wallet       string
 	flagged      bool
 	debt         int64
 	requestedAt  time.Time
@@ -33,8 +34,9 @@ func (r *fakeRepo) Withdrawable(context.Context, string) (int64, error) { return
 func (r *fakeRepo) AgentOwner(context.Context, string) (string, string, error) {
 	return r.owner, r.connect, nil
 }
-func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)     { return r.flagged, nil }
-func (r *fakeRepo) OutstandingDebt(context.Context, string) (int64, error) { return r.debt, nil }
+func (r *fakeRepo) DestinationWallet(context.Context, string) (string, error) { return r.wallet, nil }
+func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)        { return r.flagged, nil }
+func (r *fakeRepo) OutstandingDebt(context.Context, string) (int64, error)    { return r.debt, nil }
 func (r *fakeRepo) Create(_ context.Context, w payout.Withdrawal) error {
 	w.RequestedAt = r.requestedAt
 	cp := w
@@ -71,8 +73,14 @@ func (r *fakeRepo) Audit(context.Context, string, string, string, []byte) error 
 func (r *fakeRepo) ListByOwner(context.Context, string, int) ([]payout.Withdrawal, error) {
 	return nil, nil
 }
-func (r *fakeRepo) ListByStatus(context.Context, string, int) ([]payout.Withdrawal, error) {
-	return nil, nil
+func (r *fakeRepo) ListByStatus(_ context.Context, status string, _ int) ([]payout.Withdrawal, error) {
+	var out []payout.Withdrawal
+	for _, w := range r.rows {
+		if w.Status == status {
+			out = append(out, *w)
+		}
+	}
+	return out, nil
 }
 func (r *fakeRepo) PendingByConnectAccount(_ context.Context, acct string) ([]payout.Withdrawal, error) {
 	var out []payout.Withdrawal

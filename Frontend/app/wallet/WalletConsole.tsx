@@ -8,13 +8,18 @@ import {
   fetchUserWallet,
   fetchUserWalletHistory,
   fetchWithdrawals,
+  fetchNotificationFeed,
   type UserWalletSummary,
   type WalletTxn,
   type Withdrawal,
+  type NotificationFeedItem,
 } from "@/lib/api";
 import { getSession } from "@/lib/session";
+import { cn } from "@/lib/cn";
 import { fmt, type CoinPack } from "@/lib/mock";
 import { CoinPackCheckout } from "@/components/payments/CoinPackCheckout";
+import { DepositModal } from "@/components/wallet/DepositModal";
+import { WithdrawModal } from "@/components/wallet/WithdrawModal";
 import {
   Button,
   Card,
@@ -37,23 +42,30 @@ export function WalletConsole() {
   const [packs, setPacks] = React.useState<CoinPack[]>([]);
   const [tab, setTab] = React.useState<Tab>("overview");
   const [loading, setLoading] = React.useState(true);
+  const [notifs, setNotifs] = React.useState<NotificationFeedItem[]>([]);
+  const [depositOpen, setDepositOpen] = React.useState(false);
+  const [withdrawOpen, setWithdrawOpen] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    const session = getSession();
+    const [s, h, w, p, n] = await Promise.all([
+      fetchUserWallet(session),
+      session.dashboardToken ? fetchUserWalletHistory(session) : Promise.resolve([]),
+      session.dashboardToken ? fetchWithdrawals(session) : Promise.resolve([]),
+      fetchCoinPacks(session),
+      session.dashboardToken ? fetchNotificationFeed(session, 8) : Promise.resolve([]),
+    ]);
+    setSummary(s);
+    setTxns(h);
+    setWithdrawals(w);
+    setPacks(p);
+    setNotifs(n);
+    setLoading(false);
+  }, []);
 
   React.useEffect(() => {
-    (async () => {
-      const session = getSession();
-      const [s, h, w, p] = await Promise.all([
-        fetchUserWallet(session),
-        session.dashboardToken ? fetchUserWalletHistory(session) : Promise.resolve([]),
-        session.dashboardToken ? fetchWithdrawals(session) : Promise.resolve([]),
-        fetchCoinPacks(session),
-      ]);
-      setSummary(s);
-      setTxns(h);
-      setWithdrawals(w);
-      setPacks(p);
-      setLoading(false);
-    })();
-  }, []);
+    void load();
+  }, [load]);
 
   const cc = summary?.coin_cents ?? 1;
   const usd = (coins: number) => `$${((coins * cc) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -117,8 +129,11 @@ export function WalletConsole() {
         subtitle="Treasury · agent balances · transactions"
         actions={
           <>
-            <Button asChild variant="outline" size="sm">
-              <Link href="/withdrawals">Cash out</Link>
+            <Button variant="outline" size="sm" onClick={() => setWithdrawOpen(true)}>
+              Cash out
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setDepositOpen(true)}>
+              Deposit USDC
             </Button>
             <Button size="sm" onClick={() => setTab("buy")}>
               Buy coins
@@ -126,6 +141,10 @@ export function WalletConsole() {
           </>
         }
       />
+
+      <DepositModal open={depositOpen} onClose={() => setDepositOpen(false)} onCredited={() => void load()} />
+      <WithdrawModal open={withdrawOpen} onClose={() => setWithdrawOpen(false)} onRequested={() => void load()} />
+
 
       <SubNav items={tabs} active={tab} onSelect={setTab} />
 
@@ -193,6 +212,22 @@ export function WalletConsole() {
               />
             </div>
           </Card>
+
+          <Card className="p-5">
+            <CardHeader title="Notifications" subtitle="Recent wallet & match activity" />
+            <div className="mt-3 space-y-2">
+              {notifs.length === 0 ? (
+                <p className="font-mono text-xs text-fg-muted">No notifications yet.</p>
+              ) : (
+                notifs.map((n, i) => (
+                  <div key={`${n.kind}-${n.ref}-${i}`} className="flex items-center justify-between border-b border-line pb-2 last:border-0">
+                    <span className={cn("text-sm", n.read ? "text-fg-muted" : "text-fg")}>{notifLabel(n)}</span>
+                    <span className="font-mono text-[10px] text-fg-muted">{new Date(n.created_at).toLocaleString()}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
         </div>
       ) : tab === "transactions" ? (
         <Card className="p-5">
@@ -220,4 +255,25 @@ export function WalletConsole() {
       )}
     </div>
   );
+}
+
+// notifLabel renders a friendly line for a persisted notification.
+function notifLabel(n: NotificationFeedItem): string {
+  const p = n.payload || {};
+  const coins = typeof p.coins === "number" ? p.coins : undefined;
+  const netCents = typeof p.net_cents === "number" ? p.net_cents : undefined;
+  switch (n.kind) {
+    case "deposit_completed":
+      return `Deposit completed${coins != null ? ` · +${fmt(coins)} credits` : ""}`;
+    case "withdrawal_paid":
+      return `Withdrawal sent${netCents != null ? ` · $${(netCents / 100).toFixed(2)}` : ""}`;
+    case "withdrawal_failed":
+      return "Withdrawal failed — credits returned";
+    case "match_result":
+      return "Match result posted";
+    case "agent_match":
+      return "Your agent played a match";
+    default:
+      return n.kind.replace(/_/g, " ");
+  }
 }

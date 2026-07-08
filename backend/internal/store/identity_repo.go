@@ -523,3 +523,124 @@ func nullString(s string) any {
 	}
 	return s
 }
+
+// UpsertUserFromPrivy find-or-creates the owner behind a verified Privy identity.
+// Resolution order: (1) an existing user already linked to this privy_user_id;
+// (2) an existing same-email account with no Privy id yet — linked in place;
+// (3) a brand-new owner. Every path guarantees a treasury wallet exists. All in
+// one transaction so a concurrent first login can't create two wallets/users.
+func (r *IdentityRepo) UpsertUserFromPrivy(ctx context.Context, in identity.PrivyUpsertInput) (string, bool, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after commit
+
+	p := in.Profile
+
+	// 1. Already linked to this Privy identity.
+	var (
+		userID   int64
+		publicID string
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT id, public_id FROM users WHERE privy_user_id = $1`, in.PrivyUserID).
+		Scan(&userID, &publicID)
+	switch {
+	case err == nil:
+		if err = updatePrivyHints(ctx, tx, userID, p); err != nil {
+			return "", false, err
+		}
+		if err = ensureUserWallet(ctx, tx, userID); err != nil {
+			return "", false, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return "", false, err
+		}
+		return publicID, false, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return "", false, err
+	}
+
+	// 2. No Privy link yet, but the login carries an email that already belongs to
+	//    an account. Link it iff that account has no (different) Privy id.
+	if p.Email != "" {
+		var existingPrivy *string
+		err = tx.QueryRow(ctx,
+			`SELECT id, public_id, privy_user_id FROM users WHERE email = $1`, p.Email).
+			Scan(&userID, &publicID, &existingPrivy)
+		switch {
+		case err == nil:
+			if existingPrivy != nil && *existingPrivy != in.PrivyUserID {
+				return "", false, identity.ErrEmailTaken
+			}
+			if _, err = tx.Exec(ctx,
+				`UPDATE users SET privy_user_id = $2, updated_at = now() WHERE id = $1`,
+				userID, in.PrivyUserID); err != nil {
+				return "", false, err
+			}
+			if err = updatePrivyHints(ctx, tx, userID, p); err != nil {
+				return "", false, err
+			}
+			if err = ensureUserWallet(ctx, tx, userID); err != nil {
+				return "", false, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return "", false, err
+			}
+			return publicID, false, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return "", false, err
+		}
+	}
+
+	// 3. Brand-new owner. A unique-violation here means a concurrent login won the
+	//    race for the same Privy id / email — surface it as a conflict.
+	err = tx.QueryRow(ctx,
+		`INSERT INTO users (public_id, privy_user_id, email, wallet_address, wallet_provider, display_name, avatar_url)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		in.UserPublicID, in.PrivyUserID, nullString(p.Email), nullString(p.WalletAddress),
+		nullString(p.WalletProvider), nullString(p.DisplayName), nullString(p.AvatarURL)).
+		Scan(&userID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return "", false, identity.ErrEmailTaken
+		}
+		return "", false, err
+	}
+	if err = ensureUserWallet(ctx, tx, userID); err != nil {
+		return "", false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", false, err
+	}
+	return in.UserPublicID, true, nil
+}
+
+// updatePrivyHints overwrites the profile hint columns only when a non-empty hint
+// is supplied (COALESCE(NULLIF(...))), so a later login missing a field never
+// blanks a previously-captured value. Email is intentionally NOT touched here —
+// it is a unique key set only at create/link time (step 2/3) to avoid a hint
+// collision breaking an existing login.
+func updatePrivyHints(ctx context.Context, tx pgx.Tx, userID int64, p identity.PrivyProfile) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE users SET
+		     wallet_address  = COALESCE(NULLIF($2,''), wallet_address),
+		     wallet_provider = COALESCE(NULLIF($3,''), wallet_provider),
+		     display_name    = COALESCE(NULLIF($4,''), display_name),
+		     avatar_url      = COALESCE(NULLIF($5,''), avatar_url),
+		     updated_at      = now()
+		 WHERE id = $1`,
+		userID, p.WalletAddress, p.WalletProvider, p.DisplayName, p.AvatarURL)
+	return err
+}
+
+// ensureUserWallet opens the owner's treasury wallet if absent (deposits land
+// here). Idempotent — safe to call on every login.
+func ensureUserWallet(ctx context.Context, tx pgx.Tx, userID int64) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO wallets (user_id, kind, balance)
+		 SELECT $1, 'user', 0 WHERE NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1)`,
+		userID)
+	return err
+}

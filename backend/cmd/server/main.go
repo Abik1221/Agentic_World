@@ -21,6 +21,7 @@ import (
 	"github.com/agent-arena/arena/internal/antifraud"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/badges"
+	"github.com/agent-arena/arena/internal/blockchain"
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
@@ -47,12 +48,15 @@ import (
 	"github.com/agent-arena/arena/internal/sandbox"
 	"github.com/agent-arena/arena/internal/secretbox"
 	"github.com/agent-arena/arena/internal/social"
+	"github.com/agent-arena/arena/internal/solanadeposit"
 	"github.com/agent-arena/arena/internal/spectator"
 	"github.com/agent-arena/arena/internal/store"
 	"github.com/agent-arena/arena/internal/subscription"
 	"github.com/agent-arena/arena/internal/tournament"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
+	"github.com/agent-arena/arena/internal/walletadmin"
+	"github.com/agent-arena/arena/internal/walletrecon"
 	"github.com/agent-arena/arena/internal/webhook"
 )
 
@@ -179,13 +183,25 @@ func run() error {
 	}
 	authn := auth.NewAuthenticator(idSvc, jwt, platformAuth, log)
 
+	// Privy is the Beta login front door (social/email/wallet). Its ES256 access
+	// token is verified here and exchanged for a dashboard JWT at /v1/auth/privy.
+	// Empty config ⇒ nil verifier ⇒ that route returns 503 and the existing
+	// email/password + magic-link paths are unaffected.
+	privyAuth, err := auth.NewPrivyVerifier(cfg.PrivyAppID, cfg.PrivyVerificationKey)
+	if err != nil {
+		return err
+	}
+	if privyAuth == nil {
+		log.Info("Privy login disabled (PRIVY_APP_ID / PRIVY_VERIFICATION_KEY unset); using email/password + magic-link")
+	}
+
 	// Client IP is read as the Nth-from-the-right X-Forwarded-For hop so it can't
 	// be spoofed to bypass rate limits (see middleware.ClientIP).
 	middleware.SetTrustedProxies(cfg.TrustedProxyCount)
 	limiter := store.NewRateLimiter(st.Redis)
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
 	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
-	idHandler := identity.NewHandler(idSvc, authn, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled)
+	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled)
 
 	// Agent manifests: the metadata contract a developer submits per agent
 	// version (info, supported games, hosted endpoint, runtime, model, SDK). The
@@ -273,6 +289,12 @@ func run() error {
 		wallet.Config{SessionWindow: cfg.SessionWindow, CoinCents: cfg.CoinCents}, metrics.Registry())
 	walletHandler := wallet.NewHandler(walletSvc, authn, cfg.AllowMint)
 
+	// Super Admin wallet controls (P4): runtime settings (deposit/withdrawal
+	// switches, maintenance, bounds) + risk actions (freeze, manual adjust). Also
+	// the deposit/withdrawal gate — wired into those services below via SetGate.
+	walletAdminSvc := walletadmin.New(store.NewWalletAdminRepo(st.DB), walletSvc, clock, log)
+	walletAdminHandler := walletadmin.NewHandler(walletAdminSvc, authn, cfg.AdminUserIDs)
+
 	// Trust & anti-fraud: the payout gate holds suspect settlements (escrow kept),
 	// the detector flags collusion/human-timing, and disputes drive admin review.
 	// SetPayoutGate wires it into settlement after construction (the wallet is the
@@ -311,8 +333,11 @@ func run() error {
 	clipsSvc := clips.New(store.NewClipsRepo(st.DB), matchRepo, clips.NewDevGenerator(cfg.ClipCDNBase),
 		clips.Config{}, log, metrics.Registry())
 	clipsHandler := clips.NewHandler(clipsSvc)
-	socialSvc := social.New(store.NewSocialRepo(st.DB), social.Config{}, log, metrics.Registry())
+	socialRepo := store.NewSocialRepo(st.DB)
+	socialSvc := social.New(socialRepo, social.Config{}, log, metrics.Registry())
 	socialHandler := social.NewHandler(socialSvc, authn)
+	// Notification writer shared by the deposit + withdrawal flows (idempotent).
+	notifier := notifierAdapter{socialRepo}
 
 	mafiaSvc := mafia.NewService(
 		mafiaRepo,
@@ -364,16 +389,69 @@ func run() error {
 	// held in escrow on request and burned only on a confirmed payout. The live
 	// Stripe transferrer is selected whenever a secret key is configured.
 	var transferrer payout.Transferrer = payout.DevTransferrer{}
-	if cfg.StripeSecretKey != "" {
+	payoutChain := payout.ChainStripe
+	var solanaXfer *payout.SolanaTransferrer
+	switch {
+	case cfg.WithdrawalsSolana():
+		// Solana USDC cash-out: the hot wallet signs a real USDC transfer to the
+		// user's wallet; coins burn only after the tx finalizes (confirm watcher).
+		sx, err := payout.NewSolanaTransferrer(cfg.SolanaRPCURL, cfg.SolanaHotWalletSecret, cfg.SolanaUSDCMint, cfg.SolanaPlatformATA, 6)
+		if err != nil {
+			return err
+		}
+		transferrer, solanaXfer, payoutChain = sx, sx, payout.ChainSolana
+		log.Info("withdrawals: solana USDC rail enabled", "mint", cfg.SolanaUSDCMint)
+	case cfg.StripeSecretKey != "":
 		transferrer = payout.NewStripeTransferrer(cfg.StripeSecretKey)
 	}
 	payoutSvc := payout.New(store.NewPayoutRepo(st.DB), payoutBank{ledgerSvc}, transferrer, clock,
 		payout.Config{
 			CoinCents: cfg.CoinCents, SellFeePct: cfg.WithdrawSellFeePct,
 			StripeFeePct: cfg.StripePayoutFeePct, StripeFeeFlatCents: cfg.StripePayoutFeeFlatCents,
-			MinCoins: cfg.WithdrawMinCoins, Clearing: cfg.WithdrawClearing,
+			MinCoins: cfg.WithdrawMinCoins, Clearing: cfg.WithdrawClearing, Chain: payoutChain,
 		}, log, metrics.Registry())
+	if solanaXfer != nil {
+		// The transferrer also confirms finality; the watcher burns/releases escrow
+		// once each broadcast withdrawal reaches a terminal on-chain state.
+		payoutSvc.SetConfirmer(solanaXfer)
+		go payout.NewConfirmWatcher(payoutSvc, log, cfg.WithdrawConfirmInterval).Run(ctx)
+	}
+	payoutSvc.SetGate(walletAdminSvc) // Super Admin withdrawal gate (settings/freeze)
+	payoutSvc.SetNotifier(notifier)   // notify owner on paid/failed
 	payoutHandler := payout.NewHandler(payoutSvc, authn, cfg.AdminUserIDs)
+
+	// Deposits (Beta wallet pipeline P2): a background listener watches Solana for
+	// USDC transfers to the platform token account (tagged by each session's
+	// Solana Pay reference) and credits the user's treasury via the same ledger
+	// top-up path (peg derived from CoinCents: 1 USDC = 100/CoinCents coins).
+	// Enabled only when fully configured; otherwise /v1/deposits returns 503.
+	var depositHandler *solanadeposit.Handler
+	if cfg.DepositsEnabled() {
+		coinsPerUSDC := int64(100)
+		if cfg.CoinCents > 0 {
+			coinsPerUSDC = 100 / cfg.CoinCents
+		}
+		chain := blockchain.New(blockchain.Config{RPCURL: cfg.SolanaRPCURL, Commitment: cfg.SolanaCommitment})
+		depositSvc := solanadeposit.New(store.NewDepositRepo(st.DB), chain, walletSvc, clock,
+			solanadeposit.Config{
+				USDCMint: cfg.SolanaUSDCMint, PlatformOwner: cfg.SolanaPlatformOwner,
+				PlatformATA: cfg.SolanaPlatformATA, CoinsPerUSDC: coinsPerUSDC, USDCDecimals: 6,
+				SessionTTL: cfg.DepositSessionTTL, MinDepositBase: cfg.DepositMinUSDC * 1_000_000,
+			}, log)
+		depositSvc.SetGate(walletAdminSvc) // Super Admin deposit gate (settings/freeze)
+		depositSvc.SetNotifier(notifier)   // notify user when a deposit is credited
+		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
+		go solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run(ctx)
+		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
+	} else {
+		log.Info("solana deposits disabled (set SOLANA_RPC_URL + SOLANA_PLATFORM_OWNER + SOLANA_PLATFORM_ATA to enable)")
+	}
+
+	// Wallet reconciliation (P6): read-only drift safety net — cross-checks
+	// on-chain deposits/withdrawals against the ledger every interval and alerts
+	// (never auto-corrects). Cheap; runs regardless of rail config.
+	reconSvc := walletrecon.New(store.NewWalletReconRepo(st.DB), time.Hour, log, metrics.Registry())
+	go walletrecon.NewWorker(reconSvc, cfg.WalletReconInterval).Run(ctx)
 
 	// Read-only admin surface the Super Admin backfills its live mirror from
 	// (users/agents/matches/payments/disputes + revenue overview). Authorized by a
@@ -544,8 +622,7 @@ func run() error {
 	mafiaSvc.SetNotifier(store.NewNotifier(st.Redis))
 
 	// 8. HTTP server with the standard middleware chain.
-	router := httpx.NewRouter(
-		httpx.Deps{Config: cfg, Logger: log, Metrics: metrics},
+	mounts := []httpx.Mount{
 		healthH.Register,
 		openapi.NewHandler().Register,
 		idHandler.Register,
@@ -569,11 +646,26 @@ func run() error {
 		tournamentHandler.Register,
 		payoutHandler.Register,
 		adminReadHandler.Register,
-	)
+		walletAdminHandler.Register,
+	}
+	if depositHandler != nil {
+		mounts = append(mounts, depositHandler.Register)
+	}
+	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)
 	srv := httpx.NewServer(cfg, router, log)
 
 	// 9. Serve until shutdown, then drain.
 	return srv.Run(ctx)
+}
+
+// notifierAdapter lets the deposit + withdrawal services write user notifications
+// through the shared, idempotent notifications table (store.SocialRepo) without
+// importing store. Satisfies solanadeposit.Notifier and payout.Notifier.
+type notifierAdapter struct{ repo *store.SocialRepo }
+
+func (n notifierAdapter) Notify(ctx context.Context, userPublicID, kind, ref string, payload []byte) error {
+	_, err := n.repo.InsertNotification(ctx, userPublicID, kind, ref, payload)
+	return err
 }
 
 // matchPairer bridges matchmaking.Pairer to match.Service.CreatePaired, so the

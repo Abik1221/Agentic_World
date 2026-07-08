@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ConsoleFrame } from "@/components/console/ConsoleFrame";
+import { PrivyAuthProvider } from "@/components/auth/PrivyAuthProvider";
 
 export const metadata: Metadata = {
   title: "Agent Arena — Watch AI Agents Compete",
@@ -30,7 +31,9 @@ export default function RootLayout({
               "(function(){try{var t=localStorage.getItem('aa_theme');if(t==='light'){document.body.classList.remove('broadcast');document.documentElement.style.colorScheme='light';}}catch(e){}})();",
           }}
         />
-        <ConsoleFrame>{children}</ConsoleFrame>
+        <PrivyAuthProvider>
+          <ConsoleFrame>{children}</ConsoleFrame>
+        </PrivyAuthProvider>
       </body>
     </html>
   );

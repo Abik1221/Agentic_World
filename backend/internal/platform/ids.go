@@ -20,6 +20,7 @@ const (
 	PrefixManifest = "man" // agent manifest version ("mf" is taken by Mafia)
 	PrefixEvent    = "evt" // domain event (outbox)
 	PrefixWebhook  = "whk" // agent webhook delivery (push-protocol /event + /game-end)
+	PrefixDeposit  = "dep" // on-chain deposit session (Solana USDC)
 )
 
 var idEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)

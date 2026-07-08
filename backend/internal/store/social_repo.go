@@ -89,13 +89,52 @@ func (r *SocialRepo) FollowerUserIDs(ctx context.Context, agentPublicID string) 
 }
 
 func (r *SocialRepo) InsertNotification(ctx context.Context, recipientUserPublicID, kind, ref string, payload []byte) (bool, error) {
+	body := string(payload)
+	if body == "" {
+		body = "{}"
+	}
 	ct, err := r.db.Exec(ctx,
 		`INSERT INTO notifications (recipient_user_id, kind, ref, payload)
 		 SELECT u.id, $2, $3, $4::jsonb FROM users u WHERE u.public_id = $1
 		 ON CONFLICT (recipient_user_id, kind, ref) DO NOTHING`,
-		recipientUserPublicID, kind, ref, string(payload))
+		recipientUserPublicID, kind, ref, body)
 	if err != nil {
 		return false, err
 	}
 	return ct.RowsAffected() > 0, nil
+}
+
+func (r *SocialRepo) ListNotifications(ctx context.Context, userPublicID string, limit int) ([]social.Notification, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT n.kind, n.ref, n.payload, n.read_at IS NOT NULL, n.created_at
+		 FROM notifications n JOIN users u ON u.id = n.recipient_user_id
+		 WHERE u.public_id = $1
+		 ORDER BY n.created_at DESC LIMIT $2`, userPublicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []social.Notification
+	for rows.Next() {
+		var n social.Notification
+		if err := rows.Scan(&n.Kind, &n.Ref, &n.Payload, &n.Read, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+func (r *SocialRepo) MarkAllRead(ctx context.Context, userPublicID string) (int, error) {
+	ct, err := r.db.Exec(ctx,
+		`UPDATE notifications SET read_at = now()
+		 WHERE read_at IS NULL
+		   AND recipient_user_id = (SELECT id FROM users WHERE public_id = $1)`, userPublicID)
+	if err != nil {
+		return 0, err
+	}
+	return int(ct.RowsAffected()), nil
 }

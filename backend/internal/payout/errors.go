@@ -10,6 +10,7 @@ var (
 	ErrTooSmall      = httpx.NewError(http.StatusBadRequest, "withdrawal_too_small", "Below the minimum withdrawal, or fees exceed the amount.")
 	ErrInsufficient  = httpx.NewError(http.StatusPaymentRequired, "insufficient_winnings", "You can only cash out net winnings, and not more than your balance.")
 	ErrNoKYC         = httpx.NewError(http.StatusForbidden, "kyc_required", "Complete payout onboarding (Stripe Connect) before withdrawing.")
+	ErrNoWallet      = httpx.NewError(http.StatusForbidden, "wallet_required", "Connect a Solana wallet before withdrawing.")
 	ErrFlagged       = httpx.NewError(http.StatusForbidden, "account_flagged", "Withdrawals are paused while your account is under review.")
 	ErrDebt          = httpx.NewError(http.StatusConflict, "outstanding_debt", "Clear your outstanding chargeback debt before withdrawing.")
 	ErrNotFound      = httpx.ErrNotFound

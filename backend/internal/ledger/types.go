@@ -12,7 +12,7 @@ const (
 	SysEscrow          = "escrow"           // holds live match stakes
 	SysPlatformRevenue = "platform_revenue" // accrues rake
 	SysStripeClearing  = "stripe_clearing"  // money in/out (real in Stage 5; mint source in non-prod)
-	SysBadDebt         = "bad_debt"          // un-recovered chargeback receivable (may go negative)
+	SysBadDebt         = "bad_debt"         // un-recovered chargeback receivable (may go negative)
 )
 
 // Transaction kinds.
@@ -23,6 +23,7 @@ const (
 	KindSettle   = "settle"   // escrow → winner (+rake) / tie split at match end
 	KindRefund   = "refund"   // escrow → players on abort
 	KindReversal = "reversal" // claw back a top-up on a Stripe refund/chargeback
+	KindAdjust   = "adjust"   // Super Admin manual balance adjustment (credit or debit)
 )
 
 // WalletRef names a wallet by agent, user, or system kind. Exactly one field is set.

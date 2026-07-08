@@ -44,6 +44,16 @@ func (s *Service) Unfollow(ctx context.Context, userPublicID, agentPublicID stri
 	return s.repo.Unfollow(ctx, userPublicID, agentPublicID)
 }
 
+// Notifications returns a user's recent notification feed (newest first).
+func (s *Service) Notifications(ctx context.Context, userPublicID string, limit int) ([]Notification, error) {
+	return s.repo.ListNotifications(ctx, userPublicID, limit)
+}
+
+// MarkRead marks all of a user's notifications read; returns the count updated.
+func (s *Service) MarkRead(ctx context.Context, userPublicID string) (int, error) {
+	return s.repo.MarkAllRead(ctx, userPublicID)
+}
+
 // Enqueue schedules notification fan-out for a finished match. Non-blocking.
 func (s *Service) Enqueue(matchPublicID string) {
 	select {

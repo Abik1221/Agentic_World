@@ -152,6 +152,15 @@ func (s *Service) Topup(ctx context.Context, userPublicID string, coins int64, i
 	return s.creditUser(ctx, userPublicID, coins, idemKey, "stripe")
 }
 
+// CreditDeposit credits coins to the owner's treasury after a CONFIRMED on-chain
+// stablecoin deposit (Solana USDC). Same money movement as Topup (external
+// clearing → user treasury) but tagged source "solana" for a correct ledger
+// audit trail. Idempotent on idemKey (use "solana:<tx_signature>") so a
+// re-observed transfer is a no-op.
+func (s *Service) CreditDeposit(ctx context.Context, userPublicID string, coins int64, idemKey string) error {
+	return s.creditUser(ctx, userPublicID, coins, idemKey, "solana")
+}
+
 // creditUser applies incoming coins to the owner's treasury wallet.
 func (s *Service) creditUser(ctx context.Context, userPublicID string, coins int64, idemKey, source string) error {
 	postings := []ledger.Posting{
@@ -162,6 +171,25 @@ func (s *Service) creditUser(ctx context.Context, userPublicID string, coins int
 		Kind:     ledger.KindTopup,
 		Key:      idemKey,
 		Metadata: map[string]any{"user": userPublicID, "coins": coins, "source": source},
+		Postings: postings,
+	})
+	return err
+}
+
+// AdminAdjust applies a Super Admin manual balance adjustment to the owner's
+// treasury: coins > 0 credits, coins < 0 debits (a debit that would take the
+// wallet negative is rejected by the ledger's non-negative constraint). Balanced
+// against the external clearing account and idempotent on idemKey. Callers MUST
+// audit this out-of-band.
+func (s *Service) AdminAdjust(ctx context.Context, userPublicID string, coins int64, idemKey, reason string) error {
+	postings := []ledger.Posting{
+		{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: -coins},
+		{Wallet: ledger.UserWallet(userPublicID), Amount: coins},
+	}
+	_, err := s.ledger.Post(ctx, ledger.Txn{
+		Kind:     ledger.KindAdjust,
+		Key:      idemKey,
+		Metadata: map[string]any{"user": userPublicID, "coins": coins, "reason": reason, "source": "admin"},
 		Postings: postings,
 	})
 	return err

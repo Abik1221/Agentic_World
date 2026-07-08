@@ -22,6 +22,9 @@ type Repo interface {
 	// AgentOwner returns the owning user's public id and Stripe Connect account id
 	// ("" if not KYC-onboarded). ErrNotFound if the agent does not exist.
 	AgentOwner(ctx context.Context, agentPublicID string) (ownerUserPublicID, connectAccountID string, err error)
+	// DestinationWallet returns the owner's linked Solana wallet address ("" if
+	// none) — the payout destination in Solana mode. ErrNotFound if the user is unknown.
+	DestinationWallet(ctx context.Context, ownerUserPublicID string) (walletAddress string, err error)
 	// AgentFlagged reports an active fraud flag (anti-fraud gate at request/approve).
 	AgentFlagged(ctx context.Context, agentPublicID string) (bool, error)
 	// OutstandingDebt is un-recovered chargeback debt; > 0 blocks withdrawals.
@@ -55,14 +58,45 @@ type Bank interface {
 	ReversePayout(ctx context.Context, withdrawalID, agentPublicID string, coins, feeCoins int64) error
 }
 
-// Transferrer sends money to a connected account. DevTransferrer runs offline;
-// StripeTransferrer hits the real API. Idempotent on idemKey.
+// Payout rails. Chain is stored per-withdrawal so behaviour is fixed at request
+// time even if the platform later switches rails.
+const (
+	ChainStripe = "stripe" // Stripe Connect payout (destination = connect account)
+	ChainSolana = "solana" // Solana USDC transfer (destination = wallet address)
+)
+
+// Transferrer sends money to a destination. In Stripe mode the destination is a
+// connected account; in Solana mode it is a wallet address. DevTransferrer runs
+// offline; StripeTransferrer / SolanaTransferrer hit the real APIs. The transfer
+// MUST be idempotent per idemKey where the rail supports it (Stripe); Solana
+// double-broadcast is prevented by the service's 'processing' claim.
 type Transferrer interface {
-	Transfer(ctx context.Context, connectAccountID string, amountCents int64, idemKey string) (transferID string, err error)
-	// PayoutsEnabled reports whether the connected account has completed KYC and can
-	// actually receive transfers (Stripe `payouts_enabled`). Guards Approve so we
-	// never attempt a payout to an un-onboarded account.
-	PayoutsEnabled(ctx context.Context, connectAccountID string) (bool, error)
+	Transfer(ctx context.Context, destination string, amountCents int64, idemKey string) (transferID string, err error)
+	// PayoutsEnabled reports whether the destination can actually receive the
+	// payout (Stripe: KYC/`payouts_enabled`; Solana: a valid wallet address).
+	// Guards Approve so we never attempt a payout to an unusable destination.
+	PayoutsEnabled(ctx context.Context, destination string) (bool, error)
+}
+
+// Gate is the Super Admin withdrawal gate (satisfied by walletadmin.Service): it
+// blocks a request on maintenance mode, a disabled withdrawal switch, out-of-bounds
+// amounts, or a frozen wallet. Optional (nil ⇒ no dynamic gate).
+type Gate interface {
+	CheckWithdraw(ctx context.Context, userPublicID string, coins int64) error
+}
+
+// Notifier writes a user notification (idempotent per kind+ref). Optional.
+type Notifier interface {
+	Notify(ctx context.Context, userPublicID, kind, ref string, payload []byte) error
+}
+
+// Confirmer reports the terminal on-chain state of a broadcast transaction. Only
+// used in Solana mode (satisfied by SolanaTransferrer); nil in Stripe mode.
+type Confirmer interface {
+	// Confirm returns finalized=false while the tx is still pending. Once
+	// finalized: success=true ⇒ confirmed OK (burn escrow), success=false ⇒ the
+	// transaction failed on-chain (release escrow).
+	Confirm(ctx context.Context, signature string) (finalized bool, success bool, err error)
 }
 
 // Withdrawal is a cash-out record.
@@ -76,6 +110,8 @@ type Withdrawal struct {
 	StripeFeeCents int64     `json:"stripe_fee_cents"`
 	NetCents       int64     `json:"net_cents"`
 	ConnectAccount string    `json:"-"`
+	Chain          string    `json:"chain"`
+	DestWallet     string    `json:"dest_wallet,omitempty"` // Solana payout destination
 	Status         string    `json:"status"`
 	TransferID     string    `json:"transfer_id,omitempty"`
 	RequestedAt    time.Time `json:"requested_at"`
