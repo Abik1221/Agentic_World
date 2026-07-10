@@ -88,6 +88,7 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 		if fr.seq <= lastSeq {
 			continue
 		}
+		httpx.ArmWriteDeadline(w)
 		if _, err := w.Write(fr.data); err != nil {
 			return
 		}
@@ -107,12 +108,14 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 			if fr.seq <= lastSeq {
 				continue
 			}
+			httpx.ArmWriteDeadline(w)
 			if _, err := w.Write(fr.data); err != nil {
 				return
 			}
 			lastSeq = fr.seq
 			_ = rc.Flush()
 		case <-ticker.C:
+			httpx.ArmWriteDeadline(w)
 			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
 				return
 			}
@@ -179,6 +182,11 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	view, err := h.svc.State(r.Context(), chi.URLParam(r, "id"), p.AgentPublicID, wait, timeout)
+	if wait {
+		// A long-poll may have outlived the default write deadline; re-arm before
+		// writing either the state or an error.
+		httpx.ArmWriteDeadline(w)
+	}
 	if err != nil {
 		httpx.Error(w, err)
 		return

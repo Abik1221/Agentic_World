@@ -27,8 +27,9 @@ type Mount func(r chi.Router)
 // operational /metrics endpoint, uniform 404/405, and every module's routes.
 //
 // Middleware order is deliberate: correlate first (RequestID), then recover (so a
-// panic still carries a request ID), then observe (log + metrics), then CORS,
-// then the handler.
+// panic still carries a request ID), then observe (log + metrics), then CORS, then a
+// default write deadline (the server's WriteTimeout is 0 so streaming works), then
+// the handler.
 func NewRouter(d Deps, mounts ...Mount) http.Handler {
 	r := chi.NewRouter()
 
@@ -37,6 +38,9 @@ func NewRouter(d Deps, mounts ...Mount) http.Handler {
 	r.Use(mw.Logging(d.Logger))
 	r.Use(mw.Metrics(d.Metrics))
 	r.Use(mw.CORS(d.Config.CORSAllowedOrigins))
+	// Bounds ordinary responses now that the server sets no WriteTimeout; streaming
+	// and long-poll handlers re-arm a longer rolling deadline before they write.
+	r.Use(mw.WriteDeadline(d.Config.WriteTimeout))
 
 	// Operational metrics endpoint (restrict to the internal network at the LB).
 	r.Handle("/metrics", d.Metrics.Handler())

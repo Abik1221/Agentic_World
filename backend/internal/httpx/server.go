@@ -27,8 +27,14 @@ func NewServer(cfg *config.Config, handler http.Handler, log *slog.Logger) *Serv
 			Handler:           handler,
 			ReadTimeout:       cfg.ReadTimeout,
 			ReadHeaderTimeout: cfg.ReadTimeout,
-			WriteTimeout:      cfg.WriteTimeout,
-			IdleTimeout:       cfg.IdleTimeout,
+			// WriteTimeout is deliberately 0: an absolute per-connection write
+			// deadline set at request start force-closes SSE streams and long-polls
+			// (they outlive it). A bounded write deadline is instead applied per
+			// request by middleware.WriteDeadline(cfg.WriteTimeout) for ordinary
+			// handlers, and re-armed as a rolling deadline by httpx.ArmWriteDeadline
+			// on the streaming/long-poll paths.
+			WriteTimeout: 0,
+			IdleTimeout:  cfg.IdleTimeout,
 		},
 		log:   log,
 		grace: cfg.ShutdownGrace,

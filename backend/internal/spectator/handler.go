@@ -54,6 +54,7 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 			if fr.seq <= lastSeq {
 				continue
 			}
+			httpx.ArmWriteDeadline(w)
 			if _, err := w.Write(fr.data); err != nil {
 				return
 			}
@@ -74,12 +75,14 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 			if fr.seq <= lastSeq {
 				continue // already delivered via backlog
 			}
+			httpx.ArmWriteDeadline(w)
 			if _, err := w.Write(fr.data); err != nil {
 				return
 			}
 			lastSeq = fr.seq
 			_ = rc.Flush()
 		case <-ticker.C:
+			httpx.ArmWriteDeadline(w)
 			if _, err := w.Write([]byte(": keepalive\n\n")); err != nil {
 				return
 			}

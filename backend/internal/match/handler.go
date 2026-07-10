@@ -111,6 +111,11 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	view, err := h.svc.State(r.Context(), id, p.AgentPublicID, wait, timeout)
+	if wait {
+		// A long-poll may have outlived the default write deadline; re-arm before
+		// writing either the state or an error.
+		httpx.ArmWriteDeadline(w)
+	}
 	if err != nil {
 		httpx.Error(w, err)
 		return
