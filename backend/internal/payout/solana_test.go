@@ -50,6 +50,24 @@ func TestSolanaRequestNeedsWallet(t *testing.T) {
 	}
 }
 
+// W2: a linked-but-unverified wallet cannot receive a payout.
+func TestSolanaRequestRequiresVerifiedWallet(t *testing.T) {
+	repo := newRepo()
+	repo.connect = ""
+	repo.wallet = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+	repo.walletUnverified = true // linked, but ownership never proven
+	svc := newSolanaSvc(repo, newBank(), &fakeXfer{}, nil)
+
+	if _, err := svc.Request(context.Background(), "usr_a", "ag_a", 600); err != payout.ErrWalletNotVerified {
+		t.Fatalf("err = %v, want ErrWalletNotVerified", err)
+	}
+	// Once verified, the request succeeds.
+	repo.walletUnverified = false
+	if _, err := svc.Request(context.Background(), "usr_a", "ag_a", 600); err != nil {
+		t.Fatalf("verified request: %v", err)
+	}
+}
+
 func TestSolanaApproveBroadcastsWithoutBurning(t *testing.T) {
 	repo := newRepo()
 	repo.connect = ""

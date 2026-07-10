@@ -58,6 +58,7 @@ import (
 	"github.com/agent-arena/arena/internal/wallet"
 	"github.com/agent-arena/arena/internal/walletadmin"
 	"github.com/agent-arena/arena/internal/walletrecon"
+	"github.com/agent-arena/arena/internal/walletverify"
 	"github.com/agent-arena/arena/internal/webhook"
 )
 
@@ -343,6 +344,10 @@ func run() error {
 	// it with immediate effect. Play handlers resolve a chosen tier -> coin stake.
 	gameStakesSvc := gamestakes.New(store.NewGameStakesRepo(st.DB), clock, log)
 	gameStakesHandler := gamestakes.NewHandler(gameStakesSvc, authn, cfg.AdminUserIDs)
+
+	// Wallet-ownership verification: prove control of the payout wallet (sign a
+	// nonce) before a withdrawal can be sent there (payout gates on the result).
+	walletVerifyHandler := walletverify.NewHandler(walletverify.New(store.NewWalletVerifyRepo(st.DB), clock), authn)
 
 	// Trust & anti-fraud: the payout gate holds suspect settlements (escrow kept),
 	// the detector flags collusion/human-timing, and disputes drive admin review.
@@ -709,6 +714,7 @@ func run() error {
 		adminReadHandler.Register,
 		walletAdminHandler.Register,
 		gameStakesHandler.Register,
+		walletVerifyHandler.Register,
 	}
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)

@@ -68,6 +68,16 @@ func (r *PayoutRepo) DestinationWallet(ctx context.Context, ownerUserPublicID st
 	return wallet, err
 }
 
+func (r *PayoutRepo) VerifiedWallet(ctx context.Context, ownerUserPublicID string) (string, error) {
+	var wallet string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(verified_wallet_address, '') FROM users WHERE public_id = $1`, ownerUserPublicID).Scan(&wallet)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", httpx.ErrNotFound
+	}
+	return wallet, err
+}
+
 func (r *PayoutRepo) AgentFlagged(ctx context.Context, agentPublicID string) (bool, error) {
 	var flagged bool
 	err := r.db.QueryRow(ctx,

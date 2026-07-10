@@ -15,14 +15,15 @@ import (
 var now = time.Unix(1_700_000_000, 0).UTC()
 
 type fakeRepo struct {
-	withdrawable int64
-	owner        string
-	connect      string
-	wallet       string
-	flagged      bool
-	debt         int64
-	requestedAt  time.Time
-	rows         map[string]*payout.Withdrawal
+	withdrawable     int64
+	owner            string
+	connect          string
+	wallet           string
+	walletUnverified bool // when true, VerifiedWallet returns "" (linked but not proven)
+	flagged          bool
+	debt             int64
+	requestedAt      time.Time
+	rows             map[string]*payout.Withdrawal
 }
 
 func newRepo() *fakeRepo {
@@ -35,8 +36,14 @@ func (r *fakeRepo) AgentOwner(context.Context, string) (string, string, error) {
 	return r.owner, r.connect, nil
 }
 func (r *fakeRepo) DestinationWallet(context.Context, string) (string, error) { return r.wallet, nil }
-func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)        { return r.flagged, nil }
-func (r *fakeRepo) OutstandingDebt(context.Context, string) (int64, error)    { return r.debt, nil }
+func (r *fakeRepo) VerifiedWallet(context.Context, string) (string, error) {
+	if r.walletUnverified {
+		return "", nil
+	}
+	return r.wallet, nil // in the fake, a linked wallet is treated as verified
+}
+func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)     { return r.flagged, nil }
+func (r *fakeRepo) OutstandingDebt(context.Context, string) (int64, error) { return r.debt, nil }
 func (r *fakeRepo) Create(_ context.Context, w payout.Withdrawal) error {
 	w.RequestedAt = r.requestedAt
 	cp := w

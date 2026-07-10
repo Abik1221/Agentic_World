@@ -151,14 +151,24 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 	// (Beta) or a Stripe Connect account.
 	var destWallet string
 	if s.solana() {
-		w, err := s.repo.DestinationWallet(ctx, owner)
+		hint, err := s.repo.DestinationWallet(ctx, owner)
 		if err != nil {
 			return Withdrawal{}, err
 		}
-		if w == "" {
+		if hint == "" {
 			return Withdrawal{}, ErrNoWallet
 		}
-		destWallet = w
+		// Only pay a wallet whose ownership the user has PROVEN (signed challenge),
+		// and only if it still matches the linked destination — so an unverified or
+		// swapped hint can't redirect funds (W2).
+		verified, err := s.repo.VerifiedWallet(ctx, owner)
+		if err != nil {
+			return Withdrawal{}, err
+		}
+		if verified == "" || verified != hint {
+			return Withdrawal{}, ErrWalletNotVerified
+		}
+		destWallet = verified
 	} else if connect == "" {
 		return Withdrawal{}, ErrNoKYC
 	}

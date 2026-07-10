@@ -25,6 +25,10 @@ type Repo interface {
 	// DestinationWallet returns the owner's linked Solana wallet address ("" if
 	// none) — the payout destination in Solana mode. ErrNotFound if the user is unknown.
 	DestinationWallet(ctx context.Context, ownerUserPublicID string) (walletAddress string, err error)
+	// VerifiedWallet returns the owner's ownership-PROVEN Solana wallet ("" if the
+	// linked wallet's ownership was never verified via a signed challenge). Payouts
+	// require it to equal the linked destination so funds only go to a proven wallet.
+	VerifiedWallet(ctx context.Context, ownerUserPublicID string) (walletAddress string, err error)
 	// AgentFlagged reports an active fraud flag (anti-fraud gate at request/approve).
 	AgentFlagged(ctx context.Context, agentPublicID string) (bool, error)
 	// OutstandingDebt is un-recovered chargeback debt; > 0 blocks withdrawals.
