@@ -582,11 +582,14 @@ func rateWithRetry(ctx context.Context, rater Rater, rr RatingResult, attempts i
 // HandleTimeout forces a missing seat to play (deterministically) once its window
 // has expired, then resolves. Driven by the sweeper.
 func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error {
-	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
-	if err != nil || !ok {
-		return err // another instance holds it; skip this round
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return nil // another instance holds it; skip this round
+		}
+		defer release()
 	}
-	defer release()
+	// (lerr != nil — Redis unreachable: proceed lockless so the timeout still fires
+	// and escrow can't stay wedged; OCC on commit protects against a racing writer.)
 
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil || m.Status != StatusActive {
@@ -615,8 +618,12 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 			events = append(events, evs...)
 		}
 	}
-	_, err = s.commit(ctx, m, eng, state, events)
-	return err
+	// A racing live move (Act) may have advanced the match first — the forced
+	// timeout is then moot, surfaced as ErrConcurrentUpdate by the OCC commit.
+	if _, err = s.commit(ctx, m, eng, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
+		return err
+	}
+	return nil
 }
 
 // SweepExpired processes all matches whose move window has lapsed.

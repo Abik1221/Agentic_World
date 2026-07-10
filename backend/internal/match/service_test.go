@@ -3,6 +3,7 @@ package match_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -344,6 +345,44 @@ func TestSweepForcesTimeout(t *testing.T) {
 	v, _ := svc.State(ctx, id, "ag_a", false, 0)
 	if len(v.History) < 1 {
 		t.Fatalf("expected at least one resolved round after timeout sweep, got %d", len(v.History))
+	}
+}
+
+// errLocker simulates Redis being unreachable: every Lock attempt errors.
+type errLocker struct{}
+
+func (errLocker) Lock(context.Context, string, time.Duration) (func(), bool, error) {
+	return nil, false, errors.New("redis down")
+}
+
+// G2: with Redis down (the lock errors), the sweeper must STILL force the timeout
+// lockless so a match with idle players can't stay wedged 'active' with escrow held.
+func TestSweepForcesTimeoutLocklessWhenRedisDown(t *testing.T) {
+	repo := newFakeRepo()
+	clk := &mutableClock{t: time.Unix(1_700_000_000, 0).UTC()}
+	cfg := match.Config{MoveWindow: 20 * time.Second, RakePct: 5, Rounds: 13, LockTTL: 5 * time.Second}
+	mk := func(lock match.Locker) *match.Service {
+		return match.New(repo, lock, match.NoopLimits{}, match.NoopWallet{},
+			match.NoopBroadcaster{}, match.AllowAllVerifier{}, match.NoopRater{}, match.NoopFinishHook{}, clk, cfg)
+	}
+	ctx := context.Background()
+
+	// Create + join with a working lock, then sweep with a Redis-down service that
+	// shares the same repo.
+	svc := mk(fakeLocker{})
+	id, _ := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatal(err)
+	}
+	clk.advance(21 * time.Second)
+
+	down := mk(errLocker{})
+	if _, err := down.SweepExpired(ctx, 10); err != nil {
+		t.Fatalf("sweep with redis down must not error: %v", err)
+	}
+	v, _ := svc.State(ctx, id, "ag_a", false, 0)
+	if len(v.History) < 1 {
+		t.Fatalf("timeout must fire lockless when redis is down, got %d rounds", len(v.History))
 	}
 }
 
