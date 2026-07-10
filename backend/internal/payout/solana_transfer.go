@@ -11,6 +11,17 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
+// BroadcastAmbiguousError is returned when the send RPC fails AFTER the payout
+// transaction was signed. The transaction's signature is fixed at signing time and
+// the transaction MAY already have been accepted by the network, so the caller must
+// NOT release escrow on this error (that would double-pay if it landed). The
+// signature lets the confirm watcher settle the true outcome from the chain.
+type BroadcastAmbiguousError struct{ Signature string }
+
+func (e *BroadcastAmbiguousError) Error() string {
+	return "payout: solana broadcast ambiguous (tx may be in flight): " + e.Signature
+}
+
 // SolanaTransferrer pays out USDC on Solana from the platform hot wallet. It
 // implements both Transferrer (broadcast) and Confirmer (finality check). The
 // hot-wallet secret is held in memory only; callers decrypt it (secretbox) before
@@ -115,6 +126,13 @@ func (t *SolanaTransferrer) Transfer(ctx context.Context, destination string, am
 	}
 	sig, err := t.rpc.SendTransaction(ctx, tx)
 	if err != nil {
+		// The tx is already signed, so its signature is fixed and it may have reached
+		// the network despite this RPC error (timeout, transient 5xx, dropped
+		// response). Surface the deterministic signature so the caller records
+		// 'broadcasted' and confirms on-chain rather than releasing escrow blindly.
+		if len(tx.Signatures) > 0 && !tx.Signatures[0].IsZero() {
+			return "", &BroadcastAmbiguousError{Signature: tx.Signatures[0].String()}
+		}
 		return "", fmt.Errorf("payout: broadcast: %w", err)
 	}
 	return sig.String(), nil

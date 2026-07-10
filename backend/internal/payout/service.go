@@ -303,7 +303,25 @@ func (s *Service) approveSolana(ctx context.Context, adminUserID string, w Withd
 	}
 	sig, err := s.xfer.Transfer(ctx, w.DestWallet, w.NetCents, "wd:"+w.PublicID)
 	if err != nil {
-		// The broadcast did not happen: release the hold and mark failed.
+		// A broadcast-ambiguous error means the send RPC failed but the signed tx MAY
+		// have landed on-chain. Releasing here would double-pay (USDC gone AND coins
+		// back). Record the signature, keep the coins HELD in 'broadcasted', and let
+		// ConfirmBroadcasted settle it from the chain. Only a definitive pre-broadcast
+		// failure (nothing was sent) releases the hold.
+		var amb *BroadcastAmbiguousError
+		if errors.As(err, &amb) && amb.Signature != "" {
+			if _, e := s.repo.SetStatus(ctx, w.PublicID, "processing", "broadcasted", amb.Signature, "broadcast ambiguous"); e != nil {
+				s.log.Error("payout: ambiguous solana broadcast; status write failed; needs reconciliation",
+					"id", w.PublicID, "sig", amb.Signature, "error", e)
+				return e
+			}
+			s.log.Warn("payout: ambiguous solana broadcast; holding for on-chain confirmation",
+				"id", w.PublicID, "sig", amb.Signature, "error", err)
+			s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID,
+				map[string]any{"signature": amb.Signature, "ambiguous": true})
+			return err
+		}
+		// Definitive pre-broadcast failure: nothing was sent — safe to release.
 		_ = s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins)
 		_, _ = s.repo.SetStatus(ctx, w.PublicID, "processing", "failed", "", err.Error())
 		s.audit(ctx, adminUserID, "withdrawal_failed", w.PublicID, map[string]any{"error": err.Error()})

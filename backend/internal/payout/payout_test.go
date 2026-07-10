@@ -117,11 +117,15 @@ func (b *fakeBank) ReversePayout(_ context.Context, id, _ string, coins, _ int64
 type fakeXfer struct {
 	calls           int
 	fail            bool
-	payoutsDisabled bool // zero value = payouts enabled, so existing tests are unaffected
+	ambiguousSig    string // non-empty → Transfer returns a BroadcastAmbiguousError with this sig
+	payoutsDisabled bool   // zero value = payouts enabled, so existing tests are unaffected
 }
 
 func (x *fakeXfer) Transfer(context.Context, string, int64, string) (string, error) {
 	x.calls++
+	if x.ambiguousSig != "" {
+		return "", &payout.BroadcastAmbiguousError{Signature: x.ambiguousSig}
+	}
 	if x.fail {
 		return "", errors.New("stripe down")
 	}

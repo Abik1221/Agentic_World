@@ -131,7 +131,9 @@ func TestSolanaConfirmFailureReleasesEscrow(t *testing.T) {
 	}
 }
 
-func TestSolanaApproveReleasesOnBroadcastError(t *testing.T) {
+// A DEFINITIVE (pre-broadcast) failure — nothing reached the network — releases the
+// hold and fails the withdrawal.
+func TestSolanaApproveReleasesOnDefinitiveError(t *testing.T) {
 	repo := newRepo()
 	repo.connect = ""
 	repo.wallet = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
@@ -144,6 +146,47 @@ func TestSolanaApproveReleasesOnBroadcastError(t *testing.T) {
 	}
 	got, _ := repo.Get(context.Background(), w.PublicID)
 	if got.Status != "failed" || bank.released[w.PublicID] != 600 {
-		t.Fatalf("broadcast error not released: status=%q released=%+v", got.Status, bank.released)
+		t.Fatalf("definitive broadcast error not released: status=%q released=%+v", got.Status, bank.released)
+	}
+}
+
+// M3: an AMBIGUOUS broadcast error (send RPC failed but the signed tx may have
+// landed) must NEVER release escrow — that would double-pay if the tx is on-chain.
+// The withdrawal stays 'broadcasted' with the signature recorded so the confirm
+// watcher settles it from the chain.
+func TestSolanaAmbiguousBroadcastHoldsEscrow(t *testing.T) {
+	repo := newRepo()
+	repo.connect = ""
+	repo.wallet = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+	bank, xfer := newBank(), &fakeXfer{ambiguousSig: "sig_amb"}
+	svc := newSolanaSvc(repo, bank, xfer, &fakeConfirmer{})
+
+	w, _ := svc.Request(context.Background(), "usr_a", "ag_a", 600)
+	if err := svc.Approve(context.Background(), "admin", w.PublicID); err == nil {
+		t.Fatal("expected the ambiguous broadcast error to surface")
+	}
+	got, _ := repo.Get(context.Background(), w.PublicID)
+	if got.Status != "broadcasted" {
+		t.Fatalf("status = %q, want broadcasted (held for confirmation, not released)", got.Status)
+	}
+	if got.TransferID != "sig_amb" {
+		t.Fatalf("signature not recorded for reconciliation: %q", got.TransferID)
+	}
+	if len(bank.released) != 0 {
+		t.Fatalf("ambiguous broadcast must NOT release escrow: %+v", bank.released)
+	}
+	if bank.held[w.PublicID] != 600 || len(bank.paid) != 0 {
+		t.Fatalf("coins must stay held (not paid/released): held=%+v paid=%+v", bank.held, bank.paid)
+	}
+
+	// The confirm watcher then settles it exactly once: finalized-success → burn+paid.
+	conf := &fakeConfirmer{finalized: true, success: true}
+	svc2 := newSolanaSvc(repo, bank, xfer, conf)
+	if _, err := svc2.ConfirmBroadcasted(context.Background()); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	got, _ = repo.Get(context.Background(), w.PublicID)
+	if got.Status != "paid" || bank.paid[w.PublicID] != 600 {
+		t.Fatalf("confirm did not settle the held tx: status=%q paid=%+v", got.Status, bank.paid)
 	}
 }
