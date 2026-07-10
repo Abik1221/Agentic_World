@@ -43,6 +43,7 @@ type Service struct {
 	rater  Rater
 	finish FinishHook
 	bot    Bot
+	driver *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
 	clock  platform.Clock
 	cfg    Config
 }
@@ -219,6 +220,9 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 		return "", err
 	}
 	s.publish(publicID, events)
+	// Auto-drive connected agents over their sockets (no-op unless enabled + at
+	// least one seat is connected); a non-connected seat self-drives via HTTP.
+	s.maybeDrive(publicID, aAgent, bAgent)
 	return publicID, nil
 }
 

@@ -88,6 +88,12 @@ type Config struct {
 	// Sandbox practice mode — risk-free matches vs the house agents.
 	SandboxEnabled bool
 
+	// RankedAutoDrive: when a ranked/staked match is paired, the platform drives
+	// each CONNECTED agent's seat over its socket (hands-free live-vs-live play).
+	// Off by default — enable only after 2-live-agent integration testing, since it
+	// auto-plays real staked matches. When off, paired agents self-drive over HTTP.
+	RankedAutoDrive bool
+
 	// Agent manifest / endpoint verification. These two are split so enabling one
 	// does not silently enable the other, and BOTH are refused in prod/staging
 	// (see validate) so a dev flag copied into a real env can't open an SSRF hole.
@@ -225,12 +231,13 @@ func Load() (*Config, error) {
 		WithdrawConfirmInterval: l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
 		WalletReconInterval:     l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
-		MoveWindow:     time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
-		RakePct:        l.intVal("RAKE_PCT", 5),
-		DefaultRounds:  l.intVal("DEFAULT_ROUNDS", 13),
-		SSEMaxConns:    l.intVal("SSE_MAX_CONNS", 20000),
-		AutoMigrate:    l.boolVal("AUTO_MIGRATE", true),
-		SandboxEnabled: l.boolVal("SANDBOX_ENABLED", true),
+		MoveWindow:      time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
+		RakePct:         l.intVal("RAKE_PCT", 5),
+		DefaultRounds:   l.intVal("DEFAULT_ROUNDS", 13),
+		SSEMaxConns:     l.intVal("SSE_MAX_CONNS", 20000),
+		AutoMigrate:     l.boolVal("AUTO_MIGRATE", true),
+		SandboxEnabled:  l.boolVal("SANDBOX_ENABLED", true),
+		RankedAutoDrive: l.boolVal("RANKED_AUTODRIVE", false),
 
 		AgentVerifyAllowPrivate:  l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
 		AgentVerifyAllowInsecure: l.boolVal("AGENT_VERIFY_ALLOW_INSECURE", false),

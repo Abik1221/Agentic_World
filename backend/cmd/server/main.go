@@ -530,6 +530,12 @@ func run() error {
 	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
 	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
 	matchSvc.SetBot(bot.NewService())
+	if cfg.RankedAutoDrive {
+		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
+		// default (auto-plays real staked matches) — enable post integration test.
+		matchSvc.EnableRankedDrive(agentGateway, log)
+		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
+	}
 	matchHandler := match.NewHandler(matchSvc, authn)
 
 	// Sandbox: risk-free practice vs the seeded house agents, played through the

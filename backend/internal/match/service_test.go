@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,57 @@ import (
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/platform"
 )
+
+// fakeMover stands in for the socket gateway: both agents are "connected" and each
+// turn it plays the lowest card in the offered hand (via JSON round-trip, so it
+// needs no access to the driver's unexported view/move types).
+type fakeMover struct{}
+
+func (fakeMover) Connected(string) bool { return true }
+func (fakeMover) Turn(_ context.Context, _ string, view, out any) error {
+	b, _ := json.Marshal(view)
+	var v struct {
+		Round    int   `json:"round"`
+		YourHand []int `json:"your_hand"`
+	}
+	_ = json.Unmarshal(b, &v)
+	card := 0
+	if len(v.YourHand) > 0 {
+		card = v.YourHand[0]
+	}
+	resp, _ := json.Marshal(map[string]any{"round": v.Round, "card": card})
+	return json.Unmarshal(resp, out)
+}
+func (fakeMover) GameEnd(context.Context, string, string, string, json.RawMessage) error { return nil }
+
+// The server auto-drives BOTH paired agents over their sockets to completion —
+// hands-free live-vs-live play (agents-vs-agents; both staked equally at pairing).
+func TestRankedAutoDrivePlaysPairedMatchToFinish(t *testing.T) {
+	svc, _ := newSvcWithRepo()
+	svc.EnableRankedDrive(fakeMover{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+
+	id, err := svc.CreatePaired(ctx, "ag_a", "usr_a", "ag_b", "usr_b", 50)
+	if err != nil {
+		t.Fatalf("CreatePaired: %v", err)
+	}
+	// CreatePaired spawned the driver; it should play the match to a finish.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		v, _ := svc.State(ctx, id, "ag_a", false, 0)
+		if v.Status == match.StatusFinished {
+			if v.Result == nil {
+				t.Fatal("finished match has no result")
+			}
+			if len(v.History) != 13 {
+				t.Fatalf("history len = %d, want 13", len(v.History))
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("auto-driver did not finish the paired match within the deadline")
+}
 
 // ── in-memory fakes (no DB / Redis) ──────────────────────────────────────────
 
