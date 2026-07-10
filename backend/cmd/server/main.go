@@ -206,8 +206,12 @@ func run() error {
 	// be spoofed to bypass rate limits (see middleware.ClientIP).
 	middleware.SetTrustedProxies(cfg.TrustedProxyCount)
 	limiter := store.NewRateLimiter(st.Redis)
-	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
-	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
+	// Auth buckets must NOT fail open on a Redis blip (that would open a
+	// brute-force / enumeration window), so they fail over to a per-instance
+	// in-memory limiter instead of serving unthrottled.
+	localRL := middleware.NewLocalLimiter()
+	registerRL := middleware.RateLimitFailover(limiter, localRL, 5, time.Hour, middleware.IPKey("register"))
+	loginRL := middleware.RateLimitFailover(limiter, localRL, 10, time.Minute, middleware.IPKey("login"))
 	// Per-user limiters on sensitive authenticated routes: money movement, the
 	// outbound endpoint probe, and credential minting. Keyed by the token principal
 	// (never the body), falling back to IP only when unauthenticated. Fails open on
