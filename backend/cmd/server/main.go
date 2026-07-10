@@ -27,6 +27,7 @@ import (
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/events"
+	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
@@ -336,6 +337,12 @@ func run() error {
 	// the deposit/withdrawal gate — wired into those services below via SetGate.
 	walletAdminSvc := walletadmin.New(store.NewWalletAdminRepo(st.DB), walletSvc, clock, log)
 	walletAdminHandler := walletadmin.NewHandler(walletAdminSvc, authn, cfg.AdminUserIDs)
+
+	// Game stake tiers: Super-Admin-configurable price bands per game (e.g. Mafia
+	// Low/Mid/High). Public read exposes the enabled menu; admin GET/PUT configures
+	// it with immediate effect. Play handlers resolve a chosen tier -> coin stake.
+	gameStakesSvc := gamestakes.New(store.NewGameStakesRepo(st.DB), clock, log)
+	gameStakesHandler := gamestakes.NewHandler(gameStakesSvc, authn, cfg.AdminUserIDs)
 
 	// Trust & anti-fraud: the payout gate holds suspect settlements (escrow kept),
 	// the detector flags collusion/human-timing, and disputes drive admin review.
@@ -692,6 +699,7 @@ func run() error {
 		payoutHandler.Register,
 		adminReadHandler.Register,
 		walletAdminHandler.Register,
+		gameStakesHandler.Register,
 	}
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
