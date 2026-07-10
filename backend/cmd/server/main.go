@@ -149,7 +149,14 @@ func run() error {
 		adminPubKey,
 		log, time.Minute,
 	)
-	go platformCfg.Run(ctx)
+	// Every long-lived background worker is launched through SafeLoop so a panic in
+	// one loop logs + restarts instead of aborting the whole process — an unrecovered
+	// goroutine panic kills the program, taking in-flight matches, money settlement,
+	// and SSE streams down with it.
+	launch := func(name string, run func(context.Context)) {
+		go platform.SafeLoop(ctx, log, name, run)
+	}
+	launch("platform-config", platformCfg.Run)
 
 	// 7. Modules.
 	healthH := health.New(st, clock, version)
@@ -262,7 +269,7 @@ func run() error {
 	} {
 		eventBus.On(t, platformEvents.Publish)
 	}
-	go eventBus.Run(ctx)
+	launch("event-dispatcher", eventBus.Run)
 
 	// Durable webhook delivery for the push protocol's async notifications
 	// (/event + /game-end). Drive loops ENQUEUE; this central dispatcher delivers
@@ -274,8 +281,8 @@ func run() error {
 	webhookHealth := webhook.NewHealthTracker(webhook.HealthConfig{})
 	webhookDispatcher := webhook.NewDispatcher(webhookQueue, manifestSvc, manifestProbe, webhookHealth, log, webhook.Config{})
 	webhookMonitor := webhook.NewMonitor(manifestSvc, manifestProbe, webhookHealth, log, 30*time.Second)
-	go webhookDispatcher.Run(ctx)
-	go webhookMonitor.Run(ctx)
+	launch("webhook-dispatcher", webhookDispatcher.Run)
+	launch("webhook-monitor", webhookMonitor.Run)
 
 	// Verification (built in Stage 1) is wired into the match flow now.
 	verSvc := verification.New(store.NewVerificationRepo(st.DB))
@@ -315,14 +322,14 @@ func run() error {
 	// Mafia hub (demo loop + DB-backed SSE). Service wired after engagement hooks.
 	mafiaRepo := store.NewMafiaRepo(st.DB)
 	mafiaHub := mafia.NewHub(mafiaRepo, log, metrics.Registry())
-	go mafiaHub.Run(ctx)
+	launch("mafia-hub", mafiaHub.Run)
 
 	// Ratings & profiles: ELO is applied at match finalize (idempotently, keyed by
 	// match id) and powers the leaderboard + agent profiles + /v1/agent/stats.
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
 		rating.Config{SeasonLength: cfg.SeasonLength}, metrics.Registry())
-	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint)    // dev-only season force-roll gated with mint
-	go rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run(ctx) // finalise ended seasons + emit season.rolled
+	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint)                     // dev-only season force-roll gated with mint
+	launch("season-roller", rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run) // finalise ended seasons + emit season.rolled
 	profilesSvc := profiles.New(store.NewProfilesRepo(st.DB), ratingSvc.CurrentSeason)
 	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
 	profilesHandler := profiles.NewHandler(profilesSvc, authn)
@@ -351,7 +358,7 @@ func run() error {
 		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
-	go mafia.NewSweeper(mafiaSvc, log, time.Second).Run(ctx)
+	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
 	// Monopoly (turn-based property game) on the same patterns as Mafia: pure
 	// engine → match service → SSE spectator stream → agent action API. The
@@ -378,7 +385,7 @@ func run() error {
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
-	go monopoly.NewSweeper(monopolySvc, log, time.Second).Run(ctx)
+	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
 
 	// Funded freeroll (Stage 10): the prize pool moves through the ledger via the
 	// Bank adapter; entry is gated on the tournament_ready badge + no fraud flags.
@@ -414,7 +421,7 @@ func run() error {
 		// The transferrer also confirms finality; the watcher burns/releases escrow
 		// once each broadcast withdrawal reaches a terminal on-chain state.
 		payoutSvc.SetConfirmer(solanaXfer)
-		go payout.NewConfirmWatcher(payoutSvc, log, cfg.WithdrawConfirmInterval).Run(ctx)
+		launch("payout-confirm-watcher", payout.NewConfirmWatcher(payoutSvc, log, cfg.WithdrawConfirmInterval).Run)
 	}
 	payoutSvc.SetGate(walletAdminSvc) // Super Admin withdrawal gate (settings/freeze)
 	payoutSvc.SetNotifier(notifier)   // notify owner on paid/failed
@@ -441,7 +448,7 @@ func run() error {
 		depositSvc.SetGate(walletAdminSvc) // Super Admin deposit gate (settings/freeze)
 		depositSvc.SetNotifier(notifier)   // notify user when a deposit is credited
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
-		go solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run(ctx)
+		launch("solana-deposit-listener", solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run)
 		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
 	} else {
 		log.Info("solana deposits disabled (set SOLANA_RPC_URL + SOLANA_PLATFORM_OWNER + SOLANA_PLATFORM_ATA to enable)")
@@ -451,7 +458,7 @@ func run() error {
 	// on-chain deposits/withdrawals against the ledger every interval and alerts
 	// (never auto-corrects). Cheap; runs regardless of rail config.
 	reconSvc := walletrecon.New(store.NewWalletReconRepo(st.DB), time.Hour, log, metrics.Registry())
-	go walletrecon.NewWorker(reconSvc, cfg.WalletReconInterval).Run(ctx)
+	launch("wallet-recon", walletrecon.NewWorker(reconSvc, cfg.WalletReconInterval).Run)
 
 	// Read-only admin surface the Super Admin backfills its live mirror from
 	// (users/agents/matches/payments/disputes + revenue overview). Authorized by a
@@ -581,13 +588,13 @@ func run() error {
 
 	// Background: the move-window timeout sweeper + ledger reconciliation + the
 	// Stripe↔ledger reconciliation job (all safe to run on every instance).
-	go match.NewSweeper(matchSvc, log, time.Second).Run(ctx)
-	go matchmakingSvc.NewMatcher().Run(ctx)
-	go ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run(ctx)
-	go paymentsSvc.NewReconciler(cfg.PaymentsReconcileInterval).Run(ctx)
-	go clipsSvc.Run(ctx)
-	go socialSvc.Run(ctx)
-	go antifraudSvc.NewDetector(cfg.DetectInterval).Run(ctx)
+	launch("match-sweeper", match.NewSweeper(matchSvc, log, time.Second).Run)
+	launch("matchmaker", matchmakingSvc.NewMatcher().Run)
+	launch("ledger-reconciler", ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run)
+	launch("payments-reconciler", paymentsSvc.NewReconciler(cfg.PaymentsReconcileInterval).Run)
+	launch("clips", clipsSvc.Run)
+	launch("social", socialSvc.Run)
+	launch("antifraud-detector", antifraudSvc.NewDetector(cfg.DetectInterval).Run)
 
 	// Dev/demo: rule-based bots fill Goofspiel + Mafia tables (no LLM). Real users
 	// bring their own agents via API keys; disable with DEMO_BOTS=false.
@@ -606,7 +613,7 @@ func run() error {
 					log.Warn("demo agent certify failed", "agent", a.PublicID, "error", err)
 				}
 			}
-			go bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run(ctx)
+			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run)
 			// Mafia push-play needs a full roster: seat the developer's agent (via
 			// their endpoint) and fill the other seats with these demo bots.
 			botSeats := make([]mafia.BotAgent, 0, len(agents))
