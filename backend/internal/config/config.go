@@ -342,6 +342,14 @@ func (c *Config) validate() error {
 		if c.PlatformAdminPublicKey == "" {
 			errs = append(errs, "PLATFORM_ADMIN_PUBLIC_KEY is required in prod/staging (config bus would otherwise accept unsigned/forged config)")
 		}
+		// Fail closed: the engine signs the domain events (withdrawal.requested,
+		// match.finished, …) it publishes to the Super Admin's Redis stream with this
+		// key. Empty ⇒ events go out UNSIGNED and the admin side can't tell genuine
+		// events from ones forged into the stream. Require it in prod rather than emit
+		// an unauthenticated event feed.
+		if c.PlatformEnginePrivateKey == "" {
+			errs = append(errs, "PLATFORM_ENGINE_PRIVATE_KEY is required in prod/staging (domain events would otherwise be published unsigned)")
+		}
 		// Fail closed: without a captcha secret the dev accept-all captcha is used,
 		// removing the only non-rate-limit anti-automation control on onboarding.
 		if c.HCaptchaSecret == "" {

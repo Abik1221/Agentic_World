@@ -64,13 +64,23 @@ func TestValidate(t *testing.T) {
 			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
 			c.APIKeyPepper = "real-pepper"
 			c.HCaptchaSecret = "hc-secret"
+			c.PlatformEnginePrivateKey = "engine-key"
 			// PlatformAdminPublicKey left empty -> must be rejected (fail closed).
 		}, "PLATFORM_ADMIN_PUBLIC_KEY"},
+		{"prod requires engine signing key", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.HCaptchaSecret = "hc-secret"
+			c.PlatformAdminPublicKey = "some-key"
+			// PlatformEnginePrivateKey left empty -> must be rejected (fail closed).
+		}, "PLATFORM_ENGINE_PRIVATE_KEY"},
 		{"prod requires captcha secret", func(c *Config) {
 			c.Env = "prod"
 			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
 			c.APIKeyPepper = "real-pepper"
 			c.PlatformAdminPublicKey = "some-key"
+			c.PlatformEnginePrivateKey = "engine-key"
 			// HCaptchaSecret left empty -> must be rejected (fail closed).
 		}, "HCAPTCHA_SECRET"},
 	}
