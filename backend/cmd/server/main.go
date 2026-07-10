@@ -208,7 +208,29 @@ func run() error {
 	limiter := store.NewRateLimiter(st.Redis)
 	registerRL := middleware.RateLimit(limiter, 5, time.Hour, middleware.IPKey("register"))
 	loginRL := middleware.RateLimit(limiter, 10, time.Minute, middleware.IPKey("login"))
+	// Per-user limiters on sensitive authenticated routes: money movement, the
+	// outbound endpoint probe, and credential minting. Keyed by the token principal
+	// (never the body), falling back to IP only when unauthenticated. Fails open on
+	// a Redis blip like the other soft limits.
+	userKey := func(ns string) middleware.KeyFunc {
+		return func(r *http.Request) string {
+			p := auth.PrincipalFromContext(r.Context())
+			id := p.UserPublicID
+			if id == "" {
+				id = p.AgentPublicID
+			}
+			if id == "" {
+				return "rl:" + ns + ":" + middleware.ClientIP(r)
+			}
+			return "rl:" + ns + ":u:" + id
+		}
+	}
+	depositRL := middleware.RateLimit(limiter, 30, time.Minute, userKey("deposits"))
+	withdrawRL := middleware.RateLimit(limiter, 20, time.Minute, userKey("withdrawals"))
+	verifyRL := middleware.RateLimit(limiter, 12, time.Minute, userKey("manifest-verify"))
+	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled)
+	idHandler.SetKeysRateLimit(keysRL)
 
 	// Agent manifests: the metadata contract a developer submits per agent
 	// version (info, supported games, hosted endpoint, runtime, model, SDK). The
@@ -240,6 +262,7 @@ func run() error {
 	})
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
+	manifestHandler.SetRateLimit(verifyRL) // bound the outbound endpoint probe
 
 	// Agent gateway: the Beta local-runtime transport. Developer agents dial OUT
 	// over a persistent WebSocket (no inbound endpoint; a laptop behind NAT works),
@@ -435,6 +458,7 @@ func run() error {
 	payoutSvc.SetGate(walletAdminSvc) // Super Admin withdrawal gate (settings/freeze)
 	payoutSvc.SetNotifier(notifier)   // notify owner on paid/failed
 	payoutHandler := payout.NewHandler(payoutSvc, authn, cfg.AdminUserIDs)
+	payoutHandler.SetRateLimit(withdrawRL)
 
 	// Deposits (Beta wallet pipeline P2): a background listener watches Solana for
 	// USDC transfers to the platform token account (tagged by each session's
@@ -457,6 +481,7 @@ func run() error {
 		depositSvc.SetGate(walletAdminSvc) // Super Admin deposit gate (settings/freeze)
 		depositSvc.SetNotifier(notifier)   // notify user when a deposit is credited
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
+		depositHandler.SetRateLimit(depositRL)
 		launch("solana-deposit-listener", solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run)
 		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
 	} else {

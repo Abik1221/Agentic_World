@@ -18,10 +18,20 @@ const maxManifestBytes = 64 << 10 // 64 KiB
 type Handler struct {
 	svc   *Service
 	authn *auth.Authenticator
+	rl    func(http.Handler) http.Handler
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
-	return &Handler{svc: svc, authn: authn}
+	return &Handler{svc: svc, authn: authn, rl: func(n http.Handler) http.Handler { return n }}
+}
+
+// SetRateLimit installs a per-user limiter on endpoint verification, which drives
+// an OUTBOUND probe to the developer's endpoint (bound it to prevent outbound
+// request amplification). Nil keeps the no-op passthrough.
+func (h *Handler) SetRateLimit(mw func(http.Handler) http.Handler) {
+	if mw != nil {
+		h.rl = mw
+	}
 }
 
 // Register is an httpx.Mount. Public read routes need no auth; management routes
@@ -38,7 +48,7 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agents/{agent_id}/manifest", h.active)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agents/{agent_id}/manifest/versions", h.versions)
 		r.With(auth.RequireScope(auth.ScopeUser)).Put("/v1/agents/{agent_id}/manifest/{manifest_id}/endpoint-secret", h.setSecret)
-		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agents/{agent_id}/manifest/{manifest_id}/verify", h.verify)
+		r.With(auth.RequireScope(auth.ScopeUser), h.rl).Post("/v1/agents/{agent_id}/manifest/{manifest_id}/verify", h.verify)
 	})
 }
 

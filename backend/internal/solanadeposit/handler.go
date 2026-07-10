@@ -13,18 +13,30 @@ import (
 type Handler struct {
 	svc   *Service
 	authn *auth.Authenticator
+	rl    func(http.Handler) http.Handler
 }
 
 // NewHandler wires the deposit HTTP surface.
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
-	return &Handler{svc: svc, authn: authn}
+	return &Handler{svc: svc, authn: authn, rl: passthrough}
 }
+
+// SetRateLimit installs a per-user limiter on deposit-session creation (each call
+// mints a fresh Solana Pay reference + DB row and enlarges the listener scan, so
+// it must be bounded). Nil keeps the no-op passthrough.
+func (h *Handler) SetRateLimit(mw func(http.Handler) http.Handler) {
+	if mw != nil {
+		h.rl = mw
+	}
+}
+
+func passthrough(next http.Handler) http.Handler { return next }
 
 // Register mounts the deposit routes under user-scope auth.
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
-		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/deposits", h.create)
+		r.With(auth.RequireScope(auth.ScopeUser), h.rl).Post("/v1/deposits", h.create)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/deposits", h.list)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/deposits/{id}", h.get)
 	})

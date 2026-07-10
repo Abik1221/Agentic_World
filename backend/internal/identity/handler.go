@@ -20,6 +20,7 @@ type Handler struct {
 	privy      *auth.PrivyVerifier // nil ⇒ Privy login disabled (503)
 	registerRL func(http.Handler) http.Handler
 	loginRL    func(http.Handler) http.Handler
+	keysRL     func(http.Handler) http.Handler
 	dev        bool // non-prod: surface the magic-link token in the response (no email wired)
 	xClaim     bool // X-claim (tweet) onboarding available (needs a real verifier)
 }
@@ -32,7 +33,15 @@ func NewHandler(svc *Service, authn *auth.Authenticator, privy *auth.PrivyVerifi
 	if loginRL == nil {
 		loginRL = noop
 	}
-	return &Handler{svc: svc, authn: authn, privy: privy, registerRL: registerRL, loginRL: loginRL, dev: dev, xClaim: xClaim}
+	return &Handler{svc: svc, authn: authn, privy: privy, registerRL: registerRL, loginRL: loginRL, keysRL: noop, dev: dev, xClaim: xClaim}
+}
+
+// SetKeysRateLimit installs a per-user limiter on API-key creation (credential
+// minting). Nil keeps the no-op passthrough.
+func (h *Handler) SetKeysRateLimit(mw func(http.Handler) http.Handler) {
+	if mw != nil {
+		h.keysRL = mw
+	}
 }
 
 // Register is an httpx.Mount: it attaches all identity routes with their guards.
@@ -66,7 +75,7 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/config", h.updateConfig)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/me", h.me)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agent/keys", h.listKeys)
-		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/keys", h.createKey)
+		r.With(auth.RequireScope(auth.ScopeUser), h.keysRL).Post("/v1/agent/keys", h.createKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/agent/keys/{prefix}", h.revokeKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/signing-key", h.setSigningKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/profile", h.updateProfile)

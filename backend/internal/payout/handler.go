@@ -15,6 +15,7 @@ type Handler struct {
 	svc    *Service
 	authn  *auth.Authenticator
 	admins map[string]bool
+	rl     func(http.Handler) http.Handler
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator, adminUserIDs []string) *Handler {
@@ -22,7 +23,15 @@ func NewHandler(svc *Service, authn *auth.Authenticator, adminUserIDs []string) 
 	for _, id := range adminUserIDs {
 		admins[id] = true
 	}
-	return &Handler{svc: svc, authn: authn, admins: admins}
+	return &Handler{svc: svc, authn: authn, admins: admins, rl: func(n http.Handler) http.Handler { return n }}
+}
+
+// SetRateLimit installs a per-user limiter on withdrawal creation. Nil keeps the
+// no-op passthrough.
+func (h *Handler) SetRateLimit(mw func(http.Handler) http.Handler) {
+	if mw != nil {
+		h.rl = mw
+	}
 }
 
 func (h *Handler) Register(r chi.Router) {
@@ -36,7 +45,7 @@ func (h *Handler) Register(r chi.Router) {
 		adminOnly := auth.RequirePlatformOrAdmin(h.admins)
 		r.With(user).Get("/v1/wallet/withdrawable", h.withdrawable)
 		r.With(user).Get("/v1/withdrawals", h.list)
-		r.With(user).Post("/v1/withdrawals", h.request)
+		r.With(user, h.rl).Post("/v1/withdrawals", h.request)
 		r.With(ownerOrAdmin).Get("/v1/withdrawals/{id}", h.get)
 		r.With(adminOnly).Get("/v1/admin/withdrawals", h.adminList)
 		r.With(adminOnly).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
