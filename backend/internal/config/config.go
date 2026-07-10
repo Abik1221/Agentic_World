@@ -88,14 +88,20 @@ type Config struct {
 	// Sandbox practice mode — risk-free matches vs the house agents.
 	SandboxEnabled bool
 
-	// Agent manifest / endpoint verification. AgentVerifyAllowPrivate permits
-	// http:// and private/loopback endpoint hosts (dev/e2e against a local
-	// starter agent only).
-	AgentVerifyAllowPrivate bool
-	AgentVerifyTimeout      time.Duration // per-attempt deadline
-	AgentVerifyMaxTimeout   time.Duration // hard ceiling
-	AgentVerifyRetries      int           // retries after the first attempt
-	AgentVerifyMaxBodyBytes int64         // response body cap
+	// Agent manifest / endpoint verification. These two are split so enabling one
+	// does not silently enable the other, and BOTH are refused in prod/staging
+	// (see validate) so a dev flag copied into a real env can't open an SSRF hole.
+	//   AgentVerifyAllowPrivate  — disable the SSRF private/loopback/link-local IP
+	//                              guard on the outbound probe (dev/e2e only).
+	//   AgentVerifyAllowInsecure — permit plaintext http:// endpoint URLs.
+	// AllowPrivate implies AllowInsecure at wiring time (a loopback stub is http),
+	// so existing single-flag local/e2e setups keep working.
+	AgentVerifyAllowPrivate  bool
+	AgentVerifyAllowInsecure bool
+	AgentVerifyTimeout       time.Duration // per-attempt deadline
+	AgentVerifyMaxTimeout    time.Duration // hard ceiling
+	AgentVerifyRetries       int           // retries after the first attempt
+	AgentVerifyMaxBodyBytes  int64         // response body cap
 	// AgentEndpointSecretKey encrypts the endpoint bearer token at rest. Falls
 	// back to APIKeyPepper when unset so a key always exists.
 	AgentEndpointSecretKey string
@@ -226,12 +232,13 @@ func Load() (*Config, error) {
 		AutoMigrate:    l.boolVal("AUTO_MIGRATE", true),
 		SandboxEnabled: l.boolVal("SANDBOX_ENABLED", true),
 
-		AgentVerifyAllowPrivate: l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
-		AgentVerifyTimeout:      l.dur("AGENT_VERIFY_TIMEOUT", 5*time.Second),
-		AgentVerifyMaxTimeout:   l.dur("AGENT_VERIFY_MAX_TIMEOUT", 15*time.Second),
-		AgentVerifyRetries:      l.intVal("AGENT_VERIFY_RETRIES", 2),
-		AgentVerifyMaxBodyBytes: int64(l.intVal("AGENT_VERIFY_MAX_BODY_BYTES", 65536)),
-		AgentEndpointSecretKey:  l.str("AGENT_ENDPOINT_SECRET_KEY", ""),
+		AgentVerifyAllowPrivate:  l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
+		AgentVerifyAllowInsecure: l.boolVal("AGENT_VERIFY_ALLOW_INSECURE", false),
+		AgentVerifyTimeout:       l.dur("AGENT_VERIFY_TIMEOUT", 5*time.Second),
+		AgentVerifyMaxTimeout:    l.dur("AGENT_VERIFY_MAX_TIMEOUT", 15*time.Second),
+		AgentVerifyRetries:       l.intVal("AGENT_VERIFY_RETRIES", 2),
+		AgentVerifyMaxBodyBytes:  int64(l.intVal("AGENT_VERIFY_MAX_BODY_BYTES", 65536)),
+		AgentEndpointSecretKey:   l.str("AGENT_ENDPOINT_SECRET_KEY", ""),
 
 		SeasonLength: l.dur("SEASON_LENGTH", 30*24*time.Hour),
 
@@ -362,6 +369,15 @@ func (c *Config) validate() error {
 			if strings.TrimSpace(o) == "*" {
 				errs = append(errs, "CORS_ALLOWED_ORIGINS must not be \"*\" in prod/staging")
 			}
+		}
+		// These disable the SSRF guard / TLS requirement on agent-endpoint probes —
+		// a dev flag that must never reach a real env (one copied var would turn the
+		// platform into an SSRF proxy against internal services + cloud metadata).
+		if c.AgentVerifyAllowPrivate {
+			errs = append(errs, "AGENT_VERIFY_ALLOW_PRIVATE must not be set in prod/staging (it disables the SSRF private-IP guard on agent endpoint verification)")
+		}
+		if c.AgentVerifyAllowInsecure {
+			errs = append(errs, "AGENT_VERIFY_ALLOW_INSECURE must not be set in prod/staging (it permits plaintext http:// agent endpoints)")
 		}
 	}
 	if len(errs) > 0 {

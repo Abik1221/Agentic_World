@@ -75,6 +75,15 @@ func TestValidate(t *testing.T) {
 			c.PlatformAdminPublicKey = "some-key"
 			// PlatformEnginePrivateKey left empty -> must be rejected (fail closed).
 		}, "PLATFORM_ENGINE_PRIVATE_KEY"},
+		{"prod rejects allow-private-ip", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.HCaptchaSecret = "hc-secret"
+			c.PlatformAdminPublicKey = "some-key"
+			c.PlatformEnginePrivateKey = "engine-key"
+			c.AgentVerifyAllowPrivate = true // dev SSRF-bypass flag must not reach prod
+		}, "AGENT_VERIFY_ALLOW_PRIVATE"},
 		{"prod requires captcha secret", func(c *Config) {
 			c.Env = "prod"
 			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"

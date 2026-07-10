@@ -214,7 +214,15 @@ func run() error {
 	// version (info, supported games, hosted endpoint, runtime, model, SDK). The
 	// hardened agentclient (SSRF-guarded) performs endpoint verification, and the
 	// endpoint bearer token is sealed at rest with AES-256-GCM.
-	manifest.AllowInsecureEndpoint = cfg.AgentVerifyAllowPrivate
+	// AllowPrivate implies AllowInsecure (a loopback stub is http). Both are refused
+	// in prod by config.validate; log loudly if either is on so it's never a silent
+	// dev-flag-in-a-real-env footgun.
+	allowInsecure := cfg.AgentVerifyAllowInsecure || cfg.AgentVerifyAllowPrivate
+	if cfg.AgentVerifyAllowPrivate || cfg.AgentVerifyAllowInsecure {
+		log.Warn("agent endpoint verification SSRF guards relaxed (dev/e2e only)",
+			"allow_private_ip", cfg.AgentVerifyAllowPrivate, "allow_insecure_http", allowInsecure)
+	}
+	manifest.AllowInsecureEndpoint = allowInsecure
 	endpointSecretKey := cfg.AgentEndpointSecretKey
 	if endpointSecretKey == "" {
 		endpointSecretKey = cfg.APIKeyPepper // always-present fallback
