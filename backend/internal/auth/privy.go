@@ -63,7 +63,7 @@ func (v *PrivyVerifier) Verify(token string) (PrivyIdentity, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return v.pub, nil
-	}, jwt.WithIssuer("privy.io"), jwt.WithAudience(v.appID))
+	}, jwt.WithIssuer("privy.io"), jwt.WithAudience(v.appID), jwt.WithExpirationRequired())
 	if err != nil {
 		return PrivyIdentity{}, err
 	}

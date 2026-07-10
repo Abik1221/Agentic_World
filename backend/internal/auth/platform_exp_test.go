@@ -31,6 +31,9 @@ func TestPlatformTokenRequiresExpiry(t *testing.T) {
 		{"no exp is rejected", platformClaims{Iss: "super-admin", Sub: "u1", Iat: now}, false},
 		{"expired is rejected", platformClaims{Iss: "super-admin", Sub: "u1", Iat: now - 7200, Exp: now - 3600}, false},
 		{"over-long lifetime rejected", platformClaims{Iss: "super-admin", Sub: "u1", Iat: now, Exp: now + int64((48 * time.Hour).Seconds())}, false},
+		// SEC-L1: no iat previously skipped the max-age cap; now it's required so a
+		// token can't dodge the lifetime bound by omitting iat.
+		{"no iat is rejected", platformClaims{Iss: "super-admin", Sub: "u1", Exp: now + 600}, false},
 		{"valid short-lived is accepted", platformClaims{Iss: "super-admin", Sub: "u1", Iat: now, Exp: now + 600}, true},
 	}
 	for _, tc := range cases {

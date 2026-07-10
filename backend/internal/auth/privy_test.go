@@ -95,6 +95,8 @@ func TestPrivyVerifier_Rejects(t *testing.T) {
 			return c
 		}(),
 		"no_subject": func() jwt.RegisteredClaims { c := validClaims(); c.Subject = ""; return c }(),
+		// W8: a token with no exp must be rejected (jwt.WithExpirationRequired).
+		"no_exp": func() jwt.RegisteredClaims { c := validClaims(); c.ExpiresAt = nil; return c }(),
 	}
 	for name, claims := range cases {
 		t.Run(name, func(t *testing.T) {

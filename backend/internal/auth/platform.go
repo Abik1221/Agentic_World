@@ -82,16 +82,21 @@ func (v *PlatformVerifier) Verify(token string) (*Principal, error) {
 	if c.Exp == 0 {
 		return nil, errors.New("auth: platform token missing exp")
 	}
+	// Require iat too: gating the max-age cap on "iat present" let a token minted
+	// WITHOUT iat live all the way to a distant exp, bypassing the blast-radius
+	// bound. The minter always sets iat, so this only rejects hand-crafted tokens.
+	if c.Iat == 0 {
+		return nil, errors.New("auth: platform token missing iat")
+	}
 	if now >= c.Exp {
 		return nil, errors.New("auth: platform token expired")
 	}
-	if c.Iat != 0 {
-		if now < c.Iat-60 {
-			return nil, errors.New("auth: platform token not yet valid")
-		}
-		if c.Exp-c.Iat > int64(maxPlatformTokenAge/time.Second) {
-			return nil, errors.New("auth: platform token lifetime exceeds max")
-		}
+	if now < c.Iat-60 {
+		return nil, errors.New("auth: platform token not yet valid")
+	}
+	maxAge := int64(maxPlatformTokenAge / time.Second)
+	if c.Exp-c.Iat > maxAge || c.Exp-now > maxAge {
+		return nil, errors.New("auth: platform token lifetime exceeds max")
 	}
 	return &Principal{Scope: ScopePlatform, UserPublicID: c.Sub}, nil
 }
