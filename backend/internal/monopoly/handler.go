@@ -1,6 +1,7 @@
 package monopoly
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,18 +12,29 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// stakeResolver maps a chosen game/tier (+ legacy free-form fee) to the coin stake.
+// Satisfied by *gamestakes.Service; nil ⇒ legacy free-form entry_fee only.
+type stakeResolver interface {
+	ResolveStake(ctx context.Context, game, tier string, entryFee int64) (int64, error)
+}
+
 // Handler exposes the Monopoly spectator and agent APIs. Route shapes match
 // Frontend/lib/api.ts.
 type Handler struct {
 	hub       *Hub
 	svc       *Service
 	authn     *auth.Authenticator
+	stakes    stakeResolver
 	heartbeat time.Duration
 }
 
 func NewHandler(hub *Hub, svc *Service, authn *auth.Authenticator) *Handler {
 	return &Handler{hub: hub, svc: svc, authn: authn, heartbeat: 25 * time.Second}
 }
+
+// SetStakeResolver wires the game stake-tier resolver so table creation can accept
+// a `tier` and stake at the admin-configured amount. Nil keeps legacy free-form.
+func (h *Handler) SetStakeResolver(r stakeResolver) { h.stakes = r }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/monopoly/live", h.live)
@@ -156,14 +168,24 @@ func (h *Handler) replay(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		EntryFee int64 `json:"entry_fee"`
-		Players  int   `json:"players"`
+		Tier     string `json:"tier"`
+		EntryFee int64  `json:"entry_fee"`
+		Players  int    `json:"players"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	id, err := h.svc.CreateTable(r.Context(), p.AgentPublicID, p.UserPublicID, in.EntryFee, in.Players)
+	fee := in.EntryFee
+	if h.stakes != nil {
+		f, err := h.stakes.ResolveStake(r.Context(), GameName, in.Tier, in.EntryFee)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		fee = f
+	}
+	id, err := h.svc.CreateTable(r.Context(), p.AgentPublicID, p.UserPublicID, fee, in.Players)
 	if err != nil {
 		httpx.Error(w, err)
 		return

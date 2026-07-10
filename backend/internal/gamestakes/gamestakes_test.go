@@ -74,6 +74,32 @@ func TestListAndHasTiersOnlyEnabled(t *testing.T) {
 	}
 }
 
+func TestResolveStakePolicy(t *testing.T) {
+	svc := newSvc(&fakeRepo{tiers: map[string][]gamestakes.Tier{"mafia": mafiaTiers()}})
+	ctx := context.Background()
+
+	// tier chosen → tier's coins.
+	if c, err := svc.ResolveStake(ctx, "mafia", "mid", 0); err != nil || c != 500 {
+		t.Fatalf("tier mid = %d,%v; want 500,nil", c, err)
+	}
+	// no tier + free-form fee on a game WITH tiers → rejected.
+	if _, err := svc.ResolveStake(ctx, "mafia", "", 250); err != gamestakes.ErrTierRequired {
+		t.Fatalf("free-form on tiered game = %v; want ErrTierRequired", err)
+	}
+	// no tier + free-form fee on a game WITHOUT tiers → back-compat passthrough.
+	if c, err := svc.ResolveStake(ctx, "goofspiel", "", 250); err != nil || c != 250 {
+		t.Fatalf("free-form on untiered game = %d,%v; want 250,nil", c, err)
+	}
+	// no tier + no fee → practice (0), regardless of game tiers.
+	if c, err := svc.ResolveStake(ctx, "mafia", "", 0); err != nil || c != 0 {
+		t.Fatalf("practice = %d,%v; want 0,nil", c, err)
+	}
+	// disabled tier → rejected.
+	if _, err := svc.ResolveStake(ctx, "mafia", "high", 0); err != gamestakes.ErrTierDisabled {
+		t.Fatalf("disabled tier = %v; want ErrTierDisabled", err)
+	}
+}
+
 func TestAdminPutValidation(t *testing.T) {
 	svc := newSvc(&fakeRepo{})
 	ctx := context.Background()

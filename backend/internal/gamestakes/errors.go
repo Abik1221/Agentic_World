@@ -15,6 +15,9 @@ var (
 	// ErrGameNoTiers: the game has no configured tiers at all (callers may fall back
 	// to the legacy free-form stake for back-compat).
 	ErrGameNoTiers = httpx.NewError(http.StatusBadRequest, "no_tiers", "This game has no configured stake tiers.")
+	// ErrTierRequired: the game has configured tiers, so a raw free-form stake is not
+	// allowed — the caller must choose a tier.
+	ErrTierRequired = httpx.NewError(http.StatusBadRequest, "tier_required", "This game uses fixed stake tiers; choose a tier.")
 )
 
 func errInvalid(msg string) error {

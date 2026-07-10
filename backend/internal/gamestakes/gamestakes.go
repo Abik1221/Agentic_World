@@ -140,6 +140,32 @@ func (s *Service) Resolve(ctx context.Context, game, tierKey string) (int64, err
 	return 0, ErrUnknownTier
 }
 
+// ResolveStake applies the stake policy for a play request (create/join/queue),
+// returning the coin stake to use:
+//   - tier set                              → resolve it (the tier's coins ARE the stake)
+//   - no tier, entryFee > 0, game has tiers → ErrTierRequired (free-form disallowed)
+//   - no tier, entryFee > 0, no tiers       → entryFee (legacy free-form back-compat)
+//   - no tier, entryFee == 0                → 0 (no-stakes practice/sandbox)
+//
+// The returned stake still passes the agent's own budget gate (wallet.CheckJoin)
+// downstream — tiers pick WHICH stake, limits decide whether the agent can afford it.
+func (s *Service) ResolveStake(ctx context.Context, game, tier string, entryFee int64) (int64, error) {
+	if strings.TrimSpace(tier) != "" {
+		return s.Resolve(ctx, game, strings.TrimSpace(tier))
+	}
+	if entryFee > 0 {
+		has, err := s.HasTiers(ctx, game)
+		if err != nil {
+			return 0, err
+		}
+		if has {
+			return 0, ErrTierRequired
+		}
+		return entryFee, nil
+	}
+	return 0, nil // no tier, no fee → no-stakes practice
+}
+
 // AdminGet returns a game's full tier set (incl. disabled) for the admin surface.
 func (s *Service) AdminGet(ctx context.Context, game string) (GameTiers, error) {
 	all, err := s.tiers(ctx, game)

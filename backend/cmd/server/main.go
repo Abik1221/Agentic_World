@@ -401,6 +401,7 @@ func run() error {
 		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
+	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
 	// Monopoly (turn-based property game) on the same patterns as Mafia: pure
@@ -428,6 +429,7 @@ func run() error {
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
+	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake (settlement latent until MonopolyWallet wired)
 	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
 
 	// Funded freeroll (Stage 10): the prize pool moves through the ledger via the
