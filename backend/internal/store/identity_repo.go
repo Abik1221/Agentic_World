@@ -524,11 +524,21 @@ func nullString(s string) any {
 	return s
 }
 
-// UpsertUserFromPrivy find-or-creates the owner behind a verified Privy identity.
-// Resolution order: (1) an existing user already linked to this privy_user_id;
-// (2) an existing same-email account with no Privy id yet — linked in place;
-// (3) a brand-new owner. Every path guarantees a treasury wallet exists. All in
-// one transaction so a concurrent first login can't create two wallets/users.
+// UpsertUserFromPrivy find-or-creates the owner behind a verified Privy identity,
+// keyed STRICTLY on the cryptographically-proven privy_user_id (a DID). Resolution
+// order: (1) an existing user already linked to this privy_user_id; (2) a brand-new
+// owner. Every path guarantees a treasury wallet exists, in one transaction so a
+// concurrent first login can't create two wallets/users.
+//
+// SECURITY: the email/wallet in the profile are UNVERIFIED client hints — only the
+// Privy user id is proven by auth.PrivyVerifier. They are therefore NEVER used to
+// find or link an existing account (doing so let an attacker with any valid Privy
+// token claim a victim's account by passing profile.email=victim@… — the account
+// takeover fixed here), and the email hint is NEVER written to the unique `email`
+// column (which would let an attacker squat a victim's email and block their later
+// password signup). Unifying a Privy login with a pre-existing email/password
+// account is a separate, authenticated link flow — not an implicit side effect of a
+// login carrying a self-asserted email.
 func (r *IdentityRepo) UpsertUserFromPrivy(ctx context.Context, in identity.PrivyUpsertInput) (string, bool, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -562,49 +572,31 @@ func (r *IdentityRepo) UpsertUserFromPrivy(ctx context.Context, in identity.Priv
 		return "", false, err
 	}
 
-	// 2. No Privy link yet, but the login carries an email that already belongs to
-	//    an account. Link it iff that account has no (different) Privy id.
-	if p.Email != "" {
-		var existingPrivy *string
-		err = tx.QueryRow(ctx,
-			`SELECT id, public_id, privy_user_id FROM users WHERE email = $1`, p.Email).
-			Scan(&userID, &publicID, &existingPrivy)
-		switch {
-		case err == nil:
-			if existingPrivy != nil && *existingPrivy != in.PrivyUserID {
-				return "", false, identity.ErrEmailTaken
-			}
-			if _, err = tx.Exec(ctx,
-				`UPDATE users SET privy_user_id = $2, updated_at = now() WHERE id = $1`,
-				userID, in.PrivyUserID); err != nil {
-				return "", false, err
-			}
-			if err = updatePrivyHints(ctx, tx, userID, p); err != nil {
-				return "", false, err
-			}
-			if err = ensureUserWallet(ctx, tx, userID); err != nil {
-				return "", false, err
-			}
-			if err = tx.Commit(ctx); err != nil {
-				return "", false, err
-			}
-			return publicID, false, nil
-		case !errors.Is(err, pgx.ErrNoRows):
-			return "", false, err
-		}
-	}
-
-	// 3. Brand-new owner. A unique-violation here means a concurrent login won the
-	//    race for the same Privy id / email — surface it as a conflict.
+	// 2. Brand-new owner. Email is intentionally left NULL (see SECURITY above); the
+	//    only unique key on the insert is privy_user_id, so a unique violation here
+	//    can only mean a concurrent first login for the same Privy id won the race.
+	//    Resolve idempotently to that winner instead of erroring.
 	err = tx.QueryRow(ctx,
-		`INSERT INTO users (public_id, privy_user_id, email, wallet_address, wallet_provider, display_name, avatar_url)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		in.UserPublicID, in.PrivyUserID, nullString(p.Email), nullString(p.WalletAddress),
+		`INSERT INTO users (public_id, privy_user_id, wallet_address, wallet_provider, display_name, avatar_url)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		in.UserPublicID, in.PrivyUserID, nullString(p.WalletAddress),
 		nullString(p.WalletProvider), nullString(p.DisplayName), nullString(p.AvatarURL)).
 		Scan(&userID)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return "", false, identity.ErrEmailTaken
+			// The winning tx has committed its user+wallet (that is why the unique
+			// index rejected us), so a fresh read finds it complete.
+			_ = tx.Rollback(ctx)
+			var (
+				raceUserID   int64
+				racePublicID string
+			)
+			if e := r.db.QueryRow(ctx,
+				`SELECT id, public_id FROM users WHERE privy_user_id = $1`, in.PrivyUserID).
+				Scan(&raceUserID, &racePublicID); e != nil {
+				return "", false, e
+			}
+			return racePublicID, false, nil
 		}
 		return "", false, err
 	}
