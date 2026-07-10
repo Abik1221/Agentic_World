@@ -47,14 +47,22 @@ type fakeAdjuster struct {
 	calls int
 	last  int64
 	fail  bool
+	seen  map[string]bool // models the ledger's idempotency-key dedup
 }
 
-func (a *fakeAdjuster) AdminAdjust(_ context.Context, _ string, coins int64, _, _ string) error {
-	a.calls++
-	a.last = coins
+func (a *fakeAdjuster) AdminAdjust(_ context.Context, _ string, coins int64, idem, _ string) error {
 	if a.fail {
 		return errors.New("ledger error")
 	}
+	if a.seen == nil {
+		a.seen = map[string]bool{}
+	}
+	if a.seen[idem] {
+		return nil // idempotent replay of the same key — no double-apply
+	}
+	a.seen[idem] = true
+	a.calls++
+	a.last = coins
 	return nil
 }
 
@@ -152,17 +160,32 @@ func TestAdjust(t *testing.T) {
 	adj := &fakeAdjuster{}
 	svc := newSvc(newRepo(), adj)
 
-	if err := svc.Adjust(ctx, "admin", "usr_a", 0, "noop"); err == nil {
+	if err := svc.Adjust(ctx, "admin", "usr_a", 0, "noop", "k1"); err == nil {
 		t.Fatal("expected error for zero adjustment")
 	}
-	if err := svc.Adjust(ctx, "admin", "usr_a", 250, "bonus"); err != nil {
+	// A missing idempotency key is rejected (M4: prevents double-apply on retry).
+	if err := svc.Adjust(ctx, "admin", "usr_a", 250, "bonus", ""); err == nil {
+		t.Fatal("expected error when idempotency_key is missing")
+	}
+	if err := svc.Adjust(ctx, "admin", "usr_a", 250, "bonus", "k1"); err != nil {
 		t.Fatalf("adjust: %v", err)
 	}
+	// A retry that reuses the same key must NOT double-apply.
+	if err := svc.Adjust(ctx, "admin", "usr_a", 250, "bonus", "k1"); err != nil {
+		t.Fatalf("adjust retry: %v", err)
+	}
 	if adj.calls != 1 || adj.last != 250 {
-		t.Fatalf("adjuster not called correctly: calls=%d last=%d", adj.calls, adj.last)
+		t.Fatalf("same key double-applied: calls=%d last=%d", adj.calls, adj.last)
+	}
+	// A distinct key is a genuinely new adjustment.
+	if err := svc.Adjust(ctx, "admin", "usr_a", 100, "bonus2", "k2"); err != nil {
+		t.Fatalf("adjust k2: %v", err)
+	}
+	if adj.calls != 2 {
+		t.Fatalf("distinct key not applied: calls=%d", adj.calls)
 	}
 	// nil adjuster ⇒ unavailable.
-	if err := newSvc(newRepo(), nil).Adjust(ctx, "admin", "usr_a", 100, "x"); err == nil {
+	if err := newSvc(newRepo(), nil).Adjust(ctx, "admin", "usr_a", 100, "x", "k3"); err == nil {
 		t.Fatal("expected error when adjuster is nil")
 	}
 }

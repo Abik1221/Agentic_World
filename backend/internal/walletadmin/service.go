@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -97,15 +98,29 @@ func (s *Service) SetFrozen(ctx context.Context, actor, userPublicID string, fro
 	return nil
 }
 
-// Adjust applies a manual balance adjustment (coins > 0 credit, < 0 debit).
-func (s *Service) Adjust(ctx context.Context, actor, userPublicID string, coins int64, reason string) error {
+// Adjust applies a manual balance adjustment (coins > 0 credit, < 0 debit). The
+// caller MUST supply a stable idempotency key (kept the same across retries of the
+// same intended adjustment); a double-click or a retried request that reuses the
+// key is a ledger no-op, so the credit/debit applies exactly once. A previously
+// generated random key per call defeated the ledger's idempotency and could
+// double-apply.
+func (s *Service) Adjust(ctx context.Context, actor, userPublicID string, coins int64, reason, idempotencyKey string) error {
 	if coins == 0 {
 		return errInvalid("coins must be non-zero")
 	}
 	if s.adj == nil {
 		return errInvalid("manual adjustment is not available")
 	}
-	idem := "adjust:" + platform.NewID(platform.PrefixTxn)
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return errInvalid("idempotency_key is required")
+	}
+	if len(idempotencyKey) > 128 {
+		return errInvalid("idempotency_key too long")
+	}
+	// Namespaced by user so the same key for two different users can't collide, and
+	// scoped under "adjust:" so it can never alias a stake/settle/refund ledger key.
+	idem := "adjust:" + userPublicID + ":" + idempotencyKey
 	if err := s.adj.AdminAdjust(ctx, userPublicID, coins, idem, reason); err != nil {
 		return err
 	}

@@ -84,14 +84,15 @@ func (h *Handler) setFrozen(w http.ResponseWriter, r *http.Request, frozen bool)
 func (h *Handler) adjust(w http.ResponseWriter, r *http.Request) {
 	user := chi.URLParam(r, "user")
 	var in struct {
-		Coins  int64  `json:"coins"`
-		Reason string `json:"reason"`
+		Coins          int64  `json:"coins"`
+		Reason         string `json:"reason"`
+		IdempotencyKey string `json:"idempotency_key"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.Adjust(r.Context(), actor(r), user, in.Coins, in.Reason); err != nil {
+	if err := h.svc.Adjust(r.Context(), actor(r), user, in.Coins, in.Reason, in.IdempotencyKey); err != nil {
 		httpx.Error(w, err)
 		return
 	}
