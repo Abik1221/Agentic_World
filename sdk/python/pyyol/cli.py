@@ -497,6 +497,80 @@ def cmd_play(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_queue(args: argparse.Namespace) -> int:
+    """Enter ranked matchmaking at a stake tier. Your connected agent (pyyol run)
+    is driven automatically once matched; this only enqueues + reports the match."""
+    from . import credentials
+
+    creds = credentials.load()
+    base = _http_base(args, creds)
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
+        return 2
+    game = args.game
+
+    # `--list`: show the admin-configured stake tiers for the game (public) and exit.
+    if args.list:
+        st, resp = _api_get(f"{base}/v1/games/{game}/stakes")
+        if st != 200:
+            print(f"{BAD} could not fetch tiers ({st}): {resp}", file=sys.stderr)
+            return 1
+        tiers = resp.get("tiers") or []
+        if not tiers:
+            print(f"no stake tiers configured for {game} — use --bid <coins>")
+            return 0
+        print(f"{game} stake tiers:")
+        for t in tiers:
+            print(f"  {str(t.get('key','')):8} {int(t.get('coins',0)):>8} coins  {t.get('label','')}")
+        return 0
+
+    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
+    if not token:
+        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
+        return 2
+
+    body: Dict[str, object] = {"game": game}
+    if args.tier:
+        body["tier"] = args.tier
+    elif args.bid > 0:
+        body["bid"] = args.bid
+    else:
+        print(
+            f"{BAD} choose a stake: --tier <low|mid|high> (see `pyyol queue --list`) "
+            f"or --bid <coins> for a tier-less game",
+            file=sys.stderr,
+        )
+        return 2
+
+    st, resp = _api_post(f"{base}/v1/queue", token, body)
+    if st not in (200, 202):
+        code = str(resp.get("code") or resp.get("error") or "")
+        msg = resp.get("message") or ""
+        if "certified" in code:
+            print(f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.", file=sys.stderr)
+        elif "tier" in code:
+            print(f"{BAD} {msg or code} — see `pyyol queue --list`", file=sys.stderr)
+        elif "balance" in code or "insufficient" in code:
+            print(f"{BAD} not enough coins to stake this tier (or below your min balance).", file=sys.stderr)
+        else:
+            print(f"{BAD} could not queue ({st}): {resp}", file=sys.stderr)
+        return 1
+
+    print(f"{OK} queued for {game}. Keep your agent connected (`pyyol run`) — it plays automatically when matched.")
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        st, s = _api_get(f"{base}/v1/queue", token)
+        if st == 200 and s.get("status") == "matched":
+            mid = s.get("match_id") or ""
+            print(f"{OK} matched → {mid}")
+            if mid:
+                print(f"    watch it:  pyyol watch {mid}")
+            return 0
+        time.sleep(1.5)
+    print("still waiting for an opponent — leave `pyyol run` connected; check `pyyol status`.")
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     """Spectate a live match in the terminal — READ-ONLY. Renders the event
     stream; there is no way to influence the game from here."""
@@ -579,6 +653,23 @@ def _sse_summary(obj) -> str:
         if obj.get(k) not in (None, ""):
             return f"{k}: {obj[k]}"
     return json.dumps(obj, separators=(",", ":"))[:70]
+
+
+def _api_get(url: str, token: str = ""):
+    headers = {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, (json.loads(raw) if raw else {})
+        except json.JSONDecodeError:
+            return e.code, {"raw": raw.decode(errors="replace")}
 
 
 def _api_post(url: str, token: str, body):
@@ -833,6 +924,16 @@ def build_parser() -> argparse.ArgumentParser:
     ppl.add_argument("--json", action="store_true", help="JSON event lines when spectating")
     ppl.add_argument("--no-color", action="store_true")
     ppl.set_defaults(func=cmd_play)
+
+    pq = sub.add_parser("queue", help="enter ranked matchmaking at a stake tier (agents vs agents)")
+    pq.add_argument("--game", choices=["goofspiel", "mafia", "monopoly"], default="goofspiel")
+    pq.add_argument("--tier", default="", help="stake tier: low|mid|high (see `pyyol queue --list`)")
+    pq.add_argument("--bid", type=int, default=0, help="raw coin bid (only for a game without tiers)")
+    pq.add_argument("--list", action="store_true", help="list the game's stake tiers and exit")
+    pq.add_argument("--wait", type=float, default=30.0, help="seconds to poll for a match")
+    pq.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
+    pq.add_argument("--token", default="", help="agent token (defaults to the logged-in one)")
+    pq.set_defaults(func=cmd_queue)
 
     pw = sub.add_parser("watch", help="spectate a live match in the terminal (read-only)")
     pw.add_argument("match", help="match id (from `pyyol play` or the dashboard)")
