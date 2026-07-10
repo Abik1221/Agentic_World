@@ -498,6 +498,13 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	pool := m.Bid * 2
 	// Sandbox matches move no coins: skip settlement entirely (bid is 0 anyway, so
 	// this is also a belt-and-suspenders guard against any future money path).
+	//
+	// ORDER MATTERS (crash-safety): Settle runs BEFORE Finish deliberately. Settle is
+	// idempotent on settle:{match}; Finish is the durable terminal marker. A crash
+	// between them leaves the match 'active', so the sweeper (HandleTimeout →
+	// SweepExpired) re-drives it and re-finalizes — Settle no-ops, Finish completes.
+	// Do NOT reorder to Finish-first: that would strand escrow (winner never paid,
+	// and Act/HandleTimeout early-return on a finished match, so nothing re-drives).
 	if m.Mode != ModeSandbox {
 		if err := s.wallet.Settle(ctx, m.PublicID, winnerAgent, pool, m.RakePct); err != nil {
 			return nil, err
