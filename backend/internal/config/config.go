@@ -303,6 +303,14 @@ func (c *Config) validate() error {
 	if c.DefaultRounds < 1 {
 		errs = append(errs, fmt.Sprintf("DEFAULT_ROUNDS must be >= 1: %d", c.DefaultRounds))
 	}
+	// The coin peg must divide a dollar exactly: the internal economy values one
+	// coin at CoinCents, and a USDC deposit credits 100/CoinCents coins per dollar
+	// via integer division. A non-divisor (or out-of-range) value makes the deposit
+	// peg asymmetric or silently truncated (and >100 would floor to 0 coins/USDC and
+	// hit the fallback). Fail loudly rather than mis-peg the economy.
+	if c.CoinCents < 1 || c.CoinCents > 100 || 100%c.CoinCents != 0 {
+		errs = append(errs, fmt.Sprintf("COIN_CENTS must be a positive integer that divides 100 exactly (1,2,4,5,10,20,25,50,100): %d", c.CoinCents))
+	}
 	// If real Stripe is wired, a webhook secret is mandatory — otherwise inbound
 	// events cannot be verified (and would be rejected anyway).
 	if c.StripeSecretKey != "" && c.StripeWebhookSecret == "" {

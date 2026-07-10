@@ -32,7 +32,7 @@ func TestValidate(t *testing.T) {
 	base := func() *Config {
 		return &Config{
 			Env: "local", Port: 8080, LogLevel: "info",
-			RakePct: 5, DefaultRounds: 13,
+			RakePct: 5, DefaultRounds: 13, CoinCents: 1,
 			JWTSigningKey: "x", APIKeyPepper: "y",
 		}
 	}
@@ -46,6 +46,9 @@ func TestValidate(t *testing.T) {
 		{"bad log level", func(c *Config) { c.LogLevel = "verbose" }, "LOG_LEVEL"},
 		{"bad rake", func(c *Config) { c.RakePct = 99 }, "RAKE_PCT"},
 		{"bad rounds", func(c *Config) { c.DefaultRounds = 0 }, "DEFAULT_ROUNDS"},
+		{"coin cents non-divisor", func(c *Config) { c.CoinCents = 3 }, "COIN_CENTS"},
+		{"coin cents zero", func(c *Config) { c.CoinCents = 0 }, "COIN_CENTS"},
+		{"coin cents over 100", func(c *Config) { c.CoinCents = 200 }, "COIN_CENTS"},
 		{"prod placeholder jwt", func(c *Config) {
 			c.Env = "prod"
 			c.JWTSigningKey = "dev-only-change-me-................"
