@@ -75,10 +75,16 @@ type Config struct {
 	// Solana withdrawals (Beta wallet pipeline P3). Setting the hot-wallet secret
 	// (base58 private key) alongside the deposit config switches the payout rail to
 	// Solana USDC (see WithdrawalsSolana). The hot wallet is fee-payer + transfer
-	// authority; keep this secret out of logs.
-	SolanaHotWalletSecret   string
-	WithdrawConfirmInterval time.Duration // confirmation watcher cadence
-	WalletReconInterval     time.Duration // wallet reconciliation cadence (drift safety net)
+	// authority; keep this secret out of logs. Prefer the encrypted-at-rest form
+	// (SolanaHotWalletSecretEnc) in prod so the key isn't a plaintext env var.
+	SolanaHotWalletSecret string
+	// SolanaHotWalletSecretEnc is base64(secretbox ciphertext) of the base58 key,
+	// decrypted at boot with SolanaHotWalletEncKey (AES-256-GCM). Produce it with
+	// cmd/wallet-secret-encrypt. When set it takes precedence over the plaintext form.
+	SolanaHotWalletSecretEnc string
+	SolanaHotWalletEncKey    string        // master key that decrypts SecretEnc (never logged)
+	WithdrawConfirmInterval  time.Duration // confirmation watcher cadence
+	WalletReconInterval      time.Duration // wallet reconciliation cadence (drift safety net)
 
 	// Game defaults (consumed from Stage 3)
 	MoveWindow    time.Duration
@@ -187,7 +193,7 @@ func (c *Config) DepositsEnabled() bool {
 // the deposit config plus a hot-wallet secret to sign payouts. When false, the
 // existing Stripe/Dev payout rail is used.
 func (c *Config) WithdrawalsSolana() bool {
-	return c.DepositsEnabled() && c.SolanaHotWalletSecret != ""
+	return c.DepositsEnabled() && (c.SolanaHotWalletSecret != "" || c.SolanaHotWalletSecretEnc != "")
 }
 
 // Load reads configuration from the environment, applying defaults, then
@@ -232,9 +238,11 @@ func Load() (*Config, error) {
 		DepositMinUSDC:      int64(l.intVal("DEPOSIT_MIN_USDC", 1)),
 		DepositPollInterval: l.dur("DEPOSIT_POLL_INTERVAL", 15*time.Second),
 
-		SolanaHotWalletSecret:   l.str("SOLANA_HOT_WALLET_SECRET", ""),
-		WithdrawConfirmInterval: l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
-		WalletReconInterval:     l.dur("WALLET_RECON_INTERVAL", time.Hour),
+		SolanaHotWalletSecret:    l.str("SOLANA_HOT_WALLET_SECRET", ""),
+		SolanaHotWalletSecretEnc: l.str("SOLANA_HOT_WALLET_SECRET_ENC", ""),
+		SolanaHotWalletEncKey:    l.str("SOLANA_HOT_WALLET_ENC_KEY", ""),
+		WithdrawConfirmInterval:  l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
+		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
 		MoveWindow:      time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
 		RakePct:         l.intVal("RAKE_PCT", 5),
@@ -346,6 +354,10 @@ func (c *Config) validate() error {
 	// can't credit deposits safely — require the full set together.
 	if c.SolanaRPCURL != "" && (c.SolanaPlatformOwner == "" || c.SolanaPlatformATA == "") {
 		errs = append(errs, "SOLANA_RPC_URL requires SOLANA_PLATFORM_OWNER and SOLANA_PLATFORM_ATA (deposit destination)")
+	}
+	// The encrypted hot-wallet key can't be opened without its master key.
+	if c.SolanaHotWalletSecretEnc != "" && c.SolanaHotWalletEncKey == "" {
+		errs = append(errs, "SOLANA_HOT_WALLET_SECRET_ENC requires SOLANA_HOT_WALLET_ENC_KEY to decrypt it")
 	}
 	if c.IsProd() {
 		if strings.Contains(c.JWTSigningKey, "dev-only") {

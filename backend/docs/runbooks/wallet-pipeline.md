@@ -84,7 +84,9 @@ substitute for an external security review before handling real funds.
 | `SOLANA_PLATFORM_OWNER` | Solana Pay recipient wallet | — |
 | `SOLANA_PLATFORM_ATA` | platform USDC token account (deposits land here) | — |
 | `DEPOSIT_SESSION_TTL` / `DEPOSIT_MIN_USDC` / `DEPOSIT_POLL_INTERVAL` | deposit tunables | 30m / 1 / 15s |
-| `SOLANA_HOT_WALLET_SECRET` | base58 payout signer (enables Solana withdrawals) | unset ⇒ Stripe/Dev rail |
+| `SOLANA_HOT_WALLET_SECRET` | base58 payout signer, PLAINTEXT (dev/local; warned in prod) | unset ⇒ Stripe/Dev rail |
+| `SOLANA_HOT_WALLET_SECRET_ENC` | **preferred (prod):** base64(secretbox) of the signer, decrypted at boot; takes precedence over the plaintext form. Produce with `go run ./cmd/wallet-secret-encrypt` | — |
+| `SOLANA_HOT_WALLET_ENC_KEY` | master key that decrypts `SECRET_ENC` (never logged; required when `SECRET_ENC` is set) | — |
 | `WITHDRAW_CONFIRM_INTERVAL` | confirmation watcher cadence | 15s |
 | `WALLET_RECON_INTERVAL` | reconciliation cadence | 1h |
 | `PLATFORM_ADMIN_PUBLIC_KEY` | verifies admin Platform tokens | — |

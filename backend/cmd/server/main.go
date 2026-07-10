@@ -452,7 +452,16 @@ func run() error {
 	case cfg.WithdrawalsSolana():
 		// Solana USDC cash-out: the hot wallet signs a real USDC transfer to the
 		// user's wallet; coins burn only after the tx finalizes (confirm watcher).
-		sx, err := payout.NewSolanaTransferrer(cfg.SolanaRPCURL, cfg.SolanaHotWalletSecret, cfg.SolanaUSDCMint, cfg.SolanaPlatformATA, 6)
+		// The signing key is decrypted at rest (secretbox) when the encrypted form is
+		// configured; plaintext is dev-only and warned about in prod (W3).
+		hotSecret, err := payout.ResolveHotWalletSecret(cfg.SolanaHotWalletSecret, cfg.SolanaHotWalletSecretEnc, cfg.SolanaHotWalletEncKey)
+		if err != nil {
+			return err
+		}
+		if cfg.IsProd() && cfg.SolanaHotWalletSecretEnc == "" {
+			log.Warn("hot-wallet key is a PLAINTEXT env var in prod — set SOLANA_HOT_WALLET_SECRET_ENC (see cmd/wallet-secret-encrypt)")
+		}
+		sx, err := payout.NewSolanaTransferrer(cfg.SolanaRPCURL, hotSecret, cfg.SolanaUSDCMint, cfg.SolanaPlatformATA, 6)
 		if err != nil {
 			return err
 		}

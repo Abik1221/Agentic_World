@@ -2,14 +2,42 @@ package payout
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 
+	"github.com/agent-arena/arena/internal/secretbox"
 	solana "github.com/gagliardetto/solana-go"
 	ataprog "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	token "github.com/gagliardetto/solana-go/programs/token"
 	"github.com/gagliardetto/solana-go/rpc"
 )
+
+// ResolveHotWalletSecret returns the base58 hot-wallet private key to sign payouts
+// with. When encB64 is set it is base64(secretbox ciphertext) decrypted at boot
+// with masterKey (AES-256-GCM), so the key is never stored in plaintext; otherwise
+// the plaintext value is used (dev/local). Produce encB64 with cmd/wallet-secret-encrypt.
+func ResolveHotWalletSecret(plaintext, encB64, masterKey string) (string, error) {
+	if encB64 == "" {
+		return plaintext, nil
+	}
+	if masterKey == "" {
+		return "", errors.New("payout: SOLANA_HOT_WALLET_ENC_KEY is required when SOLANA_HOT_WALLET_SECRET_ENC is set")
+	}
+	ct, err := base64.StdEncoding.DecodeString(encB64)
+	if err != nil {
+		return "", fmt.Errorf("payout: SOLANA_HOT_WALLET_SECRET_ENC is not valid base64: %w", err)
+	}
+	c, err := secretbox.New(masterKey)
+	if err != nil {
+		return "", err
+	}
+	pt, err := c.Open(ct)
+	if err != nil {
+		return "", fmt.Errorf("payout: cannot decrypt SOLANA_HOT_WALLET_SECRET_ENC (wrong SOLANA_HOT_WALLET_ENC_KEY?): %w", err)
+	}
+	return string(pt), nil
+}
 
 // BroadcastAmbiguousError is returned when the send RPC fails AFTER the payout
 // transaction was signed. The transaction's signature is fixed at signing time and
