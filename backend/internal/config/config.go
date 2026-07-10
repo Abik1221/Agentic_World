@@ -28,8 +28,13 @@ type Config struct {
 
 	// Data layer
 	DatabaseURL string
-	DBMaxConns  int32
-	RedisURL    string
+	// DBMaxConns bounds the pgx pool per instance. Default 50 (was 20 — too small
+	// for ~18 always-on background loops + request/long-poll traffic, which the
+	// pre-beta audit found exhausts the pool at ~50-100 concurrent staking matches).
+	// Tune against Postgres max_connections ÷ instance count; a dedicated
+	// request-vs-worker pool split is the next step for higher scale (R3).
+	DBMaxConns int32
+	RedisURL   string
 
 	// HTTP
 	CORSAllowedOrigins []string
@@ -202,7 +207,7 @@ func Load() (*Config, error) {
 		ShutdownGrace: l.dur("SHUTDOWN_GRACE", 20*time.Second),
 
 		DatabaseURL: l.required("DATABASE_URL"),
-		DBMaxConns:  int32(l.intVal("DB_MAX_CONNS", 20)),
+		DBMaxConns:  int32(l.intVal("DB_MAX_CONNS", 50)),
 		RedisURL:    l.required("REDIS_URL"),
 
 		CORSAllowedOrigins: l.csv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
