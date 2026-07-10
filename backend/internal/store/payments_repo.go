@@ -95,6 +95,44 @@ func (r *PaymentsRepo) PurchaseByPaymentIntent(ctx context.Context, paymentInten
 	return p, true, nil
 }
 
+// ReverseToLevel serializes refund clawbacks for a PaymentIntent on its
+// coin_purchases row (SELECT ... FOR UPDATE), so two refund events for the same
+// purchase can't both reverse from a stale high-water mark. It reverses the delta
+// up to `target` and only then persists the new level; a crash after the reverse
+// but before the commit rolls back, and the retry re-runs the (idempotency-keyed)
+// reverse and re-persists — reversing at most once in total.
+func (r *PaymentsRepo) ReverseToLevel(ctx context.Context, paymentIntentID string, target int64, reverse func(delta int64) error) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after commit
+
+	var prev int64
+	err = tx.QueryRow(ctx,
+		`SELECT reversed_coins FROM coin_purchases WHERE payment_intent = $1 FOR UPDATE`,
+		paymentIntentID).Scan(&prev)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // no recorded purchase to reverse
+	}
+	if err != nil {
+		return err
+	}
+	delta := target - prev
+	if delta <= 0 {
+		return tx.Commit(ctx) // already reversed to at least this level
+	}
+	if err := reverse(delta); err != nil {
+		return err // level unchanged; a retry re-runs the idempotent reverse
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE coin_purchases SET reversed_coins = $2 WHERE payment_intent = $1`,
+		paymentIntentID, target); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (r *PaymentsRepo) OwnerOfAgent(ctx context.Context, agentPublicID string) (string, error) {
 	var owner string
 	err := r.db.QueryRow(ctx,

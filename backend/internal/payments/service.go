@@ -2,6 +2,7 @@ package payments
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -262,20 +263,27 @@ func (s *Service) process(ctx context.Context, ev Event) error {
 			s.log.Warn("refund/dispute for an unknown purchase; nothing to reverse", "event", ev.ID, "payment_intent", ev.PaymentIntentID)
 			return nil
 		}
-		// Reverse coins proportional to the refunded amount (full refund ⇒ all
-		// coins). Fall back to the full purchase for a dispute with no amount.
-		coins := p.Coins
+		// `target` is the CUMULATIVE coins that should have been clawed back at this
+		// refund level (full refund/dispute ⇒ all coins; a partial refund ⇒ pro-rata
+		// on the cumulative amount Stripe reports). ReverseToLevel then claws only the
+		// delta beyond what earlier refunds on this PaymentIntent already reversed, so
+		// several partial refunds each recover their share — a single flat per-PI key
+		// would no-op every refund after the first (coins would stay spendable).
+		target := p.Coins
 		if ev.AmountRefunded > 0 && p.AmountCents > 0 && ev.AmountRefunded < p.AmountCents {
-			coins = p.Coins * ev.AmountRefunded / p.AmountCents
+			target = p.Coins * ev.AmountRefunded / p.AmountCents
 		}
-		if coins <= 0 {
+		if target <= 0 {
 			return nil
 		}
-		// Idempotency keyed on the PaymentIntent (NOT the event id): a
-		// disputed-then-refunded purchase produces two event ids but must claw back
-		// at most once. Reverse recovers what the user still holds and books any
-		// shortfall as bad debt + per-agent chargeback debt (wallet never negative).
-		return s.Coiner.Reverse(ctx, p.UserPublicID, p.AgentPublicID, coins, "reversal:"+ev.PaymentIntentID)
+		// The reverse is keyed on the cumulative level so it is idempotent across a
+		// retry and a dispute-then-refund still claws at most once. Reverse recovers
+		// what the user still holds and books any shortfall as bad debt + per-agent
+		// chargeback debt (the wallet never goes negative).
+		return s.Repo.ReverseToLevel(ctx, ev.PaymentIntentID, target, func(delta int64) error {
+			return s.Coiner.Reverse(ctx, p.UserPublicID, p.AgentPublicID, delta,
+				fmt.Sprintf("reversal:%s:%d", ev.PaymentIntentID, target))
+		})
 
 	case EventPaymentSucceeded:
 		// Crediting happens on checkout.session.completed (same purchase, one key).

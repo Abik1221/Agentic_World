@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"testing"
@@ -57,20 +58,34 @@ func (f *fakeCoiner) Reverse(_ context.Context, _, _ string, coins int64, key st
 }
 
 type fakeRepo struct {
-	events    map[string]payments.StoredEvent
-	processed map[string]bool
-	owner     string
-	connectID string
-	purchases map[string]payments.Purchase // keyed by PaymentIntent
+	events        map[string]payments.StoredEvent
+	processed     map[string]bool
+	owner         string
+	connectID     string
+	purchases     map[string]payments.Purchase // keyed by PaymentIntent
+	reversedLevel map[string]int64             // cumulative coins clawed back per PaymentIntent
 }
 
 func newRepo() *fakeRepo {
 	return &fakeRepo{
-		events:    map[string]payments.StoredEvent{},
-		processed: map[string]bool{},
-		owner:     "usr_a",
-		purchases: map[string]payments.Purchase{},
+		events:        map[string]payments.StoredEvent{},
+		processed:     map[string]bool{},
+		owner:         "usr_a",
+		purchases:     map[string]payments.Purchase{},
+		reversedLevel: map[string]int64{},
 	}
+}
+
+func (r *fakeRepo) ReverseToLevel(_ context.Context, pi string, target int64, reverse func(int64) error) error {
+	delta := target - r.reversedLevel[pi]
+	if delta <= 0 {
+		return nil
+	}
+	if err := reverse(delta); err != nil {
+		return err
+	}
+	r.reversedLevel[pi] = target
+	return nil
 }
 
 func (r *fakeRepo) RecordPurchase(_ context.Context, p payments.Purchase) error {
@@ -301,6 +316,35 @@ func TestWebhookRefundUnknownPurchaseReversesNothing(t *testing.T) {
 	}
 	if coiner.reversed != 0 {
 		t.Fatalf("reversed = %d, want 0 for an unmapped payment_intent", coiner.reversed)
+	}
+}
+
+// Several partial refunds on ONE payment_intent must each claw back their own
+// share (M1). A $5-then-$10-then-full sequence on a 100-coin / 500¢ purchase must
+// reverse 20 + 40 + 40 = 100 coins total — a flat per-PI key would reverse only the
+// first 20 and leave 80 coins spendable.
+func TestWebhookMultiplePartialRefundsClawEachShare(t *testing.T) {
+	coiner := newCoiner()
+	repo := newRepo()
+	repo.purchases["pi_m1"] = payments.Purchase{PaymentIntentID: "pi_m1", UserPublicID: "usr_a", AgentPublicID: "ag_a", Coins: 100, AmountCents: 500}
+	svc := newSvc(coiner, repo)
+	// amount_refunded is cumulative in Stripe's charge.refunded.
+	for i, cents := range []int64{100, 300, 500} {
+		body := chargeEventJSON(fmt.Sprintf("evt_m1_%d", i), payments.EventChargeRefunded, "pi_m1", cents)
+		if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+			t.Fatalf("refund %d: %v", i, err)
+		}
+	}
+	if coiner.reversed != 100 {
+		t.Fatalf("reversed = %d, want 100 (20+40+40 across three partial refunds)", coiner.reversed)
+	}
+	// A redelivery of the final full refund must not over-claw.
+	body := chargeEventJSON("evt_m1_redeliver", payments.EventChargeRefunded, "pi_m1", 500)
+	if err := svc.HandleWebhook(context.Background(), body, sign(body, clockT.Unix())); err != nil {
+		t.Fatalf("redeliver: %v", err)
+	}
+	if coiner.reversed != 100 {
+		t.Fatalf("reversed = %d after redelivery, want 100 (no over-claw)", coiner.reversed)
 	}
 }
 

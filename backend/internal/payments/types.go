@@ -158,6 +158,14 @@ type Repo interface {
 	// PurchaseByPaymentIntent returns the recorded purchase for a PaymentIntent,
 	// or found=false if none (e.g. a refund we can't map).
 	PurchaseByPaymentIntent(ctx context.Context, paymentIntentID string) (Purchase, bool, error)
+	// ReverseToLevel raises the cumulative reversed-coins high-water mark for a
+	// PaymentIntent to `target` under a row lock, invoking reverse(delta) for the
+	// additional coins (delta = target − previous, > 0) BEFORE persisting the new
+	// level — so a crash re-runs the idempotent reverse rather than under-clawing.
+	// A target at or below the current level is a no-op (reverse is not called).
+	// This lets multiple partial refunds on one PaymentIntent each claw their share
+	// while a dispute-then-refund still claws at most once.
+	ReverseToLevel(ctx context.Context, paymentIntentID string, target int64, reverse func(delta int64) error) error
 	OwnerOfAgent(ctx context.Context, agentPublicID string) (string, error)
 	StripeConnectID(ctx context.Context, userPublicID string) (string, error)
 	SetStripeConnectID(ctx context.Context, userPublicID, connectID string) error
