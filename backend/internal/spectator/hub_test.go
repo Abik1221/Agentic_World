@@ -122,6 +122,34 @@ func TestSlowConsumerDroppedNeverBlocks(t *testing.T) {
 	}
 }
 
+// R4: the instance-wide subscriber ceiling spans all matches, and Unsubscribe
+// frees a slot (total accounting stays correct).
+func TestGlobalConnCapAndRelease(t *testing.T) {
+	h := newHub(t, fakeEvents{})
+	h.SetMaxConns(2)
+
+	s1, err := h.Subscribe("m1")
+	if err != nil {
+		t.Fatalf("sub1: %v", err)
+	}
+	s2, err := h.Subscribe("m2") // a DIFFERENT match still counts toward the cap
+	if err != nil {
+		t.Fatalf("sub2: %v", err)
+	}
+	if _, err := h.Subscribe("m3"); err != ErrTooManyWatchers {
+		t.Fatalf("instance-wide cap not enforced: %v", err)
+	}
+
+	// Freeing a slot lets a new watcher in (total decremented on unsubscribe).
+	h.Unsubscribe("m1", s1)
+	s3, err := h.Subscribe("m3")
+	if err != nil {
+		t.Fatalf("subscribe after release: %v", err)
+	}
+	h.Unsubscribe("m2", s2)
+	h.Unsubscribe("m3", s3)
+}
+
 func TestBacklogResumesAfterLastEventID(t *testing.T) {
 	evs := []gs.Event{roundEvent(0), roundEvent(1), roundEvent(2), roundEvent(3), roundEvent(4)}
 	h := newHub(t, fakeEvents{evs: evs})

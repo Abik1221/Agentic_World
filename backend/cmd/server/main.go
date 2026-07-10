@@ -317,6 +317,7 @@ func run() error {
 	// non-blocking + drop-slow, so a stalled watcher can never delay a match.
 	matchRepo := store.NewMatchRepo(st.DB)
 	hub := spectator.NewHub(matchRepo, cfg.DefaultRounds, log, metrics.Registry())
+	hub.SetMaxConns(cfg.SSEMaxConns) // instance-wide SSE ceiling; LB spreads the rest
 	specHandler := spectator.NewHandler(hub, spectator.NewLive(store.NewSpectatorRepo(st.DB), clock))
 
 	// Mafia hub (demo loop + DB-backed SSE). Service wired after engagement hooks.

@@ -33,14 +33,16 @@ func (s *sub) kill() { s.once.Do(func() { close(s.dead) }) }
 
 // Hub fans match events out to per-match subscriber sets. Safe for concurrent use.
 type Hub struct {
-	mu   sync.RWMutex
-	subs map[string]map[*sub]struct{}
+	mu    sync.RWMutex
+	subs  map[string]map[*sub]struct{}
+	total int // live subscribers across ALL matches on this instance
 
 	events       EventLog
 	log          *slog.Logger
 	m            *metrics
 	bufSize      int
 	maxPerMatch  int
+	maxTotal     int // instance-wide ceiling (load balancer spreads the rest)
 	defaultRound int // total rounds assumed for commentary (no per-match state)
 }
 
@@ -54,8 +56,22 @@ func NewHub(events EventLog, defaultRounds int, log *slog.Logger, reg *prometheu
 		m:            newMetrics(reg),
 		bufSize:      32,
 		maxPerMatch:  1000,
+		maxTotal:     20000,
 		defaultRound: defaultRounds,
 	}
+}
+
+// SetMaxConns overrides the instance-wide subscriber ceiling (values <= 0 keep the
+// default). Beyond it, Subscribe returns ErrTooManyWatchers (503) so the load
+// balancer spreads spectators across nodes rather than one node growing unbounded
+// goroutines/connections/buffers.
+func (h *Hub) SetMaxConns(n int) {
+	if n <= 0 {
+		return
+	}
+	h.mu.Lock()
+	h.maxTotal = n
+	h.mu.Unlock()
 }
 
 // Broadcast pushes events to every watcher of matchPublicID. It NEVER blocks: a
@@ -100,6 +116,10 @@ func (h *Hub) Broadcast(matchPublicID string, events []gs.Event) {
 func (h *Hub) Subscribe(matchPublicID string) (*sub, error) {
 	s := &sub{ch: make(chan frame, h.bufSize), dead: make(chan struct{})}
 	h.mu.Lock()
+	if h.total >= h.maxTotal {
+		h.mu.Unlock()
+		return nil, ErrTooManyWatchers // instance-wide cap
+	}
 	set := h.subs[matchPublicID]
 	if set == nil {
 		set = map[*sub]struct{}{}
@@ -107,9 +127,10 @@ func (h *Hub) Subscribe(matchPublicID string) (*sub, error) {
 	}
 	if len(set) >= h.maxPerMatch {
 		h.mu.Unlock()
-		return nil, ErrTooManyWatchers
+		return nil, ErrTooManyWatchers // per-match cap
 	}
 	set[s] = struct{}{}
+	h.total++
 	h.mu.Unlock()
 	h.m.subscribers.Inc()
 	return s, nil
@@ -118,14 +139,21 @@ func (h *Hub) Subscribe(matchPublicID string) (*sub, error) {
 // Unsubscribe removes a watcher and releases it.
 func (h *Hub) Unsubscribe(matchPublicID string, s *sub) {
 	h.mu.Lock()
+	removed := false
 	if set := h.subs[matchPublicID]; set != nil {
-		delete(set, s)
-		if len(set) == 0 {
-			delete(h.subs, matchPublicID)
+		if _, ok := set[s]; ok {
+			delete(set, s)
+			h.total--
+			removed = true
+			if len(set) == 0 {
+				delete(h.subs, matchPublicID)
+			}
 		}
 	}
 	h.mu.Unlock()
-	h.m.subscribers.Dec()
+	if removed {
+		h.m.subscribers.Dec()
+	}
 	s.kill()
 }
 

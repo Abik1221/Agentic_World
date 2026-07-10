@@ -79,6 +79,7 @@ type Config struct {
 	MoveWindow    time.Duration
 	RakePct       int
 	DefaultRounds int
+	SSEMaxConns   int // instance-wide SSE spectator connection ceiling (0 = hub default)
 
 	// AutoMigrate applies pending DB migrations in-process on startup (safe for
 	// multi-instance: golang-migrate takes an advisory lock). Default true.
@@ -221,6 +222,7 @@ func Load() (*Config, error) {
 		MoveWindow:     time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
 		RakePct:        l.intVal("RAKE_PCT", 5),
 		DefaultRounds:  l.intVal("DEFAULT_ROUNDS", 13),
+		SSEMaxConns:    l.intVal("SSE_MAX_CONNS", 20000),
 		AutoMigrate:    l.boolVal("AUTO_MIGRATE", true),
 		SandboxEnabled: l.boolVal("SANDBOX_ENABLED", true),
 
