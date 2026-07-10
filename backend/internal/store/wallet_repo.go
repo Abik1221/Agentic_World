@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -51,6 +52,47 @@ func (r *WalletRepo) Settlement(ctx context.Context, matchPublicID string) (wall
 		return wallet.Settlement{}, httpx.ErrNotFound
 	}
 	return out, nil
+}
+
+// SaveHeldSettlement upserts the computed multi-winner payout split for a match
+// held for review, so an admin release replays it exactly (idempotent).
+func (r *WalletRepo) SaveHeldSettlement(ctx context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error {
+	if payouts == nil {
+		payouts = map[string]int64{}
+	}
+	blob, err := json.Marshal(payouts)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.Exec(ctx,
+		`INSERT INTO held_settlements (match_public_id, platform_fee, payouts)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (match_public_id) DO UPDATE
+		   SET platform_fee = EXCLUDED.platform_fee, payouts = EXCLUDED.payouts`,
+		matchPublicID, platformFee, blob)
+	return err
+}
+
+// HeldSettlement returns a persisted held split, or found=false if none.
+func (r *WalletRepo) HeldSettlement(ctx context.Context, matchPublicID string) (int64, map[string]int64, bool, error) {
+	var platformFee int64
+	var blob []byte
+	err := r.db.QueryRow(ctx,
+		`SELECT platform_fee, payouts FROM held_settlements WHERE match_public_id = $1`,
+		matchPublicID).Scan(&platformFee, &blob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil, false, nil
+	}
+	if err != nil {
+		return 0, nil, false, err
+	}
+	payouts := map[string]int64{}
+	if len(blob) > 0 {
+		if err := json.Unmarshal(blob, &payouts); err != nil {
+			return 0, nil, false, err
+		}
+	}
+	return platformFee, payouts, true, nil
 }
 
 func (r *WalletRepo) AgentLimits(ctx context.Context, agentPublicID string) (wallet.AgentLimits, error) {

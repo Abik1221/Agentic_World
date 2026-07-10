@@ -61,9 +61,19 @@ func (s *Service) Settle(ctx context.Context, matchPublicID, winnerAgentPublicID
 	return s.settle(ctx, matchPublicID, winnerAgentPublicID, pool, rakePct)
 }
 
-// SettleHeld pays out a match whose hold an admin has cleared, re-deriving the
-// winner/pool/rake from persisted state. The gate is intentionally bypassed.
+// SettleHeld pays out a match whose hold an admin has cleared. A multi-winner game
+// (Mafia) persisted its computed per-seat split when it was held, so replay that
+// exactly; only a plain 2-player match (Goofspiel) with no persisted split falls
+// back to winner-take-all. Paying a Mafia pot winner-take-all here would over-pay
+// one seat and under-pay the surviving team. The gate is intentionally bypassed.
 func (s *Service) SettleHeld(ctx context.Context, matchPublicID string) error {
+	fee, payouts, found, err := s.repo.HeldSettlement(ctx, matchPublicID)
+	if err != nil {
+		return err
+	}
+	if found {
+		return s.settleMafia(ctx, matchPublicID, fee, payouts)
+	}
 	set, err := s.repo.Settlement(ctx, matchPublicID)
 	if err != nil {
 		return err

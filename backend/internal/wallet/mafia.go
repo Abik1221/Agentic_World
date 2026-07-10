@@ -42,10 +42,19 @@ func (s *Service) SettleMafiaTable(ctx context.Context, matchPublicID string, pl
 		return err
 	}
 	if !allowed {
+		// Held for review: persist the computed split so an admin release (SettleHeld)
+		// replays THIS multi-winner payout instead of a 2-player winner-take-all.
 		s.m.heldPayouts.Inc()
-		return nil
+		return s.repo.SaveHeldSettlement(ctx, matchPublicID, platformFee, payouts)
 	}
+	return s.settleMafia(ctx, matchPublicID, platformFee, payouts)
+}
 
+// settleMafia posts the escrow→winners split (+ platform fee + floor-division
+// remainder) for a Mafia table. Idempotent via the shared settle:{match} key, so
+// the normal path and a later held-release can never double-pay. Used by both
+// SettleMafiaTable (unheld) and SettleHeld (admin release of a held table).
+func (s *Service) settleMafia(ctx context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error {
 	set, err := s.repo.Settlement(ctx, matchPublicID)
 	if err != nil {
 		return err

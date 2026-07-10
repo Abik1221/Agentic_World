@@ -28,6 +28,13 @@ type Repo interface {
 	// Settlement returns the staked agents and the per-seat bid for a match,
 	// used to build settle/refund transactions and tie splits.
 	Settlement(ctx context.Context, matchPublicID string) (Settlement, error)
+	// SaveHeldSettlement persists the computed multi-winner payout split of a match
+	// whose settlement was held for review, so an admin release replays it exactly.
+	// Idempotent upsert (the split is deterministic from the finished game state).
+	SaveHeldSettlement(ctx context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error
+	// HeldSettlement returns a persisted held split (found=false if none — i.e. a
+	// plain 2-player match that never needed one).
+	HeldSettlement(ctx context.Context, matchPublicID string) (platformFee int64, payouts map[string]int64, found bool, err error)
 	// AgentLimits returns an agent's eight configured spending limits.
 	AgentLimits(ctx context.Context, agentPublicID string) (AgentLimits, error)
 	// LossSince returns the total coins lost (a non-negative number) in finished

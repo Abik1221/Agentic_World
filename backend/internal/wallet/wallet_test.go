@@ -42,10 +42,32 @@ type fakeRepo struct {
 	owner      string
 	debt       int64
 	repaid     int64
+	held       map[string]heldSettlement // persisted multi-winner splits
+}
+
+type heldSettlement struct {
+	fee     int64
+	payouts map[string]int64
 }
 
 func (f *fakeRepo) Settlement(context.Context, string) (wallet.Settlement, error) {
 	return f.settlement, nil
+}
+
+func (f *fakeRepo) SaveHeldSettlement(_ context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error {
+	if f.held == nil {
+		f.held = map[string]heldSettlement{}
+	}
+	f.held[matchPublicID] = heldSettlement{fee: platformFee, payouts: payouts}
+	return nil
+}
+
+func (f *fakeRepo) HeldSettlement(_ context.Context, matchPublicID string) (int64, map[string]int64, bool, error) {
+	h, ok := f.held[matchPublicID]
+	if !ok {
+		return 0, nil, false, nil
+	}
+	return h.fee, h.payouts, true, nil
 }
 func (f *fakeRepo) AgentLimits(context.Context, string) (wallet.AgentLimits, error) {
 	return f.limits, nil
@@ -163,6 +185,56 @@ func TestSettleTieRefundsBothStakes(t *testing.T) {
 	}
 	if got := amountFor(txn, ledger.SystemWallet(ledger.SysPlatformRevenue)); got != 0 {
 		t.Fatalf("ties must take no rake, got %d", got)
+	}
+}
+
+// denyGate simulates an anti-fraud hold: every payout is withheld.
+type denyGate struct{}
+
+func (denyGate) Allow(context.Context, string) (bool, error) { return false, nil }
+
+// G1: a HELD Mafia table must, on admin release, replay the persisted multi-winner
+// split — not pay the whole pot winner-take-all through the 2-player path.
+func TestSettleHeldMafiaReplaysSplit(t *testing.T) {
+	fl := &fakeLedger{}
+	// 3 seats × 100 bid = 300 pot; recorded single winner ag_a — exactly what a
+	// winner-take-all release would wrongly pay in full.
+	repo := &fakeRepo{settlement: wallet.Settlement{Bid: 100, Agents: []string{"ag_a", "ag_b", "ag_c"}, Winner: "ag_a", RakePct: 10}}
+	svc := newSvc(fl, repo)
+	svc.SetPayoutGate(denyGate{})
+
+	// Surviving winners ag_a and ag_b split 270 (135 each); 30 platform fee.
+	if err := svc.SettleMafiaTable(context.Background(), "m_mafia", 30, map[string]int64{"ag_a": 135, "ag_b": 135}); err != nil {
+		t.Fatalf("held settle: %v", err)
+	}
+	if len(fl.posts) != 0 {
+		t.Fatalf("a held settlement must not post to the ledger yet; got %d", len(fl.posts))
+	}
+
+	if err := svc.SettleHeld(context.Background(), "m_mafia"); err != nil {
+		t.Fatalf("SettleHeld: %v", err)
+	}
+	if len(fl.posts) != 1 {
+		t.Fatalf("want exactly 1 settle txn on release, got %d", len(fl.posts))
+	}
+	txn := fl.posts[0]
+	assertBalanced(t, txn)
+	if got := amountFor(txn, ledger.SystemWallet(ledger.SysEscrow)); got != -300 {
+		t.Fatalf("escrow debit = %d, want -300 (full pot)", got)
+	}
+	// The split: both winners paid their share, the loser nothing. Winner-take-all
+	// would have paid ag_a 270 and ag_b 0 — the bug this guards against.
+	if got := amountFor(txn, ledger.AgentWallet("ag_a")); got != 135 {
+		t.Fatalf("ag_a credit = %d, want 135 (its share, not the whole pot)", got)
+	}
+	if got := amountFor(txn, ledger.AgentWallet("ag_b")); got != 135 {
+		t.Fatalf("ag_b credit = %d, want 135 (must be paid its share)", got)
+	}
+	if got := amountFor(txn, ledger.AgentWallet("ag_c")); got != 0 {
+		t.Fatalf("ag_c (loser) credit = %d, want 0", got)
+	}
+	if got := amountFor(txn, ledger.SystemWallet(ledger.SysPlatformRevenue)); got != 30 {
+		t.Fatalf("platform fee = %d, want 30", got)
 	}
 }
 
