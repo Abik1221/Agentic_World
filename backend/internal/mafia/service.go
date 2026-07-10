@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
@@ -351,22 +352,50 @@ func (s *Service) State(ctx context.Context, matchPublicID, viewerAgent string, 
 	if !wait || s.notify == nil || m.Status == StatusFinished {
 		return s.viewFor(ctx, m, viewerAgent), nil
 	}
-	// Long-poll: return as soon as anything is published for this match (a seat
-	// acted, a phase advanced, the match finished) or the timeout elapses. Every
-	// engine action is a publish, so this wakes on within-phase moves too — which
-	// a day/phase version key would miss (e.g. it becoming your turn to vote).
+	// Long-poll: return as soon as the match state changes (a seat acted, a night
+	// submission or vote landed, chat advanced, a phase/day rolled, or the match
+	// finished) or the timeout elapses. A publish wakes us immediately; a 2s
+	// safety-tick backstop + a state-version compare means a missed/coalesced wake
+	// (or a Redis blip) still returns within ~2s instead of blocking the full
+	// timeout. The version includes the within-phase counts (night acts, votes,
+	// messages), so it catches sub-phase progress a plain day/phase key would miss.
 	wake, cancel := s.notify.Subscribe(matchPublicID)
 	defer cancel()
-	select {
-	case <-ctx.Done():
-	case <-wake:
-	case <-time.After(timeout):
-	}
-	m, err = s.repo.Get(ctx, matchPublicID)
-	if err != nil {
-		return AgentView{}, ErrNotFound
+	startVer := stateVersion(m.State)
+	deadline := s.clock.Now().Add(timeout)
+	for {
+		remaining := deadline.Sub(s.clock.Now())
+		if remaining <= 0 {
+			break
+		}
+		tick := remaining
+		if tick > 2*time.Second {
+			tick = 2 * time.Second // backstop in case a wake-up is missed
+		}
+		select {
+		case <-ctx.Done():
+			return s.viewFor(ctx, m, viewerAgent), nil
+		case <-wake:
+		case <-time.After(tick):
+		}
+		m, err = s.repo.Get(ctx, matchPublicID)
+		if err != nil {
+			return AgentView{}, ErrNotFound
+		}
+		if stateVersion(m.State) != startVer || m.Status == StatusFinished {
+			break
+		}
 	}
 	return s.viewFor(ctx, m, viewerAgent), nil
+}
+
+// stateVersion is a cheap change key over the fields already loaded by repo.Get.
+// It advances on ANY progress — event seq, night submissions, votes, chat, and
+// phase/day rolls — so a long-poll backstop can detect within-phase moves (e.g. it
+// becoming your turn to vote), not just coarse phase changes.
+func stateVersion(st mf.State) string {
+	return fmt.Sprintf("%d/%s/%d/%d/%d/%d/%t",
+		st.Day, st.Phase, st.NextSeq, len(st.NightActs), len(st.Votes), st.Messages, st.Finished)
 }
 
 func (s *Service) Economy(ctx context.Context, matchPublicID string) (EconomySnapshot, []RewardRow, error) {
