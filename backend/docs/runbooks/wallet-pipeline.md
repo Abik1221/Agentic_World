@@ -39,7 +39,14 @@ substitute for an external security review before handling real funds.
   double-broadcast / double-spend (Solana sends aren't key-idempotent). Coins are
   **burned only after `finalized` confirmation**; **released** on on-chain
   failure. ✅
-- Hot-wallet secret is process env only and **never logged**.
+- **Wallet-ownership proof (W2):** the payout destination must be a wallet the user
+  has *proven* they control — `POST /v1/wallet/verify/challenge` → sign the nonce →
+  `POST /v1/wallet/verify` (Ed25519). `Request` returns `wallet_not_verified` unless
+  the verified wallet matches the linked destination. ✅
+- **Hot-wallet key at rest (W3):** prefer `SOLANA_HOT_WALLET_SECRET_ENC` (secretbox
+  AES-256-GCM, decrypted at boot with `SOLANA_HOT_WALLET_ENC_KEY`); plaintext
+  `SOLANA_HOT_WALLET_SECRET` is dev-only and warned in prod. Never logged. ✅
+- Per-user **rate limits** on `POST /v1/withdrawals` (and `/v1/deposits`). ✅
 
 ### Admin controls
 - Every route is `RequirePlatformOrAdmin` (Ed25519 Platform token **or**
@@ -51,19 +58,19 @@ substitute for an external security review before handling real funds.
   auto-corrects** (drift ⇒ investigate). Metrics: `wallet_recon_*`.
 
 ### Residual risks / MUST-DO before mainnet
-1. **Hot-wallet key management.** Currently a plaintext env secret. Before
-   mainnet: hold it in a KMS / `secretbox`-at-rest, cap the hot-wallet float,
-   **sweep deposits to cold storage**, and alert on low SOL (fees) + high balance.
-2. **No per-route rate limiting** on `POST /v1/deposits` and `/v1/withdrawals`.
-   Add per-user rate limits (the codebase has `middleware.RateLimit`) to blunt
-   abuse/spam session creation.
-3. **Withdrawal destination = Privy-profile wallet hint.** Before a user's first
-   withdrawal on mainnet, **verify wallet ownership** (a signed message) rather
-   than trusting the stored hint.
+1. **Hot-wallet float + cold storage (still open).** Key-at-rest is done (W3,
+   `secretbox`); still needed for mainnet: **cap the hot-wallet float, sweep
+   excess to cold storage, and alert on low SOL (fees) + high balance.** Needs a
+   cold-wallet address (infra decision). Moving the `secretbox` master key into a
+   managed KMS is the stronger posture. ✅ key-at-rest / ⬜ float+sweep+alert.
+2. ✅ **Per-user rate limiting** on `POST /v1/deposits` and `/v1/withdrawals` (done, SEC-M1).
+3. ✅ **Wallet-ownership verification** before withdrawal (done, W2 — see Withdrawals above).
 4. **Broadcast→status-write crash window** leaves a withdrawal in `processing`
-   with funds possibly in flight (no double-spend — the claim guards it). The
-   reconciler flags `stuck_processing`; recover manually by matching the tx
-   on-chain. Consider durable-nonce transactions for exactly-once broadcast.
+   with funds possibly in flight (no double-spend — the claim guards it; an
+   *ambiguous* broadcast now stays `broadcasted` for the confirm watcher rather
+   than double-paying, M3). The reconciler flags `stuck_processing`; recover
+   manually by matching the tx on-chain. Consider durable-nonce transactions for
+   exactly-once broadcast.
 5. **RPC provider trust.** Use a reputable RPC (Helius/Triton/QuickNode);
    consider dual-RPC confirmation for high-value withdrawals. Prefer a webhook/
    indexer over polling at scale.

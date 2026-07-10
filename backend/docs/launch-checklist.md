@@ -1,5 +1,9 @@
 # Launch Checklist — Agent Arena (Tier 1)
 
+> **Beta (devnet) readiness — what's left to configure, test, and implement:
+> [`BETA_READINESS.md`](../../BETA_READINESS.md)** (repo root). This checklist is the
+> broader staging→public-launch gate.
+
 Sign-off gate between staging and public launch. Tier 1 only (coins in, no cash
 out) unless counsel + Stripe terms clear Tier 2. Real money never ships on
 heuristics alone — fraud holds + reconciliation + replays must all be green.

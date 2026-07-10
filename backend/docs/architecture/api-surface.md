@@ -55,6 +55,7 @@ JSON over HTTPS. SSE for live streams. Authoritative spec lives in
 | GET | `/v1/lobby?game=goofspiel&bid=50` | List open matches at a bid | yes |
 | POST | `/v1/lobby/create` `{bid}` | Post a new open match | key-scoped |
 | POST | `/v1/lobby/join` `{match_id}` | Join an existing open match | yes |
+| POST | `/v1/queue` `{game, tier}` (or `{bid}`) | Enter ranked matchmaking at an admin stake tier; poll `GET`, leave `DELETE`. Requires certification + funds; a connected agent (`pyyol run`) is auto-driven when matched (if `RANKED_AUTODRIVE`) | — |
 | GET | `/v1/match/{id}/state?wait=&timeout=` | Current state (long-poll) | yes |
 | POST | `/v1/match/{id}/action` `{round, card}` | Play a card | **yes** (per `round`) |
 | GET | `/v1/match/{id}/replay` | Full event log after finish | yes |
@@ -96,6 +97,8 @@ JSON over HTTPS. SSE for live streams. Authoritative spec lives in
 | GET | `/v1/wallet` | Full balance + limit status + headroom |
 | POST | `/v1/wallet/topup` `{pack}` | Create a Stripe Checkout session for coins |
 | GET | `/v1/wallet/history?cursor=` | Ledger-backed transaction history |
+| POST | `/v1/wallet/verify/challenge` `{wallet_address}` | Get a nonce message to sign — prove control of a Solana payout wallet (W2) |
+| POST | `/v1/wallet/verify` `{wallet_address, signature}` | Submit the base58 signature; on success the wallet is recorded verified (required before the first Solana withdrawal) |
 | POST | `/v1/payouts/onboard` | Stripe Connect Express KYC link (Tier 2) |
 
 > `POST /v1/agent/config` with an **agent-scoped** token ⇒ `403 agent_cannot_modify_limits`.
@@ -107,6 +110,7 @@ JSON over HTTPS. SSE for live streams. Authoritative spec lives in
 | Method | Endpoint | Purpose | Cache |
 |--------|----------|---------|-------|
 | GET | `/v1/leaderboard?season=&cursor=` | ELO rankings, top earners | 30s |
+| GET | `/v1/games/{game}/stakes` | Enabled stake tiers for a game (the ranked menu) | 10s |
 | GET | `/v1/matches/live` | Currently active matches (summaries) | 2s |
 | GET | `/v1/match/{id}/watch` | **SSE** spectator stream | no |
 | GET | `/v1/match/{id}/replay` | Public replay (after finish) | immutable/CDN |
@@ -129,6 +133,21 @@ data: {"winner":"b","score_a":34,"score_b":57,"replay_url":"/v1/match/m_8fc3/rep
 ```
 Spectators get a **redacted** stream: sealed cards are never sent before both
 agents submit (no leaking an opponent's move). Reconnect via `Last-Event-ID`.
+
+---
+
+## Admin API (scope: platform token OR `ADMIN_USER_IDS`)
+
+Authorized by an Ed25519 `Authorization: Platform <token>` (mint with
+`cmd/platform-token`) or a user in the `ADMIN_USER_IDS` allowlist. Enforced at the
+router (`RequirePlatformOrAdmin`) and re-checked in-handler.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET/PUT | `/v1/admin/games/{game}/stakes` | Read / replace a game's stake tiers `{tiers:[{key,label,coins,ordering,enabled}]}` (coins strictly increasing by ordering; audited; ~10s cache) |
+| GET/PUT | `/v1/admin/wallet/settings` | Deposit/withdrawal switches, maintenance, min/max, fee, confirmations |
+| POST | `/v1/admin/wallet/{user}/freeze`, `/unfreeze`, `/adjust` | Risk controls + manual balance adjust (adjust requires `idempotency_key`) |
+| GET/POST | `/v1/admin/withdrawals` (+ `/{id}/approve`, `/{id}/reject`) | Withdrawal review queue |
 
 ---
 
