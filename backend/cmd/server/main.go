@@ -555,6 +555,7 @@ func run() error {
 	)
 	matchmakingSvc.SetEligibility(manifestSvc) // ranked queue requires a certified agent
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
+	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
