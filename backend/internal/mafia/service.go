@@ -292,11 +292,16 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 }
 
 func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error {
-	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
-	if err != nil || !ok {
-		return err
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return nil // another instance holds it; skip this round
+		}
+		defer release()
 	}
-	defer release()
+	// (lerr != nil — Redis unreachable: proceed lockless so the timeout still fires
+	// and a paid table's escrow can't stay wedged. ForceTimeout always produces
+	// events, so the persist below is protected by the UNIQUE(match_id,seq) OCC:
+	// a racing writer surfaces as ErrConcurrentUpdate, treated as a no-op.)
 
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil || m.Status != StatusActive {
@@ -310,7 +315,10 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	if err != nil || len(events) == 0 {
 		return err
 	}
-	return s.persist(ctx, m, state, events)
+	if err := s.persist(ctx, m, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {

@@ -409,6 +409,11 @@ func insertMafiaEvents(ctx context.Context, tx pgx.Tx, matchID int64, events []m
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO match_events (match_id, seq, type, payload) VALUES ($1,$2,$3,$4::jsonb)`,
 			matchID, ev.Seq, string(ev.Type), string(b)); err != nil {
+			if isUniqueViolation(err) {
+				// A racing writer already wrote this (match_id, seq) — surface it as a
+				// concurrency conflict so a lockless caller can retry/no-op (OCC).
+				return mafia.ErrConcurrentUpdate
+			}
 			return err
 		}
 	}
