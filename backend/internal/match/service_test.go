@@ -21,6 +21,7 @@ type fakeRepo struct {
 	events        map[string][]gs.Event
 	finishedEvent []byte // last match.finished payload passed to Finish (nil = none)
 	finishCalls   int
+	signingKeys   map[string]string // agentPublicID → registered Ed25519 pubkey ("" = none)
 }
 
 func newFakeRepo() *fakeRepo {
@@ -143,7 +144,9 @@ func (r *fakeRepo) LoadEvents(_ context.Context, id string) ([]gs.Event, error) 
 	return append([]gs.Event(nil), r.events[id]...), nil
 }
 
-func (r *fakeRepo) AgentSigningKey(context.Context, string) (string, error) { return "", nil }
+func (r *fakeRepo) AgentSigningKey(_ context.Context, agent string) (string, error) {
+	return r.signingKeys[agent], nil
+}
 func (r *fakeRepo) RecordMoveSignature(context.Context, string, int, int, int, string, string) error {
 	return nil
 }
@@ -238,6 +241,35 @@ func TestCompetitiveMatchEmitsFinishedEvent(t *testing.T) {
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
+
+// P3: a signing-key agent's self-drive Act requires a signature, but DriveAct
+// (the platform driving the agent's seat over its authenticated socket) is exempt —
+// so the server can drive a signing-key agent in a live match without wedging.
+func TestDriveActBypassesSignatureForSigningKeyAgent(t *testing.T) {
+	svc, repo := newSvcWithRepo()
+	repo.signingKeys = map[string]string{"ag_a": "ed25519-pubkey-of-ag-a"}
+	ctx := context.Background()
+
+	id, _ := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+	cur, _ := svc.State(ctx, id, "ag_a", false, 0)
+
+	// Self-drive without a signature is rejected (ag_a registered a key).
+	if _, err := svc.Act(ctx, "ag_a", id, cur.Round, cur.You.Hand[0], ""); err != match.ErrSignatureRequired {
+		t.Fatalf("Act without signature = %v; want ErrSignatureRequired", err)
+	}
+	// Platform-driven move is accepted without a signature (socket auth suffices).
+	if _, err := svc.DriveAct(ctx, "ag_a", id, cur.Round, cur.You.Hand[0]); err != nil {
+		t.Fatalf("DriveAct = %v; want nil (platform-driven bypass)", err)
+	}
+	// And it actually sealed: ag_a is no longer waited on this round.
+	after, _ := svc.State(ctx, id, "ag_a", false, 0)
+	if after.YourTurn && after.Round == cur.Round {
+		t.Fatal("DriveAct did not seal the move (still ag_a's turn this round)")
+	}
+}
 
 func TestMatchHappyPathToFinish(t *testing.T) {
 	svc := newSvc()

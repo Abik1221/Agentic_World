@@ -323,7 +323,22 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 // seq) event-log constraint rejects a racing writer, surfacing as ErrConcurrentUpdate,
 // and we re-read + retry. So a Redis outage degrades to a few extra retries, never a
 // stuck, lost, or double-applied move.
+// Act submits a move over the authenticated request path. If the agent registered
+// a signing key the move must carry a valid Ed25519 signature.
 func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string) (AgentView, error) {
+	return s.act(ctx, agentPublicID, matchPublicID, round, card, signature, false)
+}
+
+// DriveAct submits a move the PLATFORM decided on the agent's behalf after asking
+// it over its authenticated socket connection. The socket auth (the agent's API key
+// verified at register) is the authenticity guarantee, so a per-move Ed25519
+// signature is NOT required here — this is what lets the server drive a signing-key
+// agent's seat in a live match instead of wedging on ErrSignatureRequired.
+func (s *Service) DriveAct(ctx context.Context, agentPublicID, matchPublicID string, round, card int) (AgentView, error) {
+	return s.act(ctx, agentPublicID, matchPublicID, round, card, "", true)
+}
+
+func (s *Service) act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string, platformDriven bool) (AgentView, error) {
 	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
 		if !ok {
 			return AgentView{}, ErrBusy
@@ -334,7 +349,7 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 
 	const maxAttempts = 4
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, round, card, signature)
+		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, round, card, signature, platformDriven)
 		if errors.Is(err, ErrConcurrentUpdate) {
 			continue // another writer advanced first; re-read and retry
 		}
@@ -345,7 +360,7 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 
 // tryAct is one optimistic-concurrency attempt: read the current snapshot, validate,
 // seal, and commit. A lost race returns ErrConcurrentUpdate for Act to retry.
-func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string) (AgentView, error) {
+func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string, platformDriven bool) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
@@ -369,11 +384,14 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	// Move authenticity: if the agent registered a signing key, the move must carry
 	// a valid Ed25519 signature over (match, round, seat, card). Verified BEFORE the
 	// card is sealed, so a forged/altered move never enters the log.
+	// Platform-driven moves (the server driving this seat over the agent's
+	// authenticated socket) skip the per-move signature — the socket connection is
+	// the authenticity guarantee. Self-drive (request-path) moves still require it.
 	pubkey, err := s.repo.AgentSigningKey(ctx, agentPublicID)
 	if err != nil {
 		return AgentView{}, err
 	}
-	if pubkey != "" {
+	if pubkey != "" && !platformDriven {
 		if signature == "" {
 			return AgentView{}, ErrSignatureRequired
 		}
@@ -396,7 +414,7 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 
 	// Persist the authorship proof alongside the move (best-effort; off the
 	// correctness path — the move is already sealed in the authoritative log).
-	if pubkey != "" {
+	if pubkey != "" && !platformDriven {
 		_ = s.repo.RecordMoveSignature(ctx, matchPublicID, round, p.Seat, card, signature, pubkey)
 	}
 
