@@ -52,4 +52,11 @@ func (w *ConfirmWatcher) tick(ctx context.Context) {
 	if n > 0 {
 		w.log.Debug("payout confirm watcher settled", "count", n)
 	}
+	// Recover any withdrawal stranded in 'processing' — provably pre-broadcast, so its
+	// escrow is safely released back to the user (M10).
+	if recovered, err := w.svc.ReconcileStuckProcessing(ctx); err != nil {
+		w.log.Warn("payout stuck-processing sweep", "error", err)
+	} else if recovered > 0 {
+		w.log.Warn("payout: recovered stuck 'processing' withdrawals (released)", "count", recovered)
+	}
 }

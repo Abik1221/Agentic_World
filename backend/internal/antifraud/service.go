@@ -131,20 +131,36 @@ func (s *Service) ResolveDispute(ctx context.Context, adminUserID, disputePublic
 		return nil // already terminal — idempotent no-op
 	}
 
+	// Disburse ONLY after atomically claiming the match's open hold. A cleanly-settled
+	// match has no hold, so its escrow was already paid out and a dispute-refund must
+	// NOT run (that debited the shared escrow a second time — the H2 double-spend);
+	// and two disputes on one held match can't both disburse because only the first
+	// claim wins. Claim-first is also correct for release+refund races. This guards
+	// pre-existing (pre-fix) settlements too, independent of the ledger key scheme.
 	switch action {
 	case "refund":
 		if matchPublicID != "" {
-			if err := s.settler.Refund(ctx, matchPublicID); err != nil {
+			claimed, err := s.repo.ResolveHold(ctx, matchPublicID, "refunded")
+			if err != nil {
 				return err
 			}
-			_ = s.repo.ResolveHold(ctx, matchPublicID, "refunded")
+			if claimed {
+				if err := s.settler.Refund(ctx, matchPublicID); err != nil {
+					return err
+				}
+			}
 		}
 	case "release":
 		if matchPublicID != "" {
-			if err := s.settler.SettleHeld(ctx, matchPublicID); err != nil {
+			claimed, err := s.repo.ResolveHold(ctx, matchPublicID, "released")
+			if err != nil {
 				return err
 			}
-			_ = s.repo.ResolveHold(ctx, matchPublicID, "released")
+			if claimed {
+				if err := s.settler.SettleHeld(ctx, matchPublicID); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	s.audit(ctx, adminUserID, "dispute_resolve:"+action, disputePublicID, map[string]any{"match": matchPublicID})

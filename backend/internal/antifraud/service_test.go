@@ -48,9 +48,14 @@ func (r *fakeRepo) RecordHold(_ context.Context, m, reason string) (bool, error)
 	r.holds[m] = reason
 	return true, nil
 }
-func (r *fakeRepo) ResolveHold(_ context.Context, m, status string) error {
+func (r *fakeRepo) ResolveHold(_ context.Context, m, status string) (bool, error) {
+	// Mirror the real atomic claim: only a still-open hold can be transitioned once.
+	cur, ok := r.holds[m]
+	if !ok || cur == "refunded" || cur == "released" {
+		return false, nil
+	}
 	r.holds[m] = status
-	return nil
+	return true, nil
 }
 func (r *fakeRepo) OpenDispute(_ context.Context, in antifraud.DisputeInput) (string, error) {
 	return in.PublicID, nil
@@ -121,6 +126,7 @@ func TestGateHoldsFlaggedAgent(t *testing.T) {
 func TestResolveDisputeRefundIdempotent(t *testing.T) {
 	repo := newRepo()
 	repo.disputeMatch["d1"] = "m1"
+	repo.holds["m1"] = "held" // the match is under an open payout hold (refundable)
 	settler := &fakeSettler{}
 	svc := newSvc(repo, settler)
 	ctx := context.Background()
@@ -137,5 +143,42 @@ func TestResolveDisputeRefundIdempotent(t *testing.T) {
 	}
 	if repo.holds["m1"] != "refunded" {
 		t.Fatalf("hold status = %q, want refunded", repo.holds["m1"])
+	}
+}
+
+// TestResolveDisputeRefundRequiresOpenHold is the H2 regression: a dispute-refund
+// on a match that has NO open hold (e.g. one already cleanly settled, or already
+// refunded/released) must NOT disburse — otherwise it debits the shared escrow a
+// second time. Two distinct disputes on the same match must disburse at most once.
+func TestResolveDisputeRefundRequiresOpenHold(t *testing.T) {
+	ctx := context.Background()
+
+	// (a) No hold at all (match settled cleanly) → refund must be a no-op.
+	repo := newRepo()
+	repo.disputeMatch["d1"] = "m_settled"
+	settler := &fakeSettler{}
+	if err := newSvc(repo, settler).ResolveDispute(ctx, "usr_admin", "d1", "refund"); err != nil {
+		t.Fatal(err)
+	}
+	if settler.refunds != 0 {
+		t.Fatalf("refund applied %d times on an unheld (settled) match, want 0", settler.refunds)
+	}
+
+	// (b) One held match, two different disputes → release then refund; only the
+	// first (release) may disburse. The second must not double-pay.
+	repo2 := newRepo()
+	repo2.disputeMatch["dRel"] = "m2"
+	repo2.disputeMatch["dRef"] = "m2"
+	repo2.holds["m2"] = "held"
+	settler2 := &fakeSettler{}
+	svc2 := newSvc(repo2, settler2)
+	if err := svc2.ResolveDispute(ctx, "usr_admin", "dRel", "release"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc2.ResolveDispute(ctx, "usr_admin", "dRef", "refund"); err != nil {
+		t.Fatal(err)
+	}
+	if settler2.releases != 1 || settler2.refunds != 0 {
+		t.Fatalf("release+refund race: releases=%d refunds=%d, want exactly one disbursement (releases=1 refunds=0)", settler2.releases, settler2.refunds)
 	}
 }

@@ -130,6 +130,15 @@ func (h *Handler) mint(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid_amount", "Amount must be positive."))
 		return
 	}
+	// Per-call ceiling: mint is a non-prod test affordance (the route is only mounted
+	// when ALLOW_MINT is on, which is forced off in prod) and requires owning the
+	// target agent, but cap the amount anyway so a stray/huge value can't create an
+	// absurd balance or approach int64 overflow. Defense in depth.
+	const maxMintPerCall int64 = 10_000_000
+	if in.Amount > maxMintPerCall {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid_amount", "Amount exceeds the per-call mint ceiling."))
+		return
+	}
 	p := auth.PrincipalFromContext(r.Context())
 	if err := h.authorizeFor(r, p, in.Agent); err != nil {
 		httpx.Error(w, err)

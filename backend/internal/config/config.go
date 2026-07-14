@@ -136,6 +136,14 @@ type Config struct {
 	StripePayoutFeeFlatCents int64         // flat Stripe payout fee, passed to the user
 	WithdrawMinCoins         int64         // minimum withdrawal in coins
 	WithdrawClearing         time.Duration // request must age this long before approval
+	// Anti-drain velocity + address controls (CEX-standard). A rolling window caps
+	// how many withdrawals and how many net cents a single owner can move; a new/
+	// changed destination wallet is frozen for a cooldown before it can receive funds
+	// (blocks a taken-over account from swapping the payout wallet and draining).
+	WithdrawVelocityWindow     time.Duration // rolling window for the caps below (0 ⇒ 24h)
+	WithdrawMaxPerWindow       int           // max withdrawals per window (0 ⇒ unlimited)
+	WithdrawMaxCentsPerWindow  int64         // max net cents withdrawn per window (0 ⇒ unlimited)
+	WithdrawNewAddressCooldown time.Duration // freeze payouts for this long after the wallet is (re)verified
 
 	// Trust & anti-fraud (Stage 9)
 	AdminUserIDs      []string      // user public ids allowed to use admin endpoints
@@ -271,6 +279,11 @@ func Load() (*Config, error) {
 		WithdrawMinCoins:         int64(l.intVal("WITHDRAW_MIN_COINS", 500)),
 		WithdrawClearing:         l.dur("WITHDRAW_CLEARING", 24*time.Hour),
 
+		WithdrawVelocityWindow:     l.dur("WITHDRAW_VELOCITY_WINDOW", 24*time.Hour),
+		WithdrawMaxPerWindow:       l.intVal("WITHDRAW_MAX_PER_WINDOW", 25),
+		WithdrawMaxCentsPerWindow:  int64(l.intVal("WITHDRAW_MAX_CENTS_PER_WINDOW", 0)),
+		WithdrawNewAddressCooldown: l.dur("WITHDRAW_NEW_ADDRESS_COOLDOWN", 24*time.Hour),
+
 		AdminUserIDs:      l.csv("ADMIN_USER_IDS", ""),
 		DetectInterval:    l.dur("DETECT_INTERVAL", time.Hour),
 		CollusionLookback: l.dur("COLLUSION_LOOKBACK", 7*24*time.Hour),
@@ -368,6 +381,32 @@ func (c *Config) validate() error {
 		}
 		if strings.Contains(c.APIKeyPepper, "dev-only") {
 			errs = append(errs, "API_KEY_PEPPER must not be a dev placeholder in prod/staging")
+		}
+		// Fail closed: the hot-wallet signing key controls ALL outbound USDC. In prod it
+		// must be encrypted at rest (secretbox) with the master key in a SEPARATE secret
+		// store — never a plaintext env var, which is exposed via the process environment,
+		// orchestrator manifests, and crash dumps (private-key exposure is the #1 crypto
+		// loss vector). Reject any plaintext key, and require the encrypted form whenever
+		// the Solana payout rail is enabled. Produce the ciphertext with cmd/wallet-secret-encrypt.
+		if c.SolanaHotWalletSecret != "" {
+			errs = append(errs, "SOLANA_HOT_WALLET_SECRET (plaintext) must not be set in prod/staging; encrypt it into SOLANA_HOT_WALLET_SECRET_ENC (see cmd/wallet-secret-encrypt)")
+		}
+		if c.WithdrawalsSolana() && c.SolanaHotWalletSecretEnc == "" {
+			errs = append(errs, "SOLANA_HOT_WALLET_SECRET_ENC is required in prod/staging to enable Solana withdrawals (the hot-wallet key must be encrypted at rest)")
+		}
+		// The master key is single-pass SHA-256'd into the AES-256-GCM key, so a
+		// low-entropy passphrase is brute-forceable against the (base64) ciphertext.
+		// Require real length in prod, mirroring the JWT key rule, and keep it in a
+		// SEPARATE secret store from the ciphertext. (L1)
+		if c.SolanaHotWalletSecretEnc != "" && len(c.SolanaHotWalletEncKey) < 32 {
+			errs = append(errs, "SOLANA_HOT_WALLET_ENC_KEY must be >= 32 bytes in prod/staging")
+		}
+		// A "confirmed" (non-finalized) tx can still be dropped by a reorg, but a coin
+		// credit is irreversible. Crediting already waits for finalized regardless of
+		// this knob, but reject the unsafe setting outright in prod so nobody relies on
+		// it. (L3)
+		if c.SolanaCommitment != "" && c.SolanaCommitment != "finalized" {
+			errs = append(errs, "SOLANA_COMMITMENT must be \"finalized\" in prod/staging (a confirmed deposit can be reorged after an irreversible credit)")
 		}
 		// Fail closed: the platform config bus signs rake/fees/rewards config with
 		// this key. Without it the verifier is nil and every snapshot "verifies"

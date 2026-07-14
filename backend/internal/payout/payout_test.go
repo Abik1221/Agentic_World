@@ -23,6 +23,9 @@ type fakeRepo struct {
 	flagged          bool
 	debt             int64
 	requestedAt      time.Time
+	walletVerifiedAt time.Time // when the destination wallet was verified (new-address cooldown)
+	recentCount      int       // withdrawals in the velocity window (WithdrawnSince)
+	recentCents      int64     // net cents withdrawn in the velocity window
 	rows             map[string]*payout.Withdrawal
 }
 
@@ -41,6 +44,15 @@ func (r *fakeRepo) VerifiedWallet(context.Context, string) (string, error) {
 		return "", nil
 	}
 	return r.wallet, nil // in the fake, a linked wallet is treated as verified
+}
+func (r *fakeRepo) VerifiedWalletAt(context.Context, string) (string, time.Time, error) {
+	if r.walletUnverified {
+		return "", time.Time{}, nil
+	}
+	return r.wallet, r.walletVerifiedAt, nil
+}
+func (r *fakeRepo) WithdrawnSince(context.Context, string, time.Time) (int, int64, error) {
+	return r.recentCount, r.recentCents, nil
 }
 func (r *fakeRepo) AgentFlagged(context.Context, string) (bool, error)     { return r.flagged, nil }
 func (r *fakeRepo) OutstandingDebt(context.Context, string) (int64, error) { return r.debt, nil }
@@ -140,6 +152,30 @@ func (x *fakeXfer) Transfer(context.Context, string, int64, string) (string, err
 }
 func (x *fakeXfer) PayoutsEnabled(context.Context, string) (bool, error) {
 	return !x.payoutsDisabled, nil
+}
+
+// TransferPreCommit mirrors the Solana rail: sign, invoke onSigned (record), then
+// "send". A pre-sign failure (x.fail) errors BEFORE onSigned; an ambiguous send
+// error records first (signature known) then fails — so escrow is never released.
+func (x *fakeXfer) TransferPreCommit(ctx context.Context, dest string, cents int64, idem string, onSigned func(string) error) (string, error) {
+	x.calls++
+	if x.fail {
+		return "", errors.New("solana down") // definitive pre-broadcast failure (not signed)
+	}
+	if x.ambiguousSig != "" {
+		if onSigned != nil {
+			if e := onSigned(x.ambiguousSig); e != nil {
+				return "", e
+			}
+		}
+		return "", &payout.BroadcastAmbiguousError{Signature: x.ambiguousSig}
+	}
+	if onSigned != nil {
+		if e := onSigned("tr_1"); e != nil {
+			return "", e
+		}
+	}
+	return "tr_1", nil
 }
 
 func newSvc(repo payout.Repo, bank payout.Bank, xfer payout.Transferrer) *payout.Service {

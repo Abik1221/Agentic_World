@@ -20,11 +20,15 @@ func NewAntifraudRepo(db *pgxpool.Pool) *AntifraudRepo { return &AntifraudRepo{d
 var _ antifraud.Repo = (*AntifraudRepo)(nil)
 
 func (r *AntifraudRepo) MatchAgents(ctx context.Context, matchPublicID string) ([]antifraud.AgentRef, error) {
+	// LEFT JOIN users so a seat whose owner can't be resolved surfaces with an EMPTY
+	// owner id instead of being dropped from the result. The payout gate treats an
+	// empty owner as "owner_unresolved" and HOLDS the payout (fail closed); an INNER
+	// JOIN here silently omitted such a seat, defeating that safety hold. (L6)
 	rows, err := r.db.Query(ctx,
-		`SELECT ag.public_id, u.public_id
+		`SELECT ag.public_id, COALESCE(u.public_id, '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
-		 JOIN users  u  ON u.id  = mp.owner_user_id
+		 LEFT JOIN users u ON u.id = mp.owner_user_id
 		 JOIN matches m ON m.id  = mp.match_id
 		 WHERE m.public_id = $1
 		 ORDER BY mp.seat`, matchPublicID)
@@ -78,11 +82,22 @@ func (r *AntifraudRepo) RecordHold(ctx context.Context, matchPublicID, reason st
 	return ct.RowsAffected() > 0, nil
 }
 
-func (r *AntifraudRepo) ResolveHold(ctx context.Context, matchPublicID, status string) error {
-	_, err := r.db.Exec(ctx,
+// ResolveHold atomically CLAIMS a still-open hold for a match, transitioning it to
+// the given terminal status. It returns changed=true only when a genuinely-held row
+// was transitioned by THIS call (WHERE status='held'); a match with no hold, or an
+// already-resolved hold, returns changed=false and touches nothing. Callers disburse
+// (refund/release) ONLY when changed=true, so escrow can never be paid out for a
+// match that was never held (e.g. one already cleanly settled) and two concurrent
+// dispute resolutions on one held match can't both disburse. (H2)
+func (r *AntifraudRepo) ResolveHold(ctx context.Context, matchPublicID, status string) (bool, error) {
+	tag, err := r.db.Exec(ctx,
 		`UPDATE payout_holds SET status = $2, resolved_at = now()
-		 WHERE match_id = (SELECT id FROM matches WHERE public_id = $1)`, matchPublicID, status)
-	return err
+		 WHERE match_id = (SELECT id FROM matches WHERE public_id = $1)
+		   AND status = 'held'`, matchPublicID, status)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *AntifraudRepo) OpenDispute(ctx context.Context, in antifraud.DisputeInput) (string, error) {

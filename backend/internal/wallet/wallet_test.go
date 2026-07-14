@@ -246,7 +246,9 @@ func TestRefundReturnsEveryStake(t *testing.T) {
 	}
 	txn := fl.posts[0]
 	assertBalanced(t, txn)
-	if txn.Key != "refund:m_1" || txn.Kind != ledger.KindRefund {
+	// Refund shares the per-match disbursement key with settle (H2): escrow can be
+	// paid out at most once per match, so a settle and a refund can never both apply.
+	if txn.Key != "disburse:m_1" || txn.Kind != ledger.KindRefund {
 		t.Fatalf("bad refund meta: %+v", txn)
 	}
 	if got := amountFor(txn, ledger.SystemWallet(ledger.SysEscrow)); got != -100 {

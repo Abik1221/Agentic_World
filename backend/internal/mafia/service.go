@@ -135,8 +135,14 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) >= s.cfg.RosterSize {
 		return AgentView{}, ErrTableFull
 	}
-	if len(m.Players) > 0 && m.Players[0].OwnerPublicID == ownerPublicID {
-		return AgentView{}, ErrSameOwner
+	// Reject if this owner already holds ANY seat, not just the creator's seat (m.Players[0]).
+	// A 12-seat Mafia table lets one owner who controls a coordinated majority force
+	// their team to win and funnel honest players' entry fees to their own agents;
+	// checking only the creator let one owner take the other 11 chairs. (M5)
+	for i := range m.Players {
+		if m.Players[i].OwnerPublicID == ownerPublicID {
+			return AgentView{}, ErrSameOwner
+		}
 	}
 	// No-stakes practice table (see CreateTable): skip the spending-limit and
 	// certification gates when nothing is staked.

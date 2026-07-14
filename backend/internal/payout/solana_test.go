@@ -68,6 +68,103 @@ func TestSolanaRequestRequiresVerifiedWallet(t *testing.T) {
 	}
 }
 
+// M2: an admin who is also the withdrawal's owner cannot approve it (separation of
+// duties). A different admin — or a Platform token (empty user id) — still can.
+func TestApproveForbidsSelfApproval(t *testing.T) {
+	repo := newRepo()
+	repo.connect = ""
+	repo.wallet = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+	bank, xfer := newBank(), &fakeXfer{}
+	svc := newSolanaSvc(repo, bank, xfer, &fakeConfirmer{})
+
+	w, _ := svc.Request(context.Background(), "usr_a", "ag_a", 600)
+
+	// The owner (usr_a) approving their own withdrawal is rejected, and nothing is broadcast.
+	if err := svc.Approve(context.Background(), "usr_a", w.PublicID); err != payout.ErrSelfApproval {
+		t.Fatalf("self-approval err = %v, want ErrSelfApproval", err)
+	}
+	if xfer.calls != 0 {
+		t.Fatalf("self-approval broadcast a payout: calls=%d", xfer.calls)
+	}
+	// A Platform-token admin (empty user id) is a distinct approver and succeeds.
+	if err := svc.Approve(context.Background(), "", w.PublicID); err != nil {
+		t.Fatalf("platform-token approve: %v", err)
+	}
+	if got, _ := repo.Get(context.Background(), w.PublicID); got.Status != "broadcasted" {
+		t.Fatalf("status = %q, want broadcasted", got.Status)
+	}
+}
+
+// Anti-drain velocity cap: at the per-window count limit, a new request is refused.
+func TestWithdrawVelocityCountCap(t *testing.T) {
+	repo := newRepo()
+	repo.connect = ""
+	repo.wallet = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+	repo.recentCount = 5 // already 5 withdrawals in the window
+	svc := payout.New(repo, newBank(), &fakeXfer{}, platform.FixedClock{T: now},
+		payout.Config{CoinCents: 1, SellFeePct: 10, MinCoins: 500, Clearing: 24 * time.Hour, Chain: payout.ChainSolana, MaxPerWindow: 5},
+		slog.Default(), prometheus.NewRegistry())
+	if _, err := svc.Request(context.Background(), "usr_a", "ag_a", 600); err != payout.ErrVelocity {
+		t.Fatalf("err = %v, want ErrVelocity", err)
+	}
+	// Under the cap, it goes through.
+	repo.recentCount = 4
+	if _, err := svc.Request(context.Background(), "usr_a", "ag_a", 600); err != nil {
+		t.Fatalf("under-cap request: %v", err)
+	}
+}
+
+// New-address cooldown: a freshly-verified wallet is frozen for the cooldown window.
+func TestWithdrawNewAddressCooldown(t *testing.T) {
+	repo := newRepo()
+	repo.connect = ""
+	repo.wallet = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+	repo.walletVerifiedAt = now.Add(-1 * time.Hour) // verified 1h ago
+	svc := payout.New(repo, newBank(), &fakeXfer{}, platform.FixedClock{T: now},
+		payout.Config{CoinCents: 1, SellFeePct: 10, MinCoins: 500, Clearing: 24 * time.Hour, Chain: payout.ChainSolana, NewAddressCooldown: 24 * time.Hour},
+		slog.Default(), prometheus.NewRegistry())
+	if _, err := svc.Request(context.Background(), "usr_a", "ag_a", 600); err != payout.ErrAddressCooldown {
+		t.Fatalf("err = %v, want ErrAddressCooldown", err)
+	}
+	// Once the wallet has aged past the cooldown, withdrawals are allowed.
+	repo.walletVerifiedAt = now.Add(-25 * time.Hour)
+	if _, err := svc.Request(context.Background(), "usr_a", "ag_a", 600); err != nil {
+		t.Fatalf("post-cooldown request: %v", err)
+	}
+}
+
+// M10: a withdrawal stranded in 'processing' past the grace is provably pre-broadcast
+// (a send only happens after the row leaves 'processing'), so the reconciliation sweep
+// safely releases its escrow. A recently-claimed 'processing' row is left alone.
+func TestReconcileStuckProcessingReleases(t *testing.T) {
+	repo := newRepo()
+	bank := newBank()
+	svc := newSolanaSvc(repo, bank, &fakeXfer{}, &fakeConfirmer{})
+
+	repo.rows["wd_stuck"] = &payout.Withdrawal{
+		PublicID: "wd_stuck", Agent: "ag_a", Owner: "usr_a", Coins: 600,
+		Status: "processing", StatusChangedAt: now.Add(-5 * time.Minute),
+	}
+	repo.rows["wd_fresh"] = &payout.Withdrawal{
+		PublicID: "wd_fresh", Agent: "ag_a", Owner: "usr_a", Coins: 600,
+		Status: "processing", StatusChangedAt: now.Add(-10 * time.Second),
+	}
+
+	n, err := svc.ReconcileStuckProcessing(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("recovered = %d, err = %v; want exactly 1", n, err)
+	}
+	if repo.rows["wd_stuck"].Status != "failed" {
+		t.Fatalf("stuck row status = %q, want failed", repo.rows["wd_stuck"].Status)
+	}
+	if bank.released["wd_stuck"] != 600 {
+		t.Fatalf("stuck escrow not released: %+v", bank.released)
+	}
+	if repo.rows["wd_fresh"].Status != "processing" {
+		t.Fatalf("fresh row wrongly touched: %q", repo.rows["wd_fresh"].Status)
+	}
+}
+
 func TestSolanaApproveBroadcastsWithoutBurning(t *testing.T) {
 	repo := newRepo()
 	repo.connect = ""

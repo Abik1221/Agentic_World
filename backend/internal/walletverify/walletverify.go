@@ -19,9 +19,22 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 )
 
-// challengePrefix is the fixed, human-readable prefix the wallet signs, so a user
-// can see what they're approving and it can't be confused with another app's message.
-const challengePrefix = "pyyol wallet verification: "
+// challengeHeader is the fixed, human-readable first line the wallet signs, so a
+// user can see what they're approving and it can't be confused with another app's
+// message.
+const challengeHeader = "pyyol wallet verification"
+
+// challengeMessage builds the EXACT message the wallet signs. It binds the acting
+// user and an explicit expiry into the signature (not just the nonce), so a signed
+// challenge can't be replayed for a different user and is self-describing about when
+// it lapses (defense in depth / phishing resistance). Both StartChallenge and Verify
+// derive the message through this one function so the strings can never drift. (L7)
+func challengeMessage(userPublicID, nonce string, expiresAt time.Time) string {
+	return challengeHeader + "\n" +
+		"user: " + userPublicID + "\n" +
+		"nonce: " + nonce + "\n" +
+		"expires: " + expiresAt.UTC().Format(time.RFC3339)
+}
 
 var (
 	ErrNoChallenge        = httpx.NewError(http.StatusBadRequest, "no_challenge", "Request a verification challenge first.")
@@ -71,10 +84,13 @@ func (s *Service) StartChallenge(ctx context.Context, userPublicID, walletAddres
 		return "", "", e
 	}
 	nonce = hex.EncodeToString(raw)
-	if err := s.repo.SaveChallenge(ctx, userPublicID, walletAddress, nonce, s.clock.Now().Add(s.ttl)); err != nil {
+	// Truncate to whole seconds so the stored expiry round-trips through the DB to the
+	// exact same RFC3339 string Verify reconstructs (sub-second precision would drift).
+	expiresAt := s.clock.Now().Add(s.ttl).Truncate(time.Second)
+	if err := s.repo.SaveChallenge(ctx, userPublicID, walletAddress, nonce, expiresAt); err != nil {
 		return "", "", err
 	}
-	return challengePrefix + nonce, nonce, nil
+	return challengeMessage(userPublicID, nonce, expiresAt), nonce, nil
 }
 
 // Verify checks a base58 Ed25519 signature over the pending challenge message for
@@ -102,7 +118,7 @@ func (s *Service) Verify(ctx context.Context, userPublicID, walletAddress, signa
 	if err != nil {
 		return errInvalid("invalid signature encoding (expected base58)")
 	}
-	if !ed25519.Verify(ed25519.PublicKey(pub[:]), []byte(challengePrefix+ch.Nonce), sig[:]) {
+	if !ed25519.Verify(ed25519.PublicKey(pub[:]), []byte(challengeMessage(userPublicID, ch.Nonce, ch.ExpiresAt)), sig[:]) {
 		return ErrBadWalletSignature
 	}
 	if err := s.repo.MarkVerified(ctx, userPublicID, walletAddress, s.clock.Now()); err != nil {

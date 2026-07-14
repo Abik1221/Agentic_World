@@ -130,13 +130,27 @@ type TokenCredit struct {
 	Delta   int64 // base units credited (post − pre)
 }
 
-// Transaction is the reduced view the listener needs: whether it failed, and the
-// per-token-account credits it produced.
+// Transaction is the reduced view the listener needs: whether it failed, the
+// per-token-account credits it produced, and the full set of account keys in the
+// message. AccountKeys lets the caller independently re-verify that a deposit
+// session's Solana Pay reference actually appears in THIS transaction (the RPC's
+// getSignaturesForAddress(reference) binding is otherwise taken on trust). (H3)
 type Transaction struct {
-	Signature string
-	Slot      uint64
-	Failed    bool
-	Credits   []TokenCredit
+	Signature   string
+	Slot        uint64
+	Failed      bool
+	Credits     []TokenCredit
+	AccountKeys []string
+}
+
+// HasAccount reports whether pubkey is one of the transaction's account keys.
+func (t *Transaction) HasAccount(pubkey string) bool {
+	for _, k := range t.AccountKeys {
+		if k == pubkey {
+			return true
+		}
+	}
+	return false
 }
 
 type tokenBalance struct {
@@ -148,9 +162,18 @@ type tokenBalance struct {
 	} `json:"uiTokenAmount"`
 }
 
-func (b tokenBalance) base() int64 {
-	n, _ := strconv.ParseInt(b.UITokenAmount.Amount, 10, 64)
-	return n
+// base parses the token amount (base units) and PROPAGATES the parse error rather
+// than silently yielding MaxInt64 on overflow/garbage — a malformed or malicious
+// RPC amount must never be treated as a real (huge) credit. (M7)
+func (b tokenBalance) base() (int64, error) {
+	n, err := strconv.ParseInt(b.UITokenAmount.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid token amount %q: %w", b.UITokenAmount.Amount, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("negative token amount %q", b.UITokenAmount.Amount)
+	}
+	return n, nil
 }
 
 // GetTransaction fetches a transaction at the configured commitment and reduces
@@ -189,18 +212,30 @@ func (c *Client) GetTransaction(ctx context.Context, signature string) (*Transac
 		return nil, fmt.Errorf("solana rpc getTransaction: decode tx: %w", err)
 	}
 	out := &Transaction{Signature: signature, Slot: tx.Slot}
+	keys := tx.Transaction.Message.AccountKeys
+	out.AccountKeys = make([]string, len(keys))
+	for i, k := range keys {
+		out.AccountKeys[i] = k.Pubkey
+	}
 	if tx.Meta == nil {
 		return out, nil
 	}
 	out.Failed = tx.Meta.Err != nil
 
-	keys := tx.Transaction.Message.AccountKeys
 	pre := make(map[uint32]int64, len(tx.Meta.PreTokenBalances))
 	for _, b := range tx.Meta.PreTokenBalances {
-		pre[b.AccountIndex] = b.base()
+		amt, err := b.base()
+		if err != nil {
+			return nil, fmt.Errorf("solana rpc getTransaction: preTokenBalance: %w", err)
+		}
+		pre[b.AccountIndex] = amt
 	}
 	for _, b := range tx.Meta.PostTokenBalances {
-		delta := b.base() - pre[b.AccountIndex]
+		post, err := b.base()
+		if err != nil {
+			return nil, fmt.Errorf("solana rpc getTransaction: postTokenBalance: %w", err)
+		}
+		delta := post - pre[b.AccountIndex]
 		if delta <= 0 {
 			continue
 		}

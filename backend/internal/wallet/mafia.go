@@ -81,7 +81,7 @@ func (s *Service) settleMafia(ctx context.Context, matchPublicID string, platfor
 
 	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindSettle,
-		Key:      "settle:" + matchPublicID,
+		Key:      disburseKey(matchPublicID),
 		Metadata: map[string]any{"match": matchPublicID, "game": "mafia", "platform_fee": platformFee, "gross": gross},
 		Postings: postings,
 	})
