@@ -70,6 +70,10 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 
 func lockKey(id string) string { return "mafia:lock:" + id }
 
+// agentJoinLockKey shares the "agent:join:lock:" namespace with Goofspiel so a single
+// agent's concurrent joins serialize across both games. (M6)
+func agentJoinLockKey(agentPublicID string) string { return "agent:join:lock:" + agentPublicID }
+
 func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID string) ([]LobbyItem, error) {
 	if entryFee <= 0 {
 		entryFee = s.cfg.EntryFee
@@ -113,6 +117,18 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 }
 
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	// Serialize this agent's concurrent joins (agent lock FIRST, then table lock) so
+	// it can't race joins into different tables/games and bypass the per-agent limits
+	// via TOCTOU. Shared "agent:join:lock:" namespace with Goofspiel. (M6)
+	relAgent, okA, err := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL)
+	if err != nil {
+		return AgentView{}, err
+	}
+	if !okA {
+		return AgentView{}, ErrBusy
+	}
+	defer relAgent()
+
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err
@@ -135,8 +151,14 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) >= s.cfg.RosterSize {
 		return AgentView{}, ErrTableFull
 	}
-	if len(m.Players) > 0 && m.Players[0].OwnerPublicID == ownerPublicID {
-		return AgentView{}, ErrSameOwner
+	// Reject if this owner already holds ANY seat, not just the creator's seat (m.Players[0]).
+	// A 12-seat Mafia table lets one owner who controls a coordinated majority force
+	// their team to win and funnel honest players' entry fees to their own agents;
+	// checking only the creator let one owner take the other 11 chairs. (M5)
+	for i := range m.Players {
+		if m.Players[i].OwnerPublicID == ownerPublicID {
+			return AgentView{}, ErrSameOwner
+		}
 	}
 	// No-stakes practice table (see CreateTable): skip the spending-limit and
 	// certification gates when nothing is staked.
@@ -191,13 +213,28 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 
 	deadline := s.clock.Now().Add(s.cfg.PhaseWindow)
 	if err := s.repo.Start(ctx, m.PublicID, roles, state, deadline, events); err != nil {
+		// Compensate the stake-then-start dual-write: the stake committed (ledger tx)
+		// but flipping the match to active failed, so the coins would be stranded in a
+		// full 'waiting' table with no retry. Refund immediately (idempotent disburse
+		// key) so escrow is never orphaned. If the refund ALSO fails (rare double
+		// fault), surface a combined error so it's visible in the request log. (G3)
+		if m.EntryFee > 0 {
+			if refErr := s.wallet.RefundTable(ctx, m.PublicID); refErr != nil {
+				return fmt.Errorf("mafia start failed (%w) and stake refund failed (%v) — escrow stranded", err, refErr)
+			}
+		}
 		return err
 	}
 	s.publish(m.PublicID, events)
 	return nil
 }
 
-func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action) (AgentView, error) {
+// Act applies a seat's action. expectedDay/expectedPhase are the (day, phase) the
+// CLIENT computed the action for (from the state it read); when provided (day != 0)
+// they are rejected if the game has since advanced — so a late action for an
+// already-resolved phase is refused rather than absorbed into the current same-kind
+// phase. Pass 0/"" to skip the check (internal/bot callers). (G1)
+func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action, expectedDay int, expectedPhase string) (AgentView, error) {
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err
@@ -213,6 +250,12 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 	}
 	if m.Status != StatusActive {
 		return AgentView{}, ErrNotActive
+	}
+	// Read the state under the lock, THEN reject a stale phase: if the client told us
+	// which (day, phase) it acted on and the match has moved past it, that phase is
+	// done — refuse the late action. (G1)
+	if expectedDay != 0 && (expectedDay != m.State.Day || expectedPhase != m.State.Phase) {
+		return AgentView{}, ErrStalePhase
 	}
 	p := m.playerByAgent(agentPublicID)
 	if p == nil {

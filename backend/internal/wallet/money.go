@@ -6,6 +6,17 @@ import (
 	"github.com/agent-arena/arena/internal/ledger"
 )
 
+// disburseKey is the SHARED idempotency key for EVERY escrow-OUT of a match —
+// settle, tie-refund, abort refund, activation-failed refund, and held release/
+// refund. A match's escrow must be paid out EXACTLY ONCE. Because the ledger
+// enforces UNIQUE(idempotency_key), routing all disbursements through this single
+// key makes any second attempt a safe no-op (ApplyResult.Applied=false), which
+// closes the settle-then-dispute-refund (and release+refund) escrow double-spend:
+// the shared escrow wallet can never be debited twice for the same match. Settle vs
+// refund carry different ledger Kinds, but idempotency is keyed on the key alone, so
+// whichever disbursement runs first wins and the rest no-op. (H2)
+func disburseKey(matchPublicID string) string { return "disburse:" + matchPublicID }
+
 // StakeMatch escrows BOTH seats' bids in ONE balanced, atomic transaction:
 // agentA −bid, agentB −bid, escrow +2·bid. Either both stake or neither — a seat's
 // coins can never be orphaned in escrow by a partial failure. Idempotency key
@@ -35,7 +46,7 @@ func (s *Service) StakeMatch(ctx context.Context, matchPublicID, agentA, agentB 
 func (s *Service) RefundStakes(ctx context.Context, matchPublicID, agentA, agentB string, bid int64) error {
 	_, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindRefund,
-		Key:      "refund:" + matchPublicID,
+		Key:      disburseKey(matchPublicID),
 		Metadata: map[string]any{"match": matchPublicID, "reason": "activation_failed"},
 		Postings: []ledger.Posting{
 			{Wallet: ledger.SystemWallet(ledger.SysEscrow), Amount: -2 * bid},
@@ -107,7 +118,7 @@ func (s *Service) settle(ctx context.Context, matchPublicID, winnerAgentPublicID
 
 	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindSettle,
-		Key:      "settle:" + matchPublicID,
+		Key:      disburseKey(matchPublicID),
 		Metadata: map[string]any{"match": matchPublicID, "winner": winnerAgentPublicID, "pool": pool, "rake": rake},
 		Postings: postings,
 	})
@@ -120,13 +131,13 @@ func (s *Service) settle(ctx context.Context, matchPublicID, winnerAgentPublicID
 	return nil
 }
 
-// Refund returns every stake of a match to its player (used for aborts). The
-// pool is reconstructed from the match's stakeholders. Idempotency key
-// refund:{match}. Implements match.Wallet.
+// Refund returns every stake of a match to its player (used for aborts and
+// dispute-refunds). The pool is reconstructed from the match's stakeholders.
 //
-// Refund and Settle are mutually exclusive for a given match (a finished match
-// settles; only a never-finished match aborts), so their distinct keys never
-// double-pay.
+// Refund and Settle share ONE per-match disbursement key (disburseKey), so they
+// are mutually exclusive by construction: whichever disburses the match's escrow
+// first wins and the other is a ledger no-op. This is what prevents a dispute-
+// refund of an already-settled match from debiting the shared escrow twice. (H2)
 func (s *Service) Refund(ctx context.Context, matchPublicID string) error {
 	set, err := s.repo.Settlement(ctx, matchPublicID)
 	if err != nil {
@@ -142,7 +153,7 @@ func (s *Service) Refund(ctx context.Context, matchPublicID string) error {
 	}
 	_, err = s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindRefund,
-		Key:      "refund:" + matchPublicID,
+		Key:      disburseKey(matchPublicID),
 		Metadata: map[string]any{"match": matchPublicID, "pool": pool},
 		Postings: postings,
 	})
@@ -243,6 +254,18 @@ func (s *Service) credit(ctx context.Context, agentPublicID string, coins int64,
 		bestEffortDebt(func() error { return s.repo.RepayDebt(ctx, agentPublicID, repay) })
 	}
 	return nil
+}
+
+// RecordFraudDebt records fraudulently-obtained winnings (e.g. a collusion clawback)
+// as debt against an agent: it gates the agent's next cash-out (payout debt-gate)
+// and is repaid FIRST out of any future credit (see credit). It is a proportionate,
+// soft recovery — it does not seize the agent's current balance. The caller ensures
+// it runs at-most-once per flag (antifraud records it only on a newly-created flag).
+func (s *Service) RecordFraudDebt(ctx context.Context, agentPublicID string, coins int64, reason string) error {
+	if coins <= 0 || agentPublicID == "" {
+		return nil
+	}
+	return s.repo.RecordDebt(ctx, agentPublicID, coins)
 }
 
 // bestEffortDebt runs a per-agent debts-table adjustment with a bounded retry. The

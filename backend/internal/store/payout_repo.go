@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -76,6 +77,51 @@ func (r *PayoutRepo) VerifiedWallet(ctx context.Context, ownerUserPublicID strin
 		return "", httpx.ErrNotFound
 	}
 	return wallet, err
+}
+
+func (r *PayoutRepo) VerifiedWalletAt(ctx context.Context, ownerUserPublicID string) (string, time.Time, error) {
+	var wallet string
+	var at *time.Time
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(verified_wallet_address, ''), wallet_verified_at
+		 FROM users WHERE public_id = $1`, ownerUserPublicID).Scan(&wallet, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Time{}, httpx.ErrNotFound
+	}
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if at == nil {
+		return wallet, time.Time{}, nil
+	}
+	return wallet, *at, nil
+}
+
+// OutstandingLiabilityCents sums the net cents of withdrawals the platform is on
+// the hook to pay but hasn't yet settled (requested/processing/broadcasted). The
+// solvency monitor compares this to the hot wallet's on-chain USDC balance.
+func (r *PayoutRepo) OutstandingLiabilityCents(ctx context.Context) (int64, error) {
+	var cents int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(net_cents), 0) FROM withdrawals
+		 WHERE status IN ('requested','processing','broadcasted')`).Scan(&cents)
+	return cents, err
+}
+
+// WithdrawnSince sums an owner's non-failed withdrawals filed since `since`.
+func (r *PayoutRepo) WithdrawnSince(ctx context.Context, ownerUserPublicID string, since time.Time) (int, int64, error) {
+	var count int
+	var cents int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(w.net_cents), 0)
+		 FROM withdrawals w JOIN users u ON u.id = w.user_id
+		 WHERE u.public_id = $1 AND w.requested_at >= $2
+		   AND w.status IN ('requested','processing','broadcasted','paid')`,
+		ownerUserPublicID, since).Scan(&count, &cents)
+	if err != nil {
+		return 0, 0, err
+	}
+	return count, cents, nil
 }
 
 func (r *PayoutRepo) AgentFlagged(ctx context.Context, agentPublicID string) (bool, error) {
@@ -256,7 +302,7 @@ func (r *PayoutRepo) ListByStatus(ctx context.Context, status string, limit int)
 		`SELECT w.public_id, ag.public_id, u.public_id, w.coins, w.fee_coins, w.gross_cents,
 		        w.stripe_fee_cents, w.net_cents, COALESCE(w.connect_account_id, ''),
 		        COALESCE(w.chain, 'stripe'), COALESCE(w.dest_wallet_address, ''), w.status,
-		        COALESCE(w.transfer_id, ''), w.requested_at
+		        COALESCE(w.transfer_id, ''), w.requested_at, COALESCE(w.resolved_at, w.requested_at)
 		 FROM withdrawals w
 		 JOIN agents ag ON ag.id = w.agent_id
 		 JOIN users  u  ON u.id  = w.user_id
@@ -270,7 +316,7 @@ func (r *PayoutRepo) ListByStatus(ctx context.Context, status string, limit int)
 	for rows.Next() {
 		var w payout.Withdrawal
 		if err := rows.Scan(&w.PublicID, &w.Agent, &w.Owner, &w.Coins, &w.FeeCoins, &w.GrossCents,
-			&w.StripeFeeCents, &w.NetCents, &w.ConnectAccount, &w.Chain, &w.DestWallet, &w.Status, &w.TransferID, &w.RequestedAt); err != nil {
+			&w.StripeFeeCents, &w.NetCents, &w.ConnectAccount, &w.Chain, &w.DestWallet, &w.Status, &w.TransferID, &w.RequestedAt, &w.StatusChangedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, w)

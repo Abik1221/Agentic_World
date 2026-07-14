@@ -133,6 +133,10 @@ type Locker interface {
 type Wallet interface {
 	StakeTable(ctx context.Context, matchPublicID string, agents []string, entryFee int64) error
 	SettleTable(ctx context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error
+	// RefundTable unwinds a taken stake (each seat's entry fee returned from escrow),
+	// used to compensate a stake-then-start dual-write failure. Idempotent via the
+	// per-match disburse key.
+	RefundTable(ctx context.Context, matchPublicID string) error
 }
 
 // Broadcaster fans events to SSE watchers.

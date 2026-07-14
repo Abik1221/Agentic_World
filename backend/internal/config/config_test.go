@@ -92,6 +92,36 @@ func TestValidate(t *testing.T) {
 			c.PlatformEnginePrivateKey = "engine-key"
 			// HCaptchaSecret left empty -> must be rejected (fail closed).
 		}, "HCAPTCHA_SECRET"},
+		{"prod rejects plaintext hot-wallet key (H1)", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.HCaptchaSecret = "hc-secret"
+			c.PlatformAdminPublicKey = "some-key"
+			c.PlatformEnginePrivateKey = "engine-key"
+			// A plaintext hot-wallet signing key must never be allowed in prod — it
+			// must be encrypted at rest (SOLANA_HOT_WALLET_SECRET_ENC).
+			c.SolanaHotWalletSecret = "some-base58-plaintext-key"
+		}, "SOLANA_HOT_WALLET_SECRET"},
+		{"prod rejects short hot-wallet master key (L1)", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.HCaptchaSecret = "hc-secret"
+			c.PlatformAdminPublicKey = "some-key"
+			c.PlatformEnginePrivateKey = "engine-key"
+			c.SolanaHotWalletSecretEnc = "ciphertext"
+			c.SolanaHotWalletEncKey = "short" // < 32 bytes → brute-forceable
+		}, "SOLANA_HOT_WALLET_ENC_KEY"},
+		{"prod rejects confirmed commitment (L3)", func(c *Config) {
+			c.Env = "prod"
+			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
+			c.APIKeyPepper = "real-pepper"
+			c.HCaptchaSecret = "hc-secret"
+			c.PlatformAdminPublicKey = "some-key"
+			c.PlatformEnginePrivateKey = "engine-key"
+			c.SolanaCommitment = "confirmed" // reorg-unsafe for irreversible credits
+		}, "SOLANA_COMMITMENT"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

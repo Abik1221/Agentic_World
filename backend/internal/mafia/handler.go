@@ -266,13 +266,17 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 		Target int    `json:"target"`
 		Tone   string `json:"tone"`
 		Text   string `json:"text"`
+		// Optional stale-phase guard: the (day, phase) the client saw when it chose
+		// this action. If the match has since advanced, the action is rejected. (G1)
+		ExpectedDay   int    `json:"expected_day"`
+		ExpectedPhase string `json:"expected_phase"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	act := mf.Action{Kind: in.Action, Target: in.Target, Tone: in.Tone, Text: in.Text}
-	view, err := h.svc.Act(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), act)
+	view, err := h.svc.Act(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), act, in.ExpectedDay, in.ExpectedPhase)
 	if err != nil {
 		httpx.Error(w, err)
 		return

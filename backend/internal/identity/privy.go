@@ -36,12 +36,17 @@ type PrivyLoginResult struct {
 }
 
 // UpsertFromPrivy exchanges a verified Privy identity for a dashboard session: it
-// find-or-creates the owner (keyed on the Privy user id, linking an existing
-// same-email account that has no Privy id yet), opens their treasury wallet,
-// stores the login profile hints, and mints the existing user-scope JWT. No agent
-// is created — a Privy user is a first-class owner who becomes a developer later,
-// on demand. The privyUserID must already be cryptographically verified by the
-// caller (auth.PrivyVerifier); this method trusts it.
+// find-or-creates the owner keyed STRICTLY on the cryptographically-proven Privy
+// user id, opens their treasury wallet, stores the login profile hints, and mints
+// the existing user-scope JWT. No agent is created — a Privy user is a first-class
+// owner who becomes a developer later, on demand.
+//
+// SECURITY: linking is by privy_user_id ONLY. A new Privy user is inserted with a
+// NULL email and privy_user_id as the sole unique key; the client-supplied email
+// is a non-authoritative display hint and is NEVER used to attach the token to a
+// pre-existing account. Do NOT reintroduce "link an existing same-email account" —
+// that would let anyone with a Privy token for any email take over the matching
+// account. The privyUserID must already be verified by auth.PrivyVerifier.
 func (s *Service) UpsertFromPrivy(ctx context.Context, privyUserID string, p PrivyProfile) (PrivyLoginResult, error) {
 	privyUserID = strings.TrimSpace(privyUserID)
 	if privyUserID == "" {

@@ -18,4 +18,7 @@ var (
 	ErrClearing          = httpx.NewError(http.StatusConflict, "clearing_period", "The withdrawal is still in its clearing window; try again later.")
 	ErrBadState          = httpx.NewError(http.StatusConflict, "bad_state", "This withdrawal is not in a state that allows that action.")
 	ErrForbiddenSelf     = httpx.NewError(http.StatusForbidden, "forbidden", "You do not own this agent.")
+	ErrSelfApproval      = httpx.NewError(http.StatusForbidden, "self_approval_forbidden", "You cannot approve your own withdrawal; a different admin must review it.")
+	ErrVelocity          = httpx.NewError(http.StatusTooManyRequests, "withdrawal_velocity", "You've reached the withdrawal limit for now; try again later.")
+	ErrAddressCooldown   = httpx.NewError(http.StatusConflict, "wallet_cooldown", "Your withdrawal wallet was changed recently; withdrawals to it are on a short security hold.")
 )

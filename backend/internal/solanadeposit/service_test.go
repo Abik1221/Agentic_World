@@ -134,10 +134,14 @@ func newSvc(repo Repo, chain Chain, cred Crediter, now time.Time) *Service {
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-func creditTx(sig string, delta int64) *blockchain.Transaction {
+// creditTx builds a finalized tx crediting the platform ATA and — crucially —
+// includes the session reference in AccountKeys, which the service now re-verifies
+// (H3). Pass a mismatching ref to simulate a lying RPC.
+func creditTx(sig, ref string, delta int64) *blockchain.Transaction {
 	return &blockchain.Transaction{
 		Signature: sig, Slot: 100,
-		Credits: []blockchain.TokenCredit{{Account: platATA, Owner: platOwn, Mint: usdcMint, Delta: delta}},
+		AccountKeys: []string{ref, platATA, platOwn},
+		Credits:     []blockchain.TokenCredit{{Account: platATA, Owner: platOwn, Mint: usdcMint, Delta: delta}},
 	}
 }
 
@@ -168,8 +172,8 @@ func TestPollCreditsFinalizedDeposit(t *testing.T) {
 	s, _ := svc.Create(context.Background(), "usr_a", 5_000_000)
 
 	sig := "SoLsIgNaTuRe111"
-	chain.sigs[s.Reference] = []blockchain.SignatureInfo{{Signature: sig}}
-	chain.txs[sig] = creditTx(sig, 5_000_000)
+	chain.sigs[s.Reference] = []blockchain.SignatureInfo{{Signature: sig, ConfirmationStatus: "finalized"}}
+	chain.txs[sig] = creditTx(sig, s.Reference, 5_000_000)
 
 	n, err := svc.Poll(context.Background())
 	if err != nil || n != 1 {
@@ -201,8 +205,8 @@ func TestPollIgnoresUnderpayment(t *testing.T) {
 	s, _ := svc.Create(context.Background(), "usr_a", 5_000_000)
 
 	sig := "underpay1"
-	chain.sigs[s.Reference] = []blockchain.SignatureInfo{{Signature: sig}}
-	chain.txs[sig] = creditTx(sig, 4_000_000) // only 4 USDC of the 5 expected
+	chain.sigs[s.Reference] = []blockchain.SignatureInfo{{Signature: sig, ConfirmationStatus: "finalized"}}
+	chain.txs[sig] = creditTx(sig, s.Reference, 4_000_000) // only 4 USDC of the 5 expected
 
 	n, _ := svc.Poll(context.Background())
 	if n != 0 || cred.total["usr_a"] != 0 {
@@ -236,11 +240,55 @@ func TestPollExpiresElapsedSession(t *testing.T) {
 	svc := newSvc(repo, &fakeChain{}, newFakeCrediter(), now)
 	s, _ := svc.Create(context.Background(), "usr_a", 5_000_000)
 
-	// Advance the clock past the TTL.
+	// A pending session is expired only past the TTL PLUS the grace window (M9), so
+	// a late-arriving payment isn't dropped. Just past the TTL it must NOT expire.
 	svc.clock = platform.FixedClock{T: now.Add(31 * time.Minute)}
 	svc.Poll(context.Background())
-	got, _ := repo.GetSession(context.Background(), s.PublicID)
-	if got.Status != StatusExpired {
+	if got, _ := repo.GetSession(context.Background(), s.PublicID); got.Status != StatusPending {
+		t.Fatalf("expired within the grace window: status = %q, want pending", got.Status)
+	}
+	// Past TTL + grace it expires.
+	svc.clock = platform.FixedClock{T: now.Add(30*time.Minute + pendingExpiryGrace + time.Minute)}
+	svc.Poll(context.Background())
+	if got, _ := repo.GetSession(context.Background(), s.PublicID); got.Status != StatusExpired {
 		t.Fatalf("status = %q, want expired", got.Status)
+	}
+}
+
+// TestPollRejectsTxWithoutReference is the H3 regression: a finalized tx that
+// credits the platform ATA but whose account list does NOT contain the session
+// reference (a lying/MITM RPC returning an unrelated real deposit) must never
+// credit coins.
+func TestPollRejectsTxWithoutReference(t *testing.T) {
+	repo, chain, cred := newFakeRepo(), &fakeChain{sigs: map[string][]blockchain.SignatureInfo{}, txs: map[string]*blockchain.Transaction{}}, newFakeCrediter()
+	svc := newSvc(repo, chain, cred, time.Unix(1_700_000_000, 0))
+	s, _ := svc.Create(context.Background(), "usr_a", 5_000_000)
+
+	sig := "forged1"
+	chain.sigs[s.Reference] = []blockchain.SignatureInfo{{Signature: sig, ConfirmationStatus: "finalized"}}
+	// tx credits the platform ATA for the full amount but references a DIFFERENT key.
+	chain.txs[sig] = creditTx(sig, "SomeOtherReferenceKeyNotOurs", 5_000_000)
+
+	n, _ := svc.Poll(context.Background())
+	if n != 0 || cred.total["usr_a"] != 0 {
+		t.Fatalf("credited a tx that did not contain the session reference: n=%d total=%d", n, cred.total["usr_a"])
+	}
+}
+
+// TestDetectedSessionSurvivesLongGrace is the M9 regression: a session that has
+// SEEN an in-flight payment (detected) must not be expired at the pending grace —
+// it's protected far longer so the deposit can finalize and credit.
+func TestDetectedSessionSurvivesLongGrace(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	repo := newFakeRepo()
+	svc := newSvc(repo, &fakeChain{}, newFakeCrediter(), now)
+	s, _ := svc.Create(context.Background(), "usr_a", 5_000_000)
+	repo.sessions[s.PublicID].Status = StatusDetected // a referencing payment was seen
+
+	// Well past TTL + pending grace, a detected session is still protected.
+	svc.clock = platform.FixedClock{T: now.Add(30*time.Minute + pendingExpiryGrace + time.Hour)}
+	svc.Poll(context.Background())
+	if got, _ := repo.GetSession(context.Background(), s.PublicID); got.Status != StatusDetected {
+		t.Fatalf("detected session expired too early: status = %q, want detected", got.Status)
 	}
 }

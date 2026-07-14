@@ -21,13 +21,23 @@ type Config struct {
 // periodic detection job. It records holds/flags and resolves them via the Settler
 // (wallet), auditing every action.
 type Service struct {
-	repo    Repo
-	settler Settler
-	clock   platform.Clock
-	cfg     Config
-	log     *slog.Logger
-	m       *metrics
+	repo     Repo
+	settler  Settler
+	clawback Clawback // optional: records fraud clawback debt on a new collusion flag
+	clock    platform.Clock
+	cfg      Config
+	log      *slog.Logger
+	m        *metrics
 }
+
+// Clawback records fraudulently-obtained winnings as debt against an agent (blocks
+// its next cash-out; repaid from future credits). Implemented by wallet.
+type Clawback interface {
+	RecordFraudDebt(ctx context.Context, agentPublicID string, coins int64, reason string) error
+}
+
+// SetClawback wires the fraud-clawback recorder (optional; nil ⇒ flags don't claw back).
+func (s *Service) SetClawback(c Clawback) { s.clawback = c }
 
 func New(repo Repo, settler Settler, clock platform.Clock, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
 	if cfg.CollusionMinGames <= 0 {
@@ -69,7 +79,7 @@ func (s *Service) Allow(ctx context.Context, matchPublicID string) (bool, error)
 
 	if sameOwner {
 		for _, a := range agents {
-			_ = s.repo.RecordFlag(ctx, a.AgentPublicID, matchPublicID, "same_owner", "both seats share an owner")
+			_, _ = s.repo.RecordFlag(ctx, a.AgentPublicID, matchPublicID, "same_owner", "both seats share an owner")
 		}
 		return s.hold(ctx, matchPublicID, "same_owner"), nil
 	}
@@ -131,20 +141,36 @@ func (s *Service) ResolveDispute(ctx context.Context, adminUserID, disputePublic
 		return nil // already terminal — idempotent no-op
 	}
 
+	// Disburse ONLY after atomically claiming the match's open hold. A cleanly-settled
+	// match has no hold, so its escrow was already paid out and a dispute-refund must
+	// NOT run (that debited the shared escrow a second time — the H2 double-spend);
+	// and two disputes on one held match can't both disburse because only the first
+	// claim wins. Claim-first is also correct for release+refund races. This guards
+	// pre-existing (pre-fix) settlements too, independent of the ledger key scheme.
 	switch action {
 	case "refund":
 		if matchPublicID != "" {
-			if err := s.settler.Refund(ctx, matchPublicID); err != nil {
+			claimed, err := s.repo.ResolveHold(ctx, matchPublicID, "refunded")
+			if err != nil {
 				return err
 			}
-			_ = s.repo.ResolveHold(ctx, matchPublicID, "refunded")
+			if claimed {
+				if err := s.settler.Refund(ctx, matchPublicID); err != nil {
+					return err
+				}
+			}
 		}
 	case "release":
 		if matchPublicID != "" {
-			if err := s.settler.SettleHeld(ctx, matchPublicID); err != nil {
+			claimed, err := s.repo.ResolveHold(ctx, matchPublicID, "released")
+			if err != nil {
 				return err
 			}
-			_ = s.repo.ResolveHold(ctx, matchPublicID, "released")
+			if claimed {
+				if err := s.settler.SettleHeld(ctx, matchPublicID); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	s.audit(ctx, adminUserID, "dispute_resolve:"+action, disputePublicID, map[string]any{"match": matchPublicID})
@@ -169,10 +195,27 @@ func (s *Service) RunDetection(ctx context.Context) error {
 	}
 	for _, p := range pairs {
 		if IsColluding(p) {
-			_ = s.repo.RecordFlag(ctx, p.A, "", "collusion", "lopsided series + coin concentration")
-			_ = s.repo.RecordFlag(ctx, p.B, "", "collusion", "lopsided series + coin concentration")
+			createdA, _ := s.repo.RecordFlag(ctx, p.A, "", "collusion", "lopsided series + coin concentration")
+			createdB, _ := s.repo.RecordFlag(ctx, p.B, "", "collusion", "lopsided series + coin concentration")
 			s.m.flags.WithLabelValues("collusion").Inc()
 			s.audit(ctx, "system", "flag_collusion", p.A+"|"+p.B, map[string]any{"games": p.Games, "score": CollusionScore(p)})
+			// Clawback (flagged-match winnings only): the recipient of the net coin flow
+			// profited from the dump; record that net amount as debt so it can't cash out
+			// (and future credits repay it). Once per flag — only on the first creation,
+			// so repeated detection sweeps don't stack the debt. (M4)
+			if s.clawback != nil {
+				recipient, amount, created := p.B, p.NetFlowAToB, createdB
+				if amount < 0 { // net flow B→A: A is the recipient
+					recipient, amount, created = p.A, -amount, createdA
+				}
+				if created && amount > 0 {
+					if err := s.clawback.RecordFraudDebt(ctx, recipient, amount, "collusion clawback"); err != nil {
+						s.log.Error("antifraud: collusion clawback failed", "agent", recipient, "coins", amount, "error", err)
+					} else {
+						s.audit(ctx, "system", "clawback_collusion", recipient, map[string]any{"coins": amount})
+					}
+				}
+			}
 		}
 	}
 
@@ -181,7 +224,7 @@ func (s *Service) RunDetection(ctx context.Context) error {
 	// like every flag here it drives a payout hold + human review, not an auto-ban.
 	for _, ring := range DetectRings(pairs) {
 		for _, ag := range ring.Agents {
-			_ = s.repo.RecordFlag(ctx, ag, "", "collusion_ring", "coin-funnel ring detected")
+			_, _ = s.repo.RecordFlag(ctx, ag, "", "collusion_ring", "coin-funnel ring detected")
 		}
 		s.m.flags.WithLabelValues("collusion_ring").Inc()
 		s.audit(ctx, "system", "flag_collusion_ring", strings.Join(ring.Agents, "|"),
@@ -210,8 +253,8 @@ func (s *Service) RunDetection(ctx context.Context) error {
 		if mi < actionMIThreshold {
 			continue
 		}
-		_ = s.repo.RecordFlag(ctx, p.A, "", "collusion_action", "coordinated bidding (high move correlation)")
-		_ = s.repo.RecordFlag(ctx, p.B, "", "collusion_action", "coordinated bidding (high move correlation)")
+		_, _ = s.repo.RecordFlag(ctx, p.A, "", "collusion_action", "coordinated bidding (high move correlation)")
+		_, _ = s.repo.RecordFlag(ctx, p.B, "", "collusion_action", "coordinated bidding (high move correlation)")
 		s.m.flags.WithLabelValues("collusion_action").Inc()
 		s.audit(ctx, "system", "flag_collusion_action", p.A+"|"+p.B,
 			map[string]any{"mi": mi, "games": p.Games, "rounds": len(samples)})
@@ -227,7 +270,7 @@ func (s *Service) RunDetection(ctx context.Context) error {
 			continue
 		}
 		if LooksHuman(t) {
-			_ = s.repo.RecordFlag(ctx, ag, "", "human_timing", "timing distribution is human-like")
+			_, _ = s.repo.RecordFlag(ctx, ag, "", "human_timing", "timing distribution is human-like")
 			s.m.flags.WithLabelValues("human_timing").Inc()
 			s.audit(ctx, "system", "flag_human_timing", ag, map[string]any{"mean_ms": t.MeanMs, "std_ms": t.StdMs})
 		}

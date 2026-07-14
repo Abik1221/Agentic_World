@@ -81,7 +81,7 @@ func (s *Service) settleMafia(ctx context.Context, matchPublicID string, platfor
 
 	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindSettle,
-		Key:      "settle:" + matchPublicID,
+		Key:      disburseKey(matchPublicID),
 		Metadata: map[string]any{"match": matchPublicID, "game": "mafia", "platform_fee": platformFee, "gross": gross},
 		Postings: postings,
 	})
@@ -103,6 +103,10 @@ func (w MafiaWallet) StakeTable(ctx context.Context, matchPublicID string, agent
 
 func (w MafiaWallet) SettleTable(ctx context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error {
 	return w.s.SettleMafiaTable(ctx, matchPublicID, platformFee, payouts)
+}
+
+func (w MafiaWallet) RefundTable(ctx context.Context, matchPublicID string) error {
+	return w.s.Refund(ctx, matchPublicID)
 }
 
 func NewMafiaWallet(s *Service) MafiaWallet { return MafiaWallet{s: s} }

@@ -1,6 +1,7 @@
 package walletverify
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/auth"
@@ -8,17 +9,28 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// StepUp verifies a second factor (TOTP) for the acting user; a no-op when 2FA is
+// off. Wired from the twofa service via SetStepUp.
+type StepUp interface {
+	Require(ctx context.Context, userPublicID, code string) error
+}
+
 // Handler exposes the wallet-ownership verification surface (user scope): request
 // a challenge, then submit the wallet's signature. Identity is taken from the
 // token, never the body.
 type Handler struct {
-	svc   *Service
-	authn *auth.Authenticator
+	svc    *Service
+	authn  *auth.Authenticator
+	stepUp StepUp
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
 	return &Handler{svc: svc, authn: authn}
 }
+
+// SetStepUp wires the 2FA step-up applied when a wallet is verified/linked (a
+// sensitive change to the payout destination). Optional.
+func (h *Handler) SetStepUp(s StepUp) { h.stepUp = s }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
@@ -52,10 +64,19 @@ func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		WalletAddress string `json:"wallet_address"`
 		Signature     string `json:"signature"` // base58
+		TOTPCode      string `json:"totp_code"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	// Step-up: changing the payout destination is sensitive, so when the user has 2FA
+	// enabled, require a valid authenticator code in addition to the wallet signature.
+	if h.stepUp != nil {
+		if err := h.stepUp.Require(r.Context(), p.UserPublicID, in.TOTPCode); err != nil {
+			httpx.Error(w, err)
+			return
+		}
 	}
 	if err := h.svc.Verify(r.Context(), p.UserPublicID, in.WalletAddress, in.Signature); err != nil {
 		httpx.Error(w, err)

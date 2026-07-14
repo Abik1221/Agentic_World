@@ -29,6 +29,15 @@ type Repo interface {
 	// linked wallet's ownership was never verified via a signed challenge). Payouts
 	// require it to equal the linked destination so funds only go to a proven wallet.
 	VerifiedWallet(ctx context.Context, ownerUserPublicID string) (walletAddress string, err error)
+	// VerifiedWalletAt returns the proven wallet AND when it was verified (zero time
+	// if none). Drives the new-address cooldown: a freshly (re)verified wallet is
+	// frozen for a window so a taken-over account can't swap the payout wallet and
+	// immediately drain.
+	VerifiedWalletAt(ctx context.Context, ownerUserPublicID string) (walletAddress string, verifiedAt time.Time, err error)
+	// WithdrawnSince reports how many withdrawals an owner has filed since `since`
+	// and their total net cents, counting all non-terminal-failed states (requested/
+	// processing/broadcasted/paid) — the basis for the rolling velocity caps.
+	WithdrawnSince(ctx context.Context, ownerUserPublicID string, since time.Time) (count int, netCents int64, err error)
 	// AgentFlagged reports an active fraud flag (anti-fraud gate at request/approve).
 	AgentFlagged(ctx context.Context, agentPublicID string) (bool, error)
 	// OutstandingDebt is un-recovered chargeback debt; > 0 blocks withdrawals.
@@ -119,6 +128,10 @@ type Withdrawal struct {
 	Status         string    `json:"status"`
 	TransferID     string    `json:"transfer_id,omitempty"`
 	RequestedAt    time.Time `json:"requested_at"`
+	// StatusChangedAt is when the row last changed status (DB resolved_at, which
+	// SetStatus stamps on every transition). Populated by ListByStatus; drives the
+	// stuck-'processing' recovery sweep. Zero when not selected.
+	StatusChangedAt time.Time `json:"-"`
 }
 
 // AdminWithdrawal adds operator context for the approval queue.

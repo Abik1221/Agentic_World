@@ -95,6 +95,12 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	if entryFee < 0 {
 		entryFee = 0
 	}
+	// Refuse a staked table when no wallet is wired: otherwise the match would store
+	// an EntryFee and report a pool/rake/rewards/coins_delta while StakeTable and
+	// SettleTable no-op, advertising a stake and payouts that never move real coins. (G2)
+	if s.wallet == nil && entryFee > 0 {
+		return "", ErrStakesUnavailable
+	}
 
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {

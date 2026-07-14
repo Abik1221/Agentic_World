@@ -158,7 +158,7 @@ func (r *Runner) playMafia(ctx context.Context, a demo.Agent, matchID string) {
 		if !ok {
 			return
 		}
-		if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act); err != nil {
+		if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act, 0, ""); err != nil { // bot acts on fresh state; no stale-phase guard
 			return
 		}
 	}

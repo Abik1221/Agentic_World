@@ -20,6 +20,11 @@ type Config struct {
 	MinCoins           int64         // minimum withdrawal
 	Clearing           time.Duration // a request must age this long before approval
 	Chain              string        // payout rail: ChainStripe (default) | ChainSolana
+	// Anti-drain controls (0 ⇒ that limit is disabled).
+	VelocityWindow     time.Duration // rolling window for the two caps below
+	MaxPerWindow       int           // max withdrawals per owner per window
+	MaxCentsPerWindow  int64         // max net cents per owner per window
+	NewAddressCooldown time.Duration // freeze payouts until the verified wallet is this old
 }
 
 // Service runs the request → approve → pay cash-out workflow.
@@ -63,8 +68,19 @@ func New(repo Repo, bank Bank, xfer Transferrer, clock platform.Clock, cfg Confi
 	if cfg.Clearing <= 0 {
 		cfg.Clearing = 24 * time.Hour
 	}
+	if cfg.VelocityWindow <= 0 {
+		cfg.VelocityWindow = 24 * time.Hour
+	}
 	if cfg.Chain == "" {
 		cfg.Chain = ChainStripe
+	}
+	if cfg.Chain == ChainSolana {
+		// The Solana rail has no Stripe processing fee — the only network cost is the
+		// hot wallet's SOL tx fee, which the platform absorbs. Charging a Stripe fee on
+		// this rail shortchanges the user AND drifts the stripe_clearing ledger vs the
+		// actual on-chain USDC outflow (a reconciliation gap that grows per payout).
+		cfg.StripeFeePct = 0
+		cfg.StripeFeeFlatCents = 0
 	}
 	return &Service{repo: repo, bank: bank, xfer: xfer, clock: clock, cfg: cfg, log: log, m: newMetrics(reg)}
 }
@@ -169,8 +185,36 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 			return Withdrawal{}, ErrWalletNotVerified
 		}
 		destWallet = verified
+		// New-address cooldown: a freshly (re)verified wallet is frozen briefly so a
+		// taken-over account can't swap the payout wallet and immediately drain. CEX-
+		// standard control; the legitimate owner just waits out the short hold.
+		if s.cfg.NewAddressCooldown > 0 {
+			_, verifiedAt, err := s.repo.VerifiedWalletAt(ctx, owner)
+			if err != nil {
+				return Withdrawal{}, err
+			}
+			if !verifiedAt.IsZero() && s.clock.Now().Sub(verifiedAt) < s.cfg.NewAddressCooldown {
+				return Withdrawal{}, ErrAddressCooldown
+			}
+		}
 	} else if connect == "" {
 		return Withdrawal{}, ErrNoKYC
+	}
+	// Velocity caps: bound how fast a single owner can move money out, per rolling
+	// window — a scripted drain (e.g. after a session compromise) hits the wall
+	// instead of emptying the account. Checked against the net amount of THIS request.
+	if s.cfg.MaxPerWindow > 0 || s.cfg.MaxCentsPerWindow > 0 {
+		since := s.clock.Now().Add(-s.cfg.VelocityWindow)
+		count, cents, err := s.repo.WithdrawnSince(ctx, owner, since)
+		if err != nil {
+			return Withdrawal{}, err
+		}
+		if s.cfg.MaxPerWindow > 0 && count >= s.cfg.MaxPerWindow {
+			return Withdrawal{}, ErrVelocity
+		}
+		if s.cfg.MaxCentsPerWindow > 0 && cents+s.quote(coins).NetCents > s.cfg.MaxCentsPerWindow {
+			return Withdrawal{}, ErrVelocity
+		}
 	}
 	// Super Admin gate: maintenance / withdrawals-disabled / bounds / frozen wallet.
 	if s.gate != nil {
@@ -188,7 +232,12 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 	} else if debt > 0 {
 		return Withdrawal{}, ErrDebt
 	}
-	if coins < s.cfg.MinCoins {
+	// Minimum-withdrawal single source of truth: when the Super Admin gate is wired
+	// it owns the coin minimum/maximum (wallet_settings.min_withdraw_coins, enforced
+	// in CheckWithdraw above), so we do NOT also apply the static env floor — the two
+	// used to silently disagree (env WITHDRAW_MIN_COINS vs the DB gate), and the higher
+	// one won invisibly. The env floor remains only as a fallback when no gate exists.
+	if s.gate == nil && coins < s.cfg.MinCoins {
 		return Withdrawal{}, ErrTooSmall
 	}
 	avail, err := s.repo.Withdrawable(ctx, agentPublicID)
@@ -245,6 +294,13 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 		// ok
 	default:
 		return ErrBadState
+	}
+	// Separation of duties (maker-checker): the admin approving a withdrawal must not
+	// be its owner. A self-approval lets a compromised or insider admin cash out their
+	// own balance with no second reviewer. Platform-token admins carry no user id
+	// (adminUserID == ""), so they are always a distinct approver and are unaffected. (M2)
+	if adminUserID != "" && adminUserID == w.Owner {
+		return ErrSelfApproval
 	}
 	if s.clock.Now().Sub(w.RequestedAt) < s.cfg.Clearing {
 		return ErrClearing
@@ -311,43 +367,71 @@ func (s *Service) approveSolana(ctx context.Context, adminUserID string, w Withd
 	if !claimed {
 		return nil // another approver claimed it, or it advanced — idempotent
 	}
-	sig, err := s.xfer.Transfer(ctx, w.DestWallet, w.NetCents, "wd:"+w.PublicID)
-	if err != nil {
-		// A broadcast-ambiguous error means the send RPC failed but the signed tx MAY
-		// have landed on-chain. Releasing here would double-pay (USDC gone AND coins
-		// back). Record the signature, keep the coins HELD in 'broadcasted', and let
-		// ConfirmBroadcasted settle it from the chain. Only a definitive pre-broadcast
-		// failure (nothing was sent) releases the hold.
-		var amb *BroadcastAmbiguousError
-		if errors.As(err, &amb) && amb.Signature != "" {
-			if _, e := s.repo.SetStatus(ctx, w.PublicID, "processing", "broadcasted", amb.Signature, "broadcast ambiguous"); e != nil {
-				s.log.Error("payout: ambiguous solana broadcast; status write failed; needs reconciliation",
-					"id", w.PublicID, "sig", amb.Signature, "error", e)
-				return e
-			}
-			s.log.Warn("payout: ambiguous solana broadcast; holding for on-chain confirmation",
-				"id", w.PublicID, "sig", amb.Signature, "error", err)
-			s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID,
-				map[string]any{"signature": amb.Signature, "ambiguous": true})
-			return err
+	// Record the signature and move 'processing' → 'broadcasted' via a pre-broadcast
+	// hook, BEFORE the tx is actually sent (M10). This closes the crash window where a
+	// send happened but the signature wasn't recorded yet: after the hook runs, the
+	// row is 'broadcasted' with the signature, and the confirm watcher owns resolution
+	// from the chain. Because a send is only attempted AFTER this hook, a row still in
+	// 'processing' provably had NO broadcast — so it is safe to release on recovery.
+	recorded := false
+	onSigned := func(sig string) error {
+		ok, e := s.repo.SetStatus(ctx, w.PublicID, "processing", "broadcasted", sig, "")
+		if e != nil {
+			return e
 		}
-		// Definitive pre-broadcast failure: nothing was sent — safe to release.
+		if !ok {
+			return errors.New("payout: could not record broadcasted state")
+		}
+		recorded = true
+		return nil
+	}
+
+	var sendErr error
+	if pc, ok := s.xfer.(preCommitTransferrer); ok {
+		_, sendErr = pc.TransferPreCommit(ctx, w.DestWallet, w.NetCents, "wd:"+w.PublicID, onSigned)
+	} else {
+		// Fallback for a non-pre-commit transferrer: send then record (legacy order).
+		// Still ambiguous-safe: on a broadcast-ambiguous error the signed tx MAY have
+		// landed, so record 'broadcasted' from the surfaced signature (recorded=true)
+		// and never release below.
+		var sig string
+		sig, sendErr = s.xfer.Transfer(ctx, w.DestWallet, w.NetCents, "wd:"+w.PublicID)
+		if sendErr == nil {
+			sendErr = onSigned(sig)
+		} else if amb := (*BroadcastAmbiguousError)(nil); errors.As(sendErr, &amb) && amb.Signature != "" {
+			_ = onSigned(amb.Signature)
+		}
+	}
+
+	if sendErr != nil {
+		if recorded {
+			// The signature is persisted and the row is 'broadcasted': the tx MAY be in
+			// flight (send RPC error is ambiguous). NEVER release here — that would
+			// double-pay if it landed. The confirm watcher settles it from the chain.
+			s.log.Warn("payout: solana send errored after signature recorded; holding 'broadcasted' for on-chain confirmation",
+				"id", w.PublicID, "error", sendErr)
+			s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID, map[string]any{"ambiguous": true})
+			return sendErr
+		}
+		// Failure BEFORE the signature was recorded ⇒ nothing was ever broadcast ⇒
+		// safe to release the hold and fail for re-request.
 		_ = s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins)
-		_, _ = s.repo.SetStatus(ctx, w.PublicID, "processing", "failed", "", err.Error())
-		s.audit(ctx, adminUserID, "withdrawal_failed", w.PublicID, map[string]any{"error": err.Error()})
-		return err
+		_, _ = s.repo.SetStatus(ctx, w.PublicID, "processing", "failed", "", sendErr.Error())
+		s.audit(ctx, adminUserID, "withdrawal_failed", w.PublicID, map[string]any{"error": sendErr.Error()})
+		return sendErr
 	}
-	// Broadcast succeeded. Record the signature; coins stay held until the tx
-	// finalizes. If THIS write fails, funds may be in flight — never release; leave
-	// it 'processing' with a loud log for ops reconciliation.
-	if _, err := s.repo.SetStatus(ctx, w.PublicID, "processing", "broadcasted", sig, ""); err != nil {
-		s.log.Error("payout: solana broadcast succeeded but status write failed; needs reconciliation",
-			"id", w.PublicID, "sig", sig, "error", err)
-		return err
-	}
+	// Sent, and the row was already moved to 'broadcasted' by the hook. Coins stay
+	// held until ConfirmBroadcasted sees the tx finalize.
 	s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID,
-		map[string]any{"signature": sig, "net_cents": w.NetCents, "wallet": w.DestWallet})
+		map[string]any{"net_cents": w.NetCents, "wallet": w.DestWallet})
 	return nil
+}
+
+// preCommitTransferrer is an optional Transferrer capability (implemented by the
+// Solana rail) that invokes a hook with the signature before broadcasting, so the
+// service can durably record 'broadcasted' pre-send. (M10)
+type preCommitTransferrer interface {
+	TransferPreCommit(ctx context.Context, destination string, amountCents int64, idemKey string, onSigned func(signature string) error) (string, error)
 }
 
 // ConfirmBroadcasted advances broadcasted Solana withdrawals: on finalized
@@ -370,7 +454,27 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 			continue
 		}
 		if !finalized {
-			continue // still confirming
+			// Not yet finalized. A live Solana tx confirms within seconds; its blockhash
+			// is only valid ~60-90s. Confirm searches the full transaction history, so a
+			// tx still un-finalized well past that window (deadBroadcastWindow) can NEVER
+			// land — its blockhash has expired. Safe to release the held escrow (no
+			// double-pay risk: a landed tx would have been found and finalized). Recent
+			// rows just keep waiting. (M10)
+			if !w.StatusChangedAt.IsZero() && s.clock.Now().Sub(w.StatusChangedAt) > deadBroadcastWindow {
+				if err := s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins); err != nil {
+					s.log.Error("payout: expired-broadcast release", "id", w.PublicID, "error", err)
+					continue
+				}
+				if _, err := s.repo.SetStatus(ctx, w.PublicID, "broadcasted", "failed", w.TransferID, "expired: never confirmed on-chain (blockhash lapsed)"); err != nil {
+					s.log.Error("payout: expired-broadcast status", "id", w.PublicID, "error", err)
+					continue
+				}
+				s.log.Warn("payout: released a withdrawal whose broadcast never confirmed (blockhash expired)",
+					"id", w.PublicID, "sig", w.TransferID, "coins", w.Coins)
+				s.audit(ctx, "solana:confirm", "withdrawal_failed", w.PublicID, map[string]any{"signature": w.TransferID, "reason": "broadcast_expired"})
+				settled++
+			}
+			continue
 		}
 		if ok {
 			if err := s.bank.Payout(ctx, w.PublicID, w.Agent, w.Coins, w.FeeCoins); err != nil {
@@ -401,6 +505,70 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 		settled++
 	}
 	return settled, nil
+}
+
+// stuckProcessingGrace is how long a row may sit in 'processing' before the
+// reconciliation sweep treats it as crashed-pre-broadcast and releases it. It only
+// needs to exceed a normal claim→sign→record span (sub-second), but is generous to
+// avoid racing a slow-but-live approve.
+const stuckProcessingGrace = 2 * time.Minute
+
+// deadBroadcastWindow is how long a 'broadcasted' withdrawal may stay un-finalized
+// before the confirm watcher concludes its blockhash lapsed and the tx can never
+// land — then it safely releases the escrow. It must comfortably exceed a Solana
+// blockhash's validity (~60-90s), so 3 minutes is conservative.
+const deadBroadcastWindow = 3 * time.Minute
+
+// ReconcileStuckProcessing recovers Solana withdrawals stranded in 'processing'.
+// A withdrawal is only in 'processing' for the brief moment between the atomic
+// claim and recording the broadcast signature (→ 'broadcasted'); a crash in that
+// window leaves it stuck with escrow frozen and NO recorded signature, so the
+// confirm watcher (which scans 'broadcasted') can't advance it. Because the state
+// is normally sub-second, any 'processing' row observed by this periodic sweep is
+// anomalous and needs operator reconciliation (look up the hot wallet's recent
+// USDC transfers to w.DestWallet to decide paid-vs-release).
+//
+// This sweep only ALERTS — it never auto-releases, because without the signed
+// transaction's signature we cannot know whether the USDC already went out, and a
+// blind release would risk a double payout. Safe automated recovery requires
+// persisting the signed-tx signature at claim time (a follow-up refactor). Returns
+// the number of stuck rows found.
+func (s *Service) ReconcileStuckProcessing(ctx context.Context) (int, error) {
+	items, err := s.repo.ListByStatus(ctx, "processing", 100)
+	if err != nil {
+		return 0, err
+	}
+	now := s.clock.Now()
+	recovered := 0
+	for _, w := range items {
+		// A row is in 'processing' only between the atomic claim and the pre-broadcast
+		// signature record; the network send happens strictly AFTER it leaves
+		// 'processing' (M10). So a row still 'processing' past the grace provably never
+		// broadcast — releasing its escrow can't double-pay. (A crashed send would have
+		// already advanced the row to 'broadcasted' with its signature, handled by the
+		// confirm watcher, not here.)
+		if now.Sub(w.StatusChangedAt) < stuckProcessingGrace {
+			continue
+		}
+		claimed, err := s.repo.SetStatus(ctx, w.PublicID, "processing", "failed", "", "stuck: released on reconciliation (never broadcast)")
+		if err != nil {
+			s.log.Error("payout: stuck-processing status write", "id", w.PublicID, "error", err)
+			continue
+		}
+		if !claimed {
+			continue // advanced concurrently (e.g. the approve finally recorded broadcasted)
+		}
+		if err := s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins); err != nil {
+			s.log.Error("payout: stuck-processing release", "id", w.PublicID, "error", err)
+			continue
+		}
+		s.log.Warn("payout: released a withdrawal stuck in 'processing' (never broadcast)",
+			"id", w.PublicID, "owner", w.Owner, "agent", w.Agent, "coins", w.Coins)
+		s.audit(ctx, "system:reconcile", "withdrawal_failed", w.PublicID, map[string]any{"reason": "stuck_processing_released"})
+		recovered++
+	}
+	s.m.stuckProcessing.Set(float64(len(items) - recovered))
+	return recovered, nil
 }
 
 // OnAccountUpdated reacts to a Stripe account.updated webhook: once a connected
@@ -510,19 +678,21 @@ func (s *Service) audit(ctx context.Context, actor, action, target string, detai
 // ── metrics ──────────────────────────────────────────────────────────────────
 
 type metrics struct {
-	requested prometheus.Counter
-	paid      prometheus.Counter
-	paidCents prometheus.Counter
-	reversed  prometheus.Counter
+	requested       prometheus.Counter
+	paid            prometheus.Counter
+	paidCents       prometheus.Counter
+	reversed        prometheus.Counter
+	stuckProcessing prometheus.Gauge
 }
 
 func newMetrics(reg *prometheus.Registry) *metrics {
 	m := &metrics{
-		requested: prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_requested_total", Help: "Cash-out requests filed."}),
-		paid:      prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_paid_total", Help: "Cash-outs paid to a bank."}),
-		paidCents: prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_paid_cents_total", Help: "Total cents paid out to users."}),
-		reversed:  prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_reversed_total", Help: "Payouts reversed by Stripe and re-credited."}),
+		requested:       prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_requested_total", Help: "Cash-out requests filed."}),
+		paid:            prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_paid_total", Help: "Cash-outs paid to a bank."}),
+		paidCents:       prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_paid_cents_total", Help: "Total cents paid out to users."}),
+		reversed:        prometheus.NewCounter(prometheus.CounterOpts{Name: "withdrawals_reversed_total", Help: "Payouts reversed by Stripe and re-credited."}),
+		stuckProcessing: prometheus.NewGauge(prometheus.GaugeOpts{Name: "withdrawals_stuck_processing", Help: "Withdrawals stranded in 'processing' (escrow frozen; needs reconciliation)."}),
 	}
-	reg.MustRegister(m.requested, m.paid, m.paidCents, m.reversed)
+	reg.MustRegister(m.requested, m.paid, m.paidCents, m.reversed, m.stuckProcessing)
 	return m
 }

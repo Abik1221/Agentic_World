@@ -88,6 +88,11 @@ func New(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster
 
 func lockKey(matchPublicID string) string { return "match:lock:" + matchPublicID }
 
+// agentJoinLockKey serializes a single agent's concurrent join attempts across the
+// whole platform (shared prefix with mafia so the two games can't race the same
+// agent into one match each). (M6)
+func agentJoinLockKey(agentPublicID string) string { return "agent:join:lock:" + agentPublicID }
+
 // publish fans new events to spectators (SSE) and wakes any agent long-polling
 // this match. Both are best-effort and off the correctness path.
 func (s *Service) publish(matchPublicID string, events []gs.Event) {
@@ -263,6 +268,20 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 
 // Join seats the caller at seat B, deals the match, and starts round 1.
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	// Serialize an agent's joins so it can't race concurrent joins into DIFFERENT
+	// matches and slip past the per-agent limits (CheckJoin, e.g. max-concurrent /
+	// reserve) via TOCTOU — the per-match lock only serializes joins to the SAME
+	// match. Agent lock FIRST, then match lock: a consistent global order that can't
+	// deadlock. (M6)
+	relAgent, okA, err := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL)
+	if err != nil {
+		return AgentView{}, err
+	}
+	if !okA {
+		return AgentView{}, ErrBusy
+	}
+	defer relAgent()
+
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err
@@ -464,7 +483,21 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 	all = append(all, resolveEvents...)
 
 	if resolved.Finished {
-		players, err := s.finalize(ctx, m, resolved, all)
+		// G4 — durably persist the finishing SEAL(S) before settling. finalize does
+		// Settle-before-Finish deliberately (crash-safety), but the finishing seal was
+		// previously made durable only inside Finish. So a crash between Settle and
+		// Finish would leave the match 'active' with the finishing seat UNSEALED in the
+		// DB; the sweeper would then re-drive via ForceTimeout (lowest card) and record
+		// a winner / Elo / replay hash that DIVERGES from the winner actually PAID.
+		// Persisting the real sealed cards here means a re-drive resolves the real cards
+		// (both already sealed ⇒ HandleTimeout forces nothing) and reproduces the paid
+		// outcome. Money was always protected by settle idempotency; this protects
+		// recorded-result integrity. The seal events are now persisted by this Advance,
+		// so finalize appends only the resolve events (no double-append).
+		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
+			return Match{}, err
+		}
+		players, err := s.finalize(ctx, m, resolved, resolveEvents)
 		if err != nil {
 			return Match{}, err
 		}

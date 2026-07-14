@@ -114,7 +114,18 @@ func (t *SolanaTransferrer) centsToBase(cents int64) uint64 {
 // Transfer builds, signs and broadcasts the USDC payout, returning the tx
 // signature. idemKey is unused here (Solana sends aren't key-idempotent; the
 // service's 'processing' claim prevents double-broadcast).
-func (t *SolanaTransferrer) Transfer(ctx context.Context, destination string, amountCents int64, _ string) (string, error) {
+func (t *SolanaTransferrer) Transfer(ctx context.Context, destination string, amountCents int64, idemKey string) (string, error) {
+	return t.TransferPreCommit(ctx, destination, amountCents, idemKey, nil)
+}
+
+// TransferPreCommit builds+signs the USDC payout, invokes onSigned with the
+// deterministic signature BEFORE broadcasting, and only then sends it. The hook
+// lets the caller durably record the signature (and move the withdrawal to
+// 'broadcasted') while the transaction is still un-sent — so a crash or failure at
+// or after the send never leaves an un-recorded in-flight payout. If onSigned
+// returns an error, the transaction is NOT broadcast (nothing goes out). onSigned
+// may be nil (plain Transfer). (M10)
+func (t *SolanaTransferrer) TransferPreCommit(ctx context.Context, destination string, amountCents int64, _ string, onSigned func(signature string) error) (string, error) {
 	if amountCents <= 0 {
 		return "", errors.New("payout: non-positive amount")
 	}
@@ -151,6 +162,16 @@ func (t *SolanaTransferrer) Transfer(ctx context.Context, destination string, am
 		return nil
 	}); err != nil {
 		return "", fmt.Errorf("payout: sign tx: %w", err)
+	}
+	// The signature is fixed at signing time. Durably record it BEFORE broadcasting
+	// so an un-sent-but-signed tx can never become an un-tracked in-flight payout: if
+	// this hook fails we abort without sending; if it succeeds the caller has already
+	// persisted the signature and can resolve the payout from the chain no matter what
+	// happens to the send below. (M10)
+	if onSigned != nil && len(tx.Signatures) > 0 && !tx.Signatures[0].IsZero() {
+		if err := onSigned(tx.Signatures[0].String()); err != nil {
+			return "", fmt.Errorf("payout: pre-broadcast record failed (not sent): %w", err)
+		}
 	}
 	sig, err := t.rpc.SendTransaction(ctx, tx)
 	if err != nil {
