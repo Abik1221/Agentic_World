@@ -165,6 +165,37 @@ func TestReconcileStuckProcessingReleases(t *testing.T) {
 	}
 }
 
+// M10: a 'broadcasted' withdrawal that never finalizes past the dead-broadcast
+// window (blockhash lapsed → tx can never land) is safely released; a recent one
+// keeps waiting.
+func TestConfirmReleasesExpiredBroadcast(t *testing.T) {
+	repo := newRepo()
+	bank := newBank()
+	// confirmer reports NOT finalized (tx never landed / not found).
+	svc := newSolanaSvc(repo, bank, &fakeXfer{}, &fakeConfirmer{finalized: false})
+
+	// stale broadcasted row (became broadcasted 5m ago) → released.
+	repo.rows["wd_dead"] = &payout.Withdrawal{
+		PublicID: "wd_dead", Agent: "ag_a", Owner: "usr_a", Coins: 600, NetCents: 540,
+		Status: "broadcasted", TransferID: "sigDead", StatusChangedAt: now.Add(-5 * time.Minute),
+	}
+	// fresh broadcasted row (30s ago) → must keep waiting.
+	repo.rows["wd_fresh"] = &payout.Withdrawal{
+		PublicID: "wd_fresh", Agent: "ag_b", Owner: "usr_b", Coins: 600, NetCents: 540,
+		Status: "broadcasted", TransferID: "sigFresh", StatusChangedAt: now.Add(-30 * time.Second),
+	}
+
+	if _, err := svc.ConfirmBroadcasted(context.Background()); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if repo.rows["wd_dead"].Status != "failed" || bank.released["wd_dead"] != 600 {
+		t.Fatalf("expired broadcast not released: status=%s released=%v", repo.rows["wd_dead"].Status, bank.released)
+	}
+	if repo.rows["wd_fresh"].Status != "broadcasted" {
+		t.Fatalf("fresh broadcast wrongly released: %s", repo.rows["wd_fresh"].Status)
+	}
+}
+
 func TestSolanaApproveBroadcastsWithoutBurning(t *testing.T) {
 	repo := newRepo()
 	repo.connect = ""

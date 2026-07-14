@@ -454,7 +454,27 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 			continue
 		}
 		if !finalized {
-			continue // still confirming
+			// Not yet finalized. A live Solana tx confirms within seconds; its blockhash
+			// is only valid ~60-90s. Confirm searches the full transaction history, so a
+			// tx still un-finalized well past that window (deadBroadcastWindow) can NEVER
+			// land — its blockhash has expired. Safe to release the held escrow (no
+			// double-pay risk: a landed tx would have been found and finalized). Recent
+			// rows just keep waiting. (M10)
+			if !w.StatusChangedAt.IsZero() && s.clock.Now().Sub(w.StatusChangedAt) > deadBroadcastWindow {
+				if err := s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins); err != nil {
+					s.log.Error("payout: expired-broadcast release", "id", w.PublicID, "error", err)
+					continue
+				}
+				if _, err := s.repo.SetStatus(ctx, w.PublicID, "broadcasted", "failed", w.TransferID, "expired: never confirmed on-chain (blockhash lapsed)"); err != nil {
+					s.log.Error("payout: expired-broadcast status", "id", w.PublicID, "error", err)
+					continue
+				}
+				s.log.Warn("payout: released a withdrawal whose broadcast never confirmed (blockhash expired)",
+					"id", w.PublicID, "sig", w.TransferID, "coins", w.Coins)
+				s.audit(ctx, "solana:confirm", "withdrawal_failed", w.PublicID, map[string]any{"signature": w.TransferID, "reason": "broadcast_expired"})
+				settled++
+			}
+			continue
 		}
 		if ok {
 			if err := s.bank.Payout(ctx, w.PublicID, w.Agent, w.Coins, w.FeeCoins); err != nil {
@@ -492,6 +512,12 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 // needs to exceed a normal claim→sign→record span (sub-second), but is generous to
 // avoid racing a slow-but-live approve.
 const stuckProcessingGrace = 2 * time.Minute
+
+// deadBroadcastWindow is how long a 'broadcasted' withdrawal may stay un-finalized
+// before the confirm watcher concludes its blockhash lapsed and the tx can never
+// land — then it safely releases the escrow. It must comfortably exceed a Solana
+// blockhash's validity (~60-90s), so 3 minutes is conservative.
+const deadBroadcastWindow = 3 * time.Minute
 
 // ReconcileStuckProcessing recovers Solana withdrawals stranded in 'processing'.
 // A withdrawal is only in 'processing' for the brief moment between the atomic
