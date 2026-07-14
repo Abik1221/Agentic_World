@@ -197,13 +197,28 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 
 	deadline := s.clock.Now().Add(s.cfg.PhaseWindow)
 	if err := s.repo.Start(ctx, m.PublicID, roles, state, deadline, events); err != nil {
+		// Compensate the stake-then-start dual-write: the stake committed (ledger tx)
+		// but flipping the match to active failed, so the coins would be stranded in a
+		// full 'waiting' table with no retry. Refund immediately (idempotent disburse
+		// key) so escrow is never orphaned. If the refund ALSO fails (rare double
+		// fault), surface a combined error so it's visible in the request log. (G3)
+		if m.EntryFee > 0 {
+			if refErr := s.wallet.RefundTable(ctx, m.PublicID); refErr != nil {
+				return fmt.Errorf("mafia start failed (%w) and stake refund failed (%v) — escrow stranded", err, refErr)
+			}
+		}
 		return err
 	}
 	s.publish(m.PublicID, events)
 	return nil
 }
 
-func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action) (AgentView, error) {
+// Act applies a seat's action. expectedDay/expectedPhase are the (day, phase) the
+// CLIENT computed the action for (from the state it read); when provided (day != 0)
+// they are rejected if the game has since advanced — so a late action for an
+// already-resolved phase is refused rather than absorbed into the current same-kind
+// phase. Pass 0/"" to skip the check (internal/bot callers). (G1)
+func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action, expectedDay int, expectedPhase string) (AgentView, error) {
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err
@@ -219,6 +234,12 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 	}
 	if m.Status != StatusActive {
 		return AgentView{}, ErrNotActive
+	}
+	// Read the state under the lock, THEN reject a stale phase: if the client told us
+	// which (day, phase) it acted on and the match has moved past it, that phase is
+	// done — refuse the late action. (G1)
+	if expectedDay != 0 && (expectedDay != m.State.Day || expectedPhase != m.State.Phase) {
+		return AgentView{}, ErrStalePhase
 	}
 	p := m.playerByAgent(agentPublicID)
 	if p == nil {

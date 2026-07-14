@@ -21,4 +21,8 @@ var (
 	ErrConcurrentUpdate = httpx.NewError(http.StatusConflict, "concurrent_update", "The match advanced concurrently; retry.")
 	ErrNotCreator       = httpx.NewError(http.StatusForbidden, "not_creator", "Only the table creator can cancel a waiting lobby entry.")
 	ErrIllegalAction    = httpx.NewError(http.StatusBadRequest, "illegal_action", "That action is not legal in the current phase.")
+	// ErrStalePhase rejects an action computed for a phase that has already resolved
+	// (the game advanced to a new day/phase). Once a phase is DONE its late actions
+	// must not be absorbed into the current round.
+	ErrStalePhase = httpx.NewError(http.StatusConflict, "stale_phase", "That round has already ended; act on the current phase.")
 )

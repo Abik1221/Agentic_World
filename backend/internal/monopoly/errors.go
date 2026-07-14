@@ -15,6 +15,9 @@ var (
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	ErrIllegalAction = httpx.NewError(http.StatusBadRequest, "illegal_action", "That action is not legal in the current phase.")
 	ErrBadConfig     = httpx.NewError(http.StatusBadRequest, "bad_config", "Invalid table configuration.")
+	// ErrStakesUnavailable rejects a staked Monopoly table while no wallet is wired —
+	// so the API never advertises a stake/pool/payout for a game that moves no coins.
+	ErrStakesUnavailable = httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable", "Staked Monopoly is not available yet; create a practice table (no entry fee).")
 	// ErrConcurrentUpdate is returned by the repo when a racing writer advanced the
 	// match first (UNIQUE(match_id,seq) violation). The service re-reads and retries;
 	// it is the optimistic-concurrency signal that makes the Redis lock optional.

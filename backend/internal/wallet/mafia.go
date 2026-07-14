@@ -105,4 +105,8 @@ func (w MafiaWallet) SettleTable(ctx context.Context, matchPublicID string, plat
 	return w.s.SettleMafiaTable(ctx, matchPublicID, platformFee, payouts)
 }
 
+func (w MafiaWallet) RefundTable(ctx context.Context, matchPublicID string) error {
+	return w.s.Refund(ctx, matchPublicID)
+}
+
 func NewMafiaWallet(s *Service) MafiaWallet { return MafiaWallet{s: s} }
