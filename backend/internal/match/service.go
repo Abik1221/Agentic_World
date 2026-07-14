@@ -88,6 +88,11 @@ func New(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster
 
 func lockKey(matchPublicID string) string { return "match:lock:" + matchPublicID }
 
+// agentJoinLockKey serializes a single agent's concurrent join attempts across the
+// whole platform (shared prefix with mafia so the two games can't race the same
+// agent into one match each). (M6)
+func agentJoinLockKey(agentPublicID string) string { return "agent:join:lock:" + agentPublicID }
+
 // publish fans new events to spectators (SSE) and wakes any agent long-polling
 // this match. Both are best-effort and off the correctness path.
 func (s *Service) publish(matchPublicID string, events []gs.Event) {
@@ -263,6 +268,20 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 
 // Join seats the caller at seat B, deals the match, and starts round 1.
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	// Serialize an agent's joins so it can't race concurrent joins into DIFFERENT
+	// matches and slip past the per-agent limits (CheckJoin, e.g. max-concurrent /
+	// reserve) via TOCTOU — the per-match lock only serializes joins to the SAME
+	// match. Agent lock FIRST, then match lock: a consistent global order that can't
+	// deadlock. (M6)
+	relAgent, okA, err := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL)
+	if err != nil {
+		return AgentView{}, err
+	}
+	if !okA {
+		return AgentView{}, ErrBusy
+	}
+	defer relAgent()
+
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err

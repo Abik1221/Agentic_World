@@ -70,6 +70,10 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 
 func lockKey(id string) string { return "mafia:lock:" + id }
 
+// agentJoinLockKey shares the "agent:join:lock:" namespace with Goofspiel so a single
+// agent's concurrent joins serialize across both games. (M6)
+func agentJoinLockKey(agentPublicID string) string { return "agent:join:lock:" + agentPublicID }
+
 func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID string) ([]LobbyItem, error) {
 	if entryFee <= 0 {
 		entryFee = s.cfg.EntryFee
@@ -113,6 +117,18 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 }
 
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	// Serialize this agent's concurrent joins (agent lock FIRST, then table lock) so
+	// it can't race joins into different tables/games and bypass the per-agent limits
+	// via TOCTOU. Shared "agent:join:lock:" namespace with Goofspiel. (M6)
+	relAgent, okA, err := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL)
+	if err != nil {
+		return AgentView{}, err
+	}
+	if !okA {
+		return AgentView{}, ErrBusy
+	}
+	defer relAgent()
+
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err
