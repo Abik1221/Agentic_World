@@ -371,6 +371,7 @@ func run() error {
 		antifraud.Config{CollusionMinGames: cfg.CollusionMinGames, DetectLookback: cfg.CollusionLookback},
 		log, metrics.Registry())
 	walletSvc.SetPayoutGate(antifraudSvc)
+	antifraudSvc.SetClawback(walletSvc) // record fraud clawback debt on a new collusion flag (M4)
 	antifraudHandler := antifraud.NewHandler(antifraudSvc, authn, cfg.AdminUserIDs)
 
 	// Spectator: the SSE hub is the real Broadcaster (replaces the Stage 3 no-op).

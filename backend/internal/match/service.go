@@ -483,7 +483,21 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 	all = append(all, resolveEvents...)
 
 	if resolved.Finished {
-		players, err := s.finalize(ctx, m, resolved, all)
+		// G4 — durably persist the finishing SEAL(S) before settling. finalize does
+		// Settle-before-Finish deliberately (crash-safety), but the finishing seal was
+		// previously made durable only inside Finish. So a crash between Settle and
+		// Finish would leave the match 'active' with the finishing seat UNSEALED in the
+		// DB; the sweeper would then re-drive via ForceTimeout (lowest card) and record
+		// a winner / Elo / replay hash that DIVERGES from the winner actually PAID.
+		// Persisting the real sealed cards here means a re-drive resolves the real cards
+		// (both already sealed ⇒ HandleTimeout forces nothing) and reproduces the paid
+		// outcome. Money was always protected by settle idempotency; this protects
+		// recorded-result integrity. The seal events are now persisted by this Advance,
+		// so finalize appends only the resolve events (no double-append).
+		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
+			return Match{}, err
+		}
+		players, err := s.finalize(ctx, m, resolved, resolveEvents)
 		if err != nil {
 			return Match{}, err
 		}

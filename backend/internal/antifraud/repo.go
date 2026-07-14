@@ -10,7 +10,7 @@ type Repo interface {
 	// ── payout gate ──
 	MatchAgents(ctx context.Context, matchPublicID string) ([]AgentRef, error)
 	AnyFlagged(ctx context.Context, agentPublicIDs []string) (bool, error)
-	RecordFlag(ctx context.Context, agentPublicID, matchPublicID, typ, detail string) error
+	RecordFlag(ctx context.Context, agentPublicID, matchPublicID, typ, detail string) (created bool, err error)
 	RecordHold(ctx context.Context, matchPublicID, reason string) (newlyHeld bool, err error)
 	ResolveHold(ctx context.Context, matchPublicID, status string) (changed bool, err error)
 

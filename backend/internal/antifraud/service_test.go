@@ -17,6 +17,7 @@ type fakeRepo struct {
 	holds        map[string]string
 	disputeMatch map[string]string
 	resolved     map[string]bool
+	pairs        []antifraud.Pair
 }
 
 func newRepo() *fakeRepo {
@@ -37,9 +38,10 @@ func (r *fakeRepo) AnyFlagged(_ context.Context, ids []string) (bool, error) {
 	}
 	return false, nil
 }
-func (r *fakeRepo) RecordFlag(_ context.Context, agent, _, _, _ string) error {
+func (r *fakeRepo) RecordFlag(_ context.Context, agent, _, _, _ string) (bool, error) {
+	created := !r.flagged[agent]
 	r.flagged[agent] = true
-	return nil
+	return created, nil
 }
 func (r *fakeRepo) RecordHold(_ context.Context, m, reason string) (bool, error) {
 	if _, ok := r.holds[m]; ok {
@@ -68,7 +70,7 @@ func (r *fakeRepo) ResolveDispute(_ context.Context, id, _, _ string) (string, b
 	return r.disputeMatch[id], true, nil
 }
 func (r *fakeRepo) RecentPairs(context.Context, time.Time, int) ([]antifraud.Pair, error) {
-	return nil, nil
+	return r.pairs, nil
 }
 func (r *fakeRepo) AgentsWithSamples(context.Context, int) ([]string, error) { return nil, nil }
 func (r *fakeRepo) PairMoves(context.Context, string, string, time.Time) ([]antifraud.MoveSample, error) {
@@ -180,5 +182,45 @@ func TestResolveDisputeRefundRequiresOpenHold(t *testing.T) {
 	}
 	if settler2.releases != 1 || settler2.refunds != 0 {
 		t.Fatalf("release+refund race: releases=%d refunds=%d, want exactly one disbursement (releases=1 refunds=0)", settler2.releases, settler2.refunds)
+	}
+}
+
+type fakeClawback struct{ debt map[string]int64 }
+
+func (c *fakeClawback) RecordFraudDebt(_ context.Context, agent string, coins int64, _ string) error {
+	if c.debt == nil {
+		c.debt = map[string]int64{}
+	}
+	c.debt[agent] += coins
+	return nil
+}
+
+// M4: a new collusion flag claws back the net flow (flagged-match winnings) from the
+// RECIPIENT once; a second detection sweep must not stack the debt.
+func TestCollusionClawbackOncePerFlag(t *testing.T) {
+	repo := newRepo()
+	// A won 6-0 over B and 900 coins net flowed A->B ... net flow is A->B positive, so
+	// B is the recipient of the dumped coins.
+	repo.pairs = []antifraud.Pair{{A: "ag_a", B: "ag_b", Games: 6, AWins: 0, BWins: 6, NetFlowAToB: 900}}
+	cb := &fakeClawback{}
+	svc := newSvc(repo, &fakeSettler{})
+	svc.SetClawback(cb)
+	ctx := context.Background()
+
+	if err := svc.RunDetection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cb.debt["ag_b"] != 900 {
+		t.Fatalf("recipient debt = %d, want 900", cb.debt["ag_b"])
+	}
+	if cb.debt["ag_a"] != 0 {
+		t.Fatalf("net loser was charged: %d, want 0", cb.debt["ag_a"])
+	}
+	// Second sweep: flags already exist (created=false) → no additional clawback.
+	if err := svc.RunDetection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cb.debt["ag_b"] != 900 {
+		t.Fatalf("debt stacked on re-sweep: %d, want 900", cb.debt["ag_b"])
 	}
 }

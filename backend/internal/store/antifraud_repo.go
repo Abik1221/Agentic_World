@@ -56,8 +56,11 @@ func (r *AntifraudRepo) AnyFlagged(ctx context.Context, agentPublicIDs []string)
 	return exists, err
 }
 
-func (r *AntifraudRepo) RecordFlag(ctx context.Context, agentPublicID, matchPublicID, typ, detail string) error {
-	_, err := r.db.Exec(ctx,
+// RecordFlag inserts an active fraud flag for an agent, idempotent per (agent, type):
+// created=true only when THIS call inserted a new flag (no prior active flag of that
+// type), so a caller can perform a one-time side effect (e.g. clawback) exactly once.
+func (r *AntifraudRepo) RecordFlag(ctx context.Context, agentPublicID, matchPublicID, typ, detail string) (bool, error) {
+	ct, err := r.db.Exec(ctx,
 		`INSERT INTO fraud_flags (agent_id, match_id, type, detail)
 		 SELECT a.id,
 		        (SELECT id FROM matches WHERE public_id = $2),
@@ -68,7 +71,10 @@ func (r *AntifraudRepo) RecordFlag(ctx context.Context, agentPublicID, matchPubl
 		     SELECT 1 FROM fraud_flags f2
 		     WHERE f2.agent_id = a.id AND f2.type = $3 AND f2.active)`,
 		agentPublicID, nullString(matchPublicID), typ, detail)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return ct.RowsAffected() > 0, nil
 }
 
 func (r *AntifraudRepo) RecordHold(ctx context.Context, matchPublicID, reason string) (bool, error) {

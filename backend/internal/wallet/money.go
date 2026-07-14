@@ -256,6 +256,18 @@ func (s *Service) credit(ctx context.Context, agentPublicID string, coins int64,
 	return nil
 }
 
+// RecordFraudDebt records fraudulently-obtained winnings (e.g. a collusion clawback)
+// as debt against an agent: it gates the agent's next cash-out (payout debt-gate)
+// and is repaid FIRST out of any future credit (see credit). It is a proportionate,
+// soft recovery — it does not seize the agent's current balance. The caller ensures
+// it runs at-most-once per flag (antifraud records it only on a newly-created flag).
+func (s *Service) RecordFraudDebt(ctx context.Context, agentPublicID string, coins int64, reason string) error {
+	if coins <= 0 || agentPublicID == "" {
+		return nil
+	}
+	return s.repo.RecordDebt(ctx, agentPublicID, coins)
+}
+
 // bestEffortDebt runs a per-agent debts-table adjustment with a bounded retry. The
 // ledger (bad_debt) is authoritative for accounting; the debts counter only drives
 // the payout gate, so a transient failure is safe-side — it over-blocks a payout
