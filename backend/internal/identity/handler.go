@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -23,6 +24,15 @@ type Handler struct {
 	keysRL     func(http.Handler) http.Handler
 	dev        bool // non-prod: surface the magic-link token in the response (no email wired)
 	xClaim     bool // X-claim (tweet) onboarding available (needs a real verifier)
+	// twoFAStatus reports whether the user has 2FA enabled, surfaced in /v1/me so a
+	// profile/security page can render the preference. Injected to avoid coupling
+	// identity to the twofa package; nil ⇒ the field is simply omitted.
+	twoFAStatus func(ctx context.Context, userPublicID string) (bool, error)
+}
+
+// SetTwoFAStatus wires the 2FA-enabled lookup surfaced in the profile (GET /v1/me).
+func (h *Handler) SetTwoFAStatus(fn func(ctx context.Context, userPublicID string) (bool, error)) {
+	h.twoFAStatus = fn
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator, privy *auth.PrivyVerifier, registerRL, loginRL func(http.Handler) http.Handler, dev, xClaim bool) *Handler {
@@ -288,10 +298,17 @@ func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	httpx.JSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"user_id":  p.UserPublicID,
 		"agent_id": p.AgentPublicID, // empty when using dashboard token only
-	})
+	}
+	// Security preference: whether the user has opted into 2FA (never defaulted on).
+	if h.twoFAStatus != nil {
+		if enabled, err := h.twoFAStatus(r.Context(), p.UserPublicID); err == nil {
+			out["two_factor_enabled"] = enabled
+		}
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
 
 func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {

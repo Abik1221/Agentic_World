@@ -11,8 +11,9 @@ import (
 )
 
 type fakeRepo struct {
-	enc     []byte
-	enabled bool
+	enc      []byte
+	enabled  bool
+	recovery []string
 }
 
 func (r *fakeRepo) SaveSecret(_ context.Context, _ string, e []byte) error {
@@ -27,8 +28,24 @@ func (r *fakeRepo) SetEnabled(_ context.Context, _ string, _ time.Time) error {
 	return nil
 }
 func (r *fakeRepo) Clear(_ context.Context, _ string) error {
-	r.enc, r.enabled = nil, false
+	r.enc, r.enabled, r.recovery = nil, false, nil
 	return nil
+}
+func (r *fakeRepo) SetRecoveryHashes(_ context.Context, _ string, hashes []string) error {
+	r.recovery = append([]string(nil), hashes...)
+	return nil
+}
+func (r *fakeRepo) ConsumeRecoveryHash(_ context.Context, _, hash string) (bool, error) {
+	for i, h := range r.recovery {
+		if h == hash {
+			r.recovery = append(r.recovery[:i], r.recovery[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (r *fakeRepo) RecoveryRemaining(_ context.Context, _ string) (int, error) {
+	return len(r.recovery), nil
 }
 
 func TestEnrollStepUpAndDisable(t *testing.T) {
@@ -38,7 +55,7 @@ func TestEnrollStepUpAndDisable(t *testing.T) {
 	}
 	repo := &fakeRepo{}
 	now := time.Unix(1_700_000_000, 0)
-	svc := New(repo, cipher, platform.FixedClock{T: now}, "pyyol")
+	svc := New(repo, cipher, platform.FixedClock{T: now}, "pyyol", "recovery-pepper-secret")
 	ctx := context.Background()
 
 	// Not enrolled ⇒ step-up is a no-op (money flows normally).
@@ -56,12 +73,16 @@ func TestEnrollStepUpAndDisable(t *testing.T) {
 	}
 
 	wrong, _ := totp.Code(secret, now.Add(10*time.Minute)) // outside the skew window
-	if err := svc.Confirm(ctx, "usr_a", wrong); err != ErrInvalidCode {
+	if _, err := svc.Confirm(ctx, "usr_a", wrong); err != ErrInvalidCode {
 		t.Fatalf("Confirm wrong code = %v, want ErrInvalidCode", err)
 	}
 	code, _ := totp.Code(secret, now)
-	if err := svc.Confirm(ctx, "usr_a", code); err != nil {
+	codes, err := svc.Confirm(ctx, "usr_a", code)
+	if err != nil {
 		t.Fatalf("Confirm valid code: %v", err)
+	}
+	if len(codes) != recoveryCodeCount {
+		t.Fatalf("got %d recovery codes, want %d", len(codes), recoveryCodeCount)
 	}
 
 	// Enabled ⇒ step-up enforced.
@@ -89,5 +110,47 @@ func TestEnrollStepUpAndDisable(t *testing.T) {
 	}
 	if err := svc.Require(ctx, "usr_a", ""); err != nil {
 		t.Fatalf("Require after disable = %v, want nil", err)
+	}
+}
+
+// A lost authenticator is recoverable: a one-time recovery code satisfies step-up,
+// is consumed (can't be replayed), and the remaining count drops.
+func TestRecoveryCodeStepUp(t *testing.T) {
+	cipher, _ := secretbox.New("test-master-key-at-least-32-bytes-long!!")
+	repo := &fakeRepo{}
+	now := time.Unix(1_700_000_000, 0)
+	svc := New(repo, cipher, platform.FixedClock{T: now}, "pyyol", "recovery-pepper-secret")
+	ctx := context.Background()
+
+	secret, _, _ := svc.Setup(ctx, "usr_a", "usr_a")
+	code, _ := totp.Code(secret, now)
+	recovery, err := svc.Confirm(ctx, "usr_a", code)
+	if err != nil || len(recovery) == 0 {
+		t.Fatalf("confirm/recovery setup failed: %v", err)
+	}
+	if n, _ := svc.RecoveryRemaining(ctx, "usr_a"); n != recoveryCodeCount {
+		t.Fatalf("remaining = %d, want %d", n, recoveryCodeCount)
+	}
+
+	// Use a recovery code where a TOTP code would be expected (lost device).
+	rc := recovery[0]
+	if err := svc.Require(ctx, "usr_a", rc); err != nil {
+		t.Fatalf("recovery code should satisfy step-up: %v", err)
+	}
+	// It is one-time: the same code no longer works, and the count dropped.
+	if err := svc.Require(ctx, "usr_a", rc); err != ErrInvalidCode {
+		t.Fatalf("reused recovery code = %v, want ErrInvalidCode", err)
+	}
+	if n, _ := svc.RecoveryRemaining(ctx, "usr_a"); n != recoveryCodeCount-1 {
+		t.Fatalf("remaining after use = %d, want %d", n, recoveryCodeCount-1)
+	}
+
+	// Regenerate (gated by a live TOTP code) replaces the set.
+	fresh, err := svc.RegenerateRecoveryCodes(ctx, "usr_a", code)
+	if err != nil || len(fresh) != recoveryCodeCount {
+		t.Fatalf("regenerate failed: codes=%d err=%v", len(fresh), err)
+	}
+	if svc.Require(ctx, "usr_a", rc) != ErrInvalidCode {
+		t.Fatal("old recovery codes must be invalid after regeneration")
 	}
 }

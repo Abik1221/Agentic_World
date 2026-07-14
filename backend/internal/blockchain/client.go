@@ -121,6 +121,26 @@ func (c *Client) SignaturesForAddress(ctx context.Context, address string, limit
 	return out, nil
 }
 
+// TokenAccountBalance returns the SPL-token balance (base units) of a token
+// account, at the configured commitment. Used by the solvency monitor to compare
+// the platform hot-wallet's on-chain USDC against outstanding payout liability.
+func (c *Client) TokenAccountBalance(ctx context.Context, tokenAccount string) (int64, error) {
+	var out struct {
+		Value struct {
+			Amount string `json:"amount"`
+		} `json:"value"`
+	}
+	params := []any{tokenAccount, map[string]any{"commitment": c.cfg.Commitment}}
+	if err := c.call(ctx, "getTokenAccountBalance", params, &out); err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(out.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("solana rpc getTokenAccountBalance: invalid amount %q: %w", out.Value.Amount, err)
+	}
+	return n, nil
+}
+
 // TokenCredit is a positive SPL-token balance change on one token account within
 // a transaction (post − pre, in base units).
 type TokenCredit struct {

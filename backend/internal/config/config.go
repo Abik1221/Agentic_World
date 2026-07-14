@@ -84,6 +84,7 @@ type Config struct {
 	SolanaHotWalletSecretEnc string
 	SolanaHotWalletEncKey    string        // master key that decrypts SecretEnc (never logged)
 	WithdrawConfirmInterval  time.Duration // confirmation watcher cadence
+	SolvencyInterval         time.Duration // hot-wallet vs liability reconciliation cadence
 	WalletReconInterval      time.Duration // wallet reconciliation cadence (drift safety net)
 
 	// Game defaults (consumed from Stage 3)
@@ -250,6 +251,7 @@ func Load() (*Config, error) {
 		SolanaHotWalletSecretEnc: l.str("SOLANA_HOT_WALLET_SECRET_ENC", ""),
 		SolanaHotWalletEncKey:    l.str("SOLANA_HOT_WALLET_ENC_KEY", ""),
 		WithdrawConfirmInterval:  l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
+		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
 		MoveWindow:      time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,

@@ -358,9 +358,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	twofaSvc := twofa.New(store.NewTwoFARepo(st.DB), totpCipher, clock, "pyyol")
+	twofaSvc := twofa.New(store.NewTwoFARepo(st.DB), totpCipher, clock, "pyyol", cfg.APIKeyPepper)
 	twofaHandler := twofa.NewHandler(twofaSvc, authn)
 	walletVerifyHandler.SetStepUp(twofaSvc)
+	idHandler.SetTwoFAStatus(twofaSvc.Enabled) // surface the 2FA preference in GET /v1/me
 
 	// Trust & anti-fraud: the payout gate holds suspect settlements (escrow kept),
 	// the detector flags collusion/human-timing, and disputes drive admin review.
@@ -526,6 +527,10 @@ func run() error {
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
 		depositHandler.SetRateLimit(depositRL)
 		launch("solana-deposit-listener", solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run)
+		// Read-only solvency monitor: reconcile the hot-wallet on-chain USDC against
+		// outstanding withdrawal liability and alert on any shortfall (never moves funds).
+		solvency := payout.NewSolvencyMonitor(store.NewPayoutRepo(st.DB), chain, cfg.SolanaPlatformATA, log, metrics.Registry())
+		launch("solvency-monitor", solvency.Run(cfg.SolvencyInterval))
 		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
 	} else {
 		log.Info("solana deposits disabled (set SOLANA_RPC_URL + SOLANA_PLATFORM_OWNER + SOLANA_PLATFORM_ATA to enable)")

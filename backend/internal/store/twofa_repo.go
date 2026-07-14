@@ -54,7 +54,35 @@ func (r *TwoFARepo) SetEnabled(ctx context.Context, userPublicID string, at time
 
 func (r *TwoFARepo) Clear(ctx context.Context, userPublicID string) error {
 	_, err := r.db.Exec(ctx,
-		`UPDATE users SET totp_secret_enc = NULL, totp_enabled = FALSE, totp_confirmed_at = NULL
+		`UPDATE users SET totp_secret_enc = NULL, totp_enabled = FALSE, totp_confirmed_at = NULL,
+		        totp_recovery_hashes = NULL
 		 WHERE public_id = $1`, userPublicID)
 	return err
+}
+
+func (r *TwoFARepo) SetRecoveryHashes(ctx context.Context, userPublicID string, hashes []string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE users SET totp_recovery_hashes = $2 WHERE public_id = $1`, userPublicID, hashes)
+	return err
+}
+
+// ConsumeRecoveryHash atomically removes hash from the user's unused set. The
+// WHERE guard makes it one-time-use even under concurrent attempts: only the call
+// that actually removed the element sees RowsAffected > 0.
+func (r *TwoFARepo) ConsumeRecoveryHash(ctx context.Context, userPublicID, hash string) (bool, error) {
+	ct, err := r.db.Exec(ctx,
+		`UPDATE users SET totp_recovery_hashes = array_remove(totp_recovery_hashes, $2)
+		 WHERE public_id = $1 AND $2 = ANY(totp_recovery_hashes)`, userPublicID, hash)
+	if err != nil {
+		return false, err
+	}
+	return ct.RowsAffected() > 0, nil
+}
+
+func (r *TwoFARepo) RecoveryRemaining(ctx context.Context, userPublicID string) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(cardinality(totp_recovery_hashes), 0) FROM users WHERE public_id = $1`,
+		userPublicID).Scan(&n)
+	return n, err
 }

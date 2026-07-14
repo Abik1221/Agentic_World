@@ -97,6 +97,17 @@ func (r *PayoutRepo) VerifiedWalletAt(ctx context.Context, ownerUserPublicID str
 	return wallet, *at, nil
 }
 
+// OutstandingLiabilityCents sums the net cents of withdrawals the platform is on
+// the hook to pay but hasn't yet settled (requested/processing/broadcasted). The
+// solvency monitor compares this to the hot wallet's on-chain USDC balance.
+func (r *PayoutRepo) OutstandingLiabilityCents(ctx context.Context) (int64, error) {
+	var cents int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(net_cents), 0) FROM withdrawals
+		 WHERE status IN ('requested','processing','broadcasted')`).Scan(&cents)
+	return cents, err
+}
+
 // WithdrawnSince sums an owner's non-failed withdrawals filed since `since`.
 func (r *PayoutRepo) WithdrawnSince(ctx context.Context, ownerUserPublicID string, since time.Time) (int, int64, error) {
 	var count int
