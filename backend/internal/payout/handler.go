@@ -1,6 +1,7 @@
 package payout
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -9,6 +10,12 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// StepUp verifies a second factor (TOTP) for the acting user; a no-op when the
+// user hasn't enabled 2FA. Wired from the twofa service via SetStepUp.
+type StepUp interface {
+	Require(ctx context.Context, userPublicID, code string) error
+}
+
 // Handler exposes the cash-out surface: withdrawable quote + request (user) and
 // approve/reject (admin allowlist).
 type Handler struct {
@@ -16,6 +23,7 @@ type Handler struct {
 	authn  *auth.Authenticator
 	admins map[string]bool
 	rl     func(http.Handler) http.Handler
+	stepUp StepUp
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator, adminUserIDs []string) *Handler {
@@ -33,6 +41,10 @@ func (h *Handler) SetRateLimit(mw func(http.Handler) http.Handler) {
 		h.rl = mw
 	}
 }
+
+// SetStepUp wires the 2FA step-up check applied to withdrawal creation. Optional;
+// when unset (or the user hasn't enabled 2FA) withdrawals proceed with no code.
+func (h *Handler) SetStepUp(s StepUp) { h.stepUp = s }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
@@ -107,12 +119,21 @@ func (h *Handler) adminList(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) request(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		Agent string `json:"agent"`
-		Coins int64  `json:"coins"`
+		Agent    string `json:"agent"`
+		Coins    int64  `json:"coins"`
+		TOTPCode string `json:"totp_code"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	// Step-up: when the user has 2FA enabled, a valid authenticator code is required
+	// to move money out. No-op for users without 2FA.
+	if h.stepUp != nil {
+		if err := h.stepUp.Require(r.Context(), p.UserPublicID, in.TOTPCode); err != nil {
+			httpx.Error(w, err)
+			return
+		}
 	}
 	wd, err := h.svc.Request(r.Context(), p.UserPublicID, in.Agent, in.Coins)
 	if err != nil {

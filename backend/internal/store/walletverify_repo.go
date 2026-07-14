@@ -43,8 +43,16 @@ func (r *WalletVerifyRepo) GetChallenge(ctx context.Context, userPublicID string
 }
 
 func (r *WalletVerifyRepo) MarkVerified(ctx context.Context, userPublicID, walletAddress string, at time.Time) error {
+	// Proving ownership of a wallet ALSO links it as the withdrawal destination:
+	// set both verified_wallet_address AND wallet_address (the destination "hint")
+	// to the proven wallet. This lets email/password (non-Privy) users establish a
+	// payout wallet purely by connecting + signing — no Privy required (M11). Payout
+	// still requires verified == hint, so funds only ever reach a proven wallet; the
+	// change is gated by the new-address cooldown (and 2FA step-up when enabled).
 	_, err := r.db.Exec(ctx,
-		`UPDATE users SET verified_wallet_address = $2, wallet_verified_at = $3 WHERE public_id = $1`,
+		`UPDATE users
+		 SET verified_wallet_address = $2, wallet_address = $2, wallet_verified_at = $3
+		 WHERE public_id = $1`,
 		userPublicID, walletAddress, at)
 	return err
 }

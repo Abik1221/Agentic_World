@@ -150,3 +150,83 @@ func TestNoEscrowWithoutClaim(t *testing.T) {
 		t.Fatalf("CreatePaired calls = %d, want 0 (must never escrow an unclaimed pair)", pairer.calls)
 	}
 }
+
+// countingRepo records whether Upsert ran, so we can prove a rejected enqueue
+// never touches the queue.
+type countingRepo struct {
+	*memRepo
+	upserts int
+}
+
+func (r *countingRepo) Upsert(ctx context.Context, e Entry) error {
+	r.upserts++
+	return r.memRepo.Upsert(ctx, e)
+}
+
+// stubAfford is an Affordability that fails when err != nil.
+type stubAfford struct {
+	err    error
+	calls  int
+	gotBid int64
+}
+
+func (s *stubAfford) CheckJoin(_ context.Context, _ string, bid int64) error {
+	s.calls++
+	s.gotBid = bid
+	return s.err
+}
+
+func newEnqueueSvc(repo Repo) *Service {
+	return New(repo, &memPairer{}, fixedRating{}, systemClk{}, Config{Interval: time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), prometheus.NewRegistry())
+}
+
+// T4: an unaffordable/over-limit stake is rejected at enqueue (fail fast) with the
+// wallet's own error, and the agent never enters the queue — no "stuck waiting".
+func TestEnqueueAffordabilityRejectsFailFast(t *testing.T) {
+	repo := &countingRepo{memRepo: newMemRepo()}
+	svc := newEnqueueSvc(repo)
+	want := errors.New("insufficient balance")
+	afford := &stubAfford{err: want}
+	svc.SetAffordability(afford)
+
+	_, err := svc.Enqueue(context.Background(), "ag_broke", "owner", 500)
+	if err == nil {
+		t.Fatal("Enqueue should reject an unaffordable stake, got nil error")
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("want the wallet error surfaced, got %v", err)
+	}
+	if afford.gotBid != 500 {
+		t.Fatalf("affordability checked bid=%d, want 500", afford.gotBid)
+	}
+	if repo.upserts != 0 {
+		t.Fatalf("a rejected enqueue must not touch the queue, Upsert ran %d times", repo.upserts)
+	}
+}
+
+// T5: an affordable stake still enqueues, and with no affordability gate wired the
+// behaviour is unchanged (backwards compatible).
+func TestEnqueueAffordabilityAllowsAndIsOptional(t *testing.T) {
+	// gate present, passes
+	repo := &countingRepo{memRepo: newMemRepo()}
+	svc := newEnqueueSvc(repo)
+	afford := &stubAfford{}
+	svc.SetAffordability(afford)
+	if _, err := svc.Enqueue(context.Background(), "ag_ok", "owner", 100); err != nil {
+		t.Fatalf("affordable enqueue should succeed, got %v", err)
+	}
+	if afford.calls != 1 || repo.upserts != 1 {
+		t.Fatalf("expected 1 check + 1 upsert, got checks=%d upserts=%d", afford.calls, repo.upserts)
+	}
+
+	// no gate wired → unchanged
+	repo2 := &countingRepo{memRepo: newMemRepo()}
+	svc2 := newEnqueueSvc(repo2)
+	if _, err := svc2.Enqueue(context.Background(), "ag_ok", "owner", 100); err != nil {
+		t.Fatalf("enqueue without affordability gate should succeed, got %v", err)
+	}
+	if repo2.upserts != 1 {
+		t.Fatalf("expected 1 upsert without gate, got %d", repo2.upserts)
+	}
+}

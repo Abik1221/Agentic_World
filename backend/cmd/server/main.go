@@ -58,6 +58,7 @@ import (
 	"github.com/agent-arena/arena/internal/wallet"
 	"github.com/agent-arena/arena/internal/walletadmin"
 	"github.com/agent-arena/arena/internal/walletrecon"
+	"github.com/agent-arena/arena/internal/twofa"
 	"github.com/agent-arena/arena/internal/walletverify"
 	"github.com/agent-arena/arena/internal/webhook"
 )
@@ -349,6 +350,18 @@ func run() error {
 	// nonce) before a withdrawal can be sent there (payout gates on the result).
 	walletVerifyHandler := walletverify.NewHandler(walletverify.New(store.NewWalletVerifyRepo(st.DB), clock), authn)
 
+	// Free, self-hosted TOTP two-factor: enrollment + step-up on money movement. The
+	// secret is encrypted at rest with a cipher keyed on the always-present API-key
+	// pepper (no new mandatory secret). Wired as the step-up check on withdrawals and
+	// on withdrawal-wallet changes.
+	totpCipher, err := secretbox.New(cfg.APIKeyPepper)
+	if err != nil {
+		return err
+	}
+	twofaSvc := twofa.New(store.NewTwoFARepo(st.DB), totpCipher, clock, "pyyol")
+	twofaHandler := twofa.NewHandler(twofaSvc, authn)
+	walletVerifyHandler.SetStepUp(twofaSvc)
+
 	// Trust & anti-fraud: the payout gate holds suspect settlements (escrow kept),
 	// the detector flags collusion/human-timing, and disputes drive admin review.
 	// SetPayoutGate wires it into settlement after construction (the wallet is the
@@ -475,6 +488,8 @@ func run() error {
 			CoinCents: cfg.CoinCents, SellFeePct: cfg.WithdrawSellFeePct,
 			StripeFeePct: cfg.StripePayoutFeePct, StripeFeeFlatCents: cfg.StripePayoutFeeFlatCents,
 			MinCoins: cfg.WithdrawMinCoins, Clearing: cfg.WithdrawClearing, Chain: payoutChain,
+			VelocityWindow: cfg.WithdrawVelocityWindow, MaxPerWindow: cfg.WithdrawMaxPerWindow,
+			MaxCentsPerWindow: cfg.WithdrawMaxCentsPerWindow, NewAddressCooldown: cfg.WithdrawNewAddressCooldown,
 		}, log, metrics.Registry())
 	if solanaXfer != nil {
 		// The transferrer also confirms finality; the watcher burns/releases escrow
@@ -486,6 +501,7 @@ func run() error {
 	payoutSvc.SetNotifier(notifier)   // notify owner on paid/failed
 	payoutHandler := payout.NewHandler(payoutSvc, authn, cfg.AdminUserIDs)
 	payoutHandler.SetRateLimit(withdrawRL)
+	payoutHandler.SetStepUp(twofaSvc) // require the 2FA code on cash-out when enabled
 
 	// Deposits (Beta wallet pipeline P2): a background listener watches Solana for
 	// USDC transfers to the platform token account (tagged by each session's
@@ -573,7 +589,8 @@ func run() error {
 		matchPairer{matchSvc}, ratingSvc, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
-	matchmakingSvc.SetEligibility(manifestSvc) // ranked queue requires a certified agent
+	matchmakingSvc.SetEligibility(manifestSvc)  // ranked queue requires a certified agent
+	matchmakingSvc.SetAffordability(walletSvc)  // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
@@ -724,6 +741,7 @@ func run() error {
 		walletAdminHandler.Register,
 		gameStakesHandler.Register,
 		walletVerifyHandler.Register,
+		twofaHandler.Register,
 	}
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)

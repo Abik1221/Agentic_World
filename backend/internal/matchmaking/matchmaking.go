@@ -106,7 +106,10 @@ type Service struct {
 	cfg    Config
 	log    *slog.Logger
 	m      *metrics
-	elig   Eligibility // optional ranked-entry gate (nil = open)
+	// elig gates ranked entry (certification); afford preflights stake
+	// affordability. Both optional (nil = skip), injected via their setters.
+	elig   Eligibility
+	afford Affordability
 }
 
 // Eligibility gates who may enter the ranked queue — e.g. the certification gate
@@ -116,8 +119,20 @@ type Eligibility interface {
 	RequireCertified(ctx context.Context, agentPublicID string) error
 }
 
+// Affordability preflights the stake against the agent's balance + owner limits,
+// using the SAME check escrow runs at pairing (wallet.CheckJoin). Enforcing it at
+// enqueue makes a broke or over-limit agent fail fast with a specific error
+// instead of sitting in `waiting` forever for a match that could never escrow.
+// Satisfied by wallet.Service. Injected via SetAffordability so New stays unchanged.
+type Affordability interface {
+	CheckJoin(ctx context.Context, agentPublicID string, bid int64) error
+}
+
 // SetEligibility installs the ranked-entry gate (call once during wiring).
 func (s *Service) SetEligibility(e Eligibility) { s.elig = e }
+
+// SetAffordability installs the stake-affordability preflight (call once during wiring).
+func (s *Service) SetAffordability(a Affordability) { s.afford = a }
 
 // clock is the minimal time port (matches platform.Clock structurally).
 type clock interface{ Now() time.Time }
@@ -138,6 +153,16 @@ func (s *Service) Enqueue(ctx context.Context, agentPublicID, ownerPublicID stri
 	// uncertified agents never pollute pairing).
 	if s.elig != nil {
 		if err := s.elig.RequireCertified(ctx, agentPublicID); err != nil {
+			return Entry{}, err
+		}
+	}
+	// Affordability preflight: reject a stake the agent can't cover (balance +
+	// reserve) or that breaches an owner limit (per-match / max-bid / loss /
+	// cooldown / concurrency), with the SAME error escrow would raise at pairing.
+	// Without this the agent would enqueue and wait forever for a match that can
+	// never escrow (the old "broke agent stuck waiting" foot-gun).
+	if s.afford != nil {
+		if err := s.afford.CheckJoin(ctx, agentPublicID, bid); err != nil {
 			return Entry{}, err
 		}
 	}
