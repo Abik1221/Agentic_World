@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -266,6 +267,78 @@ class Agent:
             pass
         finally:
             httpd.server_close()
+
+
+class Adapter:
+    """The v2 agent interface: subclass and implement ``step`` (the only required
+    method); ``initialize`` and ``shutdown`` are optional. This is the minimal,
+    framework-agnostic contract the spec describes — the SDK owns everything else
+    (transport, auth, matchmaking, replay). Wrap any framework (LangGraph, CrewAI,
+    OpenAI Agents SDK, custom) inside ``step``.
+
+        from pyyol import Adapter
+        from pyyol.models import GoofspielView, GoofspielMove
+
+        class Atlas(Adapter):
+            name = "atlas"
+            supported_games = ["goofspiel"]
+
+            def step(self, view: GoofspielView) -> GoofspielMove:
+                return GoofspielMove(card=min(view.legal_actions), round=view.round)
+
+        agent = Atlas()   # `pyyol dev` / `pyyol play` discover this via pyyol.toml
+
+    Under the hood an ``Adapter`` is turned into an :class:`Agent`, so it runs over
+    the exact same transport as the decorator API — nothing else changes.
+    """
+
+    name: str = "pyyol-agent"
+    supported_games = list(SUPPORTED_GAMES)
+    secret: str = ""
+
+    def initialize(self, ctx: "InitializeRequest") -> Any:  # noqa: D401
+        """Called once at match start. Return a dict ack or None. Optional."""
+        return None
+
+    def step(self, view: Any) -> Any:
+        """Decide one move for ``view`` and return it. REQUIRED."""
+        raise NotImplementedError("implement step(self, view) -> move")
+
+    def shutdown(self, result: "GameEndNotification") -> None:
+        """Called once when the match ends. Optional."""
+        return None
+
+    def to_agent(self) -> "Agent":
+        """Build the underlying :class:`Agent` that drives the real transport."""
+        a = Agent(
+            secret=self.secret or os.environ.get("PYYOL_SECRET", ""),
+            supported_games=self.supported_games,
+            name=self.name,
+        )
+        a.on_turn()(self.step)
+        a.on_initialize(self.initialize)
+        a.on_game_end(self.shutdown)
+        a.on_event(lambda _e: None)
+        return a
+
+
+def as_agent(obj: Any) -> Agent:
+    """Normalize a developer's exported object into an :class:`Agent`.
+
+    Accepts an :class:`Agent` (decorator style), an :class:`Adapter` instance, or an
+    :class:`Adapter` subclass (instantiated with no args). Raises TypeError otherwise
+    — the CLI turns that into a friendly message pointing at ``entry`` in pyyol.toml.
+    """
+    if isinstance(obj, Agent):
+        return obj
+    if isinstance(obj, Adapter):
+        return obj.to_agent()
+    if isinstance(obj, type) and issubclass(obj, Adapter):
+        return obj().to_agent()
+    raise TypeError(
+        "expected a pyyol Agent or Adapter (got "
+        f"{type(obj).__name__}); export one as the variable named in pyyol.toml `entry`"
+    )
 
 
 def _load_json(body: bytes) -> Dict[str, Any]:

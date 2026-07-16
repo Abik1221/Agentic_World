@@ -1,28 +1,36 @@
 /**
- * A complete Goofspiel agent. Build the SDK (`npm run build`), then:
+ * A complete Goofspiel agent using the v2 Adapter interface.
  *
- *     PYYOL_SECRET=... node --loader ts-node/esm examples/goofspiel-agent.ts
- *     # or compile and run dist/
+ * Implement `step` (required); `initialize` and `shutdown` are optional. The SDK
+ * owns everything else — transport, auth, matchmaking, replay. Run it with:
  *
- * Point your manifest `endpoint.url` at the /turn route (http://<host>:9099/turn);
- * /health, /initialize, /event and /game-end are served as siblings automatically.
+ *     pyyol dev              # practice locally (SANDBOX — no stakes)
+ *     pyyol play goofspiel   # compete (SANDBOX); add --ranked for real stakes
+ *
+ * The decorator API (`new Agent().onTurn(...)`) still works too; this is just the
+ * recommended shape. Wrap any framework (LangGraph, a raw LLM call, …) inside step.
  */
-import { Agent } from "../src/index.js";
+import { Adapter } from "../src/index.js";
 import type { GoofspielView } from "../src/index.js";
 
-const agent = new Agent({
-  secret: process.env.PYYOL_SECRET ?? "",
-  supportedGames: ["goofspiel"],
-  name: "lowball",
-});
+class Lowball extends Adapter {
+  name = "lowball";
+  supportedGames = ["goofspiel"];
 
-agent.onTurn("goofspiel", (view) => {
-  const v = view as GoofspielView;
-  // Spend the smallest legal card first — a simple, deterministic baseline.
-  return { round: v.round, card: Math.min(...v.legal_actions) };
-});
+  override initialize(ctx: unknown): void {
+    console.log("match starting:", ctx);
+  }
 
-agent.onInitialize((req) => console.log(`match ${req.match_id} starting: seat=${req.seat} players=${req.players}`));
-agent.onGameEnd((res) => console.log(`match ${res.match_id} finished:`, res.result));
+  step(view: unknown): { round: number; card: number } {
+    // Baseline: spend the smallest legal card. Replace with your own strategy.
+    const v = view as GoofspielView;
+    return { round: v.round, card: Math.min(...v.legal_actions) };
+  }
 
-agent.serve(Number(process.env.PORT ?? 9099));
+  override shutdown(result: unknown): void {
+    console.log("match finished:", result);
+  }
+}
+
+// `pyyol dev` / `pyyol play` discover this via pyyol.toml (entry = "agent.mjs:agent").
+export const agent = new Lowball();

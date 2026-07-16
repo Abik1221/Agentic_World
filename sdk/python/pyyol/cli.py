@@ -18,19 +18,15 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
+import urllib.parse  # cheap; used for quoting/URL parsing everywhere
 from typing import Any, Dict, List, Optional
 
 from . import __version__
-from .signing import (
-    REQUEST_ID_HEADER,
-    SIGNATURE_HEADER,
-    SIGNATURE_VERSION,
-    TIMESTAMP_HEADER,
-    compute_signature,
-)
+
+# NOTE: `urllib.request`/`urllib.error` (which pull in `ssl`, `http.client`, `email`
+# ≈40ms) and `.signing` are imported LAZILY inside the functions that make network
+# calls, so no-network commands (init / --version / --help / doctor-offline) stay
+# instant. Do not add them at module top.
 
 OK = "✓"
 BAD = "✗"
@@ -43,6 +39,65 @@ def _rfc3339() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _net_err(e: Exception) -> str:
+    """A friendly one-line message for a network failure (offline / refused / timeout /
+    DNS) — never a raw traceback. Used by the HTTP helpers so a dead connection reads
+    as a clear error, not a Python stack trace."""
+    reason = getattr(e, "reason", e)
+    text = str(reason).lower()
+    if "timed out" in text or "timeout" in text or isinstance(e, TimeoutError):
+        return "network timed out (slow or unreachable) — check your connection"
+    if "refused" in text:
+        return "connection refused — is the platform URL correct and reachable?"
+    if "name or service" in text or "nodename" in text or "getaddrinfo" in text:
+        return "cannot resolve host — check the URL and your DNS/connection"
+    return "network unreachable — check your internet connection"
+
+
+_insecure_warned = False
+
+
+def _warn_insecure_transport(url: str, has_auth: bool) -> None:
+    """Warn (once) when credentials would be sent over a cleartext, non-loopback
+    URL — a token/secret on plain http:// is exposed to any on-path observer.
+    Loopback (localhost/127.0.0.1/::1) is exempt (local dev)."""
+    if not has_auth or not url:
+        return
+    try:
+        u = urllib.parse.urlsplit(url)
+    except ValueError:
+        return
+    if u.scheme in ("https", "wss"):
+        return
+    host = (u.hostname or "").lower()
+    if host in ("localhost", "127.0.0.1", "::1", "") or host.endswith(".localhost"):
+        return
+    global _insecure_warned
+    if not _insecure_warned:
+        _insecure_warned = True
+        print(
+            f"{BAD} WARNING: sending credentials over insecure {u.scheme}://{host} — use https://",
+            file=sys.stderr,
+        )
+
+
+_argv_secret_warned = False
+
+
+def _warn_argv_secret() -> None:
+    """Warn (once) that a secret passed as a CLI flag is visible to other users on a
+    shared host (via `ps`/`/proc`). The browser login flow avoids this; prefer env
+    (PYYOL_TOKEN) or a PAT scoped to CI."""
+    global _argv_secret_warned
+    if not _argv_secret_warned:
+        _argv_secret_warned = True
+        print(
+            f"{BAD} note: a secret on the command line is visible to other users on shared "
+            f"hosts (ps/proc). Prefer `pyyol login` (browser) or the PYYOL_TOKEN env var.",
+            file=sys.stderr,
+        )
+
+
 def _request(
     url: str,
     method: str,
@@ -52,8 +107,19 @@ def _request(
 ) -> tuple[int, Dict[str, Any]]:
     """Send a (optionally signed) request. ``sign_path`` is the path the signature
     binds; defaults to the URL's path."""
+    import urllib.error
+    import urllib.request
     from urllib.parse import urlsplit
 
+    from .signing import (
+        REQUEST_ID_HEADER,
+        SIGNATURE_HEADER,
+        SIGNATURE_VERSION,
+        TIMESTAMP_HEADER,
+        compute_signature,
+    )
+
+    _warn_insecure_transport(url, bool(secret))
     body = json.dumps(payload).encode() if payload is not None else b""
     path = sign_path if sign_path is not None else (urlsplit(url).path or "/")
     headers: Dict[str, str] = {}
@@ -79,6 +145,8 @@ def _request(
             return e.code, json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             return e.code, {"raw": raw.decode(errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return 0, {"error": _net_err(e)}
 
 
 def _sibling(url: str, name: str) -> str:
@@ -167,9 +235,9 @@ def _synthetic_turn(game: str):
             "game": "mafia",
             "match_id": "validate",
             "your_seat": 1,
-            "your_role": "villager",
+            "your_role": "Villager",
             "day": 1,
-            "phase": "day",
+            "phase": "voting",
             "alive": {"1": True, "2": True, "3": True},
             "legal": ["vote"],
             "public": [],
@@ -285,8 +353,16 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if not (api and agent and token):
         print(f"{BAD} need --api, --agent and --token (or `pyyol login` first)", file=sys.stderr)
         return 2
+    if args.token:
+        _warn_argv_secret()
     with open(args.manifest, "rb") as f:
         manifest = f.read()
+
+    import urllib.error
+    import urllib.request
+
+    _warn_insecure_transport(api, bool(token))
+    agent_q = urllib.parse.quote(agent, safe="")  # never interpolate a raw id into the path
 
     def api_req(method: str, path: str, body: Optional[bytes], ctype: str = "application/json"):
         req = urllib.request.Request(
@@ -302,18 +378,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
         except urllib.error.HTTPError as e:
             raw = e.read()
             return e.code, (json.loads(raw) if raw else {"raw": raw.decode(errors="replace")})
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return 0, {"error": _net_err(e)}
 
-    st, m = api_req("POST", f"/v1/agents/{agent}/manifest", manifest)
+    st, m = api_req("POST", f"/v1/agents/{agent_q}/manifest", manifest)
     if st != 201:
         print(f"{BAD} submit failed ({st}): {m}", file=sys.stderr)
         return 1
-    mid = m.get("manifest_id")
-    print(f"{OK} manifest submitted: {mid}")
+    mid = urllib.parse.quote(str(m.get("manifest_id", "")), safe="")
+    print(f"{OK} manifest submitted: {m.get('manifest_id')}")
 
     if args.secret:
+        _warn_argv_secret()
         st, r = api_req(
             "PUT",
-            f"/v1/agents/{agent}/manifest/{mid}/endpoint-secret",
+            f"/v1/agents/{agent_q}/manifest/{mid}/endpoint-secret",
             json.dumps({"token": args.secret}).encode(),
         )
         if st != 200:
@@ -321,7 +400,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             return 1
         print(f"{OK} endpoint secret stored")
 
-    st, report = api_req("POST", f"/v1/agents/{agent}/manifest/{mid}/verify", b"")
+    st, report = api_req("POST", f"/v1/agents/{agent_q}/manifest/{mid}/verify", b"")
     verified = st == 200 and (report.get("verified") or report.get("status") == "verified")
     mark = OK if verified else BAD
     print(f"{mark} verify ({st}): {json.dumps(report)}")
@@ -336,6 +415,7 @@ def cmd_login(args: argparse.Namespace) -> int:
 
     # Explicit token paste (headless/CI fallback) — normal onboarding uses the browser.
     if args.token:
+        _warn_argv_secret()
         creds = credentials.Credentials(
             url=args.api,
             connect_url=args.connect or login.derive_connect_url(args.api),
@@ -350,9 +430,11 @@ def cmd_login(args: argparse.Namespace) -> int:
     if not dashboard:
         print(f"{BAD} pass --dashboard (or --api), or --token for headless login", file=sys.stderr)
         return 2
-    print(f"opening {dashboard}/cli-login in your browser…")
+    provider = getattr(args, "provider", "")
+    via = f" (via {provider})" if provider else ""
+    print(f"opening {dashboard}/cli-login in your browser{via}…")
     try:
-        creds = login.run_login_flow(dashboard, api_url=args.api)
+        creds = login.run_login_flow(dashboard, api_url=args.api, provider=provider)
     except Exception as e:  # noqa: BLE001
         print(f"{BAD} login failed: {e}", file=sys.stderr)
         return 1
@@ -375,6 +457,9 @@ def cmd_logout(_args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    import urllib.error
+    import urllib.request
+
     from . import credentials
 
     creds = credentials.load()
@@ -386,6 +471,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if not api or not agent_id:
         print(f"{BAD} need an API url and agent id (login or pass --api/--agent)", file=sys.stderr)
         return 2
+    _warn_insecure_transport(api, True)
     req = urllib.request.Request(
         f"{api}/v1/agent/status?agent_id={urllib.parse.quote(agent_id)}",
         headers={"Authorization": "Bearer " + creds.access_token},
@@ -397,6 +483,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(
             f"{BAD} status failed ({e.code}): {e.read().decode(errors='replace')}", file=sys.stderr
         )
+        return 1
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        print(f"{BAD} {_net_err(e)}", file=sys.stderr)
         return 1
     except Exception as e:  # noqa: BLE001
         print(f"{BAD} status failed: {e}", file=sys.stderr)
@@ -454,47 +543,6 @@ def _http_base(args: argparse.Namespace, creds) -> str:
         scheme = "https" if u.scheme in ("wss", "https") else "http"
         return urllib.parse.urlunsplit((scheme, u.netloc, "", "", ""))
     return ""
-
-
-def cmd_play(args: argparse.Namespace) -> int:
-    """Start a self-driving match. Your connected agent (pyyol run) plays it —
-    this command only kicks it off, then optionally spectates."""
-    from . import credentials
-
-    creds = credentials.load()
-    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
-    if not token:
-        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
-        return 2
-    base = _http_base(args, creds)
-    if not base:
-        print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
-        return 2
-
-    body = {}
-    if args.game == "goofspiel" and args.difficulty:
-        body["difficulty"] = args.difficulty
-    if args.game == "monopoly" and args.players:
-        body["players"] = args.players
-
-    st, resp = _api_post(f"{base}{_PLAY_PATH[args.game]}", token, body)
-    if st not in (200, 201):
-        code = resp.get("code") or resp.get("error") or ""
-        if "transport" in str(code) or "no_agent" in str(code):
-            print(
-                f"{BAD} your agent isn't connected. In another terminal run `pyyol run`, then retry.",
-                file=sys.stderr,
-            )
-        else:
-            print(f"{BAD} could not start match ({st}): {resp}", file=sys.stderr)
-        return 1
-    match_id = resp.get("match_id") or resp.get("MatchID") or resp.get("id") or ""
-    print(f"{OK} match started: {match_id}  ({args.game}) — your agent is playing it.")
-    if args.watch and match_id:
-        print("  spectating (read-only) — Ctrl-C to stop\n")
-        return _watch(base, match_id, args)
-    print(f"    watch it:  pyyol watch {match_id}")
-    return 0
 
 
 def cmd_queue(args: argparse.Namespace) -> int:
@@ -588,6 +636,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 
 def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
+    import urllib.error
+    import urllib.request
+
     from .console import build_console
 
     console = build_console(
@@ -656,9 +707,13 @@ def _sse_summary(obj) -> str:
 
 
 def _api_get(url: str, token: str = ""):
+    import urllib.error
+    import urllib.request
+
     headers = {}
     if token:
         headers["Authorization"] = "Bearer " + token
+        _warn_insecure_transport(url, True)
     req = urllib.request.Request(url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -670,9 +725,15 @@ def _api_get(url: str, token: str = ""):
             return e.code, (json.loads(raw) if raw else {})
         except json.JSONDecodeError:
             return e.code, {"raw": raw.decode(errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return 0, {"error": _net_err(e)}
 
 
 def _api_post(url: str, token: str, body):
+    import urllib.error
+    import urllib.request
+
+    _warn_insecure_transport(url, bool(token))
     data = json.dumps(body).encode() if body else b""
     req = urllib.request.Request(
         url,
@@ -690,6 +751,8 @@ def _api_post(url: str, token: str, body):
             return e.code, (json.loads(raw) if raw else {})
         except json.JSONDecodeError:
             return e.code, {"raw": raw.decode(errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return 0, {"error": _net_err(e)}
 
 
 # --- run (connect the local agent over WSS) ------------------------------------
@@ -764,30 +827,73 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 # --- init (scaffold) -----------------------------------------------------------
 
-_PY_STARTER = """\
-import os
-from pyyol import Agent
+_PY_STARTER_GOOFSPIEL = '''\
+"""{name} — a Pyyol agent. Implement step(); initialize()/shutdown() are optional.
+
+Run it:  pyyol dev            # practice locally (sandbox, no stakes)
+         pyyol play goofspiel # compete (add --ranked for real stakes, after `pyyol publish`)
+"""
+from pyyol import Adapter
 from pyyol.models import GoofspielView, GoofspielMove
 
-agent = Agent(secret=os.environ.get("PYYOL_SECRET", ""), supported_games=["goofspiel"], name="{name}")
 
-@agent.on_turn("goofspiel")
-def decide(view: GoofspielView) -> GoofspielMove:
-    # TODO: your strategy here. Baseline: spend the smallest card.
-    return GoofspielMove(card=min(view.legal_actions), round=view.round)
+class {cls}(Adapter):
+    name = "{name}"
+    supported_games = ["goofspiel"]
 
-if __name__ == "__main__":
-    agent.serve(port=int(os.environ.get("PORT", "9099")))
+    def initialize(self, ctx):
+        # Called once at match start (optional): ctx has match_id, seat, players.
+        pass
+
+    def step(self, view: GoofspielView) -> GoofspielMove:
+        # Your strategy goes here. Baseline: spend the smallest legal card.
+        return GoofspielMove(card=min(view.legal_actions), round=view.round)
+
+    def shutdown(self, result):
+        # Called once when the match ends (optional).
+        pass
+
+
+# `pyyol dev` / `pyyol play` discover this via pyyol.toml (entry = "agent.py:agent").
+agent = {cls}()
+'''
+
+_PY_STARTER_GENERIC = '''\
+"""{name} — a Pyyol agent for {arena}. Implement step(); the SDK owns everything else.
+
+Run it:  pyyol dev            # practice locally (sandbox, no stakes)
+         pyyol play {arena}   # compete (add --ranked for real stakes, after `pyyol publish`)
 """
+from pyyol import Adapter
+
+
+class {cls}(Adapter):
+    name = "{name}"
+    supported_games = ["{arena}"]
+
+    def initialize(self, ctx):
+        pass
+
+    def step(self, view):
+        # `view.legal_actions` lists what you may do this turn. Baseline: take the first.
+        legal = getattr(view, "legal_actions", None) or []
+        return {{"action": legal[0]}} if legal else {{}}
+
+    def shutdown(self, result):
+        pass
+
+
+agent = {cls}()
+'''
 
 _JS_STARTER = """\
 import {{ Agent }} from "pyyol";
 
-const agent = new Agent({{ secret: process.env.PYYOL_SECRET, supportedGames: ["goofspiel"], name: "{name}" }});
+const agent = new Agent({{ supportedGames: ["{arena}"], name: "{name}" }});
 
-agent.onTurn("goofspiel", (v) => ({{ round: v.round, card: Math.min(...v.legal_actions) }}));
+agent.onTurn("{arena}", (v) => ({{ round: v.round, card: Math.min(...v.legal_actions) }}));
 
-agent.serve(Number(process.env.PORT ?? 9099));
+export default agent;  // pyyol dev / pyyol play discover this via pyyol.toml
 """
 
 # Matches the platform manifest schema (schema.go): manifestVersion "1.0", a
@@ -809,148 +915,629 @@ _MANIFEST_TMPL = {
 }
 
 
+def _class_name(name: str) -> str:
+    """Turn a project name into a Python class name, e.g. 'my-atlas' -> 'MyAtlas'."""
+    parts = [p for p in "".join(c if c.isalnum() else " " for c in name).split() if p]
+    cls = "".join(p[:1].upper() + p[1:] for p in parts) or "Agent"
+    if cls[0].isdigit():
+        cls = "A" + cls
+    return cls
+
+
 def cmd_init(args: argparse.Namespace) -> int:
-    import os
+    from . import config as cfgmod
 
     d = args.dir
     os.makedirs(d, exist_ok=True)
     name = args.name or os.path.basename(os.path.abspath(d))
-    if args.lang == "js":
+    arena = args.arena or "goofspiel"
+    cls = _class_name(name)
+    lang = "javascript" if args.lang == "js" else "python"
+
+    if lang == "javascript":
         path = os.path.join(d, "agent.mjs")
-        code = _JS_STARTER.format(name=name)
-        lang = "js"
+        code = _JS_STARTER.format(name=name, arena=arena)
+        entry = "agent.mjs:agent"
     else:
         path = os.path.join(d, "agent.py")
-        code = _PY_STARTER.format(name=name)
-        lang = "python"
+        tmpl = _PY_STARTER_GOOFSPIEL if arena == "goofspiel" else _PY_STARTER_GENERIC
+        code = tmpl.format(name=name, cls=cls, arena=arena)
+        entry = "agent.py:agent"
     with open(path, "w") as f:
         f.write(code)
 
-    import copy
+    # Convention-over-configuration: a tiny pyyol.toml, no manifest.
+    cfg = cfgmod.Config(
+        name=name,
+        language=lang,
+        framework=args.framework or "",
+        arena=arena,
+        visibility="private",
+        mode="sandbox",
+        entry=entry,
+    )
+    cfg_path = cfgmod.save(cfg, d)
 
-    manifest = copy.deepcopy(_MANIFEST_TMPL)
-    manifest["agent"]["name"] = name
-    manifest["sdk"] = {"language": lang, "version": __version__}
-    mpath = os.path.join(d, "manifest.json")
-    with open(mpath, "w") as f:
-        json.dump(manifest, f, indent=2)
-
-    print(f"{OK} scaffolded {lang} agent in {d}/")
+    print(f"{OK} created {lang} agent in {d}/")
     print(f"    {path}")
-    print(f"    {mpath}")
+    print(f"    {cfg_path}")
     print("\nNext:")
-    if lang == "python":
-        print(f"    pip install pyyol && python {path}")
-    else:
-        print(f"    npm install pyyol && node {path}")
-    print("    pyyol validate --url http://localhost:9099/turn --secret <your-secret>")
+    print("    pip install pyyol" if lang == "python" else "    npm install pyyol")
+    print(f"    cd {d} && pyyol dev            # practice locally (sandbox — no stakes)")
+    print(f"    pyyol play {arena}             # compete (sandbox); add --ranked for real")
     return 0
+
+
+# --- v2: shared helpers --------------------------------------------------------
+
+
+def _load_config_or_die():
+    """Load pyyol.toml from the cwd tree, or print guidance and return None."""
+    from . import config as cfgmod
+
+    cfg = cfgmod.load()
+    if cfg is None:
+        print(f"{BAD} no pyyol.toml here — run `pyyol init <dir>` first.", file=sys.stderr)
+    return cfg
+
+
+def _load_agent_from_config(cfg):
+    """Import the developer's agent object per pyyol.toml `entry` and normalize it to
+    a pyyol Agent (accepts Agent, Adapter instance, or Adapter subclass)."""
+    import importlib.util
+
+    from . import config as cfgmod
+    from .server import as_agent
+
+    module_path, var = cfg.entry_parts()
+    # Constrain `entry` to the project root (dir of the discovered pyyol.toml): reject
+    # absolute paths and `..` traversal so a hostile pyyol.toml can't point the loader
+    # at an arbitrary file outside the project.
+    cfg_file = cfgmod.find()
+    root = os.path.dirname(os.path.abspath(cfg_file)) if cfg_file else os.getcwd()
+    resolved = os.path.abspath(os.path.join(root, module_path))
+    if os.path.isabs(module_path) or os.path.commonpath([root, resolved]) != root:
+        raise ValueError(f"entry {module_path!r} must be inside the project ({root})")
+    module_path = resolved
+    if not os.path.exists(module_path):
+        raise FileNotFoundError(f"entry module {module_path!r} not found (see pyyol.toml `entry`)")
+    spec = importlib.util.spec_from_file_location("_pyyol_user_agent", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {module_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    obj = getattr(mod, var, None)
+    if obj is None:
+        raise AttributeError(f"no `{var}` in {module_path} (see pyyol.toml `entry`)")
+    return as_agent(obj)
+
+
+def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
+    """Shared engine behind `pyyol dev` (develop) and `pyyol play` (compete): resolve
+    mode, connect the agent over WSS, and drive matches — hiding all transport."""
+    import threading
+
+    from . import config as cfgmod
+    from . import credentials, mode
+    from .console import build_console
+    from .runtime import RuntimeConnector
+
+    cfg = _load_config_or_die()
+    if cfg is None:
+        return 2
+    creds = credentials.load()
+    if creds is None or not creds.access_token:
+        print(f"{BAD} not logged in — run `pyyol login` first.", file=sys.stderr)
+        return 2
+
+    connect_url = (
+        args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
+    )
+    base = _http_base(args, creds)
+    # The agent id MUST match the token's owner. The token comes from creds, so
+    # creds.agent_id (its matched pair) wins over a possibly-stale pyyol.toml pin —
+    # else the socket's "key.agent == claimed agent_id" check rejects the register.
+    agent_id = args.agent or (creds.agent_id if creds else "") or cfg.agent_id
+    token = args.token or os.environ.get("PYYOL_TOKEN", "") or creds.access_token
+    if not connect_url or not agent_id:
+        print(f"{BAD} missing connect URL or agent id — run `pyyol login` (or pass --url/--agent).", file=sys.stderr)
+        return 2
+
+    arena = getattr(args, "arena", "") or cfg.arena
+    m = mode.resolve(ranked_flag=getattr(args, "ranked", False), cfg_mode=cfg.mode, dev_locked=dev_locked)
+    print(mode.banner(m))
+
+    # Real-stakes guardrails: explicit opt-in confirmation. Certification is enforced
+    # server-side at enqueue (we surface a friendly message if it's missing).
+    if m == mode.RANKED:
+        if not mode.confirm_ranked(assume_yes=getattr(args, "yes", False)):
+            print("aborted — staying safe. (Use --yes in CI to skip the prompt.)")
+            return 1
+
+    # Persist the agent id back into pyyol.toml so future runs are zero-config.
+    if agent_id and not cfg.agent_id:
+        cfgmod.set_agent_id(agent_id)
+
+    try:
+        agent = _load_agent_from_config(cfg)
+    except Exception as e:  # noqa: BLE001
+        print(f"{BAD} could not load your agent: {e}", file=sys.stderr)
+        return 2
+
+    console = build_console(quiet=getattr(args, "quiet", False))
+    conn = RuntimeConnector(
+        agent, url=connect_url, agent_id=agent_id, token=token,
+        name=agent.name, games=agent.supported_games, console=console,
+    )
+    stop = threading.Event()
+
+    def kicker():
+        # Give the socket a moment to register, then start match(es). pushplay/queue
+        # drive the just-connected agent; retry briefly while it comes online.
+        matches = max(1, getattr(args, "matches", 1))
+        if m == mode.RANKED:
+            _start_ranked(base, token, arena, args, console)
+            return
+        for i in range(matches):
+            if stop.is_set():
+                return
+            _start_sandbox(base, token, arena, console, attempt_label=f"{i + 1}/{matches}")
+            time.sleep(2.0)
+
+    threading.Thread(target=kicker, daemon=True, name="pyyol-kicker").start()
+    try:
+        conn.run()  # blocks: connect + heartbeat + reconnect + serve turns
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        conn.stop()
+    print("\nstopped.")
+    return 0
+
+
+def _start_sandbox(base, token, arena, console, attempt_label="") -> None:
+    path = _PLAY_PATH.get(arena, _PLAY_PATH["goofspiel"])
+    last = {}
+    for _ in range(6):  # ~9s: wait for the socket to be registered before starting
+        st, resp = _api_post(f"{base}{path}", token, {})
+        if st in (200, 201):
+            mid = resp.get("match_id") or resp.get("id") or ""
+            console.emit("match", f"started {arena} match {mid} {attempt_label}".rstrip())
+            return
+        last = resp
+        code = str(resp.get("code") or resp.get("error") or "")
+        if "transport" in code or "no_agent" in code or st in (409, 425):
+            time.sleep(1.5)
+            continue
+        break
+    console.emit("error", f"could not start {arena} match: {last}")
+
+
+def _start_ranked(base, token, arena, args, console) -> None:
+    body: Dict[str, object] = {"game": arena}
+    tier = getattr(args, "tier", "") or "low"
+    body["tier"] = tier
+    st, resp = _api_post(f"{base}/v1/queue", token, body)
+    if st in (200, 202):
+        console.emit("match", f"queued for RANKED {arena} (tier {tier}) — you play when matched")
+        return
+    code = str(resp.get("code") or resp.get("error") or "")
+    if "certified" in code:
+        console.emit(
+            "error",
+            "agent not certified for ranked — run `pyyol publish` first (ranked needs a verified endpoint).",
+        )
+    else:
+        console.emit("error", f"could not queue ranked ({st}): {resp}")
+
+
+# --- v2: informational commands (whoami / arenas / leaderboard / profile / replay) ---
+
+
+def cmd_whoami(args: argparse.Namespace) -> int:
+    from . import config as cfgmod
+    from . import credentials
+
+    creds = credentials.load()
+    if creds is None or not creds.access_token:
+        print(f"{BAD} not logged in — run `pyyol login`.", file=sys.stderr)
+        return 2
+    base = _http_base(args, creds)
+    st, me = _api_get(f"{base}/v1/me", creds.access_token) if base else (0, {})
+    user = me.get("user_id") or "(unknown)"
+    agent = me.get("agent_id") or creds.agent_id or "(none)"
+    cfg = cfgmod.load()
+    print(f"user      {user}")
+    print(f"agent     {agent}")
+    print(f"platform  {creds.url or base or '(unset)'}")
+    if cfg is not None:
+        print(f"project   {cfg.name}  ·  arena {cfg.arena}  ·  mode {cfg.mode}")
+    return 0
+
+
+def cmd_arenas(args: argparse.Namespace) -> int:
+    from . import credentials
+
+    base = _http_base(args, credentials.load())
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `pyyol login`.", file=sys.stderr)
+        return 2
+    st, resp = _api_get(f"{base}/v1/arenas")
+    if st != 200:
+        print(f"{BAD} could not fetch arenas ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        return 1
+    arenas = resp.get("arenas") or []
+    print(f"{'ARENA':<12}{'PLAYERS':<10}{'SANDBOX':<9}{'RANKED':<8}STATUS")
+    for a in arenas:
+        players = f"{a.get('min_players')}-{a.get('max_players')}"
+        print(
+            f"{a.get('id',''):<12}{players:<10}"
+            f"{('yes' if a.get('sandbox') else 'no'):<9}"
+            f"{('yes' if a.get('ranked') else 'no'):<8}{a.get('status','')}"
+        )
+    return 0
+
+
+def cmd_leaderboard(args: argparse.Namespace) -> int:
+    from . import credentials
+
+    base = _http_base(args, credentials.load())
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `pyyol login`.", file=sys.stderr)
+        return 2
+    if args.developers:
+        url = f"{base}/v1/leaderboard/developers"
+        if args.season:
+            url += f"?season={args.season}"
+        st, resp = _api_get(url)
+        rows = resp.get("entries") or []
+        print(f"{'#':<5}{'DEVELOPER':<24}P-INDEX")
+        for r in rows:
+            who = r.get("username") or r.get("developer") or "?"
+            print(f"{r.get('rank',''):<5}{who:<24}{r.get('p_index','')}")
+        return 0 if st == 200 else 1
+    q = []
+    if args.game:
+        q.append(f"game={urllib.parse.quote(args.game)}")
+    if args.season:
+        q.append(f"season={args.season}")
+    url = f"{base}/v1/leaderboard" + (("?" + "&".join(q)) if q else "")
+    st, resp = _api_get(url)
+    if st != 200:
+        print(f"{BAD} could not fetch leaderboard ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        return 1
+    rows = resp.get("entries") or []
+    print(f"{'#':<5}{'AGENT':<24}{'ELO':<7}W-L-T")
+    for r in rows:
+        wlt = f"{r.get('wins',0)}-{r.get('losses',0)}-{r.get('ties',0)}"
+        print(f"{r.get('rank',''):<5}{(r.get('name') or r.get('slug') or '?'):<24}{r.get('elo',''):<7}{wlt}")
+    return 0
+
+
+def cmd_profile(args: argparse.Namespace) -> int:
+    from . import credentials
+
+    creds = credentials.load()
+    base = _http_base(args, creds)
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `pyyol login`.", file=sys.stderr)
+        return 2
+    handle = args.handle
+    if not handle:  # self
+        _, me = _api_get(f"{base}/v1/me", creds.access_token if creds else "")
+        handle = me.get("user_id") or ""
+        if not handle:
+            print(f"{BAD} pass a handle: `pyyol profile <@handle>`", file=sys.stderr)
+            return 2
+    st, p = _api_get(f"{base}/v1/developers/{urllib.parse.quote(handle)}")
+    if st != 200:
+        print(f"{BAD} no such developer {handle!r} ({st}).", file=sys.stderr)
+        return 1
+    dev = p.get("developer", {})
+    pidx = p.get("p_index") or {}
+    stats = p.get("stats") or {}
+    print(f"@{dev.get('username') or dev.get('developer','?')}")
+    if pidx:
+        print(f"  P-Index   {pidx.get('p_index','?')}  (rank #{pidx.get('global_rank','?')}, top {pidx.get('percentile','?')}%)")
+    print(f"  Record    {stats.get('wins',0)}W-{stats.get('losses',0)}L-{stats.get('draws',0)}D over {stats.get('total_matches',0)} matches")
+    if stats.get("favorite_arena"):
+        print(f"  Favorite  {stats.get('favorite_arena')}")
+    print(f"  Agents    {len(p.get('agents') or [])}   Followers {p.get('followers',0)}")
+    return 0
+
+
+_REPLAY_PATH = {
+    "goofspiel": "/v1/match/{id}/replay",
+    "mafia": "/v1/mafia/{id}/replay",
+    "monopoly": "/v1/monopoly/{id}/replay",
+}
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    from . import credentials
+
+    creds = credentials.load()
+    base = _http_base(args, creds)
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `pyyol login`.", file=sys.stderr)
+        return 2
+    game = args.game or (creds and _cfg_arena()) or "goofspiel"
+    path = _REPLAY_PATH.get(game, _REPLAY_PATH["goofspiel"]).format(id=urllib.parse.quote(args.match))
+    st, resp = _api_get(f"{base}{path}")
+    if st != 200:
+        print(f"{BAD} could not fetch replay ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(resp, indent=2))
+        return 0
+    events = resp.get("events") or resp.get("moves") or []
+    winner, scores = _replay_outcome(resp)
+    print(f"replay {args.match} ({game}) — {len(events)} events, status {resp.get('status', '?')}")
+    if winner:
+        line = f"  winner    {winner}"
+        if scores:
+            line += f"  (scores {'-'.join(str(s) for s in scores)})"
+        print(line)
+    if resp.get("moves_verified") is not None:
+        print(f"  verified  {resp.get('moves_verified')} (every move signed + valid)")
+    print(f"  full JSON: pyyol replay {args.match} --game {game} --json")
+    return 0
+
+
+def _winner_label(w) -> str:
+    """Map a winner value to a display label. Seat ints (0/1/-1) become
+    'seat N'/'tie'; strings (mafia team / monopoly seat / agent id) pass through."""
+    if w is None or w == "":
+        return ""
+    if isinstance(w, bool):
+        return ""
+    if isinstance(w, int):
+        return "tie" if w < 0 else f"seat {w}"
+    return str(w)
+
+
+def _replay_outcome(resp: Dict[str, Any]):
+    """Extract (winner_label, scores) from a replay doc. Goofspiel encodes the result
+    in a terminal `match_finished` event (winner seat + scores); mafia/monopoly may
+    carry a top-level winner. Returns ("", None) when it can't be determined."""
+    for k in ("winner", "winner_team", "winner_agent"):
+        if resp.get(k) not in (None, ""):
+            return _winner_label(resp[k]), None
+    for ev in reversed(resp.get("events") or []):
+        if not isinstance(ev, dict):
+            continue
+        payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+        if ev.get("type") in ("match_finished", "game_over", "victory", "finished") or "winner" in payload:
+            return _winner_label(payload.get("winner")), payload.get("scores")
+    return "", None
+
+
+def _cfg_arena() -> str:
+    from . import config as cfgmod
+
+    cfg = cfgmod.load()
+    return cfg.arena if cfg else ""
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from . import config as cfgmod
+    from . import credentials
+
+    checks: List[tuple[str, bool, str]] = []
+    creds = credentials.load()
+    checks.append(("logged in", bool(creds and creds.access_token), creds.url if creds else "run `pyyol login`"))
+
+    cfg = cfgmod.load()
+    if cfg is None:
+        checks.append(("pyyol.toml", False, "run `pyyol init`"))
+    else:
+        problems = cfgmod.validate(cfg)
+        checks.append(("pyyol.toml", not problems, "; ".join(problems) or f"{cfg.name} · {cfg.arena} · {cfg.mode}"))
+        # Agent module imports?
+        try:
+            _load_agent_from_config(cfg)
+            checks.append(("agent loads", True, cfg.entry))
+        except Exception as e:  # noqa: BLE001
+            checks.append(("agent loads", False, str(e)))
+
+    base = _http_base(args, creds)
+    if base:
+        st, _ = _api_get(f"{base}/v1/arenas")
+        checks.append(("platform reachable", st == 200, f"{base} ({st})"))
+    else:
+        checks.append(("platform reachable", False, "no API url"))
+
+    checks.append(("sdk version", True, __version__))
+
+    print("pyyol doctor\n")
+    all_ok = True
+    for name, ok, detail in checks:
+        all_ok = all_ok and ok
+        print(f"  {OK if ok else BAD} {name:<20} {detail}")
+    ready = all_ok
+    print("\n" + ("✓ ready — `pyyol dev` to practice, `pyyol play <arena>` to compete." if ready
+                  else "fix the ✗ items above."))
+    return 0 if ready else 1
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    import urllib.request
+
+    print(f"pyyol {__version__}")
+    latest = ""
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/pyyol/json", timeout=5) as resp:
+            latest = json.loads(resp.read()).get("info", {}).get("version", "")
+    except Exception:  # noqa: BLE001 — offline / not published yet
+        pass
+    if latest and latest != __version__:
+        print(f"  update available: {latest}")
+        print("  run:  pip install -U pyyol")
+    elif latest:
+        print("  you're up to date.")
+    else:
+        print("  run:  pip install -U pyyol")
+    return 0
+
+
+def cmd_dev(args: argparse.Namespace) -> int:
+    """Local development loop — sandbox-locked (never real stakes)."""
+    return _orchestrate(args, dev_locked=True)
+
+
+def cmd_play(args: argparse.Namespace) -> int:
+    """Start competing in a chosen arena. Sandbox by default; --ranked = real stakes."""
+    return _orchestrate(args, dev_locked=False)
 
 
 # --- entry point ---------------------------------------------------------------
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="pyyol", description="Agent Arena developer CLI (Beta)")
-    p.add_argument("--version", action="version", version=f"pyyol {__version__}")
-    sub = p.add_subparsers(dest="command", required=True)
+def _add_api(sp):
+    sp.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
 
-    pi = sub.add_parser("init", help="scaffold a starter agent + manifest")
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="pyyol",
+        description="Pyyol — build, run, and rank autonomous AI agents. "
+        "Quickstart: pyyol login → pyyol init → pyyol dev.",
+    )
+    p.add_argument("--version", action="version", version=f"pyyol {__version__}")
+    sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
+
+    # --- auth ---
+    pl = sub.add_parser("login", help="log in via the browser (GitHub/Google/wallet/email)")
+    pl.add_argument("--with", dest="provider", default="", choices=["github", "google", "wallet"],
+                    help="pre-select a provider on the login page")
+    pl.add_argument("--dashboard", default="", help="dashboard base URL (opens {dashboard}/cli-login)")
+    pl.add_argument("--api", default="", help="platform API base URL to record")
+    pl.add_argument("--connect", default="", help="override the WSS connect URL")
+    pl.add_argument("--agent", default="", help="agent public id (if known)")
+    pl.add_argument("--token", default="", help="paste a token / PAT directly (CI / headless)")
+    pl.set_defaults(func=cmd_login)
+
+    sub.add_parser("logout", help="remove stored credentials").set_defaults(func=cmd_logout)
+
+    pwho = sub.add_parser("whoami", help="show who you're logged in as")
+    _add_api(pwho)
+    pwho.set_defaults(func=cmd_whoami)
+
+    # --- project ---
+    pi = sub.add_parser("init", help="scaffold a new agent project (agent + pyyol.toml)")
     pi.add_argument("dir")
     pi.add_argument("--lang", choices=["python", "js"], default="python")
+    pi.add_argument("--framework", default="", help="e.g. langgraph, crewai, openai-agents")
+    pi.add_argument("--arena", choices=["goofspiel", "mafia", "monopoly"], default="goofspiel")
     pi.add_argument("--name", default="")
     pi.set_defaults(func=cmd_init)
 
-    pv = sub.add_parser("validate", help="probe a running endpoint like the platform does")
-    pv.add_argument("--url", required=True, help="the /turn endpoint URL")
+    # --- develop (sandbox-locked) ---
+    pdev = sub.add_parser("dev", help="run your agent locally in SANDBOX (no stakes) — the dev loop")
+    pdev.add_argument("--matches", type=int, default=3, help="practice matches to auto-start")
+    pdev.add_argument("--url", default="", help="connect URL (or PYYOL_URL; defaults to login)")
+    pdev.add_argument("--agent", default="", help="agent id (or PYYOL_AGENT_ID; defaults to login)")
+    pdev.add_argument("--token", default="", help="token (or PYYOL_TOKEN; defaults to login)")
+    pdev.add_argument("--quiet", action="store_true")
+    pdev.add_argument("--no-color", action="store_true")
+    _add_api(pdev)
+    pdev.set_defaults(func=cmd_dev)
+
+    # --- compete (explicit; --ranked = real stakes) ---
+    pp = sub.add_parser("play", help="compete in an arena. SANDBOX by default; --ranked = real stakes")
+    pp.add_argument("arena", choices=["goofspiel", "mafia", "monopoly"])
+    pp.add_argument("--ranked", action="store_true", help="REAL stakes (needs `pyyol publish`; confirmed)")
+    pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
+    pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start")
+    pp.add_argument("--yes", action="store_true", help="skip the ranked confirmation (CI)")
+    pp.add_argument("--url", default="")
+    pp.add_argument("--agent", default="")
+    pp.add_argument("--token", default="")
+    pp.add_argument("--quiet", action="store_true")
+    pp.add_argument("--no-color", action="store_true")
+    _add_api(pp)
+    pp.set_defaults(func=cmd_play)
+
+    ppub = sub.add_parser("publish", help="certify your agent for RANKED play (verify a hosted endpoint)")
+    ppub.add_argument("--api", default="", help="platform API base (or from login)")
+    ppub.add_argument("--agent", default="", help="agent public id (or from login)")
+    ppub.add_argument("--token", default="", help="dashboard/access token (or from login)")
+    ppub.add_argument("--manifest", required=True, help="path to manifest.json (hosted endpoint)")
+    ppub.add_argument("--secret", default="", help="endpoint secret to store before verify")
+    ppub.set_defaults(func=cmd_publish)
+
+    # --- discover / inspect ---
+    prep = sub.add_parser("replay", help="fetch a match replay")
+    prep.add_argument("match")
+    prep.add_argument("--game", choices=["goofspiel", "mafia", "monopoly"], default="")
+    prep.add_argument("--json", action="store_true")
+    _add_api(prep)
+    prep.set_defaults(func=cmd_replay)
+
+    ppro = sub.add_parser("profile", help="show a developer profile + P-Index (self if omitted)")
+    ppro.add_argument("handle", nargs="?", default="")
+    _add_api(ppro)
+    ppro.set_defaults(func=cmd_profile)
+
+    plb = sub.add_parser("leaderboard", help="show the leaderboard")
+    plb.add_argument("--game", default="", help="per-arena agent board")
+    plb.add_argument("--developers", action="store_true", help="developer (P-Index) board")
+    plb.add_argument("--season", type=int, default=0)
+    _add_api(plb)
+    plb.set_defaults(func=cmd_leaderboard)
+
+    par = sub.add_parser("arenas", help="list available arenas")
+    _add_api(par)
+    par.set_defaults(func=cmd_arenas)
+
+    pdoc = sub.add_parser("doctor", help="diagnose your setup (login, config, agent, platform)")
+    _add_api(pdoc)
+    pdoc.set_defaults(func=cmd_doctor)
+
+    sub.add_parser("update", help="check for a newer pyyol").set_defaults(func=cmd_update)
+
+    # --- advanced / compatibility aliases (lower-level; dev/play front-end these) ---
+    pv = sub.add_parser("validate", help="[advanced] probe a hosted endpoint like the platform does")
+    pv.add_argument("--url", required=True)
     pv.add_argument("--secret", default="")
     pv.add_argument("--game", choices=["goofspiel", "monopoly", "mafia"], default="goofspiel")
     pv.set_defaults(func=cmd_validate)
 
-    ps = sub.add_parser("simulate", help="drive a full local match against a running endpoint")
-    ps.add_argument("--url", required=True, help="the /turn endpoint URL")
+    ps = sub.add_parser("simulate", help="[advanced] drive a full local match against a hosted endpoint")
+    ps.add_argument("--url", required=True)
     ps.add_argument("--secret", default="")
     ps.add_argument("--game", choices=["goofspiel"], default="goofspiel")
     ps.add_argument("--hand", type=int, default=13)
     ps.set_defaults(func=cmd_simulate)
 
-    pl = sub.add_parser("login", help="log in via the browser and store credentials")
-    pl.add_argument(
-        "--dashboard", default="", help="dashboard base URL (opens {dashboard}/cli-login)"
-    )
-    pl.add_argument("--api", default="", help="platform API base URL to record")
-    pl.add_argument("--connect", default="", help="override the WSS connect URL")
-    pl.add_argument("--agent", default="", help="agent public id (if known)")
-    pl.add_argument("--token", default="", help="paste a token directly (headless/CI fallback)")
-    pl.set_defaults(func=cmd_login)
+    prun = sub.add_parser("run", help="[advanced] connect your agent over WSS (dev/play front-end this)")
+    prun.add_argument("--file", default="agent.py")
+    prun.add_argument("--var", default="agent")
+    prun.add_argument("--url", default="")
+    prun.add_argument("--agent", default="")
+    prun.add_argument("--token", default="")
+    prun.add_argument("--json", action="store_true")
+    prun.add_argument("--quiet", action="store_true")
+    prun.add_argument("--no-color", action="store_true")
+    prun.set_defaults(func=cmd_run)
 
-    plo = sub.add_parser("logout", help="remove stored credentials")
-    plo.set_defaults(func=cmd_logout)
-
-    pst = sub.add_parser("status", help="show whether your agent is connected")
-    pst.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
-    pst.add_argument("--agent", default="", help="agent public id (defaults to the logged-in one)")
+    pst = sub.add_parser("status", help="[advanced] is your agent connected?")
+    _add_api(pst)
+    pst.add_argument("--agent", default="")
     pst.set_defaults(func=cmd_status)
 
-    plg = sub.add_parser("logs", help="show recent local agent logs")
-    plg.add_argument(
-        "--file", default="", help="log file path (defaults to ~/.pyyol/logs/agent.log)"
-    )
-    plg.add_argument("-n", type=int, default=50, help="number of trailing lines")
+    plg = sub.add_parser("logs", help="[advanced] recent local agent logs")
+    plg.add_argument("--file", default="")
+    plg.add_argument("-n", type=int, default=50)
     plg.set_defaults(func=cmd_logs)
 
-    pr = sub.add_parser("run", help="connect your local agent to the platform over WSS")
-    pr.add_argument("--file", default="agent.py", help="path to your agent module")
-    pr.add_argument("--var", default="agent", help="the Agent variable name in that module")
-    pr.add_argument("--url", default="", help="platform connect URL (or PYYOL_URL)")
-    pr.add_argument("--agent", default="", help="agent public id (or PYYOL_AGENT_ID)")
-    pr.add_argument("--token", default="", help="access token (or PYYOL_TOKEN)")
-    pr.add_argument(
-        "--json", action="store_true", help="emit one JSON object per line (for piping)"
-    )
-    pr.add_argument(
-        "--quiet", action="store_true", help="only milestones (connect / match / result)"
-    )
-    pr.add_argument("--no-color", action="store_true", help="disable ANSI color")
-    pr.set_defaults(func=cmd_run)
-
-    ppl = sub.add_parser("play", help="start a self-driving match (your agent plays it)")
-    ppl.add_argument("game", choices=["goofspiel", "mafia", "monopoly"])
-    ppl.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
-    ppl.add_argument("--token", default="", help="agent token (defaults to the logged-in one)")
-    ppl.add_argument("--difficulty", default="", help="goofspiel house difficulty (optional)")
-    ppl.add_argument("--players", type=int, default=0, help="monopoly player count (optional)")
-    ppl.add_argument("--watch", action="store_true", help="spectate the match after starting it")
-    ppl.add_argument("--json", action="store_true", help="JSON event lines when spectating")
-    ppl.add_argument("--no-color", action="store_true")
-    ppl.set_defaults(func=cmd_play)
-
-    pq = sub.add_parser("queue", help="enter ranked matchmaking at a stake tier (agents vs agents)")
-    pq.add_argument("--game", choices=["goofspiel", "mafia", "monopoly"], default="goofspiel")
-    pq.add_argument("--tier", default="", help="stake tier: low|mid|high (see `pyyol queue --list`)")
-    pq.add_argument("--bid", type=int, default=0, help="raw coin bid (only for a game without tiers)")
-    pq.add_argument("--list", action="store_true", help="list the game's stake tiers and exit")
-    pq.add_argument("--wait", type=float, default=30.0, help="seconds to poll for a match")
-    pq.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
-    pq.add_argument("--token", default="", help="agent token (defaults to the logged-in one)")
-    pq.set_defaults(func=cmd_queue)
-
-    pw = sub.add_parser("watch", help="spectate a live match in the terminal (read-only)")
-    pw.add_argument("match", help="match id (from `pyyol play` or the dashboard)")
-    pw.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
-    pw.add_argument("--json", action="store_true", help="emit one JSON object per line")
+    pw = sub.add_parser("watch", help="[advanced] spectate a live match (read-only)")
+    pw.add_argument("match")
+    _add_api(pw)
+    pw.add_argument("--json", action="store_true")
     pw.add_argument("--no-color", action="store_true")
     pw.set_defaults(func=cmd_watch)
-
-    pp = sub.add_parser("publish", help="submit + verify a manifest via the platform API")
-    pp.add_argument(
-        "--api", default="", help="platform API base, e.g. https://host/api (or from login)"
-    )
-    pp.add_argument("--agent", default="", help="agent public id (ag_…) (or from login)")
-    pp.add_argument("--token", default="", help="dashboard JWT / access token (or from login)")
-    pp.add_argument("--manifest", required=True, help="path to manifest.json")
-    pp.add_argument("--secret", default="", help="endpoint secret to store before verify")
-    pp.set_defaults(func=cmd_publish)
 
     return p
 

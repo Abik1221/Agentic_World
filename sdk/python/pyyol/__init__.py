@@ -16,27 +16,46 @@ your decision logic. It contains no AI/strategy and no provider lock-in.
     agent.serve(port=9099)
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.0"  # x-release-please-version
 
-from .server import Agent
-from .signing import VerificationError, compute_signature, verify_request
-from .simulator import LocalClient, SimulationError, simulate_goofspiel
-
+# Everything below is imported LAZILY (PEP 562). Importing `pyyol` — which the CLI
+# does on every invocation for `__version__` — must stay cheap: no `http.server`
+# (server), no `websockets` (runtime), no `random` (simulator). Symbols resolve on
+# first access, so `from pyyol import Agent` still works exactly as before.
 __all__ = [
     "Agent",
+    "Adapter",
+    "as_agent",
     "VerificationError",
     "verify_request",
     "compute_signature",
     "simulate_goofspiel",
     "LocalClient",
     "SimulationError",
+    "RuntimeConnector",
+    "ConnectorError",
     "__version__",
 ]
 
+_LAZY = {
+    "Agent": "server",
+    "Adapter": "server",
+    "as_agent": "server",
+    "VerificationError": "signing",
+    "verify_request": "signing",
+    "compute_signature": "signing",
+    "simulate_goofspiel": "simulator",
+    "LocalClient": "simulator",
+    "SimulationError": "simulator",
+    "RuntimeConnector": "runtime",
+    "ConnectorError": "runtime",
+}
 
-def __getattr__(name):  # lazy so `import pyyol` never forces the websockets dep
-    if name in ("RuntimeConnector", "ConnectorError"):
-        from . import runtime
 
-        return getattr(runtime, name)
+def __getattr__(name):
+    mod = _LAZY.get(name)
+    if mod is not None:
+        from importlib import import_module
+
+        return getattr(import_module(f".{mod}", __name__), name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

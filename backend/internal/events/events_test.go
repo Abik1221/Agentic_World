@@ -118,6 +118,34 @@ func TestDispatcher_MultipleHandlersAllMustSucceed(t *testing.T) {
 	}
 }
 
+// A handler that PANICS must be recovered and treated as a failed delivery (attempts
+// bumped, not published, tick does not abort) — so one poison payload can't wedge the
+// whole outbox, and events after it still get delivered in the same tick.
+func TestDispatcher_PanickingHandlerRecoveredAndDoesNotWedge(t *testing.T) {
+	repo := newFakeRepo(
+		Event{ID: "evt_boom", Type: TypeAgentCertified},
+		Event{ID: "evt_ok", Type: TypeSeasonRolled},
+	)
+	d := New(repo, quietLog(), time.Second)
+	d.On(TypeAgentCertified, func(_ context.Context, _ Event) error { panic("nil deref in a handler") })
+	delivered := false
+	d.On(TypeSeasonRolled, func(_ context.Context, _ Event) error { delivered = true; return nil })
+
+	// Must NOT panic out of tick.
+	if err := d.tick(context.Background()); err != nil {
+		t.Fatalf("tick returned error: %v", err)
+	}
+	if repo.published["evt_boom"] {
+		t.Fatal("panicking handler's event must not be published")
+	}
+	if repo.attempts["evt_boom"] != 1 {
+		t.Fatalf("panic must bump attempts (→ eventual poison-skip), got %d", repo.attempts["evt_boom"])
+	}
+	if !delivered || !repo.published["evt_ok"] {
+		t.Fatal("an event after the poison one must still be delivered in the same tick")
+	}
+}
+
 func TestDispatcher_UnknownTypeIsTriviallyPublished(t *testing.T) {
 	repo := newFakeRepo(Event{ID: "evt_5", Type: "nobody.listens"})
 	d := New(repo, quietLog(), time.Second)

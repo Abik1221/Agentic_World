@@ -79,9 +79,17 @@ def save(creds: Credentials) -> str:
             backend = "file"
 
     path = _cred_path()
-    with open(path, "w") as f:
+    # Create with 0600 from the start (O_CREAT + mode) so the token is never written
+    # to a world/group-readable file, even briefly. os.open honors the mode only on
+    # creation, so chmod an existing file too (re-login keeps it locked down).
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    with os.fdopen(fd, "w") as f:
         json.dump(meta, f, indent=2)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
     return backend
 
 

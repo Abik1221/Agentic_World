@@ -167,10 +167,20 @@ class RuntimeConnector:
     # --- one session ----------------------------------------------------------
 
     def _session(self) -> None:
+        # Feedback before the (bounded) connect, so a slow/dead link doesn't look like
+        # a frozen terminal while the 10s open_timeout runs.
+        host = urlsplit(self.url).netloc or self.url
+        self._emit("connecting", f"connecting to {host}…")
         connect = self._connect
         if connect is None:
-            from websockets.sync.client import connect as connect  # lazy import
-        ws = connect(self.url, open_timeout=10)
+            from websockets.sync.client import connect as _ws_connect  # lazy import
+
+            # Protocol-level keepalive so a half-open (silently dropped) TCP link is
+            # detected and closed — the blocked recv then raises and run() reconnects.
+            # Tuned for flaky/low-bandwidth links; the app-level heartbeat is separate.
+            ws = _ws_connect(self.url, open_timeout=10, ping_interval=15, ping_timeout=15)
+        else:
+            ws = connect(self.url, open_timeout=10)
         send_lock = threading.Lock()
 
         def send(frame: Dict[str, Any]) -> None:

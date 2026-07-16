@@ -14,6 +14,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -25,6 +26,14 @@ const (
 	TypeMatchFinished  = "match.finished"
 	TypeSeasonRolled   = "season.rolled"
 	TypeBadgeAwarded   = "badge.awarded"
+	// TypeRatingUpdated is emitted (transactionally, inside ApplyMatch) once per
+	// rated match, carrying each agent's per-arena rating before/after/delta. The
+	// P-Index recompute pipeline and streak/win-count badges project off it.
+	TypeRatingUpdated = "rating.updated"
+	// TypePIndexUpdated is emitted after a developer's composite P-Index is
+	// recomputed, carrying the new value + per-dimension breakdown. Rank-threshold
+	// badges and analytics project off it.
+	TypePIndexUpdated = "pindex.updated"
 	// Cross-service live-feed facts for the Super Admin mirror. See
 	// docs/architecture/platform-events-contract.md. TypeTopupSucceeded is defined
 	// for the contract but not yet emitted (topups commit inside the ledger's own
@@ -128,14 +137,30 @@ func (d *Dispatcher) tick(ctx context.Context) error {
 }
 
 // deliver runs every handler registered for the event's type. Returns true only
-// if all succeed (an event with no handlers is trivially delivered).
+// if all succeed (an event with no handlers is trivially delivered). A handler that
+// PANICS is recovered and treated as a failure, so it bumps attempts (and is
+// eventually poison-skipped) instead of aborting the tick — a panic that escaped
+// here would be recovered by SafeLoop and RESTART the dispatcher without ever
+// bumping attempts, wedging the outbox on the poison event forever.
 func (d *Dispatcher) deliver(ctx context.Context, e Event) bool {
 	ok := true
 	for _, h := range d.handlers[e.Type] {
-		if err := h(ctx, e); err != nil {
+		if err := d.safeCall(ctx, h, e); err != nil {
 			ok = false
 			d.log.Error("event handler failed", "event", e.ID, "type", e.Type, "error", err)
 		}
 	}
 	return ok
+}
+
+// safeCall invokes a handler, converting a panic into an error so a single bad
+// handler/payload cannot take down the dispatcher or wedge delivery.
+func (d *Dispatcher) safeCall(ctx context.Context, h Handler, e Event) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handler panic: %v", r)
+			d.log.Error("event handler PANICKED (recovered)", "event", e.ID, "type", e.Type, "panic", r)
+		}
+	}()
+	return h(ctx, e)
 }

@@ -12,6 +12,7 @@
  */
 export { Agent, SDK_VERSION } from "./server.js";
 export type { AgentOptions, DispatchResult } from "./server.js";
+export { Adapter, asAgent } from "./adapter.js";
 export {
   VerificationError,
   ReplayGuard,

@@ -6,17 +6,23 @@ persistent WebSocket — no inbound endpoint, no deploy, works behind NAT. Offic
 SDKs for **Python** and **JS/TS** own the transport so you write only your
 decision logic.
 
-## From zero to a live game in ~15 minutes
+## From zero to a live game in ~2 minutes
+
+**→ Start here: [quickstart.md](quickstart.md)** — the full v2 walkthrough
+(install → login → init → dev → play), the `initialize/step/shutdown` adapter, and
+the **SANDBOX-vs-RANKED money-safety model**.
 
 ```bash
 pip install pyyol                 # or: npm install pyyol
-pyyol login --dashboard https://<pyyol-host>   # browser login, stores creds
+pyyol login                       # browser login (GitHub / Google / wallet / email)
 pyyol init my-agent && cd my-agent
-# edit agent.py: replace decide() with your strategy (or an LLM call)
-pyyol simulate goofspiel          # optional: full match in-process, no network
-pyyol run                         # dials out; plays live matches
-pyyol status                      # 🟢 Online
+pyyol dev                         # practice locally — SANDBOX, no stakes
+pyyol play goofspiel              # compete (add --ranked for real stakes)
 ```
+
+Projects use a tiny **`pyyol.toml`** (convention over configuration) instead of a
+manifest. `manifest.md` is now only for the advanced **ranked certification** path
+(`pyyol publish`).
 
 That's it — no server to host, no port to open, no HTTPS to provision.
 
@@ -36,6 +42,16 @@ Ready to play **for coins**? Publish + fund your agent, then
 
 SDK-specific setup lives in each SDK's README: [Python](../python/README.md),
 [JS/TS](../js/README.md).
+
+## Building with an AI assistant (terminal or anywhere)
+
+Point your AI coding assistant (Claude Code, Cursor, ChatGPT, …) at these and it
+has the whole protocol + game rules in context — no plugin to install:
+
+- [`llms.txt`](llms.txt) — a curated index of every doc ([llmstxt.org](https://llmstxt.org) convention).
+- [`llms-full.txt`](llms-full.txt) — every doc concatenated into one file to paste or fetch.
+
+Both are generated from these docs by [`gen_llms.py`](gen_llms.py) and kept fresh in CI.
 
 ## Design principles (why it looks like this)
 

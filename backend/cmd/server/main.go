@@ -19,6 +19,7 @@ import (
 	"github.com/agent-arena/arena/internal/adminapi"
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/antifraud"
+	"github.com/agent-arena/arena/internal/arena"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/badges"
 	"github.com/agent-arena/arena/internal/blockchain"
@@ -26,6 +27,7 @@ import (
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
+	"github.com/agent-arena/arena/internal/devprofile"
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/health"
@@ -41,6 +43,7 @@ import (
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
 	"github.com/agent-arena/arena/internal/payout"
+	"github.com/agent-arena/arena/internal/pindex"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platformcfg"
 	"github.com/agent-arena/arena/internal/platformsign"
@@ -54,11 +57,11 @@ import (
 	"github.com/agent-arena/arena/internal/store"
 	"github.com/agent-arena/arena/internal/subscription"
 	"github.com/agent-arena/arena/internal/tournament"
+	"github.com/agent-arena/arena/internal/twofa"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
 	"github.com/agent-arena/arena/internal/walletadmin"
 	"github.com/agent-arena/arena/internal/walletrecon"
-	"github.com/agent-arena/arena/internal/twofa"
 	"github.com/agent-arena/arena/internal/walletverify"
 	"github.com/agent-arena/arena/internal/webhook"
 )
@@ -295,6 +298,10 @@ func run() error {
 	eventBus.On(events.TypeAgentCertified, badgeSvc.OnAgentCertified)
 	eventBus.On(events.TypeSeasonRolled, badgeSvc.OnSeasonRolled)
 	eventBus.On(events.TypeMatchFinished, badgeSvc.OnMatchFinished)
+	// Developer (P-Index) badges: rank thresholds + consistency off pindex.updated;
+	// streak/win-count/underdog off rating.updated. Idempotent, so at-least-once is safe.
+	eventBus.On(events.TypePIndexUpdated, badgeSvc.OnPIndexUpdated)
+	eventBus.On(events.TypeRatingUpdated, badgeSvc.OnRatingUpdated)
 	// Cross-service event mirror: every delivered domain event is also appended to
 	// the Redis stream the Super Admin consumes (live dashboard + analytics). It is
 	// just another idempotent outbox handler — a publish failure leaves the event
@@ -304,10 +311,14 @@ func run() error {
 		events.TypeAgentCertified, events.TypeMatchStarted, events.TypeMatchFinished,
 		events.TypeSeasonRolled, events.TypeBadgeAwarded,
 		events.TypeDisputeOpened, events.TypeWithdrawalRequested,
+		events.TypeRatingUpdated, events.TypePIndexUpdated,
 	} {
 		eventBus.On(t, platformEvents.Publish)
 	}
-	launch("event-dispatcher", eventBus.Run)
+	// NOTE: the event dispatcher is launched later (search "event-dispatcher"), after
+	// ALL handlers are registered — including the P-Index recompute handler, which
+	// depends on the rating service constructed further down. Registering handlers
+	// after Run starts would race the dispatcher's handler map.
 
 	// Durable webhook delivery for the push protocol's async notifications
 	// (/event + /game-end). Drive loops ENQUEUE; this central dispatcher delivers
@@ -397,6 +408,22 @@ func run() error {
 	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
 	profilesHandler := profiles.NewHandler(profilesSvc, authn)
 
+	// P-Index: the developer-reputation composite. rating.updated marks affected
+	// developers dirty; a background worker recomputes their P-Index through the
+	// modular scoring engine and refreshes the season ranking (off the hot path).
+	pindexSvc := pindex.New(store.NewPIndexRepo(st.DB), ratingSvc.CurrentSeason, clock, log)
+	eventBus.On(events.TypeRatingUpdated, pindexSvc.OnRatingUpdated)
+	launch("pindex-recompute", pindex.NewWorker(pindexSvc, log, 5*time.Second).Run)
+
+	// Public developer reputation surface (@handle profile, P-Index transparency,
+	// match history, developer follow graph), aggregated across a developer's agents.
+	devProfileHandler := devprofile.NewHandler(
+		devprofile.New(store.NewDevProfileRepo(st.DB), pindexSvc, ratingSvc.CurrentSeason), authn)
+
+	// All event handlers are now registered — start the dispatcher (see the NOTE at
+	// its handler-registration block above).
+	launch("event-dispatcher", eventBus.Run)
+
 	// Engagement: clips (dramatic-moment detection + async asset render) and social
 	// (follows + notification fan-out). Both run on bounded worker pools off the
 	// hot path; the match finish hook only enqueues (never blocks finalize).
@@ -420,6 +447,7 @@ func run() error {
 		clock,
 		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
+	mafiaSvc.SetRater(ratingSvc) // paid tables update the per-arena Mafia rating (TrueSkill)
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
@@ -448,6 +476,7 @@ func run() error {
 	monopolySvc.SetGateway(agentGateway) // play over the socket when the agent is connected
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
+	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake (settlement latent until MonopolyWallet wired)
 	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
@@ -592,11 +621,11 @@ func run() error {
 	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
 	matchmakingSvc := matchmaking.New(
 		store.NewMatchmakingRepo(st.DB),
-		matchPairer{matchSvc}, ratingSvc, clock,
+		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
-	matchmakingSvc.SetEligibility(manifestSvc)  // ranked queue requires a certified agent
-	matchmakingSvc.SetAffordability(walletSvc)  // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
+	matchmakingSvc.SetEligibility(manifestSvc) // ranked queue requires a certified agent
+	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
@@ -738,6 +767,8 @@ func run() error {
 		monopolyHandler.Register,
 		ratingHandler.Register,
 		profilesHandler.Register,
+		devProfileHandler.Register,
+		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,
@@ -943,19 +974,38 @@ func (b payoutBank) ReversePayout(ctx context.Context, withdrawalID, agentPublic
 	return err
 }
 
+// goofspielRater adapts rating.Service to matchmaking.RatingSource: the ranked queue
+// is Goofspiel-only, so band placement uses the agent's Goofspiel arena rating.
+type goofspielRater struct{ r *rating.Service }
+
+func (g goofspielRater) Elo(ctx context.Context, agentPublicID string) (int, error) {
+	return g.r.Elo(ctx, agentPublicID, rating.GameGoofspiel)
+}
+
 // raterAdapter bridges match.Rater to rating.Service, mapping the match's seat
 // view onto the rating input.
 type raterAdapter struct{ r *rating.Service }
 
 func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
-	var res rating.MatchResult
-	res.MatchPublicID = rr.MatchPublicID
-	res.WinnerSeat = rr.WinnerSeat
+	res := rating.MatchResult{MatchPublicID: rr.MatchPublicID, Game: rr.Game}
 	for _, p := range rr.Players {
-		if p.Seat == 0 || p.Seat == 1 {
-			res.Agents[p.Seat] = p.AgentPublicID
-			res.CoinsDelta[p.Seat] = p.CoinsDelta
+		placement := p.Placement
+		if placement == 0 {
+			// 2-player fallback: derive placement from the winning seat. A tie
+			// (WinnerSeat == gs.Tie) makes both placement 1.
+			switch {
+			case rr.WinnerSeat < 0: // tie sentinel
+				placement = 1
+			case p.Seat == rr.WinnerSeat:
+				placement = 1
+			default:
+				placement = 2
+			}
 		}
+		res.Players = append(res.Players, rating.PlayerResult{
+			AgentPublicID: p.AgentPublicID, Seat: p.Seat,
+			Placement: placement, CoinsDelta: p.CoinsDelta,
+		})
 	}
 	return a.r.Rate(ctx, res)
 }

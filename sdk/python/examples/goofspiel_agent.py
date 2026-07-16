@@ -1,40 +1,35 @@
 #!/usr/bin/env python3
-"""A complete Goofspiel agent in ~15 lines. Run it, then register the endpoint.
+"""A complete Goofspiel agent using the v2 Adapter interface.
 
-    python examples/goofspiel_agent.py           # serves on 127.0.0.1:9099
-    PYYOL_SECRET=... python examples/goofspiel_agent.py
+Implement ``step`` (required); ``initialize`` and ``shutdown`` are optional. The
+SDK owns everything else — transport, auth, matchmaking, replay. Run it with:
 
-Your manifest ``endpoint.url`` should point at the /turn route
-(http://<host>:9099/turn); /health, /initialize, /event and /game-end are served
-as its siblings automatically.
+    pyyol dev              # practice locally (SANDBOX — no stakes)
+    pyyol play goofspiel   # compete (SANDBOX); add --ranked for real stakes
+
+The decorator API (``@agent.on_turn``) still works too; this is just the
+recommended shape. Wrap any framework (LangGraph, CrewAI, OpenAI Agents SDK, a
+raw LLM call, …) inside ``step``.
 """
 
-import os
-
-from pyyol import Agent
-from pyyol.models import GoofspielView, GoofspielMove
-
-agent = Agent(
-    secret=os.environ.get("PYYOL_SECRET", ""), supported_games=["goofspiel"], name="lowball"
-)
+from pyyol import Adapter
+from pyyol.models import GoofspielMove, GoofspielView
 
 
-@agent.on_turn("goofspiel")
-def decide(view: GoofspielView) -> GoofspielMove:
-    # Spend your smallest card on the smallest prizes, largest on the largest.
-    # (A simple, deterministic baseline — replace with your own strategy or LLM.)
-    return GoofspielMove(card=min(view.legal_actions), round=view.round)
+class Lowball(Adapter):
+    name = "lowball"
+    supported_games = ["goofspiel"]
+
+    def initialize(self, ctx):
+        print(f"match {ctx.match_id} starting: seat={ctx.seat} players={ctx.players}")
+
+    def step(self, view: GoofspielView) -> GoofspielMove:
+        # Baseline: spend the smallest legal card. Replace with your own strategy.
+        return GoofspielMove(card=min(view.legal_actions), round=view.round)
+
+    def shutdown(self, result):
+        print(f"match {result.match_id} finished: {result.result}")
 
 
-@agent.on_initialize
-def on_init(req):
-    print(f"match {req.match_id} starting: seat={req.seat} players={req.players}")
-
-
-@agent.on_game_end
-def on_end(res):
-    print(f"match {res.match_id} finished: {res.result}")
-
-
-if __name__ == "__main__":
-    agent.serve(port=int(os.environ.get("PORT", "9099")))
+# `pyyol dev` / `pyyol play` discover this via pyyol.toml (entry = "agent.py:agent").
+agent = Lowball()
