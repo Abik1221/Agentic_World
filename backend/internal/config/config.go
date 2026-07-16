@@ -283,7 +283,10 @@ func Load() (*Config, error) {
 
 		WithdrawVelocityWindow:     l.dur("WITHDRAW_VELOCITY_WINDOW", 24*time.Hour),
 		WithdrawMaxPerWindow:       l.intVal("WITHDRAW_MAX_PER_WINDOW", 25),
-		WithdrawMaxCentsPerWindow:  int64(l.intVal("WITHDRAW_MAX_CENTS_PER_WINDOW", 0)),
+		// Backstop $ ceiling per rolling window (default $10,000). A non-zero default
+		// bounds a scripted drain even if the per-count cap is generous; raise via env
+		// for high-volume operators, set 0 to rely only on the per-count cap.
+		WithdrawMaxCentsPerWindow: int64(l.intVal("WITHDRAW_MAX_CENTS_PER_WINDOW", 1_000_000)),
 		WithdrawNewAddressCooldown: l.dur("WITHDRAW_NEW_ADDRESS_COOLDOWN", 24*time.Hour),
 
 		AdminUserIDs:      l.csv("ADMIN_USER_IDS", ""),

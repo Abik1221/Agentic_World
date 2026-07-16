@@ -111,6 +111,10 @@ func (r *fakeRepo) PendingByConnectAccount(_ context.Context, acct string) ([]pa
 	return out, nil
 }
 
+// WithOwnerLock in the fake just runs fn inline (single-threaded tests need no
+// real serialization); the real serialization is exercised in the live store test.
+func (r *fakeRepo) WithOwnerLock(_ context.Context, _ string, fn func() error) error { return fn() }
+
 type fakeBank struct{ held, released, paid, reversed map[string]int64 }
 
 func newBank() *fakeBank {

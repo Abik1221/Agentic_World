@@ -116,6 +116,24 @@ Escrow is a **single shared wallet** holding every live match's stakes; the DB `
 
 ---
 
+## Addendum — money-theft re-audit (2026-07-16)
+
+Focused follow-up asked by the owner: **prove funds can't move out wrongly (withdrawal) and no attacker can drain another user.** Re-verified, this pass, against source + a live disposable stack.
+
+**Theft paths — re-confirmed CLOSED (no change):** cross-account IDOR (owner read/act gated by token, `ErrForbiddenSelf`); destination redirect (payout only to the owner's ownership-**proven** wallet + new-address cooldown); ledger bypass / double-spend / replay (double-entry, idempotent on withdrawal id, `processing` claim prevents Solana double-broadcast, ambiguous-send never auto-refunds); self-approval (maker-checker); auth-scope confusion; deposit crediting (finalized + mint/ATA/decimals + idempotent on signature). Nothing here regressed.
+
+**New finding — F1 (HIGH), now FIXED: withdrawal `Request` TOCTOU (over-withdraw / velocity bypass).**
+`internal/payout/service.go` `Request`. The entitlement reads (`Withdrawable`, `WithdrawnSince`) and the `Create` that commits the row were **not serialized per owner**. Two (or N) concurrent requests for the same owner each read the *pre-create* state — before either row exists — so all pass the winnings-only cap **and** the velocity caps, letting an owner request payouts summing beyond their net winnings (deposit-laundering the buy→withdraw arbitrage the whole design exists to block) and blow past the rolling velocity limit. Not a cross-account theft, but real money leaving wrongly under a scripted burst / compromised session.
+**Fix:** added `Repo.WithOwnerLock(ctx, owner, fn)` — a **Postgres session advisory lock** keyed on `hashtext(owner)::bigint` (`internal/store/payout_repo.go`) — and wrapped the whole velocity→checks→`Withdrawable`→`Hold`→`Create` critical section in it (`service.go:210`). A sibling request for the same owner now blocks, then reads the **committed** row and is correctly rejected; different owners hash to different keys and never contend. Regression test `TestConcurrentRequestsCannotOverWithdraw` (12 concurrent requests for the full balance → exactly 1 succeeds; fails under `-race` if the wrap is removed). SQL validated on live PG16. Maps to **§3/§4** (debit at request time, no-TOCTOU atomic decrement).
+
+**F2 (MED), FIXED:** `WithdrawMaxCentsPerWindow` defaulted to `0` (no $ ceiling — only the per-count cap applied). Set a non-zero backstop default of **$10,000 / rolling window** (`internal/config/config.go`), overridable via env, `0` to opt out.
+
+**F3 (LOW), OPEN:** `wallet/allocation.go` idempotency key is timestamp-derived; prefer a stable token. Documented, low risk (deposit-side, not a theft path).
+
+Verify: `go build ./... && go vet ./... && go test -race ./internal/payout/...` green; advisory-lock SQL exercised on a disposable Postgres 16.
+
+---
+
 ## Industry controls (mapping key)
 
 - **§1 Key management** — hot/cold split, HSM/MPC/KMS, AES-GCM/secretbox at rest with master key in a separate store, never-log-secret, rotation. *(Chainalysis 2024: key compromise = 43.8% of stolen value; WazirX/Bybit = signer deception.)*

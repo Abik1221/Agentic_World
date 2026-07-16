@@ -56,6 +56,13 @@ type Repo interface {
 	// PendingByConnectAccount returns the still-requested withdrawals routed to a
 	// connected account — used to auto-clear them once KYC completes.
 	PendingByConnectAccount(ctx context.Context, connectAccountID string) ([]Withdrawal, error)
+	// WithOwnerLock runs fn while holding an exclusive per-owner lock, so the
+	// entitlement read (Withdrawable/WithdrawnSince) and the Create it guards are
+	// atomic against a sibling request for the SAME owner. Without it two concurrent
+	// requests each read stale state (before either row exists) and both pass,
+	// letting an owner withdraw past their net winnings and blow the velocity caps.
+	// Implemented with a Postgres session advisory lock keyed on the owner id.
+	WithOwnerLock(ctx context.Context, ownerUserPublicID string, fn func() error) error
 }
 
 // Bank moves coins through the ledger. Satisfied by an adapter over ledger.Service.
