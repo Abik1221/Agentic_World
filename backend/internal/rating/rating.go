@@ -17,17 +17,42 @@ type Config struct {
 	SeasonLength time.Duration // length of one season (default 30 days)
 }
 
-// MatchResult is the finalized outcome the match worker hands to Rate.
+// Arena game keys. The rating subject is (agent, game, season): each arena keeps an
+// independent rating. New arenas simply use a new key — no schema change.
+const (
+	GameGoofspiel = "goofspiel"
+	GameMafia     = "mafia"
+	GameMonopoly  = "monopoly"
+)
+
+// Rating algorithms. 1v1 arenas use Glicko-2; N-player arenas use TrueSkill.
+const (
+	AlgoGlicko2   = "glicko2"
+	AlgoTrueSkill = "trueskill"
+)
+
+// PlayerResult is one seat's finished-match outcome. Placement is the finishing rank
+// (1 = best); equal placements mean a tie between those agents (e.g. a winning
+// faction in Mafia all share placement 1).
+type PlayerResult struct {
+	AgentPublicID string
+	Seat          int
+	Placement     int
+	CoinsDelta    int64
+}
+
+// MatchResult is the finalized outcome the match worker hands to Rate. Game selects
+// the arena; the player count selects the algorithm (2 → Glicko-2, >2 → TrueSkill).
 type MatchResult struct {
 	MatchPublicID string
-	WinnerSeat    int
-	Agents        [2]string
-	CoinsDelta    [2]int64
+	Game          string
+	Players       []PlayerResult
 }
 
 // LeaderboardPage is a paginated leaderboard slice.
 type LeaderboardPage struct {
 	Season     int         `json:"season"`
+	Game       string      `json:"game"`
 	Entries    []LeaderRow `json:"entries"`
 	NextCursor string      `json:"next_cursor,omitempty"`
 }
@@ -93,7 +118,7 @@ func (s *Service) SeasonChampion(ctx context.Context) (SeasonChampion, error) {
 	if last < 0 {
 		return res, nil // no season finalised yet
 	}
-	rows, err := s.repo.Leaderboard(ctx, last, 0, 1)
+	rows, err := s.repo.Leaderboard(ctx, GameGoofspiel, last, 0, 1)
 	if err != nil {
 		return SeasonChampion{}, err
 	}
@@ -158,7 +183,7 @@ func (s *Service) ForceRollCurrentSeason(ctx context.Context) (season int, champ
 // queries the repo directly with the exact season (Service.Leaderboard treats
 // season 0 as "current", which would misresolve season 0 here).
 func (s *Service) championOf(ctx context.Context, season int) (string, error) {
-	rows, err := s.repo.Leaderboard(ctx, season, 0, 1)
+	rows, err := s.repo.Leaderboard(ctx, GameGoofspiel, season, 0, 1)
 	if err != nil {
 		return "", err
 	}
@@ -168,24 +193,51 @@ func (s *Service) championOf(ctx context.Context, season int) (string, error) {
 	return rows[0].AgentPublicID, nil
 }
 
-// Elo returns an agent's current-season rating, or the 1500 baseline (the Glicko
-// center) if it has no rating row yet — unrated agents matchmake from the
-// baseline. Used by matchmaking to pair within a skill band.
-func (s *Service) Elo(ctx context.Context, agentPublicID string) (int, error) {
-	return s.repo.AgentElo(ctx, agentPublicID, s.CurrentSeason())
+// Elo returns an agent's current-season rating in the given arena, or the 1500
+// baseline if it has no rating row yet — unrated agents matchmake from the baseline.
+// Used by matchmaking to pair within a skill band.
+func (s *Service) Elo(ctx context.Context, agentPublicID, game string) (int, error) {
+	if game == "" {
+		game = GameGoofspiel
+	}
+	return s.repo.AgentElo(ctx, agentPublicID, game, s.CurrentSeason())
 }
 
-// Rate applies a finished match's rating change in the current season. Idempotent
-// per match. Implements (via an adapter) match.Rater.
+// Rate applies a finished match's rating change to the match's arena in the current
+// season. Idempotent per match. 2-player matches use Glicko-2; N-player (>2) matches
+// use TrueSkill. Implements (via an adapter) match.Rater.
 func (s *Service) Rate(ctx context.Context, res MatchResult) error {
-	scoreA := ScoreForSeat0(res.WinnerSeat)
+	if len(res.Players) < 2 {
+		return nil // nothing to rate (need at least two participants)
+	}
+	game := res.Game
+	if game == "" {
+		game = GameGoofspiel
+	}
+	// The algorithm is fixed PER ARENA, not per match: Goofspiel (always 1v1) uses
+	// Glicko-2; every other arena uses TrueSkill. Choosing by arena (not by the
+	// per-match player count) prevents two algorithms from writing incompatible
+	// state (elo/rd/vol vs mu/sigma) to the same rating row and clobbering it.
+	algo := AlgoTrueSkill
+	compute := TrueSkillApply
+	if game == GameGoofspiel && len(res.Players) == 2 {
+		algo = AlgoGlicko2
+		compute = glicko2Apply
+	}
+	players := make([]ApplyPlayer, len(res.Players))
+	for i, p := range res.Players {
+		players[i] = ApplyPlayer{
+			AgentPublicID: p.AgentPublicID, Seat: p.Seat,
+			Placement: p.Placement, CoinsDelta: p.CoinsDelta,
+		}
+	}
 	applied, err := s.repo.ApplyMatch(ctx, ApplyInput{
 		MatchPublicID: res.MatchPublicID,
+		Game:          game,
 		Season:        s.CurrentSeason(),
-		Agents:        res.Agents,
-		CoinsDelta:    res.CoinsDelta,
-		WinnerSeat:    res.WinnerSeat,
-		Compute:       func(a, b PlayerRating) (PlayerRating, PlayerRating) { return Glicko2(a, b, scoreA) },
+		Algo:          algo,
+		Players:       players,
+		Compute:       compute,
 	})
 	if err != nil {
 		return err
@@ -196,9 +248,32 @@ func (s *Service) Rate(ctx context.Context, res MatchResult) error {
 	return nil
 }
 
+// glicko2Apply is the 2-player Compute closure: it derives seat 0's score from the
+// two placements and runs the existing, unchanged Glicko-2 update, leaving the
+// TrueSkill (mu/sigma) fields untouched.
+func glicko2Apply(cur []RatingState, placements []int) []RatingState {
+	scoreA := 0.5
+	switch {
+	case placements[0] < placements[1]:
+		scoreA = 1
+	case placements[0] > placements[1]:
+		scoreA = 0
+	}
+	a := PlayerRating{Elo: cur[0].Elo, RD: cur[0].RD, Vol: cur[0].Vol}
+	b := PlayerRating{Elo: cur[1].Elo, RD: cur[1].RD, Vol: cur[1].Vol}
+	na, nb := Glicko2(a, b, scoreA)
+	return []RatingState{
+		{Elo: na.Elo, RD: na.RD, Vol: na.Vol, Mu: cur[0].Mu, Sigma: cur[0].Sigma},
+		{Elo: nb.Elo, RD: nb.RD, Vol: nb.Vol, Mu: cur[1].Mu, Sigma: cur[1].Sigma},
+	}
+}
+
 // Leaderboard returns one page of season standings (defaults: current season,
 // limit 50, capped at 100). offset-based cursor.
-func (s *Service) Leaderboard(ctx context.Context, season, offset, limit int) (LeaderboardPage, error) {
+func (s *Service) Leaderboard(ctx context.Context, game string, season, offset, limit int) (LeaderboardPage, error) {
+	if game == "" {
+		game = GameGoofspiel
+	}
 	if season <= 0 {
 		season = s.CurrentSeason()
 	}
@@ -208,14 +283,14 @@ func (s *Service) Leaderboard(ctx context.Context, season, offset, limit int) (L
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := s.repo.Leaderboard(ctx, season, offset, limit)
+	rows, err := s.repo.Leaderboard(ctx, game, season, offset, limit)
 	if err != nil {
 		return LeaderboardPage{}, err
 	}
 	for i := range rows {
 		rows[i].Rank = offset + i + 1
 	}
-	page := LeaderboardPage{Season: season, Entries: rows}
+	page := LeaderboardPage{Season: season, Game: game, Entries: rows}
 	if len(rows) == limit {
 		page.NextCursor = strconv.Itoa(offset + limit)
 	}
@@ -225,18 +300,22 @@ func (s *Service) Leaderboard(ctx context.Context, season, offset, limit int) (L
 // BenchmarkPage is the "which model wins" board for the current season.
 type BenchmarkPage struct {
 	Season int         `json:"season"`
+	Game   string      `json:"game"`
 	Models []ModelStat `json:"models"`
 }
 
 // ModelBenchmark ranks declared models by season performance. minGames defaults
 // to 1 (a model must have actually played). Games + WinRate are computed here so
 // the store stays a plain aggregation.
-func (s *Service) ModelBenchmark(ctx context.Context, minGames int) (BenchmarkPage, error) {
+func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	if game == "" {
+		game = GameGoofspiel
+	}
 	if minGames <= 0 {
 		minGames = 1
 	}
 	season := s.CurrentSeason()
-	models, err := s.repo.ModelBenchmark(ctx, season, minGames)
+	models, err := s.repo.ModelBenchmark(ctx, season, game, minGames)
 	if err != nil {
 		return BenchmarkPage{}, err
 	}
@@ -247,12 +326,15 @@ func (s *Service) ModelBenchmark(ctx context.Context, minGames int) (BenchmarkPa
 			m.WinRate = float64(m.Wins) / float64(decisive)
 		}
 	}
-	return BenchmarkPage{Season: season, Models: models}, nil
+	return BenchmarkPage{Season: season, Game: game, Models: models}, nil
 }
 
-// Standing returns an agent's rank + totals in the current season.
-func (s *Service) Standing(ctx context.Context, agentPublicID string) (Standing, bool, error) {
-	return s.repo.AgentStanding(ctx, s.CurrentSeason(), agentPublicID)
+// Standing returns an agent's rank + totals in the given arena for the current season.
+func (s *Service) Standing(ctx context.Context, agentPublicID, game string) (Standing, bool, error) {
+	if game == "" {
+		game = GameGoofspiel
+	}
+	return s.repo.AgentStanding(ctx, s.CurrentSeason(), game, agentPublicID)
 }
 
 // ── metrics ──────────────────────────────────────────────────────────────────

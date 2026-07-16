@@ -9,6 +9,7 @@ import (
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/rating"
 )
 
 // Config tunes move windows and table economics.
@@ -34,7 +35,19 @@ type Service struct {
 	// notify wakes long-polling State callers on a state change. Nil ⇒ no
 	// long-poll (State returns immediately), so tests and notifier-less builds work.
 	notify Notifier
+	// rater applies per-arena skill ratings when a paid table finalizes. Nil ⇒
+	// ratings skipped. rating.Service satisfies it.
+	rater Rater
 }
+
+// Rater applies a finished ranked table's TrueSkill change to the Monopoly arena.
+// Satisfied directly by *rating.Service.
+type Rater interface {
+	Rate(ctx context.Context, res rating.MatchResult) error
+}
+
+// SetRater installs the rating hook (called once at wiring time).
+func (s *Service) SetRater(r Rater) { s.rater = r }
 
 // Notifier is the low-latency wake-up channel for long-polling State callers.
 // Satisfied by *store.Notifier (structural).
@@ -251,8 +264,61 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 		return err
 	}
 	s.publish(m.PublicID, events)
+
+	// Paid tables update the per-arena skill rating (TrueSkill, N-player). Placement
+	// is a server-authoritative net-worth ordering across the AGENT seats: bankrupt
+	// seats rank last, the rest by net worth (equal net worth = a tie). Idempotent
+	// per match, retried since the match is already durably finished + settled.
+	if s.rater != nil && m.EntryFee > 0 {
+		bankrupt := make(map[int]bool, len(state.Players))
+		for _, p := range state.Players {
+			bankrupt[p.Seat] = p.Bankrupt
+		}
+		key := func(seat int) int {
+			if bankrupt[seat] {
+				return -1 // bankrupt seats rank below any solvent net worth (≥ 0)
+			}
+			return state.NetWorth(seat)
+		}
+		res := rating.MatchResult{MatchPublicID: m.PublicID, Game: rating.GameMonopoly}
+		for _, a := range agents {
+			placement, ak := 1, key(a.Seat)
+			for _, b := range agents {
+				if key(b.Seat) > ak {
+					placement++
+				}
+			}
+			res.Players = append(res.Players, rating.PlayerResult{
+				AgentPublicID: a.AgentPublicID, Seat: a.Seat, Placement: placement, CoinsDelta: a.CoinsDelta,
+			})
+		}
+		if err := rateWithRetry(ctx, s.rater, res, 3, 50*time.Millisecond); err != nil {
+			return err
+		}
+	}
+
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil
+}
+
+// rateWithRetry applies the (idempotent) rating with a bounded retry so a transient
+// error right after the match commits doesn't lose the rating update. Honors context
+// cancellation between attempts.
+func rateWithRetry(ctx context.Context, rater Rater, res rating.MatchResult, attempts int, backoff time.Duration) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		if err = rater.Rate(ctx, res); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error {

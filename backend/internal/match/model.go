@@ -138,14 +138,17 @@ type Rater interface {
 // winning seat (or gs.Tie).
 type RatingResult struct {
 	MatchPublicID string
+	Game          string
 	WinnerSeat    int
 	Players       []RatingPlayer
 }
 
-// RatingPlayer is one seat's contribution to the rating update.
+// RatingPlayer is one seat's contribution to the rating update. Placement is the
+// finishing rank (1 = best); 0 means "derive from WinnerSeat" (the 2-player case).
 type RatingPlayer struct {
 	AgentPublicID string
 	Seat          int
+	Placement     int
 	CoinsDelta    int64
 }
 

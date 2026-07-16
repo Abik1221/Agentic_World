@@ -11,10 +11,10 @@ type Repo interface {
 	// rating rows, calls in.Compute(currentEloA, currentEloB) for the new ELOs,
 	// and updates ELO + W/L/T + streak + coins_earned.
 	ApplyMatch(ctx context.Context, in ApplyInput) (applied bool, err error)
-	// Leaderboard returns season standings ordered by ELO desc, paginated by offset.
-	Leaderboard(ctx context.Context, season, offset, limit int) ([]LeaderRow, error)
-	// AgentElo returns the agent's ELO for the season, or 1200 if it has no row yet.
-	AgentElo(ctx context.Context, agentPublicID string, season int) (int, error)
+	// Leaderboard returns an arena's season standings ordered by ELO desc, paginated.
+	Leaderboard(ctx context.Context, game string, season, offset, limit int) ([]LeaderRow, error)
+	// AgentElo returns the agent's ELO in the arena for the season, or 1500 if none.
+	AgentElo(ctx context.Context, agentPublicID, game string, season int) (int, error)
 
 	// LastRolledSeason returns the highest finalised season, or -1 if none.
 	LastRolledSeason(ctx context.Context) (int, error)
@@ -24,14 +24,14 @@ type Repo interface {
 	// same transaction. champion may be "" (no matches). Returns whether it rolled.
 	RollSeason(ctx context.Context, season int, champion string) (rolled bool, err error)
 
-	// ModelBenchmark aggregates the season's competitive results by the agents'
-	// DECLARED model (provider+model from their manifest — self-reported, never
-	// verified). Only models with >= minGames total games are returned.
-	ModelBenchmark(ctx context.Context, season, minGames int) ([]ModelStat, error)
+	// ModelBenchmark aggregates the season's competitive results in an arena by the
+	// agents' DECLARED model (provider+model from their manifest — self-reported,
+	// never verified). Only models with >= minGames total games are returned.
+	ModelBenchmark(ctx context.Context, season int, game string, minGames int) ([]ModelStat, error)
 
-	// AgentStanding returns one agent's place in the season (rank, totals, declared
-	// model). found=false when the agent has no rating row this season.
-	AgentStanding(ctx context.Context, season int, agentPublicID string) (standing Standing, found bool, err error)
+	// AgentStanding returns one agent's place in an arena for the season (rank,
+	// totals, declared model). found=false when the agent has no rating row.
+	AgentStanding(ctx context.Context, season int, game, agentPublicID string) (standing Standing, found bool, err error)
 }
 
 // ModelStat is one declared model's aggregate performance for a season. The
@@ -53,6 +53,7 @@ type ModelStat struct {
 // Standing is one agent's season position (for "your rank this season").
 type Standing struct {
 	Season        int    `json:"season"`
+	Game          string `json:"game"`
 	Rank          int    `json:"rank"`
 	Total         int    `json:"total"`
 	AgentPublicID string `json:"agent"`
@@ -67,17 +68,39 @@ type Standing struct {
 	Model         string `json:"model,omitempty"`
 }
 
-// ApplyInput is the resolved rating update for one finished match. Index 0/1 are
-// seats A/B. Compute keeps the Glicko-2 formula in this package, out of the store:
-// the store reads both agents' current (rating, RD, volatility), hands them in,
-// and writes back what Compute returns.
+// RatingState is an agent's persisted rating for one arena, spanning both
+// algorithms. Elo is the DISPLAYED rating for both (Glicko r, or a transform of the
+// TrueSkill mean) so leaderboards sort uniformly regardless of algorithm. RD/Vol are
+// Glicko-only; Mu/Sigma are TrueSkill-only.
+type RatingState struct {
+	Elo   int
+	RD    float64
+	Vol   float64
+	Mu    float64
+	Sigma float64
+}
+
+// ApplyPlayer is one participant in a rating update. Placement is the finishing rank
+// (1 = best); equal placements are a tie.
+type ApplyPlayer struct {
+	AgentPublicID string
+	Seat          int
+	Placement     int
+	CoinsDelta    int64
+}
+
+// ApplyInput is the resolved rating update for one finished match, generalized to N
+// players and any arena. Compute keeps the rating math (Glicko-2 / TrueSkill) in this
+// package, out of the store: the store reads each agent's current RatingState
+// (aligned to Players by index), hands them + the placements to Compute, and writes
+// back the new states Compute returns (same order).
 type ApplyInput struct {
 	MatchPublicID string
+	Game          string
 	Season        int
-	Agents        [2]string
-	CoinsDelta    [2]int64
-	WinnerSeat    int
-	Compute       func(a, b PlayerRating) (PlayerRating, PlayerRating)
+	Algo          string
+	Players       []ApplyPlayer
+	Compute       func(cur []RatingState, placements []int) []RatingState
 }
 
 // LeaderRow is one leaderboard entry (Rank is filled in by the service).

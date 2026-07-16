@@ -602,7 +602,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	// retry a few times before surfacing it (nothing re-drives finalize once the
 	// match is Finished — Act/HandleTimeout early-return on non-active).
 	if m.Mode != ModeSandbox {
-		rr := RatingResult{MatchPublicID: m.PublicID, WinnerSeat: state.Winner}
+		rr := RatingResult{MatchPublicID: m.PublicID, Game: m.Game, WinnerSeat: state.Winner}
 		for _, p := range players {
 			rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
 		}

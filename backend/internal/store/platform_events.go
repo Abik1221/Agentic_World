@@ -3,11 +3,17 @@ package store
 import (
 	"context"
 	"strconv"
+	"time"
 
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/platformsign"
 	"github.com/redis/go-redis/v9"
 )
+
+// platformEventsPublishTimeout bounds a single XADD so a slow/blocked Redis can't
+// stall the whole event dispatcher (this handler runs on the dispatcher's tick
+// goroutine). A timeout surfaces as a delivery failure → attempts bump → retry.
+const platformEventsPublishTimeout = 3 * time.Second
 
 // streamPlatformEvents is the cross-service domain-event log the Super Admin
 // consumes (via a consumer group) to power the dashboard + analytics. See
@@ -45,6 +51,8 @@ func eventSigningInput(id, typ, payload, ts string) []byte {
 // (safe for at-least-once re-delivery), and an Ed25519 signature over the entry
 // lets the Admin consumer reject anything not produced by the engine.
 func (s *PlatformEventStream) Publish(ctx context.Context, e events.Event) error {
+	ctx, cancel := context.WithTimeout(ctx, platformEventsPublishTimeout)
+	defer cancel()
 	ts := strconv.FormatInt(e.CreatedAt.UnixMilli(), 10)
 	payload := string(e.Payload)
 	sig := s.signer.Sign(eventSigningInput(e.ID, e.Type, payload, ts))

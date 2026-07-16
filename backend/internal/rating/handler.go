@@ -63,7 +63,7 @@ func (h *Handler) seasonChampion(w http.ResponseWriter, r *http.Request) {
 // UI makes explicit.
 func (h *Handler) modelBenchmark(w http.ResponseWriter, r *http.Request) {
 	minGames, _ := strconv.Atoi(r.URL.Query().Get("min_games"))
-	page, err := h.svc.ModelBenchmark(r.Context(), minGames)
+	page, err := h.svc.ModelBenchmark(r.Context(), r.URL.Query().Get("game"), minGames)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -80,7 +80,7 @@ func (h *Handler) standing(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "agent_required", "pass ?agent=<public id>"))
 		return
 	}
-	st, found, err := h.svc.Standing(r.Context(), agent)
+	st, found, err := h.svc.Standing(r.Context(), agent, r.URL.Query().Get("game"))
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -98,7 +98,7 @@ func (h *Handler) leaderboard(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 
-	page, err := h.svc.Leaderboard(r.Context(), season, offset, limit)
+	page, err := h.svc.Leaderboard(r.Context(), r.URL.Query().Get("game"), season, offset, limit)
 	if err != nil {
 		httpx.Error(w, err)
 		return
