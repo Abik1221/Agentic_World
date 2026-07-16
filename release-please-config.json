@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-component-in-tag": true,
+  "include-v-in-tag": true,
+  "tag-separator": "-",
+  "separate-pull-requests": true,
+  "pull-request-title-pattern": "chore: release ${component} ${version}",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "refactor", "section": "Refactors" }
+  ],
+  "packages": {
+    "sdk/python": {
+      "release-type": "python",
+      "component": "py",
+      "package-name": "pyyol",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": ["pyyol/__init__.py"]
+    },
+    "sdk/js": {
+      "release-type": "node",
+      "component": "js",
+      "package-name": "pyyol",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

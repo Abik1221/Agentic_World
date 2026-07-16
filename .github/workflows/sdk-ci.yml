@@ -74,6 +74,31 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  llms-docs-fresh:
+    # Regenerate the game reference from the engine + the llms corpus, and fail if
+    # anything drifts. games.md/gamespec.json are generated from the live engine
+    # constants (backend/internal/gamespec) so the docs can never disagree with the
+    # rules the engine actually enforces; llms.txt/llms-full.txt are then rebuilt.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: gamespec drift test (docs vocabulary == engine vocabulary)
+        run: go test ./internal/gamespec/...
+        working-directory: backend
+      - name: regenerate game reference from the engine
+        run: go run ./cmd/gamespec
+        working-directory: backend
+      - name: regenerate llms corpus
+        run: python sdk/docs/gen_llms.py
+      - name: docs are up to date (run `go run ./cmd/gamespec` + `python sdk/docs/gen_llms.py` and commit)
+        run: git diff --exit-code -- sdk/docs/games.md sdk/docs/gamespec.json sdk/docs/llms.txt sdk/docs/llms-full.txt
+
   js-lint-and-pack:
     runs-on: ubuntu-latest
     defaults:
