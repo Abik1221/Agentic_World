@@ -16,6 +16,7 @@
  */
 import type { Agent } from "./server.js";
 import { SDK_VERSION } from "./server.js";
+import { Tracer } from "./telemetry.js";
 
 // Frame types — byte-identical to the Go gateway (internal/agentgw/frame.go).
 const HELLO = "hello", REGISTERED = "registered", PONG = "pong";
@@ -111,7 +112,13 @@ function isOlder(a: string, b: string): boolean {
 export class RuntimeConnector {
   private stopped = false;
   private nudged = false; // print the "upgrade available" notice at most once
-  constructor(private agent: Agent, private opts: RuntimeOptions) {}
+  // Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
+  // Correlated to the match trace so the agent's model/tool calls render with
+  // the platform's authoritative gateway spans.
+  private readonly tracer: Tracer;
+  constructor(private agent: Agent, private opts: RuntimeOptions) {
+    this.tracer = Tracer.fromEnv({ agentId: opts.agentId, service: opts.name });
+  }
 
   /** The gateway echoes the newest published version on the registered frame.
    *  Print a one-line upgrade hint at most once (not on every reconnect). */
@@ -149,6 +156,7 @@ export class RuntimeConnector {
 
   stop(): void {
     this.stopped = true;
+    void this.tracer.close();
   }
 
   /** Emit a live-feed line to the CLI/console, if a sink was provided. */
@@ -261,7 +269,18 @@ export class RuntimeConnector {
       case PONG:
         break;
       case TURN: {
-        const { status, body } = await this.agent.decideTurn(frame.payload ?? {});
+        const view = frame.payload ?? {};
+        // Bracket the developer's handler in a Lens span; inside decideTurn the
+        // author can reach it via pyyol.currentSpan() to record model/tool calls.
+        const { status, body } = await this.tracer.runTurn(
+          {
+            matchId: (view.match_id as string) ?? "",
+            game: (view.game as string) ?? "",
+            round: Number(view.round ?? 0) || 0,
+            agentId: this.opts.agentId,
+          },
+          () => this.agent.decideTurn(view),
+        );
         if (status === 200) {
           send({ t: RESPONSE, id: frame.id ?? "", payload: body });
           this.feed("turn", summarizeMove(frame.payload?.game ?? "", body));

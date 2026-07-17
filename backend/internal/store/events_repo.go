@@ -53,6 +53,25 @@ func (r *EventsRepo) BumpAttempts(ctx context.Context, publicID string) error {
 	return err
 }
 
+// InsertEvent appends a standalone event to the outbox on its own (single
+// statement, implicitly atomic). Use this for facts that are NOT tied to another
+// state change in the same tx — e.g. a per-match benchmark summary emitted after
+// the match loop ends. Durable + at-least-once via the dispatcher. payload must
+// be valid JSON. Returns the event's public id.
+func InsertEvent(ctx context.Context, db *pgxpool.Pool, eventType string, payload []byte) (string, error) {
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	id := platform.NewID(platform.PrefixEvent)
+	_, err := db.Exec(ctx,
+		`INSERT INTO events (public_id, type, payload) VALUES ($1, $2, $3::jsonb)`,
+		id, eventType, payload)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
 // InsertEventTx appends an event to the outbox WITHIN the caller's transaction,
 // so the event is emitted iff the surrounding state change commits (transactional
 // outbox). payload must be valid JSON. Returns the event's public id.

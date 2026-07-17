@@ -11,6 +11,7 @@ import (
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/middleware"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/platformcfg"
 	"github.com/go-chi/chi/v5"
 )
@@ -68,8 +69,8 @@ func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID st
 // (login credential) and the manifest secret store (publish fallback). When a
 // platform-config provider is supplied, the gateway learns the latest/minimum
 // SDK version per language (live) for the upgrade nudge + too-old refusal.
-func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg.Provider, log *slog.Logger) *agentgw.Gateway {
-	opts := agentgw.Options{ClientIP: middleware.ClientIP}
+func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg.Provider, em *telemetry.Client, log *slog.Logger) *agentgw.Gateway {
+	opts := agentgw.Options{ClientIP: middleware.ClientIP, Emitter: em}
 	if cfg != nil {
 		opts.SDKVersionInfo = func(language string) (latest, min string) {
 			sdk := cfg.Get().SDK

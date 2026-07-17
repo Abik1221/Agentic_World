@@ -1,0 +1,235 @@
+# Full Pyyol Lens stack: infra + Go APIs + processor + web panel.
+# Usage:
+#   cp .env.docker.example .env
+#   docker compose up -d --build
+#
+# Nginx (host): telemetery.pyyol.et → :3100, tel-ingest → :8081, tel-query → :8082, tel-control → :8083
+
+x-backend-env: &backend-env
+  PYYOL_LENS_ENV: ${PYYOL_LENS_ENV:-production}
+  CH_ADDR: clickhouse:9000
+  CH_DB: pyyol_lens
+  CH_USER: default
+  CH_PASS: ""
+  CH_SECURE: "false"
+  PG_ADDR: postgres:5432
+  PG_USER: pyyol_lens
+  PG_PASS: pyyol_lens
+  PG_DB: pyyol_lens
+  NATS_URL: nats://nats:4222
+  NATS_STREAM_NAME: PL_EVENTS
+  NATS_SUBJECT_EVENTS: pyyol.lens.events
+  NATS_CONSUMER_NAME: pl-processor
+  OBJECT_STORE_ENDPOINT: minio:9000
+  OBJECT_STORE_BUCKET: pyyol-lens
+  OBJECT_STORE_KEY: minioadmin
+  OBJECT_STORE_SECRET: minioadmin
+  OBJECT_STORE_SSL: "false"
+  INGEST_API_KEY: ${INGEST_API_KEY:-local-pyyol-lens-key}
+  PYYOL_LENS_ADMIN_KEY: ${PYYOL_LENS_ADMIN_KEY:-}
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: pyyol-lens-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: pyyol_lens
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./backend/migrations/clickhouse:/docker-entrypoint-initdb.d
+      - ./clickhouse-config/default-user.xml:/etc/clickhouse-server/users.d/default-user.xml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  postgres:
+    image: postgres:16
+    container_name: pyyol-lens-postgres
+    environment:
+      POSTGRES_DB: pyyol_lens
+      POSTGRES_USER: pyyol_lens
+      POSTGRES_PASSWORD: pyyol_lens
+    ports:
+      - "15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/postgres:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pyyol_lens -d pyyol_lens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: pyyol-lens-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-03T21-03-04Z
+    container_name: pyyol-lens-minio
+    command: server /data --console-address ":9002"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9001:9000"
+      - "9002:9002"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ingest-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: pyyol-lens-backend:latest
+    container_name: pyyol-lens-ingest
+    command: ["ingest-api"]
+    environment:
+      <<: *backend-env
+      PORT_INGEST: "8081"
+    ports:
+      - "8081:8081"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: pyyol-lens-backend:latest
+    container_name: pyyol-lens-processor
+    command: ["processor"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  query-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: pyyol-lens-backend:latest
+    container_name: pyyol-lens-query
+    command: ["query-api"]
+    environment:
+      <<: *backend-env
+      PORT_QUERY: "8082"
+    ports:
+      - "8082:8082"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      processor:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8082/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  control-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: pyyol-lens-backend:latest
+    container_name: pyyol-lens-control
+    command: ["control-api"]
+    environment:
+      <<: *backend-env
+      PORT_CONTROL: "8083"
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8083/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: pyyol-lens-web
+    ports:
+      - "3100:3100"
+    environment:
+      PYYOL_API_URL: ${PYYOL_API_URL:-http://host.docker.internal:4000}
+      PYYOL_LENS_QUERY_URL: ${PYYOL_LENS_QUERY_URL:-http://query-api:8082}
+      PYYOL_LENS_CONTROL_URL: ${PYYOL_LENS_CONTROL_URL:-http://control-api:8083}
+      PYYOL_LENS_ALLOW_DIRECT_FALLBACK: ${PYYOL_LENS_ALLOW_DIRECT_FALLBACK:-true}
+      PYYOL_LENS_DEFAULT_ORG_ID: ${PYYOL_LENS_DEFAULT_ORG_ID:-local-dev-org}
+      PYYOL_LENS_DEFAULT_USER_ID: ${PYYOL_LENS_DEFAULT_USER_ID:-local-dev-user}
+      # Dashboard login: set PYYOL_LENS_AUTH_PASSWORD to require sign-in (unset ⇒
+      # open, for behind-VPN/dev). PYYOL_LENS_SESSION_SECRET signs the session.
+      PYYOL_LENS_AUTH_USER: ${PYYOL_LENS_AUTH_USER:-admin}
+      PYYOL_LENS_AUTH_PASSWORD: ${PYYOL_LENS_AUTH_PASSWORD:-}
+      PYYOL_LENS_SESSION_SECRET: ${PYYOL_LENS_SESSION_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      query-api:
+        condition: service_healthy
+      control-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3100/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  clickhouse_data:
+  postgres_data:
+  nats_data:
+  minio_data:

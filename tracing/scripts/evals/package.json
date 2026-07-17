@@ -1,0 +1,15 @@
+{
+  "name": "pyyol-lens-evals",
+  "private": true,
+  "type": "module",
+  "description": "Phase 10 fixture evals: query the collector after a fixture run and assert invariants",
+  "scripts": {
+    "eval": "tsx run.ts",
+    "eval:all": "tsx run.ts all"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

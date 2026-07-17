@@ -24,6 +24,11 @@ const (
 	TypeAgentCertified = "agent.certified"
 	TypeMatchStarted   = "match.started"
 	TypeMatchFinished  = "match.finished"
+	// TypeMatchBenchmark carries the per-match, per-seat decision-quality summary
+	// (legal/illegal/timeout/fallback counts + latency). Emitted durably via the
+	// outbox so benchmark data survives crashes and is delivered at-least-once; the
+	// telemetry bridge projects it into Pyyol Lens benchmark_recorded events.
+	TypeMatchBenchmark = "match.benchmark"
 	TypeSeasonRolled   = "season.rolled"
 	TypeBadgeAwarded   = "badge.awarded"
 	// TypeRatingUpdated is emitted (transactionally, inside ApplyMatch) once per

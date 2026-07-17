@@ -9,8 +9,10 @@ import (
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/agentwire"
+	"github.com/agent-arena/arena/internal/benchmark"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/webhook"
 )
 
@@ -46,6 +48,9 @@ type pushPlayer struct {
 	bots     []BotAgent
 	enqueue  webhook.Enqueuer // durable async /event + /game-end; nil => inline fallback
 	gw       *agentgw.Gateway // local-runtime socket; nil disables the socket path
+	em       *telemetry.Client
+	persist  benchmark.Persist
+	meta     benchmark.AgentMetaResolver
 	log      *slog.Logger
 	maxMatch time.Duration
 }
@@ -71,6 +76,17 @@ func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
 func (s *Service) SetGateway(gw *agentgw.Gateway) {
 	if s.pusher != nil {
 		s.pusher.gw = gw
+	}
+}
+
+// SetBenchmark wires per-match benchmark telemetry (decision-quality summaries).
+// em ships to Pyyol Lens; persist (optional) routes durably via the outbox. Call
+// after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetBenchmark(em *telemetry.Client, persist benchmark.Persist, meta benchmark.AgentMetaResolver) {
+	if s.pusher != nil {
+		s.pusher.em = em
+		s.pusher.persist = persist
+		s.pusher.meta = meta
 	}
 }
 
@@ -153,6 +169,19 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 	ctx, cancel := context.WithTimeout(context.Background(), p.maxMatch)
 	defer cancel()
 
+	// Per-match benchmark: record the developer-seat decisions (bots excluded),
+	// emitted (durably when wired) at match end.
+	rec := benchmark.NewRecorder("mafia", matchID)
+	var agentMeta benchmark.AgentMeta
+	if p.meta != nil {
+		agentMeta = p.meta(ctx, userAgent)
+	}
+	defer func() {
+		if err := benchmark.Flush(rec, p.persist, p.em, "practice"); err != nil {
+			p.log.Warn("mafia pushplay: benchmark persist failed", "match", matchID, "err", err)
+		}
+	}()
+
 	initialized := false
 	deliveredSeq := 0 // highest public-event Seq already pushed to /event
 	for {
@@ -181,6 +210,10 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 		// read. Public events carry a monotonic Seq, used directly for ordering.
 		deliveredSeq = p.dispatchPublicEvents(ctx, tr, matchID, base.Public, deliveredSeq)
 		if base.Status != StatusActive {
+			// Record the developer seat's meta + outcome (role-agnostic: the reward
+			// row flags whether this seat was on the winning team).
+			rec.SetAgentMeta(base.YourSeat, userAgent, agentMeta)
+			rec.SetResult(base.YourSeat, userAgent, mafiaResult(base.Result, base.YourSeat))
 			p.log.Info("mafia pushplay: match finished", "match", matchID, "status", base.Status, "socket", tr.Socket())
 			// Lifecycle: game-end with a FAT, replayable payload — the settled result
 			// PLUS the full public transcript (chat + votes + eliminations), so the
@@ -203,7 +236,10 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 			}
 			var act mf.Action
 			if id == userAgent {
-				act = p.decideRemote(ctx, tr, matchID, v)
+				var outcome benchmark.Outcome
+				var latencyMS int64
+				act, outcome, latencyMS = p.decideRemote(ctx, tr, matchID, v)
+				rec.Record(benchmark.Decision{Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS})
 			} else {
 				act = botDecide(v)
 			}
@@ -250,17 +286,41 @@ func (p *pushPlayer) dispatchPublicEvents(ctx context.Context, tr agentwire.Tran
 	return highest
 }
 
-func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) mf.Action {
+// mafiaResult maps the settled economy result to the developer seat's outcome
+// via its reward row's OnWinningTeam flag (works for any role). Nil/absent → "".
+func mafiaResult(r *EconomyResult, seat int) benchmark.Result {
+	if r == nil {
+		return ""
+	}
+	for _, row := range r.Rewards {
+		if row.Seat == seat {
+			if row.OnWinningTeam {
+				return benchmark.ResultWin
+			}
+			return benchmark.ResultLoss
+		}
+	}
+	return ""
+}
+
+func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mf.Action, benchmark.Outcome, int64) {
 	req := MafiaPushView{
 		Game: "mafia", MatchID: matchID, YourSeat: v.YourSeat, YourRole: v.YourRole,
 		Day: v.Day, Phase: v.Phase, Alive: v.Alive, Allies: v.Allies, Legal: v.Legal,
 		Public: v.Public, Private: v.Private,
 	}
 	var move MafiaPushMove
-	if err := tr.Turn(ctx, req, &move); err == nil && containsStr(v.Legal, move.Action) {
-		return mf.Action{Kind: move.Action, Target: move.Target, Tone: move.Tone, Text: move.Text}
+	start := time.Now()
+	err := tr.Turn(ctx, req, &move)
+	latencyMS := time.Since(start).Milliseconds()
+	switch {
+	case err != nil:
+		return botDecide(v), benchmark.ClassifyError(err, false), latencyMS
+	case !containsStr(v.Legal, move.Action):
+		return botDecide(v), benchmark.OutcomeIllegal, latencyMS
+	default:
+		return mf.Action{Kind: move.Action, Target: move.Target, Tone: move.Tone, Text: move.Text}, benchmark.OutcomeOK, latencyMS
 	}
-	return botDecide(v) // transport failed or returned an illegal action
 }
 
 // botDecide is a deterministic rule-based move for the current phase — the same

@@ -34,6 +34,8 @@ __all__ = [
     "SimulationError",
     "RuntimeConnector",
     "ConnectorError",
+    "Tracer",
+    "current_span",
     "__version__",
 ]
 
@@ -49,6 +51,8 @@ _LAZY = {
     "SimulationError": "simulator",
     "RuntimeConnector": "runtime",
     "ConnectorError": "runtime",
+    "Tracer": "telemetry",
+    "current_span": "telemetry",
 }
 
 

@@ -1,0 +1,139 @@
+package config
+
+import (
+	"os"
+	"strings"
+)
+
+type Config struct {
+	ServiceName string
+	Environment string
+
+	IngestPort  string
+	QueryPort   string
+	ControlPort string
+
+	CHAddr   string
+	CHDB     string
+	CHUser   string
+	CHPass   string
+	CHSecure bool
+
+	PGAddr     string
+	PGUser     string
+	PGPass     string
+	PGDatabase string
+
+	NATSURL           string
+	NATSStreamName    string
+	NATSSubjectEvents string
+	NATSConsumerName  string
+
+	ObjectStoreEndpoint string
+	ObjectStoreBucket   string
+	ObjectStoreKey      string
+	ObjectStoreSecret   string
+	ObjectStoreSSL      bool
+
+	IngestAPIKey string
+	// AdminAPIKey secures control-api replay routes; if empty, replay POSTs are rejected (set in production).
+	AdminAPIKey string
+
+	DefaultProject   string
+	RetentionDays    int
+	MaxBatchSize     int
+	MaxEventsPerRead int
+	// TelemetryTextCapRunes caps nested "quote" / nlp_task_call text in ingest (0 = unlimited).
+	TelemetryTextCapRunes int
+}
+
+func Load() Config {
+	return Config{
+		ServiceName: get("SERVICE_NAME", "pyyol-lens"),
+		Environment: get("PYYOL_LENS_ENV", "development"),
+
+		IngestPort:  get("PORT_INGEST", "8081"),
+		QueryPort:   get("PORT_QUERY", "8082"),
+		ControlPort: get("PORT_CONTROL", "8083"),
+
+		CHAddr:   get("CH_ADDR", "localhost:9000"),
+		CHDB:     get("CH_DB", "pyyol_lens"),
+		CHUser:   get("CH_USER", "default"),
+		CHPass:   os.Getenv("CH_PASS"),
+		CHSecure: get("CH_SECURE", "false") == "true",
+
+		PGAddr:     get("PG_ADDR", "localhost:5432"),
+		PGUser:     get("PG_USER", "pyyol_lens"),
+		PGPass:     get("PG_PASS", "pyyol_lens"),
+		PGDatabase: get("PG_DB", "pyyol_lens"),
+
+		NATSURL:           get("NATS_URL", "nats://localhost:4222"),
+		NATSStreamName:    get("NATS_STREAM_NAME", "PL_EVENTS"),
+		NATSSubjectEvents: get("NATS_SUBJECT_EVENTS", "pyyol.lens.events"),
+		NATSConsumerName:  get("NATS_CONSUMER_NAME", "pl-processor"),
+
+		ObjectStoreEndpoint: get("OBJECT_STORE_ENDPOINT", "localhost:9001"),
+		ObjectStoreBucket:   get("OBJECT_STORE_BUCKET", "pyyol-lens"),
+		ObjectStoreKey:      get("OBJECT_STORE_KEY", "minioadmin"),
+		ObjectStoreSecret:   get("OBJECT_STORE_SECRET", "minioadmin"),
+		ObjectStoreSSL:      get("OBJECT_STORE_SSL", "false") == "true",
+
+		IngestAPIKey: get("INGEST_API_KEY", "local-pyyol-lens-key"),
+		AdminAPIKey:  get("PYYOL_LENS_ADMIN_KEY", ""),
+
+		DefaultProject:   get("DEFAULT_PROJECT", "pyyol-core"),
+		RetentionDays:    getInt("RETENTION_DAYS", 30),
+		MaxBatchSize:     getInt("MAX_BATCH_SIZE", 500),
+		MaxEventsPerRead: getInt("MAX_EVENTS_PER_READ", 500),
+
+		TelemetryTextCapRunes: telemetryTextCapRunes(),
+	}
+}
+
+// telemetryTextCapRunes reads PYYOL_LENS_TELEMETRY_TEXT_CAP_RUNES: unset → 240, "0" → unlimited.
+func telemetryTextCapRunes() int {
+	v := strings.TrimSpace(os.Getenv("PYYOL_LENS_TELEMETRY_TEXT_CAP_RUNES"))
+	if v == "" {
+		return 240
+	}
+	if v == "0" {
+		return 0
+	}
+	var n int
+	for _, ch := range v {
+		if ch < '0' || ch > '9' {
+			return 240
+		}
+		n = n*10 + int(ch-'0')
+		if n > 1<<20 {
+			return 1 << 20
+		}
+	}
+	if n > 0 {
+		return n
+	}
+	return 240
+}
+
+func get(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
+
+func getInt(k string, d int) int {
+	if v := os.Getenv(k); v != "" {
+		var out int
+		for _, ch := range v {
+			if ch < '0' || ch > '9' {
+				return d
+			}
+			out = out*10 + int(ch-'0')
+		}
+		if out > 0 {
+			return out
+		}
+	}
+	return d
+}

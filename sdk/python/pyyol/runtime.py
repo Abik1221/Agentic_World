@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .console import Console
+from .telemetry import Tracer
 
 log = logging.getLogger("pyyol")
 
@@ -96,6 +97,10 @@ class RuntimeConnector:
         self._stop = threading.Event()
         self._turn_no = 0
         self._nudged = False  # print the "upgrade available" notice at most once
+        # Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
+        # Correlated to the match trace so the agent's model/tool calls render
+        # alongside the platform's authoritative gateway spans.
+        self._tracer = Tracer.from_env(agent_id=agent_id, service=name)
 
     # --- lifecycle emit (file log + live console, never secrets) --------------
 
@@ -163,6 +168,7 @@ class RuntimeConnector:
 
     def stop(self) -> None:
         self._stop.set()
+        self._tracer.close()
 
     # --- one session ----------------------------------------------------------
 
@@ -293,7 +299,13 @@ class RuntimeConnector:
         self._turn_no += 1
         game = view.get("game", "")
         started = time.perf_counter()
-        status, move = self.agent.decide_turn(view)
+        # Bracket the developer's handler in a Lens span. Inside on_turn, the
+        # author can reach it via pyyol.current_span() to record model/tool calls.
+        with self._tracer.turn_span(
+            match_id=view.get("match_id", ""), game=game,
+            round_no=int(view.get("round", 0) or 0), agent_id=self.agent_id,
+        ):
+            status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
         rid = frame.get("id", "")
         if status == 200:

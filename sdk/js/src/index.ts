@@ -27,3 +27,5 @@ export { simulateGoofspiel, SimulationError } from "./simulator.js";
 export type { GoofspielSimOptions, GoofspielSimResult } from "./simulator.js";
 export { RuntimeConnector, ConnectorError, PROTOCOL_VERSION } from "./runtime.js";
 export type { RuntimeOptions, WebSocketLike, WebSocketCtor } from "./runtime.js";
+export { Tracer, Span, currentSpan, matchTraceId } from "./telemetry.js";
+export type { TracerOptions, ModelCall } from "./telemetry.js";

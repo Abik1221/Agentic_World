@@ -9,8 +9,10 @@ import (
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/agentwire"
+	"github.com/agent-arena/arena/internal/benchmark"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/match"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/remoteplay"
 	"github.com/agent-arena/arena/internal/webhook"
 )
@@ -46,11 +48,26 @@ type pushPlayer struct {
 	// gw is the local-runtime WebSocket gateway. When the developer's agent is
 	// connected over the socket, matches are driven over it; otherwise the loop
 	// falls back to the hosted HTTP endpoint. Nil disables the socket path.
-	gw  *agentgw.Gateway
-	log *slog.Logger
+	gw *agentgw.Gateway
+	em *telemetry.Client
+	// persist routes the per-match benchmark summary durably through the outbox.
+	persist benchmark.Persist
+	meta    benchmark.AgentMetaResolver
+	log     *slog.Logger
 	// maxMatch caps a single driven match's wall-clock so a stalled/hostile
 	// endpoint can never leak a goroutine forever.
 	maxMatch time.Duration
+}
+
+// SetBenchmark wires per-match benchmark telemetry (decision-quality summaries).
+// meta (optional) resolves the agent's manifest metadata (version + model).
+// Call after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetBenchmark(em *telemetry.Client, persist benchmark.Persist, meta benchmark.AgentMetaResolver) {
+	if s.pusher != nil {
+		s.pusher.em = em
+		s.pusher.persist = persist
+		s.pusher.meta = meta
+	}
 }
 
 // SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
@@ -149,6 +166,18 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 		p.log.Warn("pushplay: initialize failed (continuing)", "match", matchID, "err", err)
 	}
 
+	// Per-match benchmark: record every driven decision's outcome + latency for
+	// the developer's seat (seat 0), emitted (durably when wired) at match end.
+	rec := benchmark.NewRecorder("goofspiel", matchID)
+	if p.meta != nil {
+		rec.SetAgentMeta(0, agentID, p.meta(ctx, agentID))
+	}
+	defer func() {
+		if err := benchmark.Flush(rec, p.persist, p.em, "sandbox"); err != nil {
+			p.log.Warn("pushplay: benchmark persist failed", "match", matchID, "err", err)
+		}
+	}()
+
 	fallbacks := 0
 	deliveredRounds := 0 // highest round already pushed to /event (async, ordered by seq)
 	for {
@@ -172,6 +201,10 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 		tr := p.transport(agentID, target)
 		deliveredRounds = p.dispatchRoundEvents(ctx, tr, matchID, v, deliveredRounds)
 		if v.Status != "active" {
+			// Record the developer seat's outcome (seat 0) for win-rate.
+			if v.Result != nil {
+				rec.SetResult(0, agentID, benchmark.ResultFromLabel(v.Result.Winner))
+			}
 			p.log.Info("pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks, "socket", tr.Socket())
 			// Lifecycle: game-end with a FAT, replayable result — the outcome plus
 			// the full round-by-round history, so the agent has the complete match
@@ -203,8 +236,9 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			return
 		}
 
-		card, usedFallback := p.decide(ctx, tr, matchID, v, legal)
-		if usedFallback {
+		card, outcome, latencyMS := p.decide(ctx, tr, matchID, v, legal)
+		rec.Record(benchmark.Decision{Seat: 0, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS})
+		if outcome.Fallback() {
 			fallbacks++
 		}
 		if _, err := p.driver.Act(ctx, agentID, matchID, v.Round, card, ""); err != nil {
@@ -238,7 +272,7 @@ func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, tr agentwire.Trans
 // decide asks the agent for a card over the transport and validates it against
 // the legal set, falling back to the lowest legal card on any error or illegal
 // response — so an absent/slow agent can never wedge the match.
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, bool) {
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, benchmark.Outcome, int64) {
 	view := remoteplay.GoofspielView{
 		Game:         "goofspiel",
 		MatchID:      matchID,
@@ -252,10 +286,17 @@ func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID
 		History:      historyFromView(v), // self-contained: every resolved round so far
 	}
 	var move remoteplay.GoofspielMove
-	if err := tr.Turn(ctx, view, &move); err == nil && containsInt(legal, move.Card) {
-		return move.Card, false
+	start := time.Now()
+	err := tr.Turn(ctx, view, &move)
+	latencyMS := time.Since(start).Milliseconds()
+	switch {
+	case err != nil:
+		return lowestInt(legal), benchmark.ClassifyError(err, false), latencyMS
+	case !containsInt(legal, move.Card):
+		return lowestInt(legal), benchmark.OutcomeIllegal, latencyMS
+	default:
+		return move.Card, benchmark.OutcomeOK, latencyMS
 	}
-	return lowestInt(legal), true
 }
 
 // historyFromView maps the match service's per-round history into the seat's
