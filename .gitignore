@@ -44,3 +44,7 @@ venv/
 .DS_Store
 *.pem
 .vercel
+
+# Super Admin is its own repo (github.com/Abik1221/Super_Admin), embedded here only
+# for API-integration reference — never tracked by this repo.
+backend/Super_Admin/
