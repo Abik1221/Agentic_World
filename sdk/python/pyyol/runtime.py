@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .console import Console
+from .telemetry import Tracer
 
 log = logging.getLogger("pyyol")
 
@@ -96,6 +97,10 @@ class RuntimeConnector:
         self._stop = threading.Event()
         self._turn_no = 0
         self._nudged = False  # print the "upgrade available" notice at most once
+        # Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
+        # Correlated to the match trace so the agent's model/tool calls render
+        # alongside the platform's authoritative gateway spans.
+        self._tracer = Tracer.from_env(agent_id=agent_id, service=name)
 
     # --- lifecycle emit (file log + live console, never secrets) --------------
 
@@ -163,14 +168,25 @@ class RuntimeConnector:
 
     def stop(self) -> None:
         self._stop.set()
+        self._tracer.close()
 
     # --- one session ----------------------------------------------------------
 
     def _session(self) -> None:
+        # Feedback before the (bounded) connect, so a slow/dead link doesn't look like
+        # a frozen terminal while the 10s open_timeout runs.
+        host = urlsplit(self.url).netloc or self.url
+        self._emit("connecting", f"connecting to {host}…")
         connect = self._connect
         if connect is None:
-            from websockets.sync.client import connect as connect  # lazy import
-        ws = connect(self.url, open_timeout=10)
+            from websockets.sync.client import connect as _ws_connect  # lazy import
+
+            # Protocol-level keepalive so a half-open (silently dropped) TCP link is
+            # detected and closed — the blocked recv then raises and run() reconnects.
+            # Tuned for flaky/low-bandwidth links; the app-level heartbeat is separate.
+            ws = _ws_connect(self.url, open_timeout=10, ping_interval=15, ping_timeout=15)
+        else:
+            ws = connect(self.url, open_timeout=10)
         send_lock = threading.Lock()
 
         def send(frame: Dict[str, Any]) -> None:
@@ -283,7 +299,13 @@ class RuntimeConnector:
         self._turn_no += 1
         game = view.get("game", "")
         started = time.perf_counter()
-        status, move = self.agent.decide_turn(view)
+        # Bracket the developer's handler in a Lens span. Inside on_turn, the
+        # author can reach it via pyyol.current_span() to record model/tool calls.
+        with self._tracer.turn_span(
+            match_id=view.get("match_id", ""), game=game,
+            round_no=int(view.get("round", 0) or 0), agent_id=self.agent_id,
+        ):
+            status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
         rid = frame.get("id", "")
         if status == 200:

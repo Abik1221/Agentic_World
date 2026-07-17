@@ -3,6 +3,7 @@ package mafia
 import (
 	"sort"
 )
+
 const (
 	RoleMafia     = "Mafia"
 	RoleDetective = "Detective"
@@ -167,9 +168,16 @@ func assignRoles(seed []byte, seats []int) map[int]string {
 	}
 	ordered := append([]int(nil), seats...)
 	sort.Ints(ordered)
-	out := make(map[int]string, len(ordered))
-	for i, seat := range ordered {
-		out[seat] = roles[i]
+	// Defensive: never index past the fixed role pool. The service pins the roster to
+	// len(RoleSetup), so n == len(roles) in practice; capping here just guarantees no
+	// out-of-range panic if that invariant is ever violated upstream.
+	n := len(ordered)
+	if n > len(roles) {
+		n = len(roles)
+	}
+	out := make(map[int]string, n)
+	for i := 0; i < n; i++ {
+		out[ordered[i]] = roles[i]
 	}
 	return out
 }

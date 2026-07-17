@@ -23,6 +23,27 @@ func (f *fakeRepo) Award(_ context.Context, agent, code string) (bool, error) {
 	return true, nil
 }
 
+func (f *fakeRepo) AwardDeveloper(_ context.Context, dev, code string) (bool, error) {
+	key := dev + "|" + code
+	if f.awarded[key] > 0 {
+		return false, nil
+	}
+	f.awarded[key] = 1
+	return true, nil
+}
+
+func (f *fakeRepo) OwnerOf(_ context.Context, agent string) (string, bool, error) {
+	return "usr_" + agent, true, nil
+}
+
+func (f *fakeRepo) DeveloperRank(_ context.Context, _ string, _ int) (int, float64, bool, error) {
+	return 0, 0, false, nil
+}
+
+func (f *fakeRepo) DeveloperTotals(_ context.Context, _ string, _ int) (int, int, error) {
+	return 0, 0, nil
+}
+
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func evt(t string, payload any) events.Event {

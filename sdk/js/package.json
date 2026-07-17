@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": { "pyyol": "dist/cli.js" },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,6 +37,6 @@
   "publishConfig": { "access": "public", "provenance": true },
   "devDependencies": {
     "typescript": "^5.4.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^22.0.0"
   }
 }

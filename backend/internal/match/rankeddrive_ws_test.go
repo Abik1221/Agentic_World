@@ -108,7 +108,7 @@ func TestRankedAutoDriveTwoLiveSocketAgents(t *testing.T) {
 	}
 
 	svc, _ := newSvcWithRepo()
-	svc.EnableRankedDrive(gw, discard)
+	svc.EnableRankedDrive(gw, nil, nil, nil, discard)
 	ctx := context.Background()
 
 	// Pair them into a staked match — CreatePaired stakes both seats and spawns the

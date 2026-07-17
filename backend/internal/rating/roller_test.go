@@ -23,10 +23,10 @@ func newRollFakeRepo(lastRolled int) *rollFakeRepo {
 	return &rollFakeRepo{lastRolled: lastRolled, champions: map[int]string{}, champSeen: map[int]string{}}
 }
 
-func (f *rollFakeRepo) ApplyMatch(context.Context, ApplyInput) (bool, error) { return false, nil }
-func (f *rollFakeRepo) AgentElo(context.Context, string, int) (int, error)   { return 1500, nil }
-func (f *rollFakeRepo) LastRolledSeason(context.Context) (int, error)        { return f.lastRolled, nil }
-func (f *rollFakeRepo) Leaderboard(_ context.Context, season, _, _ int) ([]LeaderRow, error) {
+func (f *rollFakeRepo) ApplyMatch(context.Context, ApplyInput) (bool, error)       { return false, nil }
+func (f *rollFakeRepo) AgentElo(context.Context, string, string, int) (int, error) { return 1500, nil }
+func (f *rollFakeRepo) LastRolledSeason(context.Context) (int, error)              { return f.lastRolled, nil }
+func (f *rollFakeRepo) Leaderboard(_ context.Context, _ string, season, _, _ int) ([]LeaderRow, error) {
 	if champ, ok := f.champions[season]; ok {
 		return []LeaderRow{{AgentPublicID: champ}}, nil
 	}
@@ -37,10 +37,10 @@ func (f *rollFakeRepo) RollSeason(_ context.Context, season int, champion string
 	f.champSeen[season] = champion
 	return true, nil
 }
-func (f *rollFakeRepo) ModelBenchmark(context.Context, int, int) ([]ModelStat, error) {
+func (f *rollFakeRepo) ModelBenchmark(context.Context, int, string, int) ([]ModelStat, error) {
 	return f.models, nil
 }
-func (f *rollFakeRepo) AgentStanding(context.Context, int, string) (Standing, bool, error) {
+func (f *rollFakeRepo) AgentStanding(context.Context, int, string, string) (Standing, bool, error) {
 	if f.standing == nil {
 		return Standing{}, false, nil
 	}

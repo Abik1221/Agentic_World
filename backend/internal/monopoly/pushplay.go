@@ -9,8 +9,10 @@ import (
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/agentwire"
+	"github.com/agent-arena/arena/internal/benchmark"
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/webhook"
 )
 
@@ -40,6 +42,9 @@ type pushPlayer struct {
 	client   PushClient
 	enqueue  webhook.Enqueuer // durable async /event + /game-end; nil => inline fallback
 	gw       *agentgw.Gateway // local-runtime socket; nil disables the socket path
+	em       *telemetry.Client
+	persist  benchmark.Persist
+	meta     benchmark.AgentMetaResolver
 	log      *slog.Logger
 	maxMatch time.Duration
 }
@@ -64,6 +69,17 @@ func (s *Service) SetWebhookEnqueuer(e webhook.Enqueuer) {
 func (s *Service) SetGateway(gw *agentgw.Gateway) {
 	if s.pusher != nil {
 		s.pusher.gw = gw
+	}
+}
+
+// SetBenchmark wires per-match benchmark telemetry. em ships decision-quality
+// summaries to Pyyol Lens; persist (optional) routes them durably through the
+// outbox. Call after EnablePushPlay; a no-op if push-play isn't enabled.
+func (s *Service) SetBenchmark(em *telemetry.Client, persist benchmark.Persist, meta benchmark.AgentMetaResolver) {
+	if s.pusher != nil {
+		s.pusher.em = em
+		s.pusher.persist = persist
+		s.pusher.meta = meta
 	}
 }
 
@@ -140,6 +156,19 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 	ctx, cancel := context.WithTimeout(context.Background(), p.maxMatch)
 	defer cancel()
 
+	// Per-match benchmark: record every driven decision's outcome + latency for
+	// the developer's seat, emitted (durably when wired) at match end.
+	rec := benchmark.NewRecorder("monopoly", matchID)
+	var agentMeta benchmark.AgentMeta
+	if p.meta != nil {
+		agentMeta = p.meta(ctx, agentID)
+	}
+	defer func() {
+		if err := benchmark.Flush(rec, p.persist, p.em, "practice"); err != nil {
+			p.log.Warn("monopoly pushplay: benchmark persist failed", "match", matchID, "err", err)
+		}
+	}()
+
 	fallbacks := 0
 	initialized := false
 	deliveredTurn := 0 // highest State.TurnCount already pushed to /event
@@ -175,6 +204,11 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 		// sees exactly what happened between its turns, not just a state snapshot.
 		deliveredTurn = p.dispatchEngineEvents(ctx, tr, s, matchID, deliveredTurn)
 		if v.Status != StatusActive {
+			// Record the developer seat's meta + outcome for win-rate/version-diff/provider.
+			rec.SetAgentMeta(v.YourSeat, agentID, agentMeta)
+			if v.Result != nil {
+				rec.SetResult(v.YourSeat, agentID, monopolyResult(v.Result.WinnerSeat, v.YourSeat))
+			}
 			p.log.Info("monopoly pushplay: match finished", "match", matchID, "status", v.Status, "fallbacks", fallbacks, "socket", tr.Socket())
 			// Lifecycle: game-end with a FAT, replayable payload — result + final board
 			// + the full itemized event log.
@@ -193,8 +227,9 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			continue
 		}
 
-		act, usedFallback := p.decide(ctx, tr, matchID, v)
-		if usedFallback {
+		act, outcome, latencyMS := p.decide(ctx, tr, matchID, v)
+		rec.Record(benchmark.Decision{Seat: v.YourSeat, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS})
+		if outcome.Fallback() {
 			fallbacks++
 		}
 		if _, err := s.Act(ctx, agentID, matchID, act); err != nil {
@@ -231,16 +266,36 @@ func (p *pushPlayer) dispatchEngineEvents(ctx context.Context, tr agentwire.Tran
 	return highest
 }
 
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mono.Action, bool) {
+// monopolyResult maps the winning seat to the developer seat's outcome. A
+// negative winner seat (no winner) is a draw.
+func monopolyResult(winnerSeat, yourSeat int) benchmark.Result {
+	switch {
+	case winnerSeat < 0:
+		return benchmark.ResultDraw
+	case winnerSeat == yourSeat:
+		return benchmark.ResultWin
+	default:
+		return benchmark.ResultLoss
+	}
+}
+
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mono.Action, benchmark.Outcome, int64) {
 	req := MonopolyPushView{
 		Game: "monopoly", MatchID: matchID, Seat: v.YourSeat,
 		Phase: v.Phase, LegalActions: v.Legal, State: v.State,
 	}
 	var move MonopolyPushMove
-	if err := tr.Turn(ctx, req, &move); err == nil && containsStr(v.Legal, move.Action) {
-		return mono.Action{Kind: move.Action, Property: move.Property, Amount: move.Amount}, false
+	start := time.Now()
+	err := tr.Turn(ctx, req, &move)
+	latencyMS := time.Since(start).Milliseconds()
+	switch {
+	case err != nil:
+		return safeFallback(v.Legal), benchmark.ClassifyError(err, false), latencyMS
+	case !containsStr(v.Legal, move.Action):
+		return safeFallback(v.Legal), benchmark.OutcomeIllegal, latencyMS
+	default:
+		return mono.Action{Kind: move.Action, Property: move.Property, Amount: move.Amount}, benchmark.OutcomeOK, latencyMS
 	}
-	return safeFallback(v.Legal), true
 }
 
 // safeFallback returns a legal action that needs no extra parameters where

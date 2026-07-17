@@ -323,3 +323,31 @@ func (r *PayoutRepo) ListByStatus(ctx context.Context, status string, limit int)
 	}
 	return out, rows.Err()
 }
+
+// WithOwnerLock serializes withdrawal requests for a single owner. It pins ONE
+// pooled connection, takes a session-level Postgres advisory lock keyed on a
+// 64-bit hash of the owner id, runs fn, then releases the lock and the connection.
+// A concurrent request for the same owner blocks on pg_advisory_lock until the
+// first releases — so the second one's Withdrawable/velocity reads see the first
+// request's committed row and are correctly rejected (closes the over-withdraw /
+// laundering / velocity-bypass race). Different owners hash to different keys and
+// do not contend. The advisory lock is session-scoped (tied to the pinned
+// connection), not transaction-scoped, so it holds across the multiple statements
+// fn issues without forcing them into one transaction.
+func (r *PayoutRepo) WithOwnerLock(ctx context.Context, ownerUserPublicID string, fn func() error) error {
+	conn, err := r.db.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	// hashtext maps the id to int4; ::bigint widens it to the advisory-lock key type.
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtext($1)::bigint)`, ownerUserPublicID); err != nil {
+		return err
+	}
+	defer func() {
+		// Best-effort unlock; connection release also drops session locks, so a
+		// failure here (e.g. ctx cancelled) does not leak the lock past checkin.
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1)::bigint)`, ownerUserPublicID)
+	}()
+	return fn()
+}

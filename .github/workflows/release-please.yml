@@ -1,0 +1,41 @@
+name: release-please
+
+# Conventional-Commits-driven release automation for the pyyol SDKs (monorepo).
+#
+# Flow (fully automatic versioning, one human gate):
+#   1. You merge normal Conventional Commits to `main` (feat:, fix:, perf: …).
+#   2. This job keeps an open "release PR" per SDK that bumps the version +
+#      regenerates the CHANGELOG from those commits. Nothing is published yet.
+#   3. When you MERGE a release PR, release-please creates a GitHub Release and a
+#      version tag — `py-vX.Y.Z` for the Python SDK, `js-vX.Y.Z` for the JS SDK.
+#   4. That tag push triggers the existing publish workflows (release-python.yml /
+#      release-js.yml), which build, test, and publish via OIDC trusted publishing.
+#
+# IMPORTANT — token:
+#   Tags created with the default GITHUB_TOKEN do NOT trigger other workflows
+#   (GitHub blocks that recursion). So the tag would never fire the publish jobs.
+#   To make the chain work, release-please must push with its own credential:
+#   create a GitHub App installation token (preferred) or a fine-grained PAT with
+#   `contents: write` + `pull-requests: write`, store it as the repo secret
+#   RELEASE_PLEASE_TOKEN, and it is used below. Without it, release PRs still open
+#   and merge, but you must push the `py-v*` / `js-v*` tag by hand to publish.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

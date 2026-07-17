@@ -180,6 +180,20 @@ type Config struct {
 	// Observability
 	OTLPEndpoint string
 
+	// Pyyol Lens: the standalone observability stack (../../tracing). The engine
+	// ships trace/span/log telemetry to its ingest API when enabled. Disabled by
+	// default (endpoint+key required); a misconfigured enable degrades to no-op.
+	PyyolLensEnabled  bool
+	PyyolLensEndpoint string // ingest base URL, e.g. http://localhost:8081
+	PyyolLensAPIKey   string // X-Pyyol-Key (matches Lens INGEST_API_KEY)
+	PyyolLensProject  string // project_id bucket in the Lens
+	PyyolLensOrg      string // organization_id for Lens scoping
+	PyyolLensLogLevel string // min level mirrored to the Lens (debug/info/warn/error)
+	// PyyolLensTraceSampleRate keeps this fraction (0..1] of NORMAL-priority
+	// traces; failures, trace lifecycle, and benchmark facts are always kept.
+	// Default 1.0 (keep all); lower under high match volume.
+	PyyolLensTraceSampleRate float64
+
 	// Platform bus (cross-service Redis channel with the Super Admin). Ed25519
 	// keys authenticate messages: the engine signs the events it publishes with
 	// its private key and verifies config against the Admin's public key. Empty
@@ -281,9 +295,12 @@ func Load() (*Config, error) {
 		WithdrawMinCoins:         int64(l.intVal("WITHDRAW_MIN_COINS", 500)),
 		WithdrawClearing:         l.dur("WITHDRAW_CLEARING", 24*time.Hour),
 
-		WithdrawVelocityWindow:     l.dur("WITHDRAW_VELOCITY_WINDOW", 24*time.Hour),
-		WithdrawMaxPerWindow:       l.intVal("WITHDRAW_MAX_PER_WINDOW", 25),
-		WithdrawMaxCentsPerWindow:  int64(l.intVal("WITHDRAW_MAX_CENTS_PER_WINDOW", 0)),
+		WithdrawVelocityWindow: l.dur("WITHDRAW_VELOCITY_WINDOW", 24*time.Hour),
+		WithdrawMaxPerWindow:   l.intVal("WITHDRAW_MAX_PER_WINDOW", 25),
+		// Backstop $ ceiling per rolling window (default $10,000). A non-zero default
+		// bounds a scripted drain even if the per-count cap is generous; raise via env
+		// for high-volume operators, set 0 to rely only on the per-count cap.
+		WithdrawMaxCentsPerWindow:  int64(l.intVal("WITHDRAW_MAX_CENTS_PER_WINDOW", 1_000_000)),
 		WithdrawNewAddressCooldown: l.dur("WITHDRAW_NEW_ADDRESS_COOLDOWN", 24*time.Hour),
 
 		AdminUserIDs:      l.csv("ADMIN_USER_IDS", ""),
@@ -306,6 +323,14 @@ func Load() (*Config, error) {
 		StripeArenaPassPriceCents: int64(l.intVal("ARENA_PASS_PRICE_CENTS", 999)),
 
 		OTLPEndpoint: l.str("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+
+		PyyolLensEnabled:         l.boolVal("PYYOL_LENS_ENABLED", false),
+		PyyolLensEndpoint:        l.str("PYYOL_LENS_ENDPOINT", ""),
+		PyyolLensAPIKey:          l.str("PYYOL_LENS_API_KEY", ""),
+		PyyolLensProject:         l.str("PYYOL_LENS_PROJECT", "pyyol-arena"),
+		PyyolLensOrg:             l.str("PYYOL_LENS_ORG", "pyyol"),
+		PyyolLensLogLevel:        l.str("PYYOL_LENS_LOG_LEVEL", "warn"),
+		PyyolLensTraceSampleRate: l.floatVal("PYYOL_LENS_TRACE_SAMPLE_RATE", 1.0),
 
 		PlatformEnginePrivateKey: l.str("PLATFORM_ENGINE_PRIVATE_KEY", ""),
 		PlatformAdminPublicKey:   l.str("PLATFORM_ADMIN_PUBLIC_KEY", ""),
@@ -487,6 +512,19 @@ func (l *loader) intVal(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func (l *loader) floatVal(key string, def float64) float64 {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		l.problems = append(l.problems, fmt.Sprintf("%s must be a number, got %q", key, v))
+		return def
+	}
+	return f
 }
 
 func (l *loader) boolVal(key string, def bool) bool {

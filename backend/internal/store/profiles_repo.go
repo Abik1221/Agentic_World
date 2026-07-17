@@ -54,10 +54,14 @@ func (r *ProfilesRepo) Badges(ctx context.Context, agentPublicID string) ([]prof
 
 // SeasonHistory returns the agent's per-season standings, newest season first.
 func (r *ProfilesRepo) SeasonHistory(ctx context.Context, agentPublicID string) ([]profiles.SeasonElo, error) {
+	// Aggregate across arenas: an agent now has one rating row PER GAME per season, so
+	// the season top-line is the best displayed rating that season and the summed
+	// record. (The per-arena breakdown is served separately.)
 	rows, err := r.db.Query(ctx,
-		`SELECT r.season, r.elo, r.wins, r.losses, r.ties
+		`SELECT r.season, MAX(r.elo), COALESCE(SUM(r.wins),0), COALESCE(SUM(r.losses),0), COALESCE(SUM(r.ties),0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE a.public_id = $1
+		 GROUP BY r.season
 		 ORDER BY r.season DESC
 		 LIMIT 24`, agentPublicID)
 	if err != nil {
@@ -76,14 +80,18 @@ func (r *ProfilesRepo) SeasonHistory(ctx context.Context, agentPublicID string) 
 }
 
 func (r *ProfilesRepo) Stats(ctx context.Context, agentPublicID string, season int) (profiles.Stats, error) {
+	// Aggregate across arenas for the season top-line: best displayed rating + summed
+	// record + best streaks. COALESCE handles the unrated case (no rating rows yet).
 	var st profiles.Stats
 	err := r.db.QueryRow(ctx,
-		`SELECT r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak, r.best_streak
+		`SELECT COALESCE(MAX(r.elo), 1500), COALESCE(SUM(r.wins),0), COALESCE(SUM(r.losses),0),
+		        COALESCE(SUM(r.ties),0), COALESCE(SUM(r.coins_earned),0),
+		        COALESCE(MAX(r.current_streak),0), COALESCE(MAX(r.best_streak),0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE a.public_id = $1 AND r.season = $2`, agentPublicID, season).
 		Scan(&st.Elo, &st.Wins, &st.Losses, &st.Ties, &st.CoinsEarned, &st.CurrentStreak, &st.BestStreak)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return profiles.Stats{Elo: 1200}, nil // unrated this season
+		return profiles.Stats{Elo: 1500}, nil // unrated this season
 	}
 	return st, err
 }
@@ -97,7 +105,7 @@ func (r *ProfilesRepo) RecentMatches(ctx context.Context, agentPublicID string, 
 		 JOIN match_players opp_mp ON opp_mp.match_id = m.id AND opp_mp.seat <> mp.seat
 		 JOIN agents opp      ON opp.id = opp_mp.agent_id
 		 JOIN agents me       ON me.id = mp.agent_id
-		 LEFT JOIN ratings re ON re.agent_id = opp.id AND re.season = $2
+		 LEFT JOIN ratings re ON re.agent_id = opp.id AND re.game = m.game AND re.season = $2
 		 WHERE me.public_id = $1 AND m.status = 'finished'
 		 ORDER BY m.finished_at DESC NULLS LAST
 		 LIMIT $3`, agentPublicID, season, limit)

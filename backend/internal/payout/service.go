@@ -200,74 +200,81 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 	} else if connect == "" {
 		return Withdrawal{}, ErrNoKYC
 	}
-	// Velocity caps: bound how fast a single owner can move money out, per rolling
-	// window — a scripted drain (e.g. after a session compromise) hits the wall
-	// instead of emptying the account. Checked against the net amount of THIS request.
-	if s.cfg.MaxPerWindow > 0 || s.cfg.MaxCentsPerWindow > 0 {
-		since := s.clock.Now().Add(-s.cfg.VelocityWindow)
-		count, cents, err := s.repo.WithdrawnSince(ctx, owner, since)
+	// Everything from here — the velocity/entitlement checks, the coin Hold, and the
+	// row Create — must be ATOMIC per owner, or two concurrent requests each read a
+	// stale `Withdrawable`/velocity (before either row exists) and both pass, letting
+	// an owner over-withdraw beyond their net winnings (deposit laundering) and blow
+	// past the velocity caps. A per-owner advisory lock serializes it: a sibling
+	// request waits, then reads the committed state and is correctly rejected.
+	var w Withdrawal
+	if err := s.repo.WithOwnerLock(ctx, owner, func() error {
+		// Velocity caps: bound how fast a single owner can move money out, per rolling
+		// window — a scripted drain (e.g. after a session compromise) hits the wall.
+		if s.cfg.MaxPerWindow > 0 || s.cfg.MaxCentsPerWindow > 0 {
+			since := s.clock.Now().Add(-s.cfg.VelocityWindow)
+			count, cents, err := s.repo.WithdrawnSince(ctx, owner, since)
+			if err != nil {
+				return err
+			}
+			if s.cfg.MaxPerWindow > 0 && count >= s.cfg.MaxPerWindow {
+				return ErrVelocity
+			}
+			if s.cfg.MaxCentsPerWindow > 0 && cents+s.quote(coins).NetCents > s.cfg.MaxCentsPerWindow {
+				return ErrVelocity
+			}
+		}
+		// Super Admin gate: maintenance / withdrawals-disabled / bounds / frozen wallet.
+		if s.gate != nil {
+			if err := s.gate.CheckWithdraw(ctx, owner, coins); err != nil {
+				return err
+			}
+		}
+		if flagged, err := s.repo.AgentFlagged(ctx, agentPublicID); err != nil {
+			return err
+		} else if flagged {
+			return ErrFlagged
+		}
+		if debt, err := s.repo.OutstandingDebt(ctx, agentPublicID); err != nil {
+			return err
+		} else if debt > 0 {
+			return ErrDebt
+		}
+		// Minimum-withdrawal single source of truth: when the Super Admin gate is wired
+		// it owns the coin minimum/maximum; the env floor is only a no-gate fallback.
+		if s.gate == nil && coins < s.cfg.MinCoins {
+			return ErrTooSmall
+		}
+		avail, err := s.repo.Withdrawable(ctx, agentPublicID)
 		if err != nil {
-			return Withdrawal{}, err
+			return err
 		}
-		if s.cfg.MaxPerWindow > 0 && count >= s.cfg.MaxPerWindow {
-			return Withdrawal{}, ErrVelocity
+		if coins > avail {
+			return ErrInsufficient
 		}
-		if s.cfg.MaxCentsPerWindow > 0 && cents+s.quote(coins).NetCents > s.cfg.MaxCentsPerWindow {
-			return Withdrawal{}, ErrVelocity
+		q := s.quote(coins)
+		if q.NetCents <= 0 {
+			return ErrTooSmall
 		}
-	}
-	// Super Admin gate: maintenance / withdrawals-disabled / bounds / frozen wallet.
-	if s.gate != nil {
-		if err := s.gate.CheckWithdraw(ctx, owner, coins); err != nil {
-			return Withdrawal{}, err
+		w = Withdrawal{
+			PublicID: platform.NewID("wd"), Agent: agentPublicID, Owner: owner,
+			Coins: coins, FeeCoins: q.FeeCoins, GrossCents: q.GrossCents,
+			StripeFeeCents: q.StripeFeeCents, NetCents: q.NetCents,
+			ConnectAccount: connect, Chain: s.cfg.Chain, DestWallet: destWallet, Status: "requested",
 		}
-	}
-	if flagged, err := s.repo.AgentFlagged(ctx, agentPublicID); err != nil {
-		return Withdrawal{}, err
-	} else if flagged {
-		return Withdrawal{}, ErrFlagged
-	}
-	if debt, err := s.repo.OutstandingDebt(ctx, agentPublicID); err != nil {
-		return Withdrawal{}, err
-	} else if debt > 0 {
-		return Withdrawal{}, ErrDebt
-	}
-	// Minimum-withdrawal single source of truth: when the Super Admin gate is wired
-	// it owns the coin minimum/maximum (wallet_settings.min_withdraw_coins, enforced
-	// in CheckWithdraw above), so we do NOT also apply the static env floor — the two
-	// used to silently disagree (env WITHDRAW_MIN_COINS vs the DB gate), and the higher
-	// one won invisibly. The env floor remains only as a fallback when no gate exists.
-	if s.gate == nil && coins < s.cfg.MinCoins {
-		return Withdrawal{}, ErrTooSmall
-	}
-	avail, err := s.repo.Withdrawable(ctx, agentPublicID)
-	if err != nil {
-		return Withdrawal{}, err
-	}
-	if coins > avail {
-		return Withdrawal{}, ErrInsufficient
-	}
-	q := s.quote(coins)
-	if q.NetCents <= 0 {
-		return Withdrawal{}, ErrTooSmall
-	}
-
-	w := Withdrawal{
-		PublicID: platform.NewID("wd"), Agent: agentPublicID, Owner: owner,
-		Coins: coins, FeeCoins: q.FeeCoins, GrossCents: q.GrossCents,
-		StripeFeeCents: q.StripeFeeCents, NetCents: q.NetCents,
-		ConnectAccount: connect, Chain: s.cfg.Chain, DestWallet: destWallet, Status: "requested",
-	}
-	// Lock the coins first, then record the request. If recording fails, release.
-	if err := s.bank.Hold(ctx, w.PublicID, agentPublicID, coins); err != nil {
-		return Withdrawal{}, err
-	}
-	if err := s.repo.Create(ctx, w); err != nil {
-		_ = s.bank.Release(ctx, w.PublicID, agentPublicID, coins)
+		// Lock the coins first, then record the request. If recording fails, release.
+		if err := s.bank.Hold(ctx, w.PublicID, agentPublicID, coins); err != nil {
+			return err
+		}
+		if err := s.repo.Create(ctx, w); err != nil {
+			_ = s.bank.Release(ctx, w.PublicID, agentPublicID, coins)
+			return err
+		}
+		return nil
+	}); err != nil {
 		return Withdrawal{}, err
 	}
 	s.m.requested.Inc()
-	s.audit(ctx, callerUserPublicID, "withdrawal_request", w.PublicID, map[string]any{"agent": agentPublicID, "coins": coins, "net_cents": q.NetCents})
+	s.audit(ctx, callerUserPublicID, "withdrawal_request", w.PublicID, map[string]any{"agent": agentPublicID, "coins": coins, "net_cents": w.NetCents})
 	return w, nil
 }
 

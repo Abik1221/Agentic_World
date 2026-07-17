@@ -25,7 +25,7 @@ const (
 type generatedKey struct {
 	Raw    string // shown to the caller exactly once
 	Prefix string // "sk_arena_<lookup>" — stored for lookup, unique among live keys
-	Hash   string // bcrypt(secret+pepper) — stored
+	Hash   string // bcrypt(pepperedDigest(secret,pepper)) — stored
 }
 
 func generateKey(pepper string) (generatedKey, error) {
@@ -39,7 +39,11 @@ func generateKey(pepper string) (generatedKey, error) {
 	}
 	prefix := platform.PrefixKey + "_" + lookup
 	raw := prefix + "_" + secret
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret+pepper), bcrypt.DefaultCost)
+	// Pre-hash the secret through HMAC (like passwords, see password.go) before
+	// bcrypt: the ~39-char secret plus a long server pepper would otherwise exceed
+	// bcrypt's 72-byte input cap and fail EVERY key generation. The digest is a
+	// fixed, bounded length regardless of pepper length.
+	hash, err := bcrypt.GenerateFromPassword(pepperedDigest(secret, pepper), bcrypt.DefaultCost)
 	if err != nil {
 		return generatedKey{}, err
 	}
@@ -60,7 +64,12 @@ func splitKey(raw string) (prefix, secret string, err error) {
 }
 
 // verifySecret constant-time-compares a presented secret against the stored hash.
+// It tries the current HMAC-digest scheme first, then falls back to the legacy
+// raw secret+pepper scheme so keys minted before the digest change still verify.
 func verifySecret(hash, secret, pepper string) bool {
+	if bcrypt.CompareHashAndPassword([]byte(hash), pepperedDigest(secret, pepper)) == nil {
+		return true
+	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(secret+pepper)) == nil
 }
 

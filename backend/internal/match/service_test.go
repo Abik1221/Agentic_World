@@ -41,7 +41,7 @@ func (fakeMover) GameEnd(context.Context, string, string, string, json.RawMessag
 // hands-free live-vs-live play (agents-vs-agents; both staked equally at pairing).
 func TestRankedAutoDrivePlaysPairedMatchToFinish(t *testing.T) {
 	svc, _ := newSvcWithRepo()
-	svc.EnableRankedDrive(fakeMover{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.EnableRankedDrive(fakeMover{}, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 
 	id, err := svc.CreatePaired(ctx, "ag_a", "usr_a", "ag_b", "usr_b", 50)

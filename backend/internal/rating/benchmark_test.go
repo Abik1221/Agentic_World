@@ -11,7 +11,7 @@ func TestModelBenchmarkComputesGamesAndWinRate(t *testing.T) {
 		{Provider: "anthropic", Model: "claude-sonnet-5", Agents: 3, Wins: 60, Losses: 40, Ties: 0, AvgElo: 1540, CoinsWon: 12000},
 		{Provider: "openai", Model: "gpt-4o", Agents: 5, Wins: 30, Losses: 20, Ties: 10, AvgElo: 1500, CoinsWon: 8000},
 	}
-	page, err := svcAtSeason(repo, 2).ModelBenchmark(context.Background(), 0)
+	page, err := svcAtSeason(repo, 2).ModelBenchmark(context.Background(), GameGoofspiel, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,11 +36,11 @@ func TestModelBenchmarkComputesGamesAndWinRate(t *testing.T) {
 func TestStandingPassthrough(t *testing.T) {
 	repo := newRollFakeRepo(-1)
 	// Not found when the agent hasn't played.
-	if _, found, err := svcAtSeason(repo, 1).Standing(context.Background(), "ag_x"); err != nil || found {
+	if _, found, err := svcAtSeason(repo, 1).Standing(context.Background(), "ag_x", GameGoofspiel); err != nil || found {
 		t.Fatalf("want not-found, got found=%v err=%v", found, err)
 	}
 	repo.standing = &Standing{Rank: 7, Total: 120, Elo: 1610, Wins: 22, Model: "claude-sonnet-5"}
-	st, found, err := svcAtSeason(repo, 1).Standing(context.Background(), "ag_x")
+	st, found, err := svcAtSeason(repo, 1).Standing(context.Background(), "ag_x", GameGoofspiel)
 	if err != nil || !found {
 		t.Fatalf("want found, got found=%v err=%v", found, err)
 	}

@@ -16,6 +16,7 @@
  */
 import type { Agent } from "./server.js";
 import { SDK_VERSION } from "./server.js";
+import { Tracer } from "./telemetry.js";
 
 // Frame types — byte-identical to the Go gateway (internal/agentgw/frame.go).
 const HELLO = "hello", REGISTERED = "registered", PONG = "pong";
@@ -43,11 +44,43 @@ export interface RuntimeOptions {
   heartbeatMs?: number;
   reconnect?: boolean;
   maxBackoffMs?: number;
+  /** Bound the opening WS handshake (ms); dead-air links hang without it. Default 10s. */
+  connectTimeoutMs?: number;
   /** Inject a WebSocket implementation (defaults to globalThis.WebSocket). */
   WebSocketImpl?: WebSocketCtor;
   /** Called (once per process) with a one-line notice when the gateway reports a
    *  newer SDK is available. Defaults to console.warn. */
   onNotice?: (message: string) => void;
+  /** Optional live feed of match lifecycle for a CLI/console. kind is one of
+   *  "connected" | "turn" | "event" | "game_end". No-op if unset. */
+  onFeed?: (kind: string, detail: string) => void;
+}
+
+function summarizeMove(game: string, move: unknown): string {
+  if (!move || typeof move !== "object") return String(move);
+  const m = move as Record<string, unknown>;
+  if ("card" in m) return `card ${m.card}${m.round !== undefined ? ` (round ${m.round})` : ""}`;
+  if ("action" in m) return `${m.action}${m.target !== undefined ? ` → ${m.target}` : ""}`;
+  return JSON.stringify(m);
+}
+
+function summarizeResult(result: unknown): string {
+  if (!result || typeof result !== "object") return "game finished";
+  const outer = result as Record<string, unknown>;
+  // The gateway may nest the outcome under `result` (with a viewer-relative winner
+  // label like "you"/"opponent"/"tie"); unwrap it like the Python SDK does.
+  const inner = (
+    outer.result && typeof outer.result === "object" ? outer.result : outer
+  ) as Record<string, unknown>;
+  const bits: string[] = [];
+  if (inner.winner !== undefined && inner.winner !== null) bits.push(`winner: ${inner.winner}`);
+  for (const k of ["coins_delta", "your_coins", "coins"]) {
+    if (inner[k]) {
+      bits.push(`${k}=${inner[k]}`);
+      break;
+    }
+  }
+  return "game finished" + (bits.length ? " · " + bits.join(" · ") : "");
 }
 
 /** Terminal connector failure (e.g. auth rejected) — not retried. */
@@ -79,7 +112,13 @@ function isOlder(a: string, b: string): boolean {
 export class RuntimeConnector {
   private stopped = false;
   private nudged = false; // print the "upgrade available" notice at most once
-  constructor(private agent: Agent, private opts: RuntimeOptions) {}
+  // Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
+  // Correlated to the match trace so the agent's model/tool calls render with
+  // the platform's authoritative gateway spans.
+  private readonly tracer: Tracer;
+  constructor(private agent: Agent, private opts: RuntimeOptions) {
+    this.tracer = Tracer.fromEnv({ agentId: opts.agentId, service: opts.name });
+  }
 
   /** The gateway echoes the newest published version on the registered frame.
    *  Print a one-line upgrade hint at most once (not on every reconnect). */
@@ -106,6 +145,9 @@ export class RuntimeConnector {
       } catch (e) {
         if (e instanceof ConnectorError) throw e; // terminal (auth) — don't spin
         if (this.opts.reconnect === false || this.stopped) throw e;
+        // Surface the retry so a bad/absent network doesn't look like a frozen
+        // terminal (the reason is often "can't reach the platform").
+        this.feed("reconnecting", `${(e as Error).message} — retrying in ${Math.round(backoff / 1000)}s`);
         await sleep(backoff);
         backoff = Math.min(backoff * 2, maxBackoff);
       }
@@ -114,43 +156,92 @@ export class RuntimeConnector {
 
   stop(): void {
     this.stopped = true;
+    void this.tracer.close();
+  }
+
+  /** Emit a live-feed line to the CLI/console, if a sink was provided. */
+  private feed(kind: string, detail: string): void {
+    this.opts.onFeed?.(kind, detail);
+  }
+
+  /** Warn (once) when connecting over cleartext ws:// to a non-local host — the
+   *  register token is sent in the clear (mirrors the Python connector). */
+  private securityCheck(): void {
+    try {
+      const u = new URL(this.opts.url);
+      if (u.protocol === "ws:") {
+        const h = u.hostname.toLowerCase();
+        if (!(h === "localhost" || h === "127.0.0.1" || h === "::1" || h.endsWith(".localhost"))) {
+          // Security warning goes straight to stderr — NOT through onNotice, which is
+          // reserved for the SDK upgrade nudge (a host app may route that to its UI).
+          console.warn(
+            `WARNING: connecting over insecure ws:// to ${h} — your token is sent in cleartext; use wss://`,
+          );
+        }
+      }
+    } catch {
+      /* unparseable url — the connect below will surface it */
+    }
   }
 
   /** One connection lifetime: resolves on a clean stop, rejects on transport loss. */
   private session(): Promise<void> {
+    this.securityCheck();
     const WS = this.opts.WebSocketImpl ?? (globalThis as any).WebSocket;
     if (!WS) throw new ConnectorError("no WebSocket implementation (Node >=22 or pass WebSocketImpl)");
+    let host = this.opts.url;
+    try { host = new URL(this.opts.url).host; } catch { /* keep raw */ }
+    this.feed("connecting", host);
     const ws: WebSocketLike = new WS(this.opts.url);
 
     return new Promise<void>((resolve, reject) => {
       let hb: ReturnType<typeof setInterval> | undefined;
       let settled = false;
+      let opened = false;
+      let queue: Promise<void> = Promise.resolve(); // serialize frame dispatch (FIFO)
       const send = (f: Record<string, unknown>) => ws.send(JSON.stringify(f));
+      // Bound the OPENING handshake — the WHATWG WebSocket has no connect timeout, so
+      // a dead-air link (accepts TCP, never upgrades) would hang forever. On timeout
+      // we fail with a transient error → run() reconnects.
+      const openTimer = setTimeout(() => {
+        if (!opened) fail(new Error("connect timed out (platform unreachable)"));
+      }, this.opts.connectTimeoutMs ?? 10000);
       const cleanup = () => {
+        clearTimeout(openTimer);
         if (hb) clearInterval(hb);
         try { ws.close(); } catch { /* already closing */ }
       };
       const fail = (e: Error) => { if (!settled) { settled = true; cleanup(); reject(e); } };
       const done = () => { if (!settled) { settled = true; cleanup(); resolve(); } };
+      ws.addEventListener("open", () => { opened = true; });
 
-      ws.addEventListener("message", async (ev: any) => {
+      ws.addEventListener("message", (ev: any) => {
         let frame: Record<string, any>;
         try {
           frame = JSON.parse(typeof ev.data === "string" ? ev.data : String(ev.data));
         } catch { return; }
-        try {
-          await this.dispatch(frame, send, () => {
-            hb = setInterval(() => send({ t: PING }), this.opts.heartbeatMs ?? 10000);
-          });
-        } catch (e) {
-          fail(e instanceof Error ? e : new Error(String(e)));
-        }
+        // Chain onto the queue so frames are handled strictly one-at-a-time, in
+        // arrival order — responses can't be sent out of order under a burst.
+        queue = queue.then(async () => {
+          if (settled) return;
+          try {
+            await this.dispatch(frame, send, () => {
+              hb = setInterval(() => send({ t: PING }), this.opts.heartbeatMs ?? 10000);
+            });
+          } catch (e) {
+            fail(e instanceof Error ? e : new Error(String(e)));
+          }
+        });
       });
       ws.addEventListener("close", () => {
-        // In one-shot mode (or after stop()) a close is a clean end; otherwise it
-        // is a transport loss that run() turns into a reconnect.
-        if (this.stopped || this.opts.reconnect === false) done();
-        else fail(new Error("connection closed"));
+        // Drain any queued frame dispatches BEFORE settling, so a close that arrives
+        // right after the last frame doesn't cut off its handling (e.g. a final turn
+        // response). In one-shot mode (or after stop()) a close is a clean end;
+        // otherwise it is a transport loss that run() turns into a reconnect.
+        queue = queue.then(() => {
+          if (this.stopped || this.opts.reconnect === false) done();
+          else fail(new Error("connection closed"));
+        });
       });
       ws.addEventListener("error", () => { /* close fires next; handled there */ });
     });
@@ -167,6 +258,7 @@ export class RuntimeConnector {
         break;
       case REGISTERED:
         this.maybeNudge(frame.latest_sdk);
+        this.feed("connected", `as ${frame.agent_id ?? this.opts.agentId ?? ""} · games=${(this.opts.games ?? []).join(",")}`);
         onRegistered();
         break;
       case ERROR:
@@ -177,9 +269,24 @@ export class RuntimeConnector {
       case PONG:
         break;
       case TURN: {
-        const { status, body } = await this.agent.decideTurn(frame.payload ?? {});
-        if (status === 200) send({ t: RESPONSE, id: frame.id ?? "", payload: body });
-        else send({ t: RESPONSE, id: frame.id ?? "", error: (body as any)?.error ?? "handler_error" });
+        const view = frame.payload ?? {};
+        // Bracket the developer's handler in a Lens span; inside decideTurn the
+        // author can reach it via pyyol.currentSpan() to record model/tool calls.
+        const { status, body } = await this.tracer.runTurn(
+          {
+            matchId: (view.match_id as string) ?? "",
+            game: (view.game as string) ?? "",
+            round: Number(view.round ?? 0) || 0,
+            agentId: this.opts.agentId,
+          },
+          () => this.agent.decideTurn(view),
+        );
+        if (status === 200) {
+          send({ t: RESPONSE, id: frame.id ?? "", payload: body });
+          this.feed("turn", summarizeMove(frame.payload?.game ?? "", body));
+        } else {
+          send({ t: RESPONSE, id: frame.id ?? "", error: (body as any)?.error ?? "handler_error" });
+        }
         break;
       }
       case INITIALIZE: {
@@ -192,11 +299,13 @@ export class RuntimeConnector {
           match_id: frame.match_id ?? "", game: frame.game ?? "",
           seq: frame.seq ?? 0, type: frame.kind ?? "", payload: frame.payload,
         });
+        this.feed("event", `${frame.kind ?? "event"}${frame.seq !== undefined ? ` seq=${frame.seq}` : ""}`);
         break;
       case GAME_END:
         await this.agent.notifyGameEnd({
           match_id: frame.match_id ?? "", game: frame.game ?? "", result: frame.payload,
         });
+        this.feed("game_end", summarizeResult(frame.payload));
         break;
       default:
         break;

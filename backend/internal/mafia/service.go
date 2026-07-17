@@ -10,6 +10,7 @@ import (
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/rating"
 )
 
 // Config tunes phase windows and table economics.
@@ -38,7 +39,19 @@ type Service struct {
 	pusher *pushPlayer
 	// notify wakes long-polling State callers on a state change. Nil ⇒ no long-poll.
 	notify Notifier
+	// rater applies per-arena skill ratings when a paid table finalizes. Nil ⇒
+	// ratings skipped (tests / notifier-less builds). rating.Service satisfies it.
+	rater Rater
 }
+
+// Rater applies a finished ranked table's TrueSkill change to the Mafia arena.
+// Satisfied directly by *rating.Service.
+type Rater interface {
+	Rate(ctx context.Context, res rating.MatchResult) error
+}
+
+// SetRater installs the rating hook (called once at wiring time).
+func (s *Service) SetRater(r Rater) { s.rater = r }
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {
 	if cfg.PhaseWindow <= 0 {
@@ -53,8 +66,12 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 	if cfg.PlatformFeePct <= 0 {
 		cfg.PlatformFeePct = DefaultPlatformFeePct
 	}
-	if cfg.RosterSize <= 0 {
-		cfg.RosterSize = mf.RosterSize
+	// Roles are dealt from a FIXED pool (mf.RoleSetup); the roster MUST equal the
+	// pool size, or assignRoles would panic (too many seats) or silently skew the
+	// faction balance (too few). Pin it so a Config misconfig can't corrupt role
+	// assignment on a real (money) table.
+	if cfg.RosterSize != len(mf.RoleSetup) {
+		cfg.RosterSize = len(mf.RoleSetup)
 	}
 	if finish == nil {
 		finish = NoopFinishHook{}
@@ -330,8 +347,49 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 		return err
 	}
 	s.publish(m.PublicID, events)
+
+	// Paid tables update the per-arena skill rating (TrueSkill, N-player). The
+	// result is faction-based and server-authoritative: the whole winning team ranks
+	// 1, everyone else ranks 2. Idempotent per match, retried a few times since the
+	// match is already durably finished + settled (nothing re-drives finalize).
+	if s.rater != nil && m.EntryFee > 0 {
+		res := rating.MatchResult{MatchPublicID: m.PublicID, Game: rating.GameMafia}
+		for _, p := range players {
+			placement := 2
+			if p.Team == state.Winner {
+				placement = 1
+			}
+			res.Players = append(res.Players, rating.PlayerResult{
+				AgentPublicID: p.AgentPublicID, Seat: p.Seat, Placement: placement, CoinsDelta: p.CoinsDelta,
+			})
+		}
+		if err := rateWithRetry(ctx, s.rater, res, 3, 50*time.Millisecond); err != nil {
+			return err
+		}
+	}
+
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil
+}
+
+// rateWithRetry applies the (idempotent) rating with a bounded retry so a transient
+// error right after the match commits doesn't lose the rating update. Honors context
+// cancellation between attempts.
+func rateWithRetry(ctx context.Context, rater Rater, res rating.MatchResult, attempts int, backoff time.Duration) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		if err = rater.Rate(ctx, res); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error {

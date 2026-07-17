@@ -23,87 +23,173 @@ func NewRatingRepo(db *pgxpool.Pool) *RatingRepo { return &RatingRepo{db: db} }
 var _ rating.Repo = (*RatingRepo)(nil)
 
 func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool, error) {
+	if len(in.Players) < 2 {
+		return false, nil
+	}
+	game := in.Game
+	if game == "" {
+		game = rating.GameGoofspiel
+	}
+	algo := in.Algo
+	if algo == "" {
+		algo = rating.AlgoGlicko2
+	}
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Idempotency marker: present ⇒ already rated. Bound to a real match via FK.
-	ct, err := tx.Exec(ctx,
+	// Idempotency marker: present ⇒ already rated. Bound to a real match via FK. A
+	// match belongs to exactly one arena, so match_id alone is the right key.
+	var matchID int64
+	err = tx.QueryRow(ctx,
 		`INSERT INTO rating_updates (match_id, season)
 		 SELECT m.id, $2 FROM matches m WHERE m.public_id = $1
-		 ON CONFLICT (match_id) DO NOTHING`, in.MatchPublicID, in.Season)
-	if err != nil {
-		return false, err
-	}
-	if ct.RowsAffected() == 0 {
+		 ON CONFLICT (match_id) DO NOTHING
+		 RETURNING match_id`, in.MatchPublicID, in.Season).Scan(&matchID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx) // already rated (or no such match): no-op
 	}
-
-	idA, err := resolveAgentID(ctx, tx, in.Agents[0])
-	if err != nil {
-		return false, err
-	}
-	idB, err := resolveAgentID(ctx, tx, in.Agents[1])
 	if err != nil {
 		return false, err
 	}
 
-	// Ensure both rating rows exist (default 1500) before locking them.
-	for _, ag := range in.Agents {
+	// Resolve agent ids first (player order preserved so Compute's output aligns).
+	ids := make([]int64, len(in.Players))
+	for i, p := range in.Players {
+		id, err := resolveAgentID(ctx, tx, p.AgentPublicID)
+		if err != nil {
+			return false, err
+		}
+		ids[i] = id
+	}
+	// Ensure a rating row exists for each (agent, game, season), inserting in
+	// ASCENDING agent-id order — the same order as the FOR UPDATE lock below — so two
+	// concurrent matches that share agents can't deadlock on the ensure-insert.
+	order := make([]int, len(ids))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool { return ids[order[a]] < ids[order[b]] })
+	for _, i := range order {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO ratings (agent_id, season) SELECT id, $2 FROM agents WHERE public_id = $1
-			 ON CONFLICT DO NOTHING`, ag, in.Season); err != nil {
+			`INSERT INTO ratings (agent_id, game, season, algo) VALUES ($1, $2, $3, $4)
+			 ON CONFLICT DO NOTHING`, ids[i], game, in.Season, algo); err != nil {
 			return false, err
 		}
 	}
 
-	// Lock both rows in ascending id order to avoid deadlocks between concurrent
-	// matches that share an agent.
-	ids := []int64{idA, idB}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	pr := map[int64]rating.PlayerRating{}
+	// Lock all rows in ascending id order (deadlock-free across concurrent matches
+	// that share an agent).
+	locked := append([]int64(nil), ids...)
+	sort.Slice(locked, func(i, j int) bool { return locked[i] < locked[j] })
+	cur := map[int64]rating.RatingState{}
 	streak := map[int64]int{}
 	rows, err := tx.Query(ctx,
-		`SELECT agent_id, elo, rd, vol, current_streak FROM ratings
-		 WHERE agent_id = ANY($1) AND season = $2 ORDER BY agent_id FOR UPDATE`, ids, in.Season)
+		`SELECT agent_id, elo, rd, vol, mu, sigma, current_streak FROM ratings
+		 WHERE agent_id = ANY($1) AND game = $2 AND season = $3
+		 ORDER BY agent_id FOR UPDATE`, locked, game, in.Season)
 	if err != nil {
 		return false, err
 	}
 	for rows.Next() {
-		var id int64
-		var e, s int
-		var rd, vol float64
-		if err := rows.Scan(&id, &e, &rd, &vol, &s); err != nil {
+		var id, s int64
+		var e int
+		var rd, vol, mu, sigma float64
+		if err := rows.Scan(&id, &e, &rd, &vol, &mu, &sigma, &s); err != nil {
 			rows.Close()
 			return false, err
 		}
-		pr[id] = rating.PlayerRating{Elo: e, RD: rd, Vol: vol}
-		streak[id] = s
+		cur[id] = rating.RatingState{Elo: e, RD: rd, Vol: vol, Mu: mu, Sigma: sigma}
+		streak[id] = int(s)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
 
-	newA, newB := in.Compute(pr[idA], pr[idB])
-	if err := updateRating(ctx, tx, idA, in.Season, 0, in.WinnerSeat, newA, streak[idA], in.CoinsDelta[0]); err != nil {
+	// Build the aligned inputs, compute, and write each player's new state + a
+	// permanent per-match snapshot row.
+	states := make([]rating.RatingState, len(in.Players))
+	placements := make([]int, len(in.Players))
+	minPlace := in.Players[0].Placement
+	allEqual := true
+	for i, p := range in.Players {
+		states[i] = cur[ids[i]]
+		placements[i] = p.Placement
+		if p.Placement < minPlace {
+			minPlace = p.Placement
+		}
+		if p.Placement != in.Players[0].Placement {
+			allEqual = false
+		}
+	}
+	next := in.Compute(states, placements)
+	if len(next) != len(in.Players) {
+		return false, errors.New("rating: Compute returned wrong player count")
+	}
+
+	deltas := make([]ratingDelta, len(in.Players))
+	for i, p := range in.Players {
+		var w, l, t int
+		switch {
+		case allEqual:
+			t = 1
+		case p.Placement == minPlace:
+			w = 1
+		default:
+			l = 1
+		}
+		if err := updateRating(ctx, tx, ids[i], game, in.Season, next[i], streak[ids[i]], w, l, t, p.CoinsDelta); err != nil {
+			return false, err
+		}
+		before, after := states[i].Elo, next[i].Elo
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO match_rating_changes
+			   (match_id, agent_id, game, season, rating_before, rating_after, rating_delta, rank_in_match)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			 ON CONFLICT (match_id, agent_id) DO NOTHING`,
+			matchID, ids[i], game, in.Season, before, after, after-before, p.Placement); err != nil {
+			return false, err
+		}
+		deltas[i] = ratingDelta{
+			Agent: p.AgentPublicID, Before: before, After: after,
+			Delta: after - before, Rank: p.Placement,
+		}
+	}
+
+	// Emit rating.updated in the SAME tx (transactional outbox): the P-Index
+	// recompute pipeline and streak/win-count badges project off this.
+	payload, err := json.Marshal(map[string]any{
+		"match": in.MatchPublicID, "game": game, "season": in.Season, "agents": deltas,
+	})
+	if err != nil {
 		return false, err
 	}
-	if err := updateRating(ctx, tx, idB, in.Season, 1, in.WinnerSeat, newB, streak[idB], in.CoinsDelta[1]); err != nil {
+	if _, err := InsertEventTx(ctx, tx, events.TypeRatingUpdated, payload); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
 }
 
-func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int) ([]rating.LeaderRow, error) {
+// ratingDelta is one agent's rating movement in the rating.updated event payload.
+type ratingDelta struct {
+	Agent  string `json:"agent"`
+	Before int    `json:"rating_before"`
+	After  int    `json:"rating_after"`
+	Delta  int    `json:"rating_delta"`
+	Rank   int    `json:"rank"`
+}
+
+func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offset, limit int) ([]rating.LeaderRow, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT a.public_id, a.slug, a.name, COALESCE(a.avatar_url, ''), r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE r.season = $1 AND a.kind <> 'house'
+		 WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
 		 ORDER BY r.elo DESC, r.agent_id ASC
-		 LIMIT $2 OFFSET $3`, season, limit, offset)
+		 LIMIT $3 OFFSET $4`, game, season, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +209,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, season, offset, limit int)
 // ModelBenchmark groups the season's rated agents by their DECLARED model (the
 // latest non-rejected manifest per agent) and aggregates games/elo/coins. Only
 // models with >= minGames total games are returned, best avg-ELO first.
-func (r *RatingRepo) ModelBenchmark(ctx context.Context, season, minGames int) ([]rating.ModelStat, error) {
+func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string, minGames int) ([]rating.ModelStat, error) {
 	rows, err := r.db.Query(ctx,
 		`WITH mdl AS (
 		   SELECT DISTINCT ON (agent_id) agent_id,
@@ -142,10 +228,10 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season, minGames int) (
 		        COALESCE(SUM(r.coins_earned),0)::bigint    AS coins_won
 		 FROM mdl
 		 JOIN agents  a ON a.id = mdl.agent_id AND a.kind <> 'house'
-		 JOIN ratings r ON r.agent_id = mdl.agent_id AND r.season = $1
+		 JOIN ratings r ON r.agent_id = mdl.agent_id AND r.game = $2 AND r.season = $1
 		 GROUP BY mdl.provider, mdl.model
-		 HAVING (COALESCE(SUM(r.wins),0)+COALESCE(SUM(r.losses),0)+COALESCE(SUM(r.ties),0)) >= $2
-		 ORDER BY avg_elo DESC, coins_won DESC`, season, minGames)
+		 HAVING (COALESCE(SUM(r.wins),0)+COALESCE(SUM(r.losses),0)+COALESCE(SUM(r.ties),0)) >= $3
+		 ORDER BY avg_elo DESC, coins_won DESC`, season, game, minGames)
 	if err != nil {
 		return nil, err
 	}
@@ -163,24 +249,25 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season, minGames int) (
 
 // AgentStanding returns an agent's rank + totals for the season. Rank is 1-based,
 // ordered by ELO desc (ties broken by lower agent_id, matching the leaderboard).
-func (r *RatingRepo) AgentStanding(ctx context.Context, season int, agentPublicID string) (rating.Standing, bool, error) {
+func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentPublicID string) (rating.Standing, bool, error) {
 	var s rating.Standing
 	s.Season = season
+	s.Game = game
 	s.AgentPublicID = agentPublicID
 	err := r.db.QueryRow(ctx,
 		`SELECT a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak,
 		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
-		      WHERE r2.season = $1 AND a2.kind <> 'house'
+		      WHERE r2.game = $3 AND r2.season = $1 AND a2.kind <> 'house'
 		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
 		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
-		      WHERE r3.season = $1 AND a3.kind <> 'house') AS total,
+		      WHERE r3.game = $3 AND r3.season = $1 AND a3.kind <> 'house') AS total,
 		   COALESCE((SELECT model_provider FROM agent_manifests m WHERE m.agent_id = a.id
 		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
 		   COALESCE((SELECT model_name FROM agent_manifests m WHERE m.agent_id = a.id
 		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), '')
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE r.season = $1 AND a.public_id = $2`,
-		season, agentPublicID).
+		 WHERE r.game = $3 AND r.season = $1 AND a.public_id = $2`,
+		season, agentPublicID, game).
 		Scan(&s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
 			&s.Rank, &s.Total, &s.Provider, &s.Model)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -200,39 +287,34 @@ func resolveAgentID(ctx context.Context, tx pgx.Tx, agentPublicID string) (int64
 	return id, err
 }
 
-func updateRating(ctx context.Context, tx pgx.Tx, agentID int64, season, seat, winnerSeat int, nr rating.PlayerRating, oldStreak int, coins int64) error {
-	var w, l, t, streak int
-	switch {
-	case winnerSeat == rating.Tie:
-		t, streak = 1, 0
-	case winnerSeat == seat:
-		w, streak = 1, oldStreak+1
-	default:
-		l, streak = 1, 0
+func updateRating(ctx context.Context, tx pgx.Tx, agentID int64, game string, season int, nr rating.RatingState, oldStreak, w, l, t int, coins int64) error {
+	streak := 0
+	if w == 1 {
+		streak = oldStreak + 1 // a win extends the streak; a loss/tie resets it
 	}
 	_, err := tx.Exec(ctx,
 		`UPDATE ratings
-		 SET elo = $3, rd = $4, vol = $5,
-		     wins = wins + $6, losses = losses + $7, ties = ties + $8,
-		     coins_earned = coins_earned + $9, current_streak = $10,
-		     best_streak = GREATEST(best_streak, $10), updated_at = now()
-		 WHERE agent_id = $1 AND season = $2`,
-		agentID, season, nr.Elo, nr.RD, nr.Vol, w, l, t, coins, streak)
+		 SET elo = $4, rd = $5, vol = $6, mu = $7, sigma = $8,
+		     wins = wins + $9, losses = losses + $10, ties = ties + $11,
+		     coins_earned = coins_earned + $12, current_streak = $13,
+		     best_streak = GREATEST(best_streak, $13), updated_at = now()
+		 WHERE agent_id = $1 AND game = $2 AND season = $3`,
+		agentID, game, season, nr.Elo, nr.RD, nr.Vol, nr.Mu, nr.Sigma, w, l, t, coins, streak)
 	return err
 }
 
 // AgentElo returns the agent's rating for the season, defaulting to the 1500
 // Glicko-2 baseline when the agent has not yet been rated this season (so unrated
 // agents matchmake from the baseline rather than failing).
-func (r *RatingRepo) AgentElo(ctx context.Context, agentPublicID string, season int) (int, error) {
+func (r *RatingRepo) AgentElo(ctx context.Context, agentPublicID, game string, season int) (int, error) {
 	var elo int
 	err := r.db.QueryRow(ctx,
 		`SELECT COALESCE(
 		     (SELECT rt.elo FROM ratings rt
 		      JOIN agents a ON a.id = rt.agent_id
-		      WHERE a.public_id = $1 AND rt.season = $2),
+		      WHERE a.public_id = $1 AND rt.game = $3 AND rt.season = $2),
 		     1500)`,
-		agentPublicID, season).Scan(&elo)
+		agentPublicID, season, game).Scan(&elo)
 	if err != nil {
 		return 1500, err
 	}

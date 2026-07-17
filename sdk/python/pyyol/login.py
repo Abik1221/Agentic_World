@@ -15,6 +15,7 @@ side (loopback capture + secure storage) is complete and lives here.
 
 from __future__ import annotations
 
+import hmac
 import secrets
 import threading
 import urllib.parse
@@ -43,6 +44,7 @@ def run_login_flow(
     dashboard_url: str,
     api_url: str = "",
     timeout: float = 180.0,
+    provider: str = "",
     _opener=None,
 ) -> Credentials:
     """Run the loopback browser login and return captured Credentials.
@@ -62,7 +64,8 @@ def run_login_flow(
                 return
             q = urllib.parse.parse_qs(parsed.query)
             token = (q.get("token") or [""])[0]
-            ok = bool(token) and (q.get("state") or [""])[0] == state
+            # Constant-time CSRF-state check (mirrors the signing module's discipline).
+            ok = bool(token) and hmac.compare_digest((q.get("state") or [""])[0], state)
             self.send_response(200 if ok else 400)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -88,6 +91,8 @@ def run_login_flow(
             f"{dashboard_url.rstrip('/')}/cli-login"
             f"?callback={urllib.parse.quote(callback, safe='')}&state={state}"
         )
+        if provider:  # let the dashboard pre-select GitHub/Google/wallet
+            auth_url += f"&provider={urllib.parse.quote(provider, safe='')}"
         (_opener or webbrowser.open)(auth_url)
         if not done.wait(timeout) or not captured.get("token"):
             raise TimeoutError("login timed out or was cancelled")

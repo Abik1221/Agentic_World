@@ -213,8 +213,10 @@ def test_console_receives_lifecycle_events():
         pass
 
     kinds = [e[0] for e in console.events]
-    # Connected → waiting → match → decision → event → game_end → waiting.
-    assert kinds == ["connected", "waiting", "match", "decision", "event", "game_end", "waiting"]
+    # Connecting → connected → waiting → match → decision → event → game_end → waiting.
+    assert kinds == [
+        "connecting", "connected", "waiting", "match", "decision", "event", "game_end", "waiting",
+    ]
     decision = next(e for e in console.events if e[0] == "decision")
     assert "bid 9" in decision[1]  # the move is summarized
     assert "ms" in decision[2]  # latency is captured

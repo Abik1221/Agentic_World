@@ -27,6 +27,27 @@ func TestKeyRoundTrip(t *testing.T) {
 	}
 }
 
+// A long server pepper must NOT break key generation. Before the HMAC pre-hash,
+// bcrypt(secret+pepper) exceeded its 72-byte input cap for any pepper ≳33 bytes,
+// silently failing every signup. The digest keeps the bcrypt input bounded.
+func TestKeyRoundTrip_LongPepper(t *testing.T) {
+	pepper := "a-realistically-long-server-pepper-value-well-over-72-bytes-when-concatenated-with-the-secret"
+	k, err := generateKey(pepper)
+	if err != nil {
+		t.Fatalf("generateKey with long pepper: %v", err)
+	}
+	_, secret, err := splitKey(k.Raw)
+	if err != nil {
+		t.Fatalf("splitKey: %v", err)
+	}
+	if !verifySecret(k.Hash, secret, pepper) {
+		t.Fatal("verifySecret failed for correct secret under a long pepper")
+	}
+	if verifySecret(k.Hash, secret, "different-long-pepper-"+pepper) {
+		t.Fatal("verifySecret succeeded with the wrong pepper")
+	}
+}
+
 func TestSplitKey_Malformed(t *testing.T) {
 	for _, bad := range []string{"", "nope", "sk_arena_", "sk_arena_onlylookup", "bearer x"} {
 		if _, _, err := splitKey(bad); err == nil {

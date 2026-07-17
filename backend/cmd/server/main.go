@@ -19,13 +19,16 @@ import (
 	"github.com/agent-arena/arena/internal/adminapi"
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/antifraud"
+	"github.com/agent-arena/arena/internal/arena"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/badges"
+	"github.com/agent-arena/arena/internal/benchmark"
 	"github.com/agent-arena/arena/internal/blockchain"
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
+	"github.com/agent-arena/arena/internal/devprofile"
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/health"
@@ -41,7 +44,9 @@ import (
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
 	"github.com/agent-arena/arena/internal/payout"
+	"github.com/agent-arena/arena/internal/pindex"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/platformcfg"
 	"github.com/agent-arena/arena/internal/platformsign"
 	"github.com/agent-arena/arena/internal/profiles"
@@ -53,12 +58,13 @@ import (
 	"github.com/agent-arena/arena/internal/spectator"
 	"github.com/agent-arena/arena/internal/store"
 	"github.com/agent-arena/arena/internal/subscription"
+	"github.com/agent-arena/arena/internal/telemetrybridge"
 	"github.com/agent-arena/arena/internal/tournament"
+	"github.com/agent-arena/arena/internal/twofa"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
 	"github.com/agent-arena/arena/internal/walletadmin"
 	"github.com/agent-arena/arena/internal/walletrecon"
-	"github.com/agent-arena/arena/internal/twofa"
 	"github.com/agent-arena/arena/internal/walletverify"
 	"github.com/agent-arena/arena/internal/webhook"
 )
@@ -83,8 +89,25 @@ func run() error {
 
 	// 2. Logging.
 	log := platform.NewLogger(cfg.Env, cfg.LogLevel)
+
+	// 2b. Pyyol Lens telemetry emitter (observability). Constructed early so the
+	// logger can be teed into it and every downstream component can take it. A
+	// disabled/misconfigured Lens yields a no-op emitter (zero hot-path cost).
+	lens := telemetry.New(telemetry.Config{
+		Enabled:         cfg.PyyolLensEnabled,
+		Endpoint:        cfg.PyyolLensEndpoint,
+		APIKey:          cfg.PyyolLensAPIKey,
+		Project:         cfg.PyyolLensProject,
+		Organization:    cfg.PyyolLensOrg,
+		Environment:     cfg.Env,
+		ServiceName:     "arena-engine",
+		TraceSampleRate: cfg.PyyolLensTraceSampleRate,
+	}, log)
+	// Tee logs at/above the configured level into the Lens as correlated
+	// log_record events (stdout logging is untouched). "all logs, in one place."
+	log = slog.New(telemetry.NewLogHandler(log.Handler(), lens, parseLensLogLevel(cfg.PyyolLensLogLevel)))
 	slog.SetDefault(log)
-	log.Info("starting agent-arena", "env", cfg.Env, "version", version, "port", cfg.Port)
+	log.Info("starting agent-arena", "env", cfg.Env, "version", version, "port", cfg.Port, "telemetry", lens.Enabled())
 
 	// 3. Signal-aware root context: SIGINT/SIGTERM begin graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -100,6 +123,12 @@ func run() error {
 		defer cancel()
 		_ = tracer.Shutdown(shutdownCtx)
 	}()
+	// Flush buffered telemetry on shutdown so the last match/logs are not lost.
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = lens.Shutdown(shutdownCtx)
+	}()
 
 	// 5. Cross-cutting platform primitives.
 	metrics := platform.NewMetrics()
@@ -114,6 +143,19 @@ func run() error {
 	}
 	defer st.Close()
 	log.Info("data layer connected")
+
+	// Durable benchmark sink: per-match decision-quality summaries ride the outbox
+	// (crash-safe, at-least-once) and the telemetry bridge projects them to Pyyol
+	// Lens. Wired only when telemetry is on, so we don't write rows nobody reads.
+	// Shared by every game's drive loop (goofspiel ranked, mafia/monopoly push).
+	var benchPersist benchmark.Persist
+	var benchMeta benchmark.AgentMetaResolver
+	if lens.Enabled() {
+		benchPersist = func(ctx context.Context, eventType string, payload []byte) error {
+			_, err := store.InsertEvent(ctx, st.DB, eventType, payload)
+			return err
+		}
+	}
 
 	// Auto-migrate on startup: apply any pending schema migrations in-process
 	// before serving. Safe for multi-instance (advisory-locked); disable with
@@ -269,6 +311,23 @@ func run() error {
 	})
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
+	// Benchmark agent metadata: resolve each agent's active manifest at match time
+	// so the benchmark fact carries trusted, server-side version + declared model
+	// provider/model (for version-diff and provider benchmarks). Telemetry only.
+	if lens.Enabled() {
+		benchMeta = func(ctx context.Context, agentPublicID string) benchmark.AgentMeta {
+			m, err := manifestSvc.PublicActive(ctx, agentPublicID)
+			if err != nil {
+				return benchmark.AgentMeta{}
+			}
+			meta := benchmark.AgentMeta{Version: m.AgentVersion}
+			if m.Model != nil {
+				meta.Provider = m.Model.Provider
+				meta.Model = m.Model.Model
+			}
+			return meta
+		}
+	}
 	manifestHandler.SetRateLimit(verifyRL) // bound the outbound endpoint probe
 
 	// Agent gateway: the Beta local-runtime transport. Developer agents dial OUT
@@ -276,12 +335,17 @@ func run() error {
 	// authenticated by their manifest endpoint secret. The engine drives matches
 	// over the socket via agentgw.*Decider, falling back deterministically if an
 	// agent is absent/slow — the same guarantee the HTTP push client gives.
-	agentGateway := newAgentGateway(manifestSvc, idSvc, platformCfg, log)
+	agentGateway := newAgentGateway(manifestSvc, idSvc, platformCfg, lens, log)
 
 	// Domain event bus (transactional outbox): producers emit facts in their own
 	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone
 	// for notifications, badges, and analytics (P1). Handlers registered here.
 	eventBus := events.New(store.NewEventsRepo(st.DB), log, time.Second)
+	// Pyyol Lens projection: every domain fact (match started/finished, rating,
+	// pindex, certification, disputes…) becomes a trace/span in the observability
+	// stack — an idempotent outbox handler like badges/notifications. No-op when
+	// telemetry is disabled. Registered before the dispatcher starts (see NOTE).
+	telemetrybridge.New(lens).Register(eventBus.On)
 	eventBus.On(events.TypeAgentCertified, func(_ context.Context, e events.Event) error {
 		log.Info("agent certified", "event", e.ID, "payload", string(e.Payload))
 		return nil
@@ -295,6 +359,10 @@ func run() error {
 	eventBus.On(events.TypeAgentCertified, badgeSvc.OnAgentCertified)
 	eventBus.On(events.TypeSeasonRolled, badgeSvc.OnSeasonRolled)
 	eventBus.On(events.TypeMatchFinished, badgeSvc.OnMatchFinished)
+	// Developer (P-Index) badges: rank thresholds + consistency off pindex.updated;
+	// streak/win-count/underdog off rating.updated. Idempotent, so at-least-once is safe.
+	eventBus.On(events.TypePIndexUpdated, badgeSvc.OnPIndexUpdated)
+	eventBus.On(events.TypeRatingUpdated, badgeSvc.OnRatingUpdated)
 	// Cross-service event mirror: every delivered domain event is also appended to
 	// the Redis stream the Super Admin consumes (live dashboard + analytics). It is
 	// just another idempotent outbox handler — a publish failure leaves the event
@@ -304,10 +372,14 @@ func run() error {
 		events.TypeAgentCertified, events.TypeMatchStarted, events.TypeMatchFinished,
 		events.TypeSeasonRolled, events.TypeBadgeAwarded,
 		events.TypeDisputeOpened, events.TypeWithdrawalRequested,
+		events.TypeRatingUpdated, events.TypePIndexUpdated,
 	} {
 		eventBus.On(t, platformEvents.Publish)
 	}
-	launch("event-dispatcher", eventBus.Run)
+	// NOTE: the event dispatcher is launched later (search "event-dispatcher"), after
+	// ALL handlers are registered — including the P-Index recompute handler, which
+	// depends on the rating service constructed further down. Registering handlers
+	// after Run starts would race the dispatcher's handler map.
 
 	// Durable webhook delivery for the push protocol's async notifications
 	// (/event + /game-end). Drive loops ENQUEUE; this central dispatcher delivers
@@ -397,6 +469,22 @@ func run() error {
 	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
 	profilesHandler := profiles.NewHandler(profilesSvc, authn)
 
+	// P-Index: the developer-reputation composite. rating.updated marks affected
+	// developers dirty; a background worker recomputes their P-Index through the
+	// modular scoring engine and refreshes the season ranking (off the hot path).
+	pindexSvc := pindex.New(store.NewPIndexRepo(st.DB), ratingSvc.CurrentSeason, clock, log)
+	eventBus.On(events.TypeRatingUpdated, pindexSvc.OnRatingUpdated)
+	launch("pindex-recompute", pindex.NewWorker(pindexSvc, log, 5*time.Second).Run)
+
+	// Public developer reputation surface (@handle profile, P-Index transparency,
+	// match history, developer follow graph), aggregated across a developer's agents.
+	devProfileHandler := devprofile.NewHandler(
+		devprofile.New(store.NewDevProfileRepo(st.DB), pindexSvc, ratingSvc.CurrentSeason), authn)
+
+	// All event handlers are now registered — start the dispatcher (see the NOTE at
+	// its handler-registration block above).
+	launch("event-dispatcher", eventBus.Run)
+
 	// Engagement: clips (dramatic-moment detection + async asset render) and social
 	// (follows + notification fan-out). Both run on bounded worker pools off the
 	// hot path; the match finish hook only enqueues (never blocks finalize).
@@ -420,6 +508,7 @@ func run() error {
 		clock,
 		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
+	mafiaSvc.SetRater(ratingSvc) // paid tables update the per-arena Mafia rating (TrueSkill)
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
@@ -445,9 +534,11 @@ func run() error {
 	// fill the rest. Reuses the same match machinery + SSE spectating.
 	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
 	monopolySvc.SetWebhookEnqueuer(webhookQueue)
-	monopolySvc.SetGateway(agentGateway) // play over the socket when the agent is connected
+	monopolySvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
+	monopolySvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
+	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake (settlement latent until MonopolyWallet wired)
 	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
@@ -569,7 +660,7 @@ func run() error {
 	if cfg.RankedAutoDrive {
 		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
 		// default (auto-plays real staked matches) — enable post integration test.
-		matchSvc.EnableRankedDrive(agentGateway, log)
+		matchSvc.EnableRankedDrive(agentGateway, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
 	matchHandler := match.NewHandler(matchSvc, authn)
@@ -582,7 +673,8 @@ func run() error {
 	// and the same match machinery, so the browser watches it live over SSE.
 	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, manifestProbe, log)
 	sandboxSvc.SetWebhookEnqueuer(webhookQueue)
-	sandboxSvc.SetGateway(agentGateway) // play over the socket when the agent is connected
+	sandboxSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
+	sandboxSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
 	sandboxHandler := sandbox.NewHandler(sandboxSvc, authn)
 
 	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
@@ -592,11 +684,11 @@ func run() error {
 	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
 	matchmakingSvc := matchmaking.New(
 		store.NewMatchmakingRepo(st.DB),
-		matchPairer{matchSvc}, ratingSvc, clock,
+		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
-	matchmakingSvc.SetEligibility(manifestSvc)  // ranked queue requires a certified agent
-	matchmakingSvc.SetAffordability(walletSvc)  // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
+	matchmakingSvc.SetEligibility(manifestSvc) // ranked queue requires a certified agent
+	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
@@ -713,7 +805,8 @@ func run() error {
 			}
 			mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, botSeats, log)
 			mafiaSvc.SetWebhookEnqueuer(webhookQueue)
-			mafiaSvc.SetGateway(agentGateway) // play over the socket when the agent is connected
+			mafiaSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
+			mafiaSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
 		}
 	}
 	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
@@ -738,6 +831,8 @@ func run() error {
 		monopolyHandler.Register,
 		ratingHandler.Register,
 		profilesHandler.Register,
+		devProfileHandler.Register,
+		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,
@@ -757,6 +852,21 @@ func run() error {
 
 	// 9. Serve until shutdown, then drain.
 	return srv.Run(ctx)
+}
+
+// parseLensLogLevel maps PYYOL_LENS_LOG_LEVEL to a slog.Level; unknown/empty
+// defaults to WARN so the telemetry log stream stays signal-heavy by default.
+func parseLensLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelWarn
+	}
 }
 
 // notifierAdapter lets the deposit + withdrawal services write user notifications
@@ -943,19 +1053,38 @@ func (b payoutBank) ReversePayout(ctx context.Context, withdrawalID, agentPublic
 	return err
 }
 
+// goofspielRater adapts rating.Service to matchmaking.RatingSource: the ranked queue
+// is Goofspiel-only, so band placement uses the agent's Goofspiel arena rating.
+type goofspielRater struct{ r *rating.Service }
+
+func (g goofspielRater) Elo(ctx context.Context, agentPublicID string) (int, error) {
+	return g.r.Elo(ctx, agentPublicID, rating.GameGoofspiel)
+}
+
 // raterAdapter bridges match.Rater to rating.Service, mapping the match's seat
 // view onto the rating input.
 type raterAdapter struct{ r *rating.Service }
 
 func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
-	var res rating.MatchResult
-	res.MatchPublicID = rr.MatchPublicID
-	res.WinnerSeat = rr.WinnerSeat
+	res := rating.MatchResult{MatchPublicID: rr.MatchPublicID, Game: rr.Game}
 	for _, p := range rr.Players {
-		if p.Seat == 0 || p.Seat == 1 {
-			res.Agents[p.Seat] = p.AgentPublicID
-			res.CoinsDelta[p.Seat] = p.CoinsDelta
+		placement := p.Placement
+		if placement == 0 {
+			// 2-player fallback: derive placement from the winning seat. A tie
+			// (WinnerSeat == gs.Tie) makes both placement 1.
+			switch {
+			case rr.WinnerSeat < 0: // tie sentinel
+				placement = 1
+			case p.Seat == rr.WinnerSeat:
+				placement = 1
+			default:
+				placement = 2
+			}
 		}
+		res.Players = append(res.Players, rating.PlayerResult{
+			AgentPublicID: p.AgentPublicID, Seat: p.Seat,
+			Placement: placement, CoinsDelta: p.CoinsDelta,
+		})
 	}
 	return a.r.Rate(ctx, res)
 }

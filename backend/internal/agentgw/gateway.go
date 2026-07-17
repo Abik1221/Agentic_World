@@ -15,6 +15,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 )
 
 // ErrNotConnected is returned when a decision/notification is requested for an
@@ -66,6 +68,10 @@ type Options struct {
 	// ClientIP extracts the real client IP for the per-IP cap. Nil ⇒ RemoteAddr
 	// host. Set to middleware.ClientIP so the cap isn't defeated behind the LB.
 	ClientIP func(*http.Request) string
+	// Emitter ships per-decision telemetry to Pyyol Lens. Nil ⇒ no telemetry.
+	// This is THE choke point every agent interaction crosses, so instrumenting
+	// it here traces every turn/initialize/event/game-end across all games.
+	Emitter *telemetry.Client
 }
 
 func (o Options) withDefaults() Options {
@@ -95,6 +101,7 @@ type Gateway struct {
 	auth Authenticator
 	opts Options
 	log  *slog.Logger
+	em   *telemetry.Client
 
 	mu    sync.RWMutex
 	conns map[string]*conn // agentID -> current live connection (latest wins)
@@ -122,6 +129,7 @@ func New(auth Authenticator, opts Options, log *slog.Logger) *Gateway {
 		auth:    auth,
 		opts:    opts.withDefaults(),
 		log:     log,
+		em:      opts.Emitter,
 		conns:   make(map[string]*conn),
 		ipConns: make(map[string]int),
 	}
@@ -379,7 +387,12 @@ func (g *Gateway) Turn(ctx context.Context, agentID string, view any, out any) e
 
 // Event delivers one public game event (one-way). Best-effort: a disconnected
 // agent simply misses it (it can rebuild from the next turn view).
-func (g *Gateway) Event(ctx context.Context, agentID, game, matchID string, seq int, kind string, payload json.RawMessage) error {
+func (g *Gateway) Event(ctx context.Context, agentID, game, matchID string, seq int, kind string, payload json.RawMessage) (err error) {
+	_, done := g.em.StartSpan(ctx, "agent.event", telemetry.Attrs{
+		SpanType: "agent_notify", Operation: "event", AgentID: agentID, MatchID: matchID, Game: game,
+		Payload: map[string]any{"kind": kind, "seq": seq},
+	})
+	defer func() { done(err) }()
 	c := g.lookup(agentID)
 	if c == nil {
 		return ErrNotConnected
@@ -388,7 +401,11 @@ func (g *Gateway) Event(ctx context.Context, agentID, game, matchID string, seq 
 }
 
 // GameEnd delivers the final result (one-way).
-func (g *Gateway) GameEnd(ctx context.Context, agentID, game, matchID string, result json.RawMessage) error {
+func (g *Gateway) GameEnd(ctx context.Context, agentID, game, matchID string, result json.RawMessage) (err error) {
+	_, done := g.em.StartSpan(ctx, "agent.game_end", telemetry.Attrs{
+		SpanType: "agent_notify", Operation: "game_end", AgentID: agentID, MatchID: matchID, Game: game,
+	})
+	defer func() { done(err) }()
 	c := g.lookup(agentID)
 	if c == nil {
 		return ErrNotConnected
@@ -396,15 +413,33 @@ func (g *Gateway) GameEnd(ctx context.Context, agentID, game, matchID string, re
 	return c.send(ctx, Frame{T: FrameGameEnd, Game: game, MatchID: matchID, Payload: result})
 }
 
-// request sends a correlated frame and waits for the matching response.
-func (g *Gateway) request(ctx context.Context, agentID, frameType string, body any) (json.RawMessage, error) {
-	c := g.lookup(agentID)
-	if c == nil {
-		return nil, ErrNotConnected
-	}
+// request sends a correlated frame and waits for the matching response. Every
+// agent decision crosses this path, so it is instrumented once here: a span per
+// round-trip, correlated to the match trace when the body carries a match id.
+func (g *Gateway) request(ctx context.Context, agentID, frameType string, body any) (raw json.RawMessage, err error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
+	}
+	// Best-effort match context from the already-marshaled body (no extra cost on
+	// the hot path beyond one small unmarshal), so gateway spans nest under the
+	// match's trace across every game.
+	var meta struct {
+		MatchID string `json:"match_id"`
+		Round   int    `json:"round"`
+		Game    string `json:"game"`
+	}
+	_ = json.Unmarshal(payload, &meta)
+	_, done := g.em.StartSpan(ctx, "agent."+frameType, telemetry.Attrs{
+		SpanType: "agent_call", Operation: frameType, AgentID: agentID,
+		MatchID: meta.MatchID, Game: meta.Game,
+		Payload: map[string]any{"frame": frameType, "round": meta.Round},
+	})
+	defer func() { done(err) }()
+
+	c := g.lookup(agentID)
+	if c == nil {
+		return nil, ErrNotConnected
 	}
 	id := newID()
 	ch := make(chan Frame, 1)
