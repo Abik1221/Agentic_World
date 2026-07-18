@@ -1,12 +1,16 @@
 name: release-js
 
-# Publishes the pyyol JS/TS SDK to npm on a `js-vX.Y.Z` tag, with provenance via
-# OIDC Trusted Publishing (no NODE_AUTH_TOKEN needed; requires npm >= 11.5.1). A
-# workflow_dispatch run does `npm publish --dry-run` only (dry_run defaults true).
+# Publishes the pyyol JS/TS SDK to npm on a `js-vX.Y.Z` tag. Auth is a classic npm
+# token (NPM_TOKEN repo secret) because this repo is PRIVATE — npm --provenance and
+# OIDC trusted publishing require a PUBLIC repo, so they are intentionally not used.
+# A workflow_dispatch run does `npm publish --dry-run` only (dry_run defaults true).
 #
-# One-time setup: on npmjs.com → package `pyyol` → Settings → Trusted Publisher,
-# point it at Abik1221/Agentic_World, workflow release-js.yml. (Fallback: set an
-# NPM_TOKEN repo secret and uncomment the env line on the publish step.)
+# One-time setup:
+#   1. npmjs.com → Access Tokens → Generate "Granular Access" (or Automation) token
+#      with Read+Write on the `pyyol` package, store it as the repo secret NPM_TOKEN.
+#   2. If you later make the repo PUBLIC, you can switch back to
+#      `npm publish --provenance` + set publishConfig.provenance=true for supply-chain
+#      attestation.
 on:
   push:
     tags: ["js-v*"]
@@ -24,8 +28,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # OIDC provenance + trusted publishing
-      contents: read
+      contents: read # token-based publish (NPM_TOKEN); no OIDC needed for a private repo
     defaults:
       run:
         working-directory: sdk/js
@@ -36,8 +39,6 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
-      - name: Ensure npm supports trusted publishing
-        run: npm install -g npm@latest
       - name: Full test suite (fail closed)
         run: npm test
       - name: Assert tag == package.json version and SDK_VERSION
@@ -56,8 +57,8 @@ jobs:
       - name: Dry run
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --dry-run
-      - name: Publish to npm (provenance)
+      - name: Publish to npm
         if: startsWith(github.ref, 'refs/tags/js-v')
-        run: npm publish --provenance --access public
-        # env:
-        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}  # fallback if trusted publishing is not enabled
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

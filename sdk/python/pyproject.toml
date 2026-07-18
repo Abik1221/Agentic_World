@@ -34,9 +34,9 @@ classifiers = [
 dependencies = ["websockets>=13"]
 
 [project.urls]
-Homepage = "https://github.com/Abik1221/Agentic_World"
-Repository = "https://github.com/Abik1221/Agentic_World"
-Issues = "https://github.com/Abik1221/Agentic_World/issues"
+# Source lives in a private repo; users are pointed at the public site + docs.
+Homepage = "https://pyyol.com"
+Documentation = "https://pyyol.com/docs"
 
 [project.scripts]
 pyyol = "pyyol.cli:main"

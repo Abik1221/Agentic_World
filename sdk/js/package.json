@@ -27,14 +27,9 @@
   "keywords": ["agent", "arena", "pyyol", "goofspiel", "monopoly", "mafia"],
   "license": "MIT",
   "author": "Pyyol",
-  "homepage": "https://github.com/Abik1221/Agentic_World#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Abik1221/Agentic_World.git",
-    "directory": "sdk/js"
-  },
-  "bugs": { "url": "https://github.com/Abik1221/Agentic_World/issues" },
-  "publishConfig": { "access": "public", "provenance": true },
+  "homepage": "https://pyyol.com/docs",
+  "bugs": { "url": "https://pyyol.com/docs" },
+  "publishConfig": { "access": "public" },
   "devDependencies": {
     "typescript": "^5.4.0",
     "@types/node": "^22.0.0"

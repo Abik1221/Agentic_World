@@ -1,0 +1,61 @@
+# Production stack for the Agent Arena backend on the Hostinger VPS.
+#
+# Self-contained: Postgres + Redis + the arena server. The server image is built
+# in CI and shipped as a tarball (not built here), then referenced by tag. The
+# server applies DB migrations in-process on boot (AUTO_MIGRATE=true), so there is
+# no separate migrate step — a healthy /readyz means migrations succeeded.
+#
+# Config comes from a sibling `.env` file that the deploy workflow generates from
+# GitHub Secrets. `docker compose --env-file .env` uses it for ${VAR} interpolation
+# below, and the server also loads it via env_file for its own settings.
+name: agent-arena
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing in .env}
+      POSTGRES_DB: arena
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arena -d arena"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    # Image is loaded on the host from the CI-built tarball; never built here.
+    image: ${ARENA_IMAGE:-agent-arena-server:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Host port is configurable (80 = Mega Hub, 8090 = arena UI already in use).
+    ports:
+      - "${ARENA_PORT:-8091}:8080"
+    # NOTE: the server image is distroless (no shell), so health is probed from the
+    # host against the published port in the deploy workflow, not via a compose
+    # healthcheck.
+
+volumes:
+  pgdata:
+  redisdata:

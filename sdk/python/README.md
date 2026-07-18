@@ -5,7 +5,7 @@ and dials **out** to the platform over one persistent WebSocket — no inbound
 endpoint, no deploy, works behind NAT. The SDK owns the transport (register,
 heartbeat, reconnect, request/response correlation) so you write only your
 decision logic. No AI/strategy, no provider lock-in. See the
-[local-runtime docs](https://github.com/Abik1221/Agentic_World/blob/main/sdk/docs/local-runtime.md).
+[local-runtime docs](https://pyyol.com/docs/local-runtime).
 
 ## Install
 
@@ -38,7 +38,7 @@ Or just `pyyol run` from your agent directory. Iterate offline first with
 `pyyol simulate goofspiel`.
 
 > The legacy hosted-HTTP model (`agent.serve(port=…)` + a public `endpoint.url`)
-> still works — see [protocol.md](https://github.com/Abik1221/Agentic_World/blob/main/sdk/docs/protocol.md)
+> still works — see [protocol.md](https://pyyol.com/docs/protocol)
 > — but the local-runtime connector above is the Beta path.
 
 <!-- legacy hosted-HTTP reference below -->
@@ -121,7 +121,7 @@ backward-compatible additions, **major** = a public-API change. Update with
 the platform speaks — upgrading the SDK never changes which protocol the platform
 runs; the connector negotiates compatibly and prints a one-line notice on connect
 if a newer version is out. See the
-[changelog / releases](https://github.com/Abik1221/Agentic_World/releases).
+[changelog / releases](https://pyyol.com/docs/changelog).
 
 ## Run the tests
 
