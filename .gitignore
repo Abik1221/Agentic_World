@@ -52,3 +52,6 @@ backend/Super_Admin/
 # Pyyol_client is its own repo (github.com/Abik1221/Pyyol_client) — the frontend,
 # cloned here only for API-integration work. Never tracked by this repo.
 Pyyol_client/
+
+# Separate repo (admin) — cloned in-tree, never tracked here
+Super_Admin/
