@@ -1,4 +1,4 @@
--- 0028_agent_game_style
+-- 0049_agent_game_style
 -- Per-agent, per-game behavioral style aggregates, accumulated at match finish.
 -- Read-only descriptive metrics (do not affect play or money). Stored as rolling
 -- sums so the average is sum/matches; computed from the match transcript.

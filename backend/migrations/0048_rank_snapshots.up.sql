@@ -1,4 +1,4 @@
--- 0027_rank_snapshots
+-- 0048_rank_snapshots
 -- Daily rank snapshots per (game, season, agent) so the leaderboard can show a
 -- rank TREND (movement since the last snapshot). Written by the rank-snapshotter
 -- background loop; read by the leaderboard query (trend = prev_rank - current_rank).
