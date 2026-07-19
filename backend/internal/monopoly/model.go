@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	StatusWaiting  = "waiting"
 	StatusActive   = "active"
 	StatusFinished = "finished"
 	StatusAborted  = "aborted"
@@ -43,6 +44,10 @@ type Match struct {
 	Commit        string
 	Seed          []byte
 	Players       int
+	// TargetPlayers is the number of real agents a WAITING (staked, agent-vs-agent)
+	// table waits for before it starts. Zero for practice/active tables, where the
+	// seat count is derived from len(State.Players).
+	TargetPlayers int
 	State         mono.State
 	RoundDeadline *time.Time
 	Agents        []Player
@@ -70,6 +75,16 @@ func (m *Match) botSeats() map[int]bool {
 		delete(out, p.Seat)
 	}
 	return out
+}
+
+// LobbyItem summarizes an open (waiting) staked Monopoly table.
+type LobbyItem struct {
+	PublicID             string    `json:"match_id"`
+	EntryFee             int64     `json:"entry_fee"`
+	SeatsFilled          int       `json:"seats_filled"`
+	SeatsTotal           int       `json:"seats_total"`
+	CreatorAgentPublicID string    `json:"creator_agent"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 // LiveMatch is one row of the public Monopoly arena list.
@@ -114,18 +129,33 @@ type CreateMatchInput struct {
 	EntryFee int64
 	RakePct  int
 	Players  int
-	Seed     []byte
-	Commit   string
-	State    mono.State
-	Deadline time.Time
-	Events   []mono.Event
-	Creator  Player
+	// TargetPlayers is stored on a WAITING table so a later Join knows when the
+	// table is full and can start. Ignored for immediately-started tables.
+	TargetPlayers int
+	Seed          []byte
+	Commit        string
+	State         mono.State
+	Deadline      time.Time
+	Events        []mono.Event
+	Creator       Player
 }
 
 // Repo persists Monopoly matches on the shared matches/match_players/match_events
 // tables (game='monopoly'), storing the full engine State as JSONB.
 type Repo interface {
 	Create(ctx context.Context, in CreateMatchInput) (Match, error)
+	// CreateWaiting opens a staked, agent-vs-agent table in the WAITING state with
+	// only the creator seated and no engine state yet (started by Start on fill).
+	CreateWaiting(ctx context.Context, in CreateMatchInput) (Match, error)
+	// ListWaiting lists open waiting tables at the given entry fee (0 = any),
+	// excluding tables the given owner already holds a seat at.
+	ListWaiting(ctx context.Context, entryFee int64, excludeOwnerPublicID string, limit int) ([]LobbyItem, error)
+	// JoinSeat seats a new agent at the given seat on a waiting table.
+	JoinSeat(ctx context.Context, matchPublicID string, p Player) error
+	// Start flips a waiting table to active with its initialized engine state.
+	Start(ctx context.Context, matchPublicID string, state mono.State, deadline time.Time, events []mono.Event) error
+	// CancelWaiting aborts a waiting table (creator-only; no-op if already started).
+	CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error
 	Get(ctx context.Context, matchPublicID string) (Match, error)
 	Advance(ctx context.Context, matchPublicID string, state mono.State, deadline *time.Time, events []mono.Event) error
 	Finish(ctx context.Context, matchPublicID string, state mono.State, winnerSeat int, replayHash string, agents []Player, events []mono.Event) error
@@ -148,7 +178,24 @@ type Broadcaster interface {
 // practice table with no ledger movement.
 type Wallet interface {
 	StakeTable(ctx context.Context, matchPublicID string, agents []string, entryFee int64) error
-	SettleTable(ctx context.Context, matchPublicID string, platformFee int64, payouts map[string]int64) error
+	// SettleTable pays the winner + platform from escrow. `gross` is the full staked
+	// pool (agents × entryFee) so the escrow debit always balances.
+	SettleTable(ctx context.Context, matchPublicID string, gross, platformFee int64, payouts map[string]int64) error
+	// RefundTable returns every agent's entry fee from escrow when a staked table
+	// fails to start after staking. Idempotent per match.
+	RefundTable(ctx context.Context, matchPublicID string, agents []string, entryFee int64) error
+}
+
+// Limits checks per-agent spending limits before a staked join. Optional: a nil
+// Limits skips the check (practice tables never stake, so never call it).
+type Limits interface {
+	CheckJoin(ctx context.Context, agentPublicID string, entryFee int64) error
+}
+
+// Verifier gates agent eligibility for staked play (certification, suspension).
+// Optional: a nil Verifier skips the check.
+type Verifier interface {
+	CheckEligible(ctx context.Context, agentPublicID string) error
 }
 
 // FinishHook fires after settlement (clips, notifications). Optional.

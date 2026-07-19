@@ -99,13 +99,15 @@ func (r *ProfilesRepo) Stats(ctx context.Context, agentPublicID string, season i
 func (r *ProfilesRepo) RecentMatches(ctx context.Context, agentPublicID string, season, limit int) ([]profiles.RecentMatch, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT m.public_id, COALESCE(mp.coins_delta, 0), COALESCE(mp.final_score, 0),
-		        COALESCE(opp_mp.final_score, 0), opp.public_id, COALESCE(re.elo, 1500), m.finished_at
+		        COALESCE(opp_mp.final_score, 0), opp.public_id, COALESCE(re.elo, 1500), m.finished_at,
+		        COALESCE(mrc.rating_delta, 0)
 		 FROM match_players mp
 		 JOIN matches m       ON m.id = mp.match_id
 		 JOIN match_players opp_mp ON opp_mp.match_id = m.id AND opp_mp.seat <> mp.seat
 		 JOIN agents opp      ON opp.id = opp_mp.agent_id
 		 JOIN agents me       ON me.id = mp.agent_id
 		 LEFT JOIN ratings re ON re.agent_id = opp.id AND re.game = m.game AND re.season = $2
+		 LEFT JOIN match_rating_changes mrc ON mrc.match_id = m.id AND mrc.agent_id = me.id
 		 WHERE me.public_id = $1 AND m.status = 'finished'
 		 ORDER BY m.finished_at DESC NULLS LAST
 		 LIMIT $3`, agentPublicID, season, limit)
@@ -118,7 +120,7 @@ func (r *ProfilesRepo) RecentMatches(ctx context.Context, agentPublicID string, 
 		var rm profiles.RecentMatch
 		var finished *time.Time
 		if err := rows.Scan(&rm.MatchID, &rm.CoinsDelta, &rm.YourScore, &rm.OppScore,
-			&rm.Opponent, &rm.OpponentElo, &finished); err != nil {
+			&rm.Opponent, &rm.OpponentElo, &finished, &rm.RatingDelta); err != nil {
 			return nil, err
 		}
 		if finished != nil {

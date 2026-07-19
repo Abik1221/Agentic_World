@@ -56,6 +56,125 @@ func (r *MonopolyRepo) Create(ctx context.Context, in monopoly.CreateMatchInput)
 	return out, nil
 }
 
+// CreateWaiting opens a staked agent-vs-agent table in the WAITING state: only the
+// creator is seated (seat 0), no engine state yet (state stays NULL until Start).
+func (r *MonopolyRepo) CreateWaiting(ctx context.Context, in monopoly.CreateMatchInput) (monopoly.Match, error) {
+	err := r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
+			     engine_version, prize_seed_commit, prize_seed, fairness_mode, target_players,
+			     creator_owner_user_id)
+			 VALUES ($1,'monopoly','waiting',$2,$3,$4,$5,$6,$7,'deterministic',$8,
+			         (SELECT id FROM users WHERE public_id=$9))
+			 RETURNING id`,
+			in.PublicID, in.EntryFee, in.RakePct, mono.DefaultMaxTurns, mono.Version,
+			in.Commit, in.Seed, in.TargetPlayers, in.Creator.OwnerPublicID).Scan(&matchID)
+		if err != nil {
+			return err
+		}
+		return insertMonopolyPlayer(ctx, tx, matchID, in.Creator)
+	})
+	if err != nil {
+		return monopoly.Match{}, err
+	}
+	return monopoly.Match{
+		PublicID: in.PublicID, Title: in.Title, Status: monopoly.StatusWaiting,
+		EntryFee: in.EntryFee, RakePct: in.RakePct, EngineVersion: mono.Version,
+		Commit: in.Commit, Seed: in.Seed, TargetPlayers: in.TargetPlayers,
+		Agents: []monopoly.Player{in.Creator}, WinnerSeat: -1,
+	}, nil
+}
+
+// ListWaiting lists open waiting Monopoly tables at the given entry fee (0 = any),
+// excluding tables the given owner already created.
+func (r *MonopolyRepo) ListWaiting(ctx context.Context, entryFee int64, excludeOwnerPublicID string, limit int) ([]monopoly.LobbyItem, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT m.public_id, m.bid,
+		        (SELECT COUNT(*) FROM match_players mp2 WHERE mp2.match_id = m.id),
+		        COALESCE(m.target_players, 0), ag.public_id, m.created_at
+		 FROM matches m
+		 JOIN match_players mp ON mp.match_id = m.id AND mp.seat = 0
+		 JOIN agents ag ON ag.id = mp.agent_id
+		 WHERE m.status = 'waiting' AND m.game = 'monopoly'
+		   AND ($1 <= 0 OR m.bid = $1)
+		   AND m.creator_owner_user_id <> COALESCE((SELECT id FROM users WHERE public_id = $2), 0)
+		 ORDER BY m.created_at DESC
+		 LIMIT $3`, entryFee, excludeOwnerPublicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []monopoly.LobbyItem
+	for rows.Next() {
+		var it monopoly.LobbyItem
+		if err := rows.Scan(&it.PublicID, &it.EntryFee, &it.SeatsFilled, &it.SeatsTotal, &it.CreatorAgentPublicID, &it.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// JoinSeat seats a new agent on a waiting table under a row lock so concurrent
+// joins can't oversubscribe seats.
+func (r *MonopolyRepo) JoinSeat(ctx context.Context, matchPublicID string, p monopoly.Player) error {
+	return r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM matches WHERE public_id=$1 AND status='waiting' AND game='monopoly' FOR UPDATE`,
+			matchPublicID).Scan(&matchID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return monopoly.ErrNotWaiting
+		}
+		if err != nil {
+			return err
+		}
+		return insertMonopolyPlayer(ctx, tx, matchID, p)
+	})
+}
+
+// Start flips a full waiting table to active with its initialized engine state.
+func (r *MonopolyRepo) Start(ctx context.Context, matchPublicID string, state mono.State, deadline time.Time, events []mono.Event) error {
+	err := r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, started_at=now(), updated_at=now()
+			 WHERE public_id=$1 AND status='waiting' AND game='monopoly' RETURNING id`,
+			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return monopoly.ErrNotWaiting
+		}
+		if err != nil {
+			return err
+		}
+		return insertMonopolyEvents(ctx, tx, matchID, events)
+	})
+	if isUniqueViolation(err) {
+		return monopoly.ErrConcurrentUpdate
+	}
+	return err
+}
+
+// CancelWaiting aborts a waiting table if the caller is its creator (seat 0).
+func (r *MonopolyRepo) CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches SET status='aborted', updated_at=now()
+		 WHERE public_id=$1 AND status='waiting' AND game='monopoly'
+		   AND EXISTS (
+		     SELECT 1 FROM match_players mp
+		     JOIN agents ag ON ag.id = mp.agent_id
+		     WHERE mp.match_id = matches.id AND mp.seat = 0 AND ag.public_id = $2
+		   )`, matchPublicID, creatorAgentPublicID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return monopoly.ErrNotWaiting
+	}
+	return nil
+}
+
 func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.Match, error) {
 	var m monopoly.Match
 	var stateBytes []byte
@@ -64,10 +183,10 @@ func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.status, m.bid, m.rake_pct, m.engine_version,
 		        m.prize_seed_commit, m.prize_seed, COALESCE(m.state, '{}'::jsonb),
-		        m.round_deadline, COALESCE(m.replay_hash, '')
+		        m.round_deadline, COALESCE(m.replay_hash, ''), COALESCE(m.target_players, 0)
 		 FROM matches m WHERE m.public_id = $1 AND m.game = 'monopoly'`, matchPublicID).
 		Scan(&m.PublicID, &m.Status, &m.EntryFee, &m.RakePct, &m.EngineVersion,
-			&m.Commit, &seed, &stateBytes, &deadline, &m.ReplayHash)
+			&m.Commit, &seed, &stateBytes, &deadline, &m.ReplayHash, &m.TargetPlayers)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return monopoly.Match{}, monopoly.ErrNotFound

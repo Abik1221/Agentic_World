@@ -463,10 +463,13 @@ func run() error {
 	// match id) and powers the leaderboard + agent profiles + /v1/agent/stats.
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
 		rating.Config{SeasonLength: cfg.SeasonLength}, metrics.Registry())
-	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint)                     // dev-only season force-roll gated with mint
-	launch("season-roller", rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run) // finalise ended seasons + emit season.rolled
+	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint)                           // dev-only season force-roll gated with mint
+	launch("season-roller", rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run)       // finalise ended seasons + emit season.rolled
+	launch("rank-snapshotter", rating.NewRankSnapshotter(ratingSvc, log, 6*time.Hour).Run) // daily rank snapshot → leaderboard trend
+	styleRepo := store.NewStyleRepo(st.DB)                                                 // read-only behavioral style aggregates (goofspiel)
 	profilesSvc := profiles.New(store.NewProfilesRepo(st.DB), ratingSvc.CurrentSeason)
 	profilesSvc.SetManifest(profileManifest{manifestSvc}) // certification + declared-capability card on profiles
+	profilesSvc.SetStyleReader(styleRepo)                 // aggression/efficiency on the profile
 	profilesHandler := profiles.NewHandler(profilesSvc, authn)
 
 	// P-Index: the developer-reputation composite. rating.updated marks affected
@@ -524,12 +527,15 @@ func run() error {
 	monopolySvc := monopoly.NewService(
 		monopolyRepo,
 		store.NewLocker(st.Redis),
-		nil, // Wallet: practice tables until staked matchmaking is added
+		wallet.NewMonopolyWallet(walletSvc), // staked agent-vs-agent tables: escrow + settle + refund
 		monopolyHub,
 		nil, // FinishHook
 		clock,
 		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
+	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
+	monopolySvc.SetLimits(walletSvc)
+	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg})
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
 	// fill the rest. Reuses the same match machinery + SSE spectating.
 	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
@@ -540,7 +546,7 @@ func run() error {
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
-	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake (settlement latent until MonopolyWallet wired)
+	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake; escrowed + settled via MonopolyWallet
 	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
 
 	// Funded freeroll (Stage 10): the prize pool moves through the ledger via the
@@ -655,6 +661,7 @@ func run() error {
 	// Low-latency wake-ups for long-polling agents (Redis pub/sub, cross-instance).
 	// Set after construction so a notifier-less build still works (no-op fallback).
 	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
+	matchSvc.SetStyleRecorder(styleRepo) // record aggression/efficiency at match finish (best-effort)
 	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
 	matchSvc.SetBot(bot.NewService())
 	if cfg.RankedAutoDrive {
@@ -820,6 +827,7 @@ func run() error {
 		manifestHandler.Register,
 		agentGateway.Register,
 		mountAgentStatus(authn, agentGateway),
+		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd()),
 		matchHandler.Register,
 		matchmakingHandler.Register,
 		sandboxHandler.Register,

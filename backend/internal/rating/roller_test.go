@@ -32,6 +32,7 @@ func (f *rollFakeRepo) Leaderboard(_ context.Context, _ string, season, _, _ int
 	}
 	return nil, nil
 }
+func (f *rollFakeRepo) SnapshotRanks(context.Context, time.Time) (int, error) { return 0, nil }
 func (f *rollFakeRepo) RollSeason(_ context.Context, season int, champion string) (bool, error) {
 	f.rolled = append(f.rolled, season)
 	f.champSeen[season] = champion

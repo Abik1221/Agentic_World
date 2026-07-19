@@ -1,0 +1,21 @@
+# Public overlay for serving Pyyol Lens at https://trace.pyyol.com.
+#
+# Usage (on the host, from tracing/):
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.trace.yml \
+#     --env-file deploy/.env.trace up -d --build
+#
+# It only overrides the `web` service: bind it to loopback (nginx fronts it, see
+# deploy/nginx/trace.pyyol.com.conf) and require a dashboard login. Everything
+# else (ClickHouse, NATS, ingest/processor/query/control) stays as defined in the
+# base compose and is never exposed publicly.
+
+services:
+  web:
+    ports:
+      - "127.0.0.1:3100:3100" # loopback only — reachable solely via the nginx vhost
+    environment:
+      # Public subdomain must NOT be open. Set these in deploy/.env.trace.
+      PYYOL_LENS_AUTH_USER: ${PYYOL_LENS_AUTH_USER:-admin}
+      PYYOL_LENS_AUTH_PASSWORD: ${PYYOL_LENS_AUTH_PASSWORD:?set a dashboard password for the public subdomain}
+      PYYOL_LENS_SESSION_SECRET: ${PYYOL_LENS_SESSION_SECRET:?set a session secret}
+    restart: always
