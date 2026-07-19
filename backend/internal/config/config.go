@@ -239,7 +239,7 @@ func Load() (*Config, error) {
 		DBMaxConns:  int32(l.intVal("DB_MAX_CONNS", 50)),
 		RedisURL:    l.required("REDIS_URL"),
 
-		CORSAllowedOrigins: l.csv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"),
+		CORSAllowedOrigins: l.csv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://localhost:3002"),
 		TrustedProxyCount:  l.intVal("TRUSTED_PROXY_COUNT", 1),
 
 		JWTSigningKey:     l.required("JWT_SIGNING_KEY"),

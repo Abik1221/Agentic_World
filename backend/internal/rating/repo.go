@@ -1,6 +1,9 @@
 package rating
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repo persists ratings. ApplyMatch performs the read-modify-write atomically
 // under row locks; Leaderboard is a read-only ranked query.
@@ -13,6 +16,9 @@ type Repo interface {
 	ApplyMatch(ctx context.Context, in ApplyInput) (applied bool, err error)
 	// Leaderboard returns an arena's season standings ordered by ELO desc, paginated.
 	Leaderboard(ctx context.Context, game string, season, offset, limit int) ([]LeaderRow, error)
+	// SnapshotRanks records today's rank per (game, season, agent) for trend deltas.
+	// Idempotent per day (UNIQUE on taken_on). Returns rows written.
+	SnapshotRanks(ctx context.Context, takenOn time.Time) (int, error)
 	// AgentElo returns the agent's ELO in the arena for the season, or 1500 if none.
 	AgentElo(ctx context.Context, agentPublicID, game string, season int) (int, error)
 
@@ -105,15 +111,17 @@ type ApplyInput struct {
 
 // LeaderRow is one leaderboard entry (Rank is filled in by the service).
 type LeaderRow struct {
-	Rank          int    `json:"rank"`
-	AgentPublicID string `json:"agent"`
-	Slug          string `json:"slug"`
-	Name          string `json:"name"`
-	AvatarURL     string `json:"avatar_url,omitempty"`
-	Elo           int    `json:"elo"`
-	Wins          int    `json:"wins"`
-	Losses        int    `json:"losses"`
-	Ties          int    `json:"ties"`
-	CoinsEarned   int64  `json:"coins_earned"`
-	Streak        int    `json:"current_streak"`
+	Rank          int     `json:"rank"`
+	AgentPublicID string  `json:"agent"`
+	Slug          string  `json:"slug"`
+	Name          string  `json:"name"`
+	AvatarURL     string  `json:"avatar_url,omitempty"`
+	Elo           int     `json:"elo"`
+	RD            float64 `json:"rd"`    // Glicko rating deviation (lower = more certain)
+	Trend         int     `json:"trend"` // rank movement since the last snapshot (+ = moved up)
+	Wins          int     `json:"wins"`
+	Losses        int     `json:"losses"`
+	Ties          int     `json:"ties"`
+	CoinsEarned   int64   `json:"coins_earned"`
+	Streak        int     `json:"current_streak"`
 }

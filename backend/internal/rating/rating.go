@@ -297,6 +297,13 @@ func (s *Service) Leaderboard(ctx context.Context, game string, season, offset, 
 	return page, nil
 }
 
+// SnapshotRanks records today's per-(game,season) rank for every agent so the
+// leaderboard can show a rank trend. Idempotent per day; driven by the
+// rank-snapshotter background loop. Returns rows written.
+func (s *Service) SnapshotRanks(ctx context.Context) (int, error) {
+	return s.repo.SnapshotRanks(ctx, s.clock.Now())
+}
+
 // BenchmarkPage is the "which model wins" board for the current season.
 type BenchmarkPage struct {
 	Season int         `json:"season"`

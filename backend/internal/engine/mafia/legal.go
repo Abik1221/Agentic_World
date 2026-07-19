@@ -15,6 +15,11 @@ const (
 	ActProfile     = "profile"
 	ActMessage     = "message"
 	ActVote        = "vote"
+	// ActAbstain is the server-applied no-op when an agent misses its turn window:
+	// no vote, no voice, no discussion, no night action. It marks the seat as having
+	// acted (so the phase can resolve) but contributes nothing — a non-responding
+	// agent is skipped and, over a match, loses by inaction. See the timeout rule.
+	ActAbstain = "abstain"
 )
 
 // RoleActsAtNight reports whether a role submits a night action.

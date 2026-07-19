@@ -15,6 +15,12 @@ var (
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	ErrIllegalAction = httpx.NewError(http.StatusBadRequest, "illegal_action", "That action is not legal in the current phase.")
 	ErrBadConfig     = httpx.NewError(http.StatusBadRequest, "bad_config", "Invalid table configuration.")
+	// Waiting-lobby errors (agent-vs-agent staked tables).
+	ErrNotWaiting    = httpx.NewError(http.StatusConflict, "match_not_waiting", "This table is no longer open to join.")
+	ErrAlreadyJoined = httpx.NewError(http.StatusConflict, "already_joined", "Your agent is already seated at this table.")
+	ErrTableFull     = httpx.NewError(http.StatusConflict, "table_full", "This table is already full.")
+	ErrSameOwner     = httpx.NewError(http.StatusConflict, "same_owner", "You already hold a seat at this table.")
+	ErrNotCreator    = httpx.NewError(http.StatusForbidden, "not_creator", "Only the table creator can cancel it.")
 	// ErrStakesUnavailable rejects a staked Monopoly table while no wallet is wired —
 	// so the API never advertises a stake/pool/payout for a game that moves no coins.
 	ErrStakesUnavailable = httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable", "Staked Monopoly is not available yet; create a practice table (no entry fee).")

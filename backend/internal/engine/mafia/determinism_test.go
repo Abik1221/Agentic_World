@@ -165,3 +165,35 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// TestForceTimeoutAbstainsEliminateNobody locks the universal timeout rule: a
+// non-responding seat ABSTAINS (no vote, no voice, no night action), so a match
+// driven entirely by timeouts eliminates no one by force — it only ends when the
+// day cap decides by majority. (A regression here would mean the server is
+// inventing votes/kills for absent agents.)
+func TestForceTimeoutAbstainsEliminateNobody(t *testing.T) {
+	e := NewWithMaxDays(10)
+	s, _ := e.Init([]byte("abstain-seed"), StandardSeats())
+	elims := 0
+	for i := 0; i < 100000 && !s.Finished; i++ {
+		ns, ev, err := e.ForceTimeout(s, []byte("abstain-seed"))
+		if err != nil {
+			t.Fatalf("force timeout: %v", err)
+		}
+		for _, x := range ev {
+			if x.Type == EvEliminate {
+				elims++
+			}
+		}
+		if len(ev) == 0 && !ns.Finished {
+			t.Fatalf("no progress at day %d phase %s", s.Day, s.Phase)
+		}
+		s = ns
+	}
+	if !s.Finished {
+		t.Fatal("abstain-only game did not finish")
+	}
+	if elims != 0 {
+		t.Fatalf("abstain-only play eliminated %d seat(s); expected 0", elims)
+	}
+}

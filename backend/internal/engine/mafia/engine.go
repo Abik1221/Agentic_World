@@ -62,6 +62,35 @@ func (e *Engine) Act(s State, seat int, act Action) (State, []Event, error) {
 
 func (e *Engine) actNight(s State, seat int, act Action) (State, []Event, error) {
 	role := s.Roles[seat]
+	// Abstain (timeout no-op): record the seat as done for the night with no effect —
+	// a mafia casts no kill vote, a special gathers no info. The night resolves once
+	// every pending special has acted or abstained.
+	if act.Kind == ActAbstain {
+		switch role {
+		case RoleMafia:
+			if s.MafiaKill == nil {
+				s.MafiaKill = map[int]int{}
+			}
+			if _, ok := s.MafiaKill[seat]; ok {
+				return s, nil, nil
+			}
+			s.MafiaKill[seat] = 0 // no target — ignored by pluralityTarget
+		case RoleDetective, RoleDoctor, RoleSheriff:
+			if s.nightDone(seat) {
+				return s, nil, nil
+			}
+			if s.NightActs == nil {
+				s.NightActs = map[int]Action{}
+			}
+			s.NightActs[seat] = Action{Kind: ActAbstain}
+		default:
+			return s, nil, nil // plain townsfolk have no night action
+		}
+		if !s.nightReady() {
+			return s, nil, nil
+		}
+		return e.resolveNight(s)
+	}
 	switch role {
 	case RoleMafia:
 		if act.Kind != "night_kill" || !s.Alive[act.Target] || act.Target == seat {
@@ -230,6 +259,22 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 }
 
 func (e *Engine) actDiscussion(s State, seat int, act Action) (State, []Event, error) {
+	// Abstain (timeout no-op): the seat stays silent but still counts toward the
+	// discussion quota so the phase advances. No message is emitted (no voice).
+	if act.Kind == ActAbstain {
+		if s.NightActs == nil {
+			s.NightActs = map[int]Action{}
+		}
+		if _, ok := s.NightActs[seat]; ok {
+			return s, nil, nil
+		}
+		s.NightActs[seat] = Action{Kind: ActAbstain}
+		s.Messages++
+		if !s.discussionReady() {
+			return s, nil, nil
+		}
+		return e.openVoting(s, nil)
+	}
 	if act.Kind != "message" || act.Text == "" {
 		return s, nil, ErrIllegalAction
 	}
@@ -276,6 +321,27 @@ func (e *Engine) openVoting(s State, prefix []Event) (State, []Event, error) {
 }
 
 func (e *Engine) actVote(s State, seat int, act Action) (State, []Event, error) {
+	// Abstain (timeout no-op): record a non-vote so the tally can complete, but it
+	// counts for nobody (pluralityTarget ignores target 0). No vote event is emitted.
+	if act.Kind == ActAbstain {
+		if s.Votes == nil {
+			s.Votes = map[int]int{}
+		}
+		if _, ok := s.Votes[seat]; ok {
+			return s, nil, nil
+		}
+		s.Votes[seat] = 0
+		alive := 0
+		for _, ok := range s.Alive {
+			if ok {
+				alive++
+			}
+		}
+		if len(s.Votes) < alive {
+			return s, nil, nil
+		}
+		return e.resolveVote(s, nil)
+	}
 	if act.Kind != "vote" || !s.Alive[act.Target] || act.Target == seat {
 		return s, nil, ErrIllegalAction
 	}
@@ -387,26 +453,13 @@ func (e *Engine) ForceTimeout(s State, seed []byte) (State, []Event, error) {
 }
 
 // defaultActionFor is the deterministic fallback action for a pending seat.
+// defaultActionFor is the action the server applies for a seat that missed its
+// turn window. Per the universal timeout rule it is a pure ABSTAIN in every phase
+// — no vote, no voice, no discussion, no night action — so a non-responding agent
+// is skipped (and loses by inaction) rather than having a plausible move invented
+// for it. The phase still resolves because abstain marks the seat as having acted.
 func defaultActionFor(s State, seat int, seed []byte) Action {
-	switch s.Phase {
-	case PhaseNight:
-		switch s.Roles[seat] {
-		case RoleMafia:
-			return Action{Kind: ActNightKill, Target: defaultTarget(s, seat, seed, "kill")}
-		case RoleDetective:
-			return Action{Kind: ActInvestigate, Target: defaultTarget(s, seat, seed, "inv")}
-		case RoleDoctor:
-			return Action{Kind: ActProtect, Target: defaultTarget(s, seat, seed, "doc")}
-		case RoleSheriff:
-			return Action{Kind: ActProfile, Target: defaultTarget(s, seat, seed, "sher")}
-		}
-		return Action{}
-	case PhaseDiscussion:
-		return Action{Kind: ActMessage, Tone: "info", Text: fmt.Sprintf("Seat %d observes the table.", seat)}
-	case PhaseVoting:
-		return Action{Kind: ActVote, Target: defaultTarget(s, seat, seed, "vote")}
-	}
-	return Action{}
+	return Action{Kind: ActAbstain}
 }
 
 func defaultTarget(s State, seat int, seed []byte, tag string) int {
@@ -431,6 +484,9 @@ func pluralityTarget(votes map[int]int) int {
 	}
 	counts := map[int]int{}
 	for _, t := range votes {
+		if t <= 0 {
+			continue // abstain / no target — never counts toward a kill or elimination
+		}
 		counts[t]++
 	}
 	best, bestN := 0, 0

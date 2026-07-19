@@ -43,9 +43,23 @@ type Service struct {
 	rater  Rater
 	finish FinishHook
 	bot    Bot
-	driver *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
+	style  StyleRecorder // nil ⇒ style aggregates not recorded (optional, best-effort)
+	driver *driver       // nil ⇒ paired agents self-drive (auto-drive disabled)
 	clock  platform.Clock
 	cfg    Config
+}
+
+// StyleRecorder accumulates per-agent behavioral style aggregates at match finish
+// (read-only descriptive metrics; never affects play or money). Optional.
+type StyleRecorder interface {
+	RecordStyle(ctx context.Context, agentPublicID, game string, aggression, efficiency int) error
+}
+
+// SetStyleRecorder installs the (optional) style aggregator. Nil keeps it off.
+func (s *Service) SetStyleRecorder(r StyleRecorder) {
+	if r != nil {
+		s.style = r
+	}
 }
 
 // SetNotifier installs the low-latency wake-up channel for long-polling agents
@@ -610,8 +624,46 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 			return nil, err
 		}
 		s.finish.MatchFinished(ctx, m.PublicID)
+
+		// Best-effort behavioral-style aggregates (read-only; never gate money or
+		// completion). A recorder error is swallowed — the match is already durably
+		// finished + settled + rated above.
+		if s.style != nil {
+			for _, p := range players {
+				agg, eff := goofStyle(state, p.Seat)
+				_ = s.style.RecordStyle(ctx, p.AgentPublicID, m.Game, agg, eff)
+			}
+		}
 	}
 	return players, nil
+}
+
+// goofStyle derives read-only behavioral metrics for one seat from the finished
+// Goofspiel transcript. aggression = average bid strength (mean bid relative to
+// the deck's top card, 0-100); efficiency = share of total prize value the seat
+// captured (final score / total prize value, 0-100, carry-overs included).
+func goofStyle(state gs.State, seat int) (aggression, efficiency int) {
+	if len(state.History) == 0 || seat < 0 || seat > 1 {
+		return 0, 0
+	}
+	maxCard, bidSum, prizeTotal := 0, 0, 0
+	for _, r := range state.History {
+		bidSum += r.Cards[seat]
+		for _, c := range []int{r.Cards[0], r.Cards[1], r.Prize} {
+			if c > maxCard {
+				maxCard = c
+			}
+		}
+		prizeTotal += r.Prize
+	}
+	rounds := len(state.History)
+	if maxCard > 0 {
+		aggression = bidSum * 100 / (rounds * maxCard)
+	}
+	if prizeTotal > 0 {
+		efficiency = state.Scores[seat] * 100 / prizeTotal
+	}
+	return aggression, efficiency
 }
 
 // rateWithRetry applies the (idempotent) rating with a bounded retry so a transient

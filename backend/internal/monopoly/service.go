@@ -38,7 +38,18 @@ type Service struct {
 	// rater applies per-arena skill ratings when a paid table finalizes. Nil ⇒
 	// ratings skipped. rating.Service satisfies it.
 	rater Rater
+	// limits/ver gate a STAKED join (spending budget + certification/suspension).
+	// Nil ⇒ the check is skipped; practice (zero-fee) tables never stake so never
+	// consult them. Set once at wiring via SetLimits/SetVerifier.
+	limits Limits
+	ver    Verifier
 }
+
+// SetLimits installs the per-agent spending-limit check for staked joins.
+func (s *Service) SetLimits(l Limits) { s.limits = l }
+
+// SetVerifier installs the eligibility check for staked joins.
+func (s *Service) SetVerifier(v Verifier) { s.ver = v }
 
 // Rater applies a finished ranked table's TrueSkill change to the Monopoly arena.
 // Satisfied directly by *rating.Service.
@@ -115,6 +126,13 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 		return "", ErrStakesUnavailable
 	}
 
+	// Staked tables are agent-vs-agent: open a WAITING lobby (no bots) that other
+	// agents Join; stakes are escrowed and the engine starts once it fills. Practice
+	// tables (entryFee == 0) start immediately against server bots, below.
+	if entryFee > 0 {
+		return s.createWaiting(ctx, agentPublicID, ownerPublicID, entryFee, players)
+	}
+
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		return "", err
@@ -133,13 +151,164 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	if err != nil {
 		return "", err
 	}
-	if s.wallet != nil && entryFee > 0 {
-		if err := s.wallet.StakeTable(ctx, id, []string{agentPublicID}, entryFee); err != nil {
+	s.publish(id, events)
+	return id, nil
+}
+
+func agentJoinLockKey(agent string) string { return "agent:join:lock:" + agent }
+
+// createWaiting opens a staked, agent-vs-agent table with only the creator seated,
+// waiting for (players-1) more agents to Join. Nothing is staked until it starts.
+func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicID string, entryFee int64, players int) (string, error) {
+	if s.limits != nil {
+		if err := s.limits.CheckJoin(ctx, agentPublicID, entryFee); err != nil {
 			return "", err
 		}
 	}
-	s.publish(id, events)
+	if s.ver != nil {
+		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+			return "", err
+		}
+	}
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return "", err
+	}
+	id := platform.NewID(platform.PrefixMonopoly)
+	_, err := s.repo.CreateWaiting(ctx, CreateMatchInput{
+		PublicID: id, Title: "Monopoly AI Arena", EntryFee: entryFee, RakePct: s.cfg.PlatformFeePct,
+		Players: players, TargetPlayers: players, Seed: seed, Commit: mono.Commit(seed),
+		Creator: Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: 0},
+	})
+	if err != nil {
+		return "", err
+	}
 	return id, nil
+}
+
+// Lobby lists open waiting staked tables the caller can join (excluding its own).
+func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID string) ([]LobbyItem, error) {
+	return s.repo.ListWaiting(ctx, entryFee, ownerPublicID, 50)
+}
+
+// Join seats the agent at a waiting table and, once the table fills, escrows every
+// seat's stake and starts the match. Serializes the agent's concurrent joins first
+// (shared "agent:join:lock:" namespace with Mafia/Goofspiel) so it can't race joins
+// across tables/games and bypass per-agent spending limits.
+func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	if relAgent, okA, lerr := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL); lerr == nil {
+		if !okA {
+			return AgentView{}, ErrBusy
+		}
+		defer relAgent()
+	}
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
+	}
+
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if m.Status != StatusWaiting {
+		return AgentView{}, ErrNotWaiting
+	}
+	if m.agentByAgentID(agentPublicID) != nil {
+		return AgentView{}, ErrAlreadyJoined
+	}
+	if len(m.Agents) >= m.TargetPlayers {
+		return AgentView{}, ErrTableFull
+	}
+	// One owner may hold at most one seat — otherwise a single owner could seat a
+	// coordinated majority and funnel honest agents' entry fees to itself.
+	for i := range m.Agents {
+		if m.Agents[i].OwnerPublicID == ownerPublicID {
+			return AgentView{}, ErrSameOwner
+		}
+	}
+	if s.limits != nil {
+		if err := s.limits.CheckJoin(ctx, agentPublicID, m.EntryFee); err != nil {
+			return AgentView{}, err
+		}
+	}
+	if s.ver != nil {
+		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+			return AgentView{}, err
+		}
+	}
+
+	seat := len(m.Agents) // creator holds seat 0; joiners take 1,2,…
+	if err := s.repo.JoinSeat(ctx, matchPublicID, Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: seat}); err != nil {
+		return AgentView{}, err
+	}
+
+	m, err = s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, err
+	}
+	if len(m.Agents) < m.TargetPlayers {
+		return s.view(m, agentPublicID), nil
+	}
+	if err := s.startTable(ctx, m); err != nil {
+		return AgentView{}, err
+	}
+	m, err = s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, err
+	}
+	return s.view(m, agentPublicID), nil
+}
+
+// startTable initializes the engine for a filled waiting table, escrows every
+// seated agent's stake, and flips it to active. All seats are real agents (no bots).
+func (s *Service) startTable(ctx context.Context, m Match) error {
+	eng := mono.New(matchConfig(m.TargetPlayers))
+	state, events := eng.Init(m.Seed)
+
+	agents := make([]string, len(m.Agents))
+	for i, p := range m.Agents {
+		agents[i] = p.AgentPublicID
+	}
+	if s.wallet != nil && m.EntryFee > 0 {
+		if err := s.wallet.StakeTable(ctx, m.PublicID, agents, m.EntryFee); err != nil {
+			return err
+		}
+	}
+	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	if err := s.repo.Start(ctx, m.PublicID, state, deadline, events); err != nil {
+		// Compensate a stake-then-start dual-write failure so no coins are trapped.
+		if s.wallet != nil && m.EntryFee > 0 {
+			_ = s.wallet.RefundTable(ctx, m.PublicID, agents, m.EntryFee)
+		}
+		return err
+	}
+	s.publish(m.PublicID, events)
+	return nil
+}
+
+// Cancel aborts a creator's waiting table before it starts. No stakes have been
+// taken yet (staking happens at start), so there is nothing to refund.
+func (s *Service) Cancel(ctx context.Context, agentPublicID, matchPublicID string) error {
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return ErrBusy
+		}
+		defer release()
+	}
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return ErrNotFound
+	}
+	if m.Status != StatusWaiting {
+		return ErrNotWaiting
+	}
+	if len(m.Agents) == 0 || m.Agents[0].AgentPublicID != agentPublicID {
+		return ErrNotCreator
+	}
+	return s.repo.CancelWaiting(ctx, matchPublicID, agentPublicID)
 }
 
 // Act applies one action for the calling agent, then auto-advances every bot
@@ -253,7 +422,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 		}
 	}
 	if s.wallet != nil && m.EntryFee > 0 {
-		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.PlatformFee, payouts); err != nil {
+		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.GrossPool, econ.PlatformFee, payouts); err != nil {
 			return err
 		}
 	}
@@ -439,6 +608,18 @@ func (s *Service) Live(ctx context.Context) ([]LiveMatch, error) {
 }
 
 func (s *Service) view(m Match, viewerAgent string) AgentView {
+	// A waiting (or aborted) table has no engine state yet — return a light view
+	// without touching the engine, so PendingSeat/PublicState never run on a zero board.
+	if m.Status != StatusActive && m.Status != StatusFinished {
+		v := AgentView{
+			MatchID: m.PublicID, Status: m.Status, EntryFee: m.EntryFee,
+			Economy: ComputeEconomy(len(m.Agents), m.EntryFee, m.RakePct),
+		}
+		if p := m.agentByAgentID(viewerAgent); p != nil {
+			v.YourSeat = p.Seat
+		}
+		return v
+	}
 	eng := mono.New(matchConfig(m.Players))
 	pending := -1
 	if !m.State.Finished {

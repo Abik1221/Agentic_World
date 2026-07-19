@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/rating"
@@ -184,11 +185,28 @@ type ratingDelta struct {
 }
 
 func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offset, limit int) ([]rating.LeaderRow, error) {
+	// The window RANK() runs over the full (game,season) set before LIMIT/OFFSET, so
+	// cur.rnk is the true global rank; trend = the most recent prior day's rank minus
+	// today's (positive = the agent climbed). Agents with no prior snapshot read 0.
 	rows, err := r.db.Query(ctx,
-		`SELECT a.public_id, a.slug, a.name, COALESCE(a.avatar_url, ''), r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak
-		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
-		 ORDER BY r.elo DESC, r.agent_id ASC
+		`SELECT cur.public_id, cur.slug, cur.name, cur.avatar_url, cur.elo, cur.rd,
+		        cur.wins, cur.losses, cur.ties, cur.coins_earned, cur.current_streak,
+		        CASE WHEN prev.rank IS NULL THEN 0 ELSE prev.rank - cur.rnk END AS trend
+		 FROM (
+		   SELECT a.public_id, a.slug, a.name, COALESCE(a.avatar_url, '') AS avatar_url,
+		          r.elo, COALESCE(r.rd, 0) AS rd, r.wins, r.losses, r.ties,
+		          r.coins_earned, r.current_streak, r.agent_id, r.game, r.season,
+		          RANK() OVER (ORDER BY r.elo DESC, r.agent_id ASC) AS rnk
+		   FROM ratings r JOIN agents a ON a.id = r.agent_id
+		   WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
+		 ) cur
+		 LEFT JOIN LATERAL (
+		   SELECT s.rank FROM rating_rank_snapshots s
+		   WHERE s.game = cur.game AND s.season = cur.season
+		     AND s.agent_id = cur.agent_id AND s.taken_on < CURRENT_DATE
+		   ORDER BY s.taken_on DESC LIMIT 1
+		 ) prev ON true
+		 ORDER BY cur.rnk
 		 LIMIT $3 OFFSET $4`, game, season, limit, offset)
 	if err != nil {
 		return nil, err
@@ -197,13 +215,31 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 	var out []rating.LeaderRow
 	for rows.Next() {
 		var lr rating.LeaderRow
-		if err := rows.Scan(&lr.AgentPublicID, &lr.Slug, &lr.Name, &lr.AvatarURL, &lr.Elo,
-			&lr.Wins, &lr.Losses, &lr.Ties, &lr.CoinsEarned, &lr.Streak); err != nil {
+		if err := rows.Scan(&lr.AgentPublicID, &lr.Slug, &lr.Name, &lr.AvatarURL, &lr.Elo, &lr.RD,
+			&lr.Wins, &lr.Losses, &lr.Ties, &lr.CoinsEarned, &lr.Streak, &lr.Trend); err != nil {
 			return nil, err
 		}
 		out = append(out, lr)
 	}
 	return out, rows.Err()
+}
+
+// SnapshotRanks records the current rank of every non-house agent per (game,
+// season) for the given day. Idempotent per day via the UNIQUE(taken_on) key, so
+// running it more than once a day (or on multiple instances) is safe.
+func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int, error) {
+	tag, err := r.db.Exec(ctx,
+		`INSERT INTO rating_rank_snapshots (game, season, agent_id, rank, taken_on)
+		 SELECT r.game, r.season, r.agent_id,
+		        RANK() OVER (PARTITION BY r.game, r.season ORDER BY r.elo DESC, r.agent_id ASC),
+		        $1::date
+		 FROM ratings r JOIN agents a ON a.id = r.agent_id
+		 WHERE a.kind <> 'house'
+		 ON CONFLICT (game, season, agent_id, taken_on) DO NOTHING`, takenOn)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 // ModelBenchmark groups the season's rated agents by their DECLARED model (the

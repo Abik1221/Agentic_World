@@ -45,7 +45,10 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
+		r.With(agent).Get("/v1/monopoly/lobby", h.lobby)
 		r.With(agent).Post("/v1/monopoly/lobby/create", h.create)
+		r.With(agent).Post("/v1/monopoly/lobby/join", h.join)
+		r.With(agent).Post("/v1/monopoly/lobby/cancel", h.cancel)
 		r.With(agent).Post("/v1/monopoly/pushplay", h.pushplay)
 		r.With(agent).Get("/v1/monopoly/{id}/state", h.state)
 		r.With(agent).Post("/v1/monopoly/{id}/action", h.action)
@@ -192,6 +195,54 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	h.hub.RegisterMatch(id)
 	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id})
+}
+
+// lobby lists open waiting (staked, agent-vs-agent) tables the caller can join.
+func (h *Handler) lobby(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	entryFee, _ := strconv.ParseInt(r.URL.Query().Get("entry_fee"), 10, 64)
+	items, err := h.svc.Lobby(r.Context(), entryFee, p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"matches": items})
+}
+
+// join seats the caller's agent at a waiting table; the match starts when it fills.
+func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		MatchID string `json:"match_id"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	view, err := h.svc.Join(r.Context(), p.AgentPublicID, p.UserPublicID, in.MatchID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	h.hub.RegisterMatch(in.MatchID)
+	httpx.JSON(w, http.StatusOK, view)
+}
+
+// cancel aborts a creator's waiting table before it starts.
+func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		MatchID string `json:"match_id"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Cancel(r.Context(), p.AgentPublicID, in.MatchID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) state(w http.ResponseWriter, r *http.Request) {

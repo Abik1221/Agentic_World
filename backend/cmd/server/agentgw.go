@@ -80,6 +80,23 @@ func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg
 	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, log: log}, opts, log)
 }
 
+// mountCapabilities exposes a public GET /v1/config so the frontend can hide flows
+// that are disabled in this environment (X-claim onboarding, Solana deposits)
+// instead of letting the user hit a 503/404. Booleans only — never any secret or
+// key material.
+func mountCapabilities(xClaim, deposits, devMode bool) func(chi.Router) {
+	return func(r chi.Router) {
+		r.Get("/v1/config", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Cache-Control", "public, max-age=30")
+			httpx.JSON(w, http.StatusOK, map[string]any{
+				"onboarding_x_claim": xClaim,   // /register + /verify usable
+				"deposits":           deposits, // /v1/deposits usable
+				"dev_mode":           devMode,
+			})
+		})
+	}
+}
+
 // mountAgentStatus serves GET /v1/agent/status?agent_id=… — is my agent connected
 // right now (for `pyyol status` and the dashboard card). User-scoped like the
 // other agent routes. Returns online/offline plus SDK/games/last-seen when live.

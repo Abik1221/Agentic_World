@@ -11,7 +11,29 @@ import (
 type Service struct {
 	repo          Repo
 	currentSeason func() int
-	manifest      Manifest // optional: certification + manifest card for the profile
+	manifest      Manifest    // optional: certification + manifest card for the profile
+	style         StyleReader // optional: behavioral style aggregates (read-only)
+}
+
+// StyleReader supplies an agent's average behavioral style for a game (0-100).
+// Optional; when unset, profiles report 0 aggression/efficiency.
+type StyleReader interface {
+	AgentStyle(ctx context.Context, agentPublicID, game string) (aggression, efficiency int, ok bool, err error)
+}
+
+// SetStyleReader installs the style aggregate provider (call once during wiring).
+func (s *Service) SetStyleReader(r StyleReader) { s.style = r }
+
+// withStyle folds the agent's behavioral style into its stats (best-effort:
+// a reader error leaves the metrics at 0). Games other than goofspiel report 0.
+func (s *Service) withStyle(ctx context.Context, agentPublicID string, st Stats) Stats {
+	if s.style == nil {
+		return st
+	}
+	if agg, eff, ok, err := s.style.AgentStyle(ctx, agentPublicID, "goofspiel"); err == nil && ok {
+		st.Aggression, st.Efficiency = agg, eff
+	}
+	return st
 }
 
 // New builds the profiles service. currentSeason resolves the active season
@@ -94,7 +116,7 @@ func (s *Service) AgentStats(ctx context.Context, agentPublicID string) (StatsDo
 	if err != nil {
 		return StatsDoc{}, err
 	}
-	return StatsDoc{Agent: agentPublicID, Season: season, Stats: derive(st), Recent: recent}, nil
+	return StatsDoc{Agent: agentPublicID, Season: season, Stats: s.withStyle(ctx, agentPublicID, derive(st)), Recent: recent}, nil
 }
 
 // Profile returns the public profile for a slug.
@@ -112,7 +134,7 @@ func (s *Service) Profile(ctx context.Context, slug string) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	stats := derive(st)
+	stats := s.withStyle(ctx, a.PublicID, derive(st))
 	p := Profile{Agent: a, Season: season, Stats: stats, Style: style(stats), Recent: recent}
 
 	// Certification + declared-capability card (the wedge, on the profile).

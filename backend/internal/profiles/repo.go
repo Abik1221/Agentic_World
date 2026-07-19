@@ -45,6 +45,9 @@ type Stats struct {
 	CoinsEarned   int64   `json:"coins_earned"`
 	CurrentStreak int     `json:"current_streak"`
 	BestStreak    int     `json:"best_streak"`
+	// Behavioral style (read-only, 0-100; goofspiel). 0 when no samples yet.
+	Aggression int `json:"aggression"`
+	Efficiency int `json:"efficiency"`
 }
 
 // RecentMatch is one row of an agent's match history.
@@ -54,6 +57,7 @@ type RecentMatch struct {
 	YourScore   int       `json:"your_score"`
 	OppScore    int       `json:"opp_score"`
 	CoinsDelta  int64     `json:"coins_delta"`
+	RatingDelta int       `json:"rating_delta"` // per-match Elo/rating change (0 if unrated)
 	Opponent    string    `json:"opponent"`
 	OpponentElo int       `json:"opponent_elo"`
 	FinishedAt  time.Time `json:"finished_at"`
