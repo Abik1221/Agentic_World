@@ -476,7 +476,27 @@ func run() error {
 	// P-Index: the developer-reputation composite. rating.updated marks affected
 	// developers dirty; a background worker recomputes their P-Index through the
 	// modular scoring engine and refreshes the season ranking (off the hot path).
-	pindexSvc := pindex.New(store.NewPIndexRepo(st.DB), ratingSvc.CurrentSeason, clock, log)
+	pindexRepo := store.NewPIndexRepo(st.DB)
+	pindexSvc := pindex.New(pindexRepo, ratingSvc.CurrentSeason, clock, log)
+	// P-Index Intelligence projection: fold each match.benchmark seat into the
+	// per-match decision-quality aggregate the recompute reads (legal/fallback/
+	// latency). Best-effort: a decode failure never wedges the outbox.
+	eventBus.On(events.TypeMatchBenchmark, func(ctx context.Context, e events.Event) error {
+		ms, _, err := benchmark.DecodePayload(e.Payload)
+		if err != nil {
+			return nil
+		}
+		for _, seat := range ms.Seats {
+			if seat.AgentID == "" || seat.Decisions == 0 {
+				continue
+			}
+			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID,
+				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS); err != nil {
+				return err // let the outbox retry
+			}
+		}
+		return nil
+	})
 	eventBus.On(events.TypeRatingUpdated, pindexSvc.OnRatingUpdated)
 	launch("pindex-recompute", pindex.NewWorker(pindexSvc, log, 5*time.Second).Run)
 

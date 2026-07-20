@@ -99,7 +99,45 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 		return in, err
 	}
 
+	// Intelligence: engine-measured decision quality (legal / fallback / latency)
+	// across the developer's RANKED matches this season. Joined through matches +
+	// match_rating_changes so it reuses the exact owner/season/fraud scoping;
+	// non-ranked matches (no rating row) never join and are excluded.
+	var dec, legal, fb, latSum int64
+	if err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(amb.decisions),0), COALESCE(SUM(amb.legal),0),
+		        COALESCE(SUM(amb.fallbacks),0), COALESCE(SUM(amb.latency_sum_ms),0)
+		 FROM agent_match_benchmark amb
+		 JOIN matches m ON m.public_id = amb.match_id
+		 JOIN match_rating_changes mrc ON mrc.match_id = m.id AND mrc.agent_id = amb.agent_id
+		 JOIN agents a ON a.id = amb.agent_id AND a.owner_user_id = $1 AND a.kind <> 'house'
+		 WHERE mrc.season = $2
+		   AND NOT EXISTS (SELECT 1 FROM fraud_flags f WHERE f.match_id = mrc.match_id AND f.active)`,
+		uid, season).Scan(&dec, &legal, &fb, &latSum); err != nil {
+		return in, err
+	}
+	if dec > 0 {
+		in.BenchDecisions = int(dec)
+		in.LegalRate = float64(legal) / float64(dec)
+		in.FallbackRate = float64(fb) / float64(dec)
+		in.AvgLatencyMS = float64(latSum) / float64(dec)
+	}
+
 	return in, nil
+}
+
+// RecordMatchBenchmark upserts one seat's per-match decision-quality counts (the
+// P-Index Intelligence projection over match.benchmark). A no-op when the agent's
+// public id is unknown (INSERT…SELECT yields no row) so it never errors on a bot.
+func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, matchID, agentPublicID string, decisions, legal, fallbacks int, latencySumMS int64) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO agent_match_benchmark (match_id, agent_id, decisions, legal, fallbacks, latency_sum_ms, updated_at)
+		 SELECT $1, a.id, $3, $4, $5, $6, now() FROM agents a WHERE a.public_id = $2
+		 ON CONFLICT (match_id, agent_id) DO UPDATE SET
+		   decisions = EXCLUDED.decisions, legal = EXCLUDED.legal, fallbacks = EXCLUDED.fallbacks,
+		   latency_sum_ms = EXCLUDED.latency_sum_ms, updated_at = now()`,
+		matchID, agentPublicID, decisions, legal, fallbacks, latencySumMS)
+	return err
 }
 
 func (r *PIndexRepo) Save(ctx context.Context, userPublicID string, season int, res pindex.Result, inputsHash string, asOf time.Time) error {
@@ -123,17 +161,17 @@ func (r *PIndexRepo) Save(ctx context.Context, userPublicID string, season int, 
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO developer_pindex
-		   (user_id, season, p_index, arena_c, consistency_c, difficulty_c, activity_c,
+		   (user_id, season, p_index, arena_c, consistency_c, difficulty_c, activity_c, intelligence_c,
 		    highest_pindex, best_rank, config_version, computed_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$3,0,$8,$9)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$3,0,$9,$10)
 		 ON CONFLICT (user_id, season) DO UPDATE SET
 		   p_index = EXCLUDED.p_index, arena_c = EXCLUDED.arena_c,
 		   consistency_c = EXCLUDED.consistency_c, difficulty_c = EXCLUDED.difficulty_c,
-		   activity_c = EXCLUDED.activity_c,
+		   activity_c = EXCLUDED.activity_c, intelligence_c = EXCLUDED.intelligence_c,
 		   highest_pindex = GREATEST(developer_pindex.highest_pindex, EXCLUDED.p_index),
 		   config_version = EXCLUDED.config_version, computed_at = EXCLUDED.computed_at`,
 		uid, season, res.PIndex, res.Sub("arena"), res.Sub("consistency"),
-		res.Sub("difficulty"), res.Sub("activity"), res.ConfigVersion, asOf); err != nil {
+		res.Sub("difficulty"), res.Sub("activity"), res.Sub("intelligence"), res.ConfigVersion, asOf); err != nil {
 		return err
 	}
 

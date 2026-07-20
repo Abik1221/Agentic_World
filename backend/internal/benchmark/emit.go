@@ -122,6 +122,17 @@ func Payload(s MatchSummary, mode string) []byte {
 // EmitFromPayload decodes a match.benchmark outbox payload and emits the per-seat
 // benchmark_recorded events. Used by the telemetry bridge. Malformed payloads are
 // ignored (the fact is already durably stored; projection is best-effort).
+// DecodePayload restores a match.benchmark outbox payload to its MatchSummary +
+// mode. Used by projections (e.g. the P-Index benchmark aggregate) that need the
+// per-seat data, not just the telemetry fan-out.
+func DecodePayload(raw []byte) (MatchSummary, string, error) {
+	var dto payloadDTO
+	if err := json.Unmarshal(raw, &dto); err != nil {
+		return MatchSummary{}, "", err
+	}
+	return MatchSummary{Game: dto.Game, MatchID: dto.MatchID, Seats: dto.Seats}, dto.Mode, nil
+}
+
 func EmitFromPayload(em *telemetry.Client, raw []byte) {
 	if em == nil || !em.Enabled() {
 		return
