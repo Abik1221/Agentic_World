@@ -37,6 +37,14 @@ type DeveloperInputs struct {
 	AvgOppRating      float64 // mean opponent rating faced (rating_before at match time)
 	AvgOppRatingOnWin float64 // mean opponent rating in the developer's WINS
 
+	// Engine-measured intelligence signals, season-aggregated across the
+	// developer's agents (from the benchmark rollup). These are platform-measured,
+	// not self-reported, so they can't be gamed — the safe backbone for reputation.
+	BenchDecisions int     // benchmarked decisions this season (sample size / gate)
+	LegalRate      float64 // 0–1: share of moves that were legal (not force-defaulted)
+	FallbackRate   float64 // 0–1: share of moves that fell back (timeout/illegal/transport)
+	AvgLatencyMS   float64 // mean decision latency across benchmarked moves
+
 	LastMatchAt time.Time // most recent rated match
 	AsOf        time.Time // recompute reference time (activity recency is relative to this)
 }

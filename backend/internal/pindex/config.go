@@ -13,10 +13,11 @@ type Config struct {
 	Scale   float64 `json:"scale"` // sub-score ceiling (1000)
 
 	Weights struct {
-		Arena       float64 `json:"arena"`
-		Consistency float64 `json:"consistency"`
-		Difficulty  float64 `json:"difficulty"`
-		Activity    float64 `json:"activity"`
+		Arena        float64 `json:"arena"`
+		Consistency  float64 `json:"consistency"`
+		Difficulty   float64 `json:"difficulty"`
+		Activity     float64 `json:"activity"`
+		Intelligence float64 `json:"intelligence"`
 	} `json:"weights"`
 
 	Norm struct {
@@ -42,6 +43,15 @@ type Config struct {
 		DiversityTarget float64 `json:"diversity_target"` // arenas for full diversity credit
 		RecencyDays     float64 `json:"recency_days"`     // active-window length (days)
 	} `json:"activity"`
+
+	Intelligence struct {
+		WLegal        float64 `json:"w_legal"`         // weight of legal-move rate (should sum to 1 with the two below)
+		WReliability  float64 `json:"w_reliability"`   // weight of (1 − fallback rate)
+		WSpeed        float64 `json:"w_speed"`         // weight of decision speed
+		LatencyFastMS float64 `json:"latency_fast_ms"` // ≤ this latency ⇒ full speed credit
+		LatencySlowMS float64 `json:"latency_slow_ms"` // ≥ this latency ⇒ zero speed credit
+		MinDecisions  int     `json:"min_decisions"`   // benchmarked decisions for full (ungated) credit
+	} `json:"intelligence"`
 }
 
 // ParseConfig decodes a pindex_config.params blob and validates the invariants the
@@ -55,7 +65,7 @@ func ParseConfig(version int, params []byte) (Config, error) {
 	if c.Scale <= 0 {
 		c.Scale = 1000
 	}
-	sum := c.Weights.Arena + c.Weights.Consistency + c.Weights.Difficulty + c.Weights.Activity
+	sum := c.Weights.Arena + c.Weights.Consistency + c.Weights.Difficulty + c.Weights.Activity + c.Weights.Intelligence
 	if sum < 0.999 || sum > 1.001 {
 		return Config{}, fmt.Errorf("pindex: config v%d weights sum to %.3f, want 1.0", version, sum)
 	}

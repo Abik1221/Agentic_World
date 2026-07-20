@@ -8,10 +8,12 @@ type Engine struct {
 }
 
 // NewEngine builds the engine with the beta dimensions (Arena, Consistency,
-// Difficulty, Activity).
+// Difficulty, Activity) plus the engine-measured Intelligence dimension. A config
+// that gives Intelligence weight 0 (e.g. the original v1) leaves scores unchanged,
+// so the dimension is inert until a config version activates it.
 func NewEngine() *Engine {
 	return &Engine{dims: []Dimension{
-		Arena{}, Consistency{}, Difficulty{}, Activity{},
+		Arena{}, Consistency{}, Difficulty{}, Activity{}, Intelligence{},
 	}}
 }
 
@@ -26,6 +28,8 @@ func weightOf(key string, cfg Config) float64 {
 		return cfg.Weights.Difficulty
 	case keyActivity:
 		return cfg.Weights.Activity
+	case keyIntelligence:
+		return cfg.Weights.Intelligence
 	default:
 		return 0
 	}
