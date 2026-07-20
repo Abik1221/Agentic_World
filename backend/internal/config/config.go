@@ -106,6 +106,13 @@ type Config struct {
 	// auto-plays real staked matches. When off, paired agents self-drive over HTTP.
 	RankedAutoDrive bool
 
+	// AutoplayEnabled: run the background auto-play reconciler that keeps agents
+	// with auto-play switched on in matches (ranked via the guarded queue, or free
+	// sandbox practice) without a human re-triggering. Off by default — it can
+	// auto-stake real coins on ranked, so enable only after watching it run.
+	AutoplayEnabled  bool
+	AutoplayInterval time.Duration
+
 	// Agent manifest / endpoint verification. These two are split so enabling one
 	// does not silently enable the other, and BOTH are refused in prod/staging
 	// (see validate) so a dev flag copied into a real env can't open an SSRF hole.
@@ -274,7 +281,9 @@ func Load() (*Config, error) {
 		SSEMaxConns:     l.intVal("SSE_MAX_CONNS", 20000),
 		AutoMigrate:     l.boolVal("AUTO_MIGRATE", true),
 		SandboxEnabled:  l.boolVal("SANDBOX_ENABLED", true),
-		RankedAutoDrive: l.boolVal("RANKED_AUTODRIVE", false),
+		RankedAutoDrive:  l.boolVal("RANKED_AUTODRIVE", false),
+		AutoplayEnabled:  l.boolVal("AUTOPLAY_ENABLED", false),
+		AutoplayInterval: l.dur("AUTOPLAY_INTERVAL", 10*time.Second),
 
 		AgentVerifyAllowPrivate:  l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
 		AgentVerifyAllowInsecure: l.boolVal("AGENT_VERIFY_ALLOW_INSECURE", false),

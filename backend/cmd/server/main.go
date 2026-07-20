@@ -21,6 +21,7 @@ import (
 	"github.com/agent-arena/arena/internal/antifraud"
 	"github.com/agent-arena/arena/internal/arena"
 	"github.com/agent-arena/arena/internal/auth"
+	"github.com/agent-arena/arena/internal/autoplay"
 	"github.com/agent-arena/arena/internal/badges"
 	"github.com/agent-arena/arena/internal/benchmark"
 	"github.com/agent-arena/arena/internal/blockchain"
@@ -699,6 +700,11 @@ func run() error {
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
+	// Auto-play: devs flip availability on their agent (settings API below); the
+	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
+	autoplayRepo := autoplay.NewMemRepo()
+	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
+
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
 	// processing into the ledger. A configured secret key selects the live Stripe
 	// gateway; otherwise the offline DevGateway runs the whole flow locally.
@@ -780,6 +786,19 @@ func run() error {
 	// Stripe↔ledger reconciliation job (all safe to run on every instance).
 	launch("match-sweeper", match.NewSweeper(matchSvc, log, time.Second).Run)
 	launch("matchmaker", matchmakingSvc.NewMatcher().Run)
+	if cfg.AutoplayEnabled {
+		autoplaySvc := autoplay.New(
+			autoplayRepo,
+			rankedQueueAdapter{mm: matchmakingSvc},
+			sandboxStarterAdapter{
+				throttle: autoplay.NewSandboxThrottle(5 * time.Minute),
+				goof:     sandboxSvc, mafia: mafiaSvc, monopoly: monopolySvc,
+			},
+			autoplay.Config{},
+			log,
+		)
+		launch("autoplay", autoplay.NewTicker(autoplaySvc, cfg.AutoplayInterval).Run)
+	}
 	launch("ledger-reconciler", ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run)
 	launch("payments-reconciler", paymentsSvc.NewReconciler(cfg.PaymentsReconcileInterval).Run)
 	launch("clips", clipsSvc.Run)
@@ -830,6 +849,7 @@ func run() error {
 		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd()),
 		matchHandler.Register,
 		matchmakingHandler.Register,
+		autoplayHandler.Register,
 		sandboxHandler.Register,
 		walletHandler.Register,
 		paymentsHandler.Register,

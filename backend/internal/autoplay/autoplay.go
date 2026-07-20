@@ -27,12 +27,12 @@ const (
 
 // Setting is a single agent's auto-play configuration (one row per agent).
 type Setting struct {
-	AgentPublicID string
-	OwnerPublicID string
-	Enabled       bool
-	Mode          Mode
-	Bid           int64    // ranked stake per match (ignored for sandbox)
-	Games         []string // sandbox: games to rotate through; empty ⇒ DefaultGame
+	AgentPublicID string   `json:"agent_id"`
+	OwnerPublicID string   `json:"-"` // resolved from the token, never client-set
+	Enabled       bool     `json:"enabled"`
+	Mode          Mode     `json:"mode"`
+	Bid           int64    `json:"bid,omitempty"`   // ranked stake per match (ignored for sandbox)
+	Games         []string `json:"games,omitempty"` // sandbox: games to rotate through; empty ⇒ DefaultGame
 }
 
 // Repo persists auto-play settings.
