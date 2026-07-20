@@ -34,6 +34,11 @@ type BenchmarkRow struct {
 	Wins            int64
 	Losses          int64
 	Draws           int64
+	// Token economics (from the benchmark_recorded payload); summed by the rollup.
+	PromptTokens     int64
+	CompletionTokens int64
+	ReasoningTokens  int64
+	TotalTokens      int64
 }
 
 // BenchmarkRowFromEvent extracts a benchmark rollup row from a benchmark_recorded
@@ -69,6 +74,10 @@ func BenchmarkRowFromEvent(e schema.TelemetryEvent) (BenchmarkRow, bool) {
 		Wins:            payloadInt(p, "wins"),
 		Losses:          payloadInt(p, "losses"),
 		Draws:           payloadInt(p, "draws"),
+		PromptTokens:     payloadInt(p, "prompt_tokens"),
+		CompletionTokens: payloadInt(p, "completion_tokens"),
+		ReasoningTokens:  payloadInt(p, "reasoning_tokens"),
+		TotalTokens:      payloadInt(p, "total_tokens"),
 	}
 	return row, true
 }
@@ -83,12 +92,13 @@ func (s *Store) InsertAgentBenchmark(ctx context.Context, e schema.TelemetryEven
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO agent_benchmarks (
 		bucket_start,organization_id,project_id,environment,game,mode,agent_id,agent_version,provider,model,
 		matches,decisions,legal,illegal,timeouts,transport_errors,disconnects,errors,fallbacks,latency_sum_ms,
-		wins,losses,draws
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		wins,losses,draws,prompt_tokens,completion_tokens,reasoning_tokens,total_tokens
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.BucketStart, row.OrganizationID, row.ProjectID, row.Environment, row.Game, row.Mode, row.AgentID, row.AgentVersion, row.Provider, row.Model,
 		row.Matches, row.Decisions, row.Legal, row.Illegal, row.Timeouts, row.TransportErrors,
 		row.Disconnects, row.Errors, row.Fallbacks, row.LatencySumMS,
 		row.Wins, row.Losses, row.Draws,
+		row.PromptTokens, row.CompletionTokens, row.ReasoningTokens, row.TotalTokens,
 	)
 	return err
 }
