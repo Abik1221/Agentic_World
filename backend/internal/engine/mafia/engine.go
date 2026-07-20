@@ -218,9 +218,17 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 	}
 	if sh := findSeatByRole(s, RoleSheriff); sh > 0 && s.Alive[sh] {
 		act := s.NightActs[sh]
+		// The Sheriff gets a real behavioural read (SUSPICIOUS for Mafia, CLEAR for
+		// Town) — a second investigative angle alongside the Detective. Previously
+		// this returned no finding, making the role dead weight.
+		result := "CLEAR"
+		if TeamOf(s.Roles[act.Target]) == TeamMafia {
+			result = "SUSPICIOUS"
+		}
 		events = append(events, e.emit(&s, EvNight, NightPayload{
-			Actor: RoleSheriff, Seat: sh, Text: fmt.Sprintf("Sheriff profiles seat %d.", act.Target),
-			Secret: "Profile complete",
+			Actor: RoleSheriff, Seat: sh, Target: act.Target, Finding: result,
+			Text:   fmt.Sprintf("Sheriff profiles seat %d.", act.Target),
+			Secret: fmt.Sprintf("Seat %d reads %s", act.Target, result),
 		}))
 	}
 

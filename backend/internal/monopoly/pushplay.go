@@ -120,9 +120,12 @@ type MonopolyPushView struct {
 
 // MonopolyPushMove is the action the agent returns.
 type MonopolyPushMove struct {
-	Action   string `json:"action"`
-	Property int    `json:"property"`
-	Amount   int    `json:"amount"`
+	Action    string                `json:"action"`
+	Property  int                   `json:"property"`
+	Amount    int                   `json:"amount"`
+	Trade     *mono.Trade           `json:"trade,omitempty"`     // required to originate a propose_trade
+	Rationale string                `json:"rationale,omitempty"` // optional agent reasoning, captured for observability
+	Usage     *benchmark.TokenUsage `json:"usage,omitempty"`
 }
 
 // StartPushPlay opens a no-stakes Monopoly table (creator seat 0 + engine bots)
@@ -227,8 +230,15 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			continue
 		}
 
-		act, outcome, latencyMS := p.decide(ctx, tr, matchID, v)
-		rec.Record(benchmark.Decision{Seat: v.YourSeat, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS})
+		act, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, matchID, v)
+		round := 0
+		if v.State != nil {
+			round = v.State.TurnCount
+		}
+		rec.Record(benchmark.Decision{
+			Seat: v.YourSeat, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
+			Round: round, Action: act.Kind, Rationale: rationale, Usage: usage,
+		})
 		if outcome.Fallback() {
 			fallbacks++
 		}
@@ -279,7 +289,7 @@ func monopolyResult(winnerSeat, yourSeat int) benchmark.Result {
 	}
 }
 
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mono.Action, benchmark.Outcome, int64) {
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mono.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	req := MonopolyPushView{
 		Game: "monopoly", MatchID: matchID, Seat: v.YourSeat,
 		Phase: v.Phase, LegalActions: v.Legal, State: v.State,
@@ -290,11 +300,11 @@ func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID
 	latencyMS := time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
-		return safeFallback(v.Legal), benchmark.ClassifyError(err, false), latencyMS
+		return safeFallback(v.Legal), benchmark.ClassifyError(err, false), latencyMS, move.Rationale, move.Usage
 	case !containsStr(v.Legal, move.Action):
-		return safeFallback(v.Legal), benchmark.OutcomeIllegal, latencyMS
+		return safeFallback(v.Legal), benchmark.OutcomeIllegal, latencyMS, move.Rationale, move.Usage
 	default:
-		return mono.Action{Kind: move.Action, Property: move.Property, Amount: move.Amount}, benchmark.OutcomeOK, latencyMS
+		return mono.Action{Kind: move.Action, Property: move.Property, Amount: move.Amount, Trade: move.Trade}, benchmark.OutcomeOK, latencyMS, move.Rationale, move.Usage
 	}
 }
 
@@ -305,10 +315,12 @@ func safeFallback(legal []string) mono.Action {
 	targetless := map[string]bool{
 		"roll": true, "roll_jail": true, "pay_jail": true, "use_jail_card": true,
 		"end_turn": true, "decline": true, "pass": true, "bankrupt": true,
-		"accept_trade": true, "reject_trade": true,
+		"accept_trade": true, "reject_trade": true, "skip_trade": true,
 	}
-	// Prefer the least-committal safe actions first.
-	for _, pref := range []string{"end_turn", "decline", "pass", "roll", "roll_jail", "reject_trade"} {
+	// Prefer the least-committal safe actions first. skip_trade is the safe no-op
+	// in the open trade window (propose_trade needs a payload and must never be a
+	// blind fallback).
+	for _, pref := range []string{"end_turn", "decline", "pass", "skip_trade", "roll", "roll_jail", "reject_trade"} {
 		if containsStr(legal, pref) {
 			return mono.Action{Kind: pref}
 		}

@@ -51,7 +51,44 @@ type Decision struct {
 	AgentID   string
 	Outcome   Outcome
 	LatencyMS int64
+	// Per-move detail for observability (does not affect aggregates):
+	Round     int         // engine round/turn number, if known
+	Action    string      // the action kind the agent chose (e.g. "vote", "buy", card value)
+	Rationale string      // optional agent-supplied reasoning for the move
+	Usage     *TokenUsage // optional per-move LLM token usage (drives cost/economics)
 }
+
+// TokenUsage is the optional per-move LLM economics an agent may report with its
+// move. When present it powers token/cost analytics; absent it costs nothing.
+type TokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+}
+
+// total returns the reported total, or the sum of the parts if total is unset.
+func (u TokenUsage) total() int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	return u.PromptTokens + u.CompletionTokens + u.ReasoningTokens
+}
+
+// DecisionDetail is one recorded move, kept in the seat's decision log so the
+// full per-agent decision trail — including reasoning — reaches observability.
+type DecisionDetail struct {
+	Round     int         `json:"round"`
+	Action    string      `json:"action,omitempty"`
+	Outcome   string      `json:"outcome"`
+	LatencyMS int64       `json:"latency_ms"`
+	Rationale string      `json:"rationale,omitempty"`
+	Usage     *TokenUsage `json:"usage,omitempty"`
+}
+
+// maxDecisionLog bounds per-seat decision detail so one match can't emit an
+// unbounded payload. Only real agent seats are recorded, so this is generous.
+const maxDecisionLog = 256
 
 // SeatSummary aggregates every decision made at one seat in a match.
 type SeatSummary struct {
@@ -72,6 +109,15 @@ type SeatSummary struct {
 	LatencyMinMS    int64  `json:"latency_min_ms"`
 	LatencyMaxMS    int64  `json:"latency_max_ms"`
 	Result          Result `json:"result,omitempty"` // match outcome for this seat
+	// LLM economics (summed across moves that reported usage; 0 if none did).
+	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64 `json:"completion_tokens,omitempty"`
+	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
+	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	// Full per-move trail (capped) — action, outcome, latency, reasoning, and
+	// token usage for every decision, so observability can see WHY an agent
+	// moved and at what cost, not just aggregate rates.
+	DecisionLog []DecisionDetail `json:"decision_log,omitempty"`
 }
 
 // LegalRate is the fraction of decisions that were legal + on time (0..1). An
@@ -163,6 +209,18 @@ func (r *Recorder) Record(d Decision) {
 	}
 	if d.LatencyMS > s.LatencyMaxMS {
 		s.LatencyMaxMS = d.LatencyMS
+	}
+	if d.Usage != nil {
+		s.PromptTokens += int64(d.Usage.PromptTokens)
+		s.CompletionTokens += int64(d.Usage.CompletionTokens)
+		s.ReasoningTokens += int64(d.Usage.ReasoningTokens)
+		s.TotalTokens += int64(d.Usage.total())
+	}
+	if len(s.DecisionLog) < maxDecisionLog {
+		s.DecisionLog = append(s.DecisionLog, DecisionDetail{
+			Round: d.Round, Action: d.Action, Outcome: string(d.Outcome),
+			LatencyMS: d.LatencyMS, Rationale: d.Rationale, Usage: d.Usage,
+		})
 	}
 }
 

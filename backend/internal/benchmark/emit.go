@@ -60,6 +60,11 @@ func Emit(em *telemetry.Client, s MatchSummary, mode string) {
 			Provider:  seat.Provider,
 			Model:     seat.Model,
 			LatencyMS: int64(seat.AvgLatencyMS()),
+			// Surface token economics at the top level too, so Lens's token/cost
+			// aggregation picks them up (0/omitted when no move reported usage).
+			PromptTokens:     seat.PromptTokens,
+			CompletionTokens: seat.CompletionTokens,
+			TotalTokens:      seat.TotalTokens,
 			PayloadJSON: map[string]any{
 				"game":             s.Game,
 				"mode":             mode,
@@ -85,6 +90,11 @@ func Emit(em *telemetry.Client, s MatchSummary, mode string) {
 				"latency_sum_ms":   seat.LatencySumMS, // lets the Lens sum latency exactly across matches
 				"latency_min_ms":   seat.LatencyMinMS,
 				"latency_max_ms":   seat.LatencyMaxMS,
+				"prompt_tokens":     seat.PromptTokens,
+				"completion_tokens": seat.CompletionTokens,
+				"reasoning_tokens":  seat.ReasoningTokens,
+				"total_tokens":      seat.TotalTokens,
+				"decision_log":      seat.DecisionLog, // per-move action/outcome/latency/reasoning/tokens trail
 			},
 		})
 	}

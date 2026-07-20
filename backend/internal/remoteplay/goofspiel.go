@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 
 	"github.com/agent-arena/arena/internal/agentclient"
+	"github.com/agent-arena/arena/internal/benchmark"
 	"github.com/agent-arena/arena/internal/engine/goofspiel"
 )
 
@@ -90,8 +91,10 @@ type GoofspielResult struct {
 
 // GoofspielMove is the action the agent returns.
 type GoofspielMove struct {
-	Round int `json:"round"`
-	Card  int `json:"card"`
+	Round     int                   `json:"round"`
+	Card      int                   `json:"card"`
+	Rationale string                `json:"rationale,omitempty"` // optional agent reasoning, captured for observability
+	Usage     *benchmark.TokenUsage `json:"usage,omitempty"`
 }
 
 // Decider picks a card for one seat given its view. Implementations may be remote

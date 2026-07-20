@@ -606,6 +606,25 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline
+		if m.RoundDeadline != nil {
+			if rem := m.RoundDeadline.Sub(s.clock.Now()).Milliseconds(); rem > 0 {
+				v.DeadlineMs = rem
+			}
+		}
+		// The engine clears Votes when voting opens, so this is exactly the
+		// current round's ballots. Surface the raw votes + an aggregated tally.
+		if len(m.State.Votes) > 0 {
+			votes := make(map[int]int, len(m.State.Votes))
+			tally := map[int]int{}
+			for voter, target := range m.State.Votes {
+				votes[voter] = target
+				if target > 0 {
+					tally[target]++
+				}
+			}
+			v.Votes = votes
+			v.VoteTally = tally
+		}
 	}
 	if p := m.playerByAgent(viewerAgent); p != nil {
 		v.YourSeat = p.Seat

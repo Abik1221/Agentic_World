@@ -45,6 +45,8 @@ func (p policy) act(e *Engine, s State) (int, Action) {
 			}
 		}
 		return actor, Action{Kind: ActEndTurn}
+	case PhaseTrade:
+		return actor, Action{Kind: ActSkipTrade}
 	}
 	return actor, Action{Kind: ActEndTurn}
 }

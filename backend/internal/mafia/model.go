@@ -89,7 +89,13 @@ type AgentView struct {
 	Public   []mf.Event      `json:"public,omitempty"`  // shared transcript this seat may see
 	Private  []mf.Event      `json:"private,omitempty"` // this seat's own night results only
 	Deadline *time.Time      `json:"deadline,omitempty"`
-	EntryFee int64           `json:"entry_fee"`
+	// Live voting state for the current round (present only during the voting
+	// phase) so an agent can reason about bandwagons / saving an ally without
+	// reconstructing it from raw vote events.
+	Votes      map[int]int `json:"votes,omitempty"`      // voter seat -> target seat
+	VoteTally  map[int]int `json:"vote_tally,omitempty"` // target seat -> number of votes
+	DeadlineMs int64       `json:"deadline_ms,omitempty"` // ms left on the shot clock (0 once elapsed)
+	EntryFee   int64       `json:"entry_fee"`
 	Economy  EconomySnapshot `json:"economy"`
 	Result   *EconomyResult  `json:"result,omitempty"`
 }

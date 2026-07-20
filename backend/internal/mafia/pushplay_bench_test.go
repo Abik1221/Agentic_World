@@ -44,7 +44,7 @@ func TestMafiaDecideRemote_Classifies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			act, out, latency := p.decideRemote(context.Background(), fakeTransport{turn: tc.turn}, "m1", v)
+			act, out, latency, _, _ := p.decideRemote(context.Background(), fakeTransport{turn: tc.turn}, "m1", v)
 			if out != tc.want {
 				t.Errorf("outcome=%s want %s", out, tc.want)
 			}

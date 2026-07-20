@@ -18,6 +18,7 @@ var AllPhases = []string{
 	PhaseResolveDebt,
 	PhaseManage,
 	PhaseTradeResponse,
+	PhaseTrade,
 	PhaseGameOver,
 }
 

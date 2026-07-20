@@ -387,6 +387,191 @@ func TestTradeAccept(t *testing.T) {
 	}
 }
 
+func TestTradeCounter(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0} // Mediterranean — seat 0
+	s.Holdings[3] = Holding{Owner: 1} // Baltic — seat 1
+	s.Current = 0
+	s.Phase = PhaseManage
+
+	// Seat 0 offers Mediterranean for Baltic.
+	s, _, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: &Trade{Target: 1, GiveProps: []int{1}, WantProps: []int{3}}}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// counter_trade must be legal for the responder.
+	if got := e.LegalActions(s, 1); !containsString(got, ActCounterTrade) {
+		t.Fatalf("counter_trade should be legal for the responder, got %v", got)
+	}
+
+	// Seat 1 counters: wants Mediterranean AND $100 for Baltic.
+	s, cevs, err := e.Step(s, 1, Action{Kind: ActCounterTrade, Trade: &Trade{GiveProps: []int{3}, WantProps: []int{1}, WantCash: 100}}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Phase != PhaseTradeResponse || s.PendingTrade == nil {
+		t.Fatal("counter should keep the negotiation open")
+	}
+	if cevs[0].Type != EvTradeProposed {
+		t.Fatal("a counter is emitted as a new trade_proposed")
+	}
+	// Roles swapped: seat 1 is now the proposer, seat 0 must respond.
+	if s.PendingTrade.Proposer != 1 || s.PendingTrade.Target != 0 {
+		t.Fatalf("counter roles not swapped: proposer=%d target=%d", s.PendingTrade.Proposer, s.PendingTrade.Target)
+	}
+	if e.pendingActor(s) != 0 {
+		t.Fatal("original proposer should now be the pending actor")
+	}
+	if s.TradeCounters != 1 {
+		t.Fatalf("counter depth should be 1, got %d", s.TradeCounters)
+	}
+
+	// Seat 0 accepts the counter: seat 0 gives Mediterranean + $100, gets Baltic.
+	s, aevs, err := e.Step(s, 0, Action{Kind: ActAcceptTrade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aevs[0].Type != EvTradeExecuted {
+		t.Fatal("expected trade_executed")
+	}
+	if s.Holdings[1].Owner != 1 || s.Holdings[3].Owner != 0 {
+		t.Fatalf("counter not executed: med=%d baltic=%d", s.Holdings[1].Owner, s.Holdings[3].Owner)
+	}
+	if s.Players[0].Cash != 1400 || s.Players[1].Cash != 1600 {
+		t.Fatalf("counter cash wrong: %d %d", s.Players[0].Cash, s.Players[1].Cash)
+	}
+	// Turn returns to the original turn owner (seat 0), negotiation cleared.
+	if s.Phase != PhaseManage || s.PendingTrade != nil || s.Current != 0 || s.TradeCounters != 0 {
+		t.Fatalf("should return to turn owner's manage: phase=%s current=%d", s.Phase, s.Current)
+	}
+}
+
+func TestTradeCounterCapEndsAtAcceptReject(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 5000, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0}
+	s.Holdings[3] = Holding{Owner: 1}
+	s.Current = 0
+	s.Phase = PhaseManage
+	s, _, _ = e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: &Trade{Target: 1, GiveProps: []int{1}, WantProps: []int{3}}}, testSeed)
+
+	// Alternate counters up to the cap; each side just re-counters the same shape.
+	for i := 0; i < maxTradeCounters; i++ {
+		responder := e.pendingActor(s)
+		give, want := 3, 1
+		if responder == 0 {
+			give, want = 1, 3
+		}
+		var err error
+		s, _, err = e.Step(s, responder, Action{Kind: ActCounterTrade, Trade: &Trade{GiveProps: []int{give}, WantProps: []int{want}}}, testSeed)
+		if err != nil {
+			t.Fatalf("counter %d failed: %v", i, err)
+		}
+	}
+	// At the cap, counter is no longer legal — only accept/reject.
+	if got := e.LegalActions(s, e.pendingActor(s)); containsString(got, ActCounterTrade) {
+		t.Fatalf("counter should be capped out, got %v", got)
+	}
+	if _, _, err := e.Step(s, e.pendingActor(s), Action{Kind: ActCounterTrade, Trade: &Trade{GiveProps: []int{1}, WantProps: []int{3}}}, testSeed); err == nil {
+		t.Fatal("counter past the cap should be rejected")
+	}
+}
+
+func containsString(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+func TestTradeJailCards(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Players[1].JailCards = 1 // seat 1 holds a get-out-of-jail card
+	s.Current = 0
+	s.Phase = PhaseManage
+
+	// Seat 0 offers $75 for seat 1's jail card.
+	s, _, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: &Trade{Target: 1, GiveCash: 75, WantCards: 1}}, testSeed)
+	if err != nil {
+		t.Fatalf("propose jail-card trade: %v", err)
+	}
+	s, _, err = e.Step(s, 1, Action{Kind: ActAcceptTrade}, testSeed)
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if s.Players[0].JailCards != 1 || s.Players[1].JailCards != 0 {
+		t.Fatalf("jail card did not move: p0=%d p1=%d", s.Players[0].JailCards, s.Players[1].JailCards)
+	}
+	if s.Players[0].Cash != 1425 || s.Players[1].Cash != 1575 {
+		t.Fatalf("cash wrong: %d %d", s.Players[0].Cash, s.Players[1].Cash)
+	}
+
+	// Offering a card you don't have is illegal.
+	s2, _ := e.Init(testSeed)
+	s2.Current = 0
+	s2.Phase = PhaseManage
+	if _, _, err := e.Step(s2, 0, Action{Kind: ActProposeTrade, Trade: &Trade{Target: 1, GiveCards: 1}}, testSeed); err == nil {
+		t.Fatal("offering a jail card you don't hold should be rejected")
+	}
+}
+
+func TestOpenTradeWindow(t *testing.T) {
+	e := New(Config{Players: 3, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0} // Mediterranean — seat 0
+	s.Holdings[3] = Holding{Owner: 2} // Baltic — seat 2
+
+	// End seat 0's turn: seat 1's turn now opens with a trade window for the others.
+	s.Current = 0
+	s.Phase = PhaseManage
+	s, _, err := e.Step(s, 0, Action{Kind: ActEndTurn}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Phase != PhaseTrade || s.Current != 1 {
+		t.Fatalf("seat 1's turn should open a trade window: phase=%s current=%d", s.Phase, s.Current)
+	}
+	// The window offers the OTHER active players (0 then 2), not the turn owner.
+	if e.pendingActor(s) != 0 {
+		t.Fatalf("window should offer seat 0 first, got %d", e.pendingActor(s))
+	}
+	if got := e.LegalActions(s, 0); !containsString(got, ActProposeTrade) || !containsString(got, ActSkipTrade) {
+		t.Fatalf("window legal actions = %v", got)
+	}
+
+	// Seat 0 trades with seat 2 DURING seat 1's turn — a trade on someone else's turn.
+	s, _, err = e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: &Trade{Target: 2, GiveProps: []int{1}, WantProps: []int{3}}}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Phase != PhaseTradeResponse || e.pendingActor(s) != 2 {
+		t.Fatalf("seat 2 should respond: phase=%s pending=%d", s.Phase, e.pendingActor(s))
+	}
+	s, _, err = e.Step(s, 2, Action{Kind: ActAcceptTrade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Holdings[1].Owner != 2 || s.Holdings[3].Owner != 0 {
+		t.Fatal("trade did not execute during the window")
+	}
+	// The window resumes, pops seat 0, and offers seat 2 next.
+	if s.Phase != PhaseTrade || e.pendingActor(s) != 2 {
+		t.Fatalf("window should resume at seat 2: phase=%s pending=%d", s.Phase, e.pendingActor(s))
+	}
+	// Seat 2 skips → window drains → the turn owner (seat 1) finally rolls.
+	s, _, err = e.Step(s, 2, Action{Kind: ActSkipTrade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Phase != PhaseRoll || e.pendingActor(s) != 1 {
+		t.Fatalf("after the window, seat 1 should roll: phase=%s pending=%d", s.Phase, e.pendingActor(s))
+	}
+}
+
 func TestTradeReject(t *testing.T) {
 	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
 	s, _ := e.Init(testSeed)

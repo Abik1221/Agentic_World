@@ -121,6 +121,10 @@ func (b *Bot) Decide(e *Engine, s State, seat int) Action {
 	case PhaseTradeResponse:
 		// A trade was proposed to this bot; accept only if it gains list-price value.
 		return Action{Kind: tradeResponse(s, seat)}
+
+	case PhaseTrade:
+		// Open-floor window: rule-based bots don't originate trades, they skip.
+		return Action{Kind: ActSkipTrade}
 	}
 	return Action{Kind: ActEndTurn}
 }

@@ -32,6 +32,7 @@ const (
 	PhaseResolveDebt  = "resolve_debt"   // a player owes more than their cash; must raise funds or go bankrupt
 	PhaseManage       = "manage"         // post-move: build/mortgage/trade, then end turn (or re-roll on doubles)
 	PhaseTradeResponse = "trade_response" // a trade was proposed; the target must accept or reject
+	PhaseTrade         = "trade"          // open floor at the top of a turn: other players may propose a trade or skip
 	PhaseGameOver     = "game_over"
 )
 
@@ -40,10 +41,12 @@ const (
 type Trade struct {
 	Proposer  int   `json:"proposer"`
 	Target    int   `json:"target"`
-	GiveProps []int `json:"give_props"` // proposer -> target
-	GiveCash  int   `json:"give_cash"`  // proposer -> target
-	WantProps []int `json:"want_props"` // target -> proposer
-	WantCash  int   `json:"want_cash"`  // target -> proposer
+	GiveProps []int `json:"give_props"`           // proposer -> target
+	GiveCash  int   `json:"give_cash"`            // proposer -> target
+	GiveCards int   `json:"give_cards,omitempty"` // get-out-of-jail cards proposer -> target
+	WantProps []int `json:"want_props"`           // target -> proposer
+	WantCash  int   `json:"want_cash"`            // target -> proposer
+	WantCards int   `json:"want_cards,omitempty"` // get-out-of-jail cards target -> proposer
 }
 
 // Player is one seat's mutable state.
@@ -110,6 +113,12 @@ type State struct {
 	Auction      *AuctionState `json:"auction,omitempty"`
 	Debt         *Debt         `json:"debt,omitempty"`
 	PendingTrade *Trade        `json:"pending_trade,omitempty"`
+	TradeCounters int          `json:"trade_counters,omitempty"` // counters so far in the open negotiation
+	// Open trade window (PhaseTrade): the seats, in order, still owed a chance to
+	// propose a trade before the turn owner rolls. TradeReturn records where a
+	// negotiation should resume once it resolves ("trade" window or "manage").
+	TradeQueue  []int  `json:"trade_queue,omitempty"`
+	TradeReturn string `json:"trade_return,omitempty"`
 
 	FreeParkingPot int `json:"free_parking_pot,omitempty"` // only used when the house rule is on
 
@@ -147,6 +156,7 @@ func (s State) clone() State {
 		tr.WantProps = append([]int(nil), s.PendingTrade.WantProps...)
 		cp.PendingTrade = &tr
 	}
+	cp.TradeQueue = append([]int(nil), s.TradeQueue...)
 	return cp
 }
 

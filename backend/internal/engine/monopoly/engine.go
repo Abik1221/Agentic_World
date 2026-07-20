@@ -37,10 +37,17 @@ const (
 	ActProposeTrade = "propose_trade" // PhaseManage: offer a trade (Action.Trade) to another seat
 	ActAcceptTrade  = "accept_trade"  // PhaseTradeResponse: the target accepts
 	ActRejectTrade  = "reject_trade"  // PhaseTradeResponse: the target declines
+	ActCounterTrade = "counter_trade" // PhaseTradeResponse: the target counters with a new offer (Action.Trade)
+	ActSkipTrade    = "skip_trade"    // PhaseTrade: decline to open a trade in the open-floor window
 )
 
 // JailFine is the cost to buy out of jail.
 const JailFine = 50
+
+// maxTradeCounters bounds a single negotiation so counter-offers can't loop
+// forever between two agents. After this many counters, only accept/reject
+// remain legal.
+const maxTradeCounters = 4
 
 // Action is one agent submission. Property/Amount are used by the actions that
 // need them; others ignore them.
@@ -125,6 +132,8 @@ func (e *Engine) Init(seed []byte) (State, []Event) {
 		}),
 		e.emit(&s, EvTurnStarted, TurnStartedPayload{Seat: 0, TurnCount: 0}),
 	}
+	// The opening move is just seat 0's roll — nobody owns anything to trade yet.
+	// Every subsequent turn opens with the trade window (see endTurn/enterTurn).
 	return s, evs
 }
 
@@ -142,6 +151,10 @@ func (e *Engine) pendingActor(s State) int {
 	case PhaseTradeResponse:
 		if s.PendingTrade != nil {
 			return s.PendingTrade.Target
+		}
+	case PhaseTrade:
+		if len(s.TradeQueue) > 0 {
+			return s.TradeQueue[0]
 		}
 	}
 	return s.Current
@@ -182,7 +195,12 @@ func (e *Engine) LegalActions(s State, seat int) []string {
 	case PhaseManage:
 		return []string{ActEndTurn, ActBuild, ActSellHouse, ActMortgage, ActUnmortgage, ActProposeTrade}
 	case PhaseTradeResponse:
+		if s.TradeCounters < maxTradeCounters {
+			return []string{ActAcceptTrade, ActRejectTrade, ActCounterTrade}
+		}
 		return []string{ActAcceptTrade, ActRejectTrade}
+	case PhaseTrade:
+		return []string{ActProposeTrade, ActSkipTrade}
 	}
 	return nil
 }
@@ -218,6 +236,8 @@ func (e *Engine) Step(s State, seat int, a Action, seed []byte) (State, []Event,
 		evs, err = e.stepManage(&ns, a, seed)
 	case PhaseTradeResponse:
 		evs, err = e.stepTradeResponse(&ns, a)
+	case PhaseTrade:
+		evs, err = e.stepTradeWindow(&ns, a)
 	default:
 		return s, nil, ErrIllegalAction
 	}
@@ -253,6 +273,8 @@ func (e *Engine) defaultAction(s State) Action {
 		return Action{Kind: ActBankrupt}
 	case PhaseTradeResponse:
 		return Action{Kind: ActRejectTrade} // never accept a trade on a timeout
+	case PhaseTrade:
+		return Action{Kind: ActSkipTrade} // don't open a trade on a timeout
 	default:
 		return Action{Kind: ActEndTurn}
 	}
@@ -531,6 +553,8 @@ func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
 	t.WantProps = append([]int(nil), tr.WantProps...)
 	ns.PendingTrade = &t
 	ns.Phase = PhaseTradeResponse
+	ns.TradeCounters = 0        // fresh negotiation
+	ns.TradeReturn = PhaseManage // proposed from the owner's manage phase
 	return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
 }
 
@@ -543,10 +567,11 @@ func (e *Engine) validateTrade(ns *State, t Trade) error {
 	if ns.Players[t.Proposer].Bankrupt || ns.Players[t.Target].Bankrupt {
 		return ErrIllegalAction
 	}
-	if len(t.GiveProps) == 0 && len(t.WantProps) == 0 && t.GiveCash == 0 && t.WantCash == 0 {
+	if len(t.GiveProps) == 0 && len(t.WantProps) == 0 && t.GiveCash == 0 && t.WantCash == 0 &&
+		t.GiveCards == 0 && t.WantCards == 0 {
 		return ErrIllegalAction // empty trade
 	}
-	if t.GiveCash < 0 || t.WantCash < 0 {
+	if t.GiveCash < 0 || t.WantCash < 0 || t.GiveCards < 0 || t.WantCards < 0 {
 		return ErrIllegalAction
 	}
 	if err := e.checkTradeSide(ns, t.GiveProps, t.Proposer); err != nil {
@@ -557,6 +582,10 @@ func (e *Engine) validateTrade(ns *State, t Trade) error {
 	}
 	if ns.Players[t.Proposer].Cash < t.GiveCash || ns.Players[t.Target].Cash < t.WantCash {
 		return ErrInsufficientFunds
+	}
+	// Each side must actually hold the jail cards it is offering.
+	if ns.Players[t.Proposer].JailCards < t.GiveCards || ns.Players[t.Target].JailCards < t.WantCards {
+		return ErrIllegalAction
 	}
 	return nil
 }
@@ -590,24 +619,152 @@ func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
 	}
 	switch a.Kind {
 	case ActRejectTrade:
+		rejected := tradePayload(*t)
 		ns.PendingTrade = nil
-		ns.Phase = PhaseManage
-		return []Event{e.emit(ns, EvTradeRejected, tradePayload(*t))}, nil
+		e.resumeAfterTrade(ns)
+		return []Event{e.emit(ns, EvTradeRejected, rejected)}, nil
 	case ActAcceptTrade:
 		// Re-validate at execution time (state may have shifted is impossible here,
 		// but this keeps acceptance self-contained and safe).
 		if err := e.validateTrade(ns, *t); err != nil {
 			ns.PendingTrade = nil
-			ns.Phase = PhaseManage
+			e.resumeAfterTrade(ns)
 			return nil, err
 		}
 		e.executeTrade(ns, *t)
+		executed := tradePayload(*t)
 		ns.PendingTrade = nil
-		ns.Phase = PhaseManage // control returns to the proposer's turn
-		return []Event{e.emit(ns, EvTradeExecuted, tradePayload(*t))}, nil
+		e.resumeAfterTrade(ns) // control returns to the window or the turn owner
+		return []Event{e.emit(ns, EvTradeExecuted, executed)}, nil
+	case ActCounterTrade:
+		// The responder (current PendingTrade.Target) makes a return offer to the
+		// original proposer. Roles swap: the counter becomes the new pending offer
+		// and the ORIGINAL proposer must now respond. Current (the turn owner) is
+		// untouched, so the turn still returns to them once this resolves.
+		if ns.TradeCounters >= maxTradeCounters {
+			return nil, ErrIllegalAction
+		}
+		if a.Trade == nil {
+			return nil, ErrIllegalAction
+		}
+		c := *a.Trade
+		c.Proposer = t.Target  // the seat countering (the previous responder)
+		c.Target = t.Proposer  // back to whoever last offered
+		if err := e.validateTrade(ns, c); err != nil {
+			return nil, err
+		}
+		c.GiveProps = append([]int(nil), a.Trade.GiveProps...)
+		c.WantProps = append([]int(nil), a.Trade.WantProps...)
+		ns.PendingTrade = &c
+		ns.Phase = PhaseTradeResponse // stays open; pendingActor is now c.Target
+		ns.TradeCounters++
+		return []Event{e.emit(ns, EvTradeProposed, tradePayload(c))}, nil
 	default:
 		return nil, ErrIllegalAction
 	}
+}
+
+// ── Open trade window (PhaseTrade) ──────────────────────────────────────────
+// At the top of each turn, every OTHER active player gets one chance — in seat
+// order — to open a trade with anyone (or skip). This is how a player trades on
+// a turn that isn't their own. The turn owner (ns.Current) is never in the queue;
+// they trade during their own manage phase. Once the queue drains, the owner
+// rolls (or handles jail). Skips emit nothing, so a table where nobody uses the
+// window plays out — and replays — exactly as if the window did not exist.
+
+// otherActiveSeats lists the non-bankrupt seats other than `cur`, in seat order.
+func otherActiveSeats(s *State, cur int) []int {
+	var out []int
+	for i := range s.Players {
+		if i != cur && !s.Players[i].Bankrupt {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// enterTurn is called when a fresh turn begins for ns.Current. If any other
+// player is still in the game, it opens the trade window for them; otherwise it
+// goes straight to play (roll or jail).
+func (e *Engine) enterTurn(ns *State) {
+	others := otherActiveSeats(ns, ns.Current)
+	if len(others) > 0 {
+		ns.TradeQueue = others
+		ns.TradeReturn = ""
+		ns.Phase = PhaseTrade
+		return
+	}
+	e.enterPlay(ns)
+}
+
+// enterPlay closes any window and drops the turn owner into their own play phase.
+func (e *Engine) enterPlay(ns *State) {
+	ns.TradeQueue = nil
+	ns.TradeReturn = ""
+	if ns.Players[ns.Current].InJail {
+		ns.Phase = PhaseJail
+	} else {
+		ns.Phase = PhaseRoll
+	}
+}
+
+// stepTradeWindow handles the open-floor window: the pending player either opens
+// a trade (which runs the normal accept/reject/counter negotiation and then
+// returns here) or skips, advancing to the next player — and to play once the
+// queue is empty.
+func (e *Engine) stepTradeWindow(ns *State, a Action) ([]Event, error) {
+	if len(ns.TradeQueue) == 0 {
+		e.enterPlay(ns)
+		return nil, nil
+	}
+	proposer := ns.TradeQueue[0]
+	switch a.Kind {
+	case ActSkipTrade:
+		ns.TradeQueue = ns.TradeQueue[1:]
+		if len(ns.TradeQueue) == 0 {
+			e.enterPlay(ns)
+		}
+		return nil, nil
+	case ActProposeTrade:
+		if a.Trade == nil {
+			return nil, ErrIllegalAction
+		}
+		t := *a.Trade
+		t.Proposer = proposer
+		if err := e.validateTrade(ns, t); err != nil {
+			return nil, err
+		}
+		t.GiveProps = append([]int(nil), a.Trade.GiveProps...)
+		t.WantProps = append([]int(nil), a.Trade.WantProps...)
+		ns.PendingTrade = &t
+		ns.Phase = PhaseTradeResponse
+		ns.TradeCounters = 0
+		ns.TradeReturn = PhaseTrade // resume the window after this negotiation
+		return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
+	default:
+		return nil, ErrIllegalAction
+	}
+}
+
+// resumeAfterTrade returns control after a negotiation resolves. From a manage
+// proposal it goes back to the owner's manage phase; from a window proposal it
+// pops that proposer and continues the window (or begins play when it drains).
+func (e *Engine) resumeAfterTrade(ns *State) {
+	ret := ns.TradeReturn
+	ns.TradeCounters = 0
+	ns.TradeReturn = ""
+	if ret == PhaseTrade {
+		if len(ns.TradeQueue) > 0 {
+			ns.TradeQueue = ns.TradeQueue[1:]
+		}
+		if len(ns.TradeQueue) > 0 {
+			ns.Phase = PhaseTrade
+		} else {
+			e.enterPlay(ns)
+		}
+		return
+	}
+	ns.Phase = PhaseManage
 }
 
 // executeTrade swaps the agreed properties and nets the cash. Mortgaged properties
@@ -621,13 +778,16 @@ func (e *Engine) executeTrade(ns *State, t Trade) {
 	}
 	ns.Players[t.Proposer].Cash += t.WantCash - t.GiveCash
 	ns.Players[t.Target].Cash += t.GiveCash - t.WantCash
+	// Get-out-of-jail-free cards change hands too.
+	ns.Players[t.Proposer].JailCards += t.WantCards - t.GiveCards
+	ns.Players[t.Target].JailCards += t.GiveCards - t.WantCards
 }
 
 func tradePayload(t Trade) TradePayload {
 	return TradePayload{
 		Proposer: t.Proposer, Target: t.Target,
-		GiveProps: append([]int(nil), t.GiveProps...), GiveCash: t.GiveCash,
-		WantProps: append([]int(nil), t.WantProps...), WantCash: t.WantCash,
+		GiveProps: append([]int(nil), t.GiveProps...), GiveCash: t.GiveCash, GiveCards: t.GiveCards,
+		WantProps: append([]int(nil), t.WantProps...), WantCash: t.WantCash, WantCards: t.WantCards,
 	}
 }
 
@@ -976,7 +1136,14 @@ func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
 	ns.Players[debtor].InJail = false
 	ns.Debt = nil
 	ns.PendingJailMove = 0
-	evs = append(evs, e.emit(ns, EvBankrupt, BankruptPayload{Seat: debtor, Creditor: creditor}))
+	// Surface WHY the seat left the market (captured from d before Debt was
+	// cleared): the unpayable amount, the triggering square, and the reason.
+	// This flows to spectators' logs and, via the push-play /event stream, to
+	// the other agents so they can reason about eliminations.
+	evs = append(evs, e.emit(ns, EvBankrupt, BankruptPayload{
+		Seat: debtor, Creditor: creditor,
+		Amount: d.Amount, Property: d.Property, Reason: d.Reason,
+	}))
 
 	if ns.activeCount() <= 1 {
 		return e.finish(ns, evs)
@@ -1135,12 +1302,9 @@ func (e *Engine) endTurn(ns *State, evs []Event, seed []byte) []Event {
 	p.Doubles = 0
 	next := ns.nextActiveSeat(cur)
 	ns.Current = next
-	if ns.Players[next].InJail {
-		ns.Phase = PhaseJail
-	} else {
-		ns.Phase = PhaseRoll
-	}
-	return append(evs, e.emit(ns, EvTurnStarted, TurnStartedPayload{Seat: next, TurnCount: ns.TurnCount}))
+	evs = append(evs, e.emit(ns, EvTurnStarted, TurnStartedPayload{Seat: next, TurnCount: ns.TurnCount}))
+	e.enterTurn(ns) // open the trade window for the other players, then play
+	return evs
 }
 
 // finish ends the match, ranking by survival then net worth.

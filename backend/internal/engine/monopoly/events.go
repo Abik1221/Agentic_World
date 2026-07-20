@@ -145,8 +145,11 @@ type AuctionResultPayload struct {
 }
 
 type BankruptPayload struct {
-	Seat     int `json:"seat"`
-	Creditor int `json:"creditor"` // Bank(-1) or a seat
+	Seat     int    `json:"seat"`
+	Creditor int    `json:"creditor"`          // Bank(-1) or a seat
+	Amount   int    `json:"amount,omitempty"`  // debt that could not be paid
+	Property int    `json:"property,omitempty"` // the square whose rent/action triggered it, or -1
+	Reason   string `json:"reason,omitempty"`  // "rent" | "tax" | "card" | "jail_fine" | ...
 }
 
 // TradePayload describes a proposed/executed/rejected trade.
@@ -155,8 +158,10 @@ type TradePayload struct {
 	Target    int   `json:"target"`
 	GiveProps []int `json:"give_props"`
 	GiveCash  int   `json:"give_cash"`
+	GiveCards int   `json:"give_cards,omitempty"`
 	WantProps []int `json:"want_props"`
 	WantCash  int   `json:"want_cash"`
+	WantCards int   `json:"want_cards,omitempty"`
 }
 
 type TurnEndedPayload struct {

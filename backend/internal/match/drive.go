@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentgw"
@@ -53,22 +54,45 @@ func (s *Service) EnableRankedDrive(gw mover, em *telemetry.Client, persist benc
 }
 
 // goofspielTurnView is the self-contained per-seat JSON asked over the socket; it
-// mirrors what the SDK's goofspiel handler expects.
+// mirrors what the SDK's goofspiel handler expects. It carries the FULL match
+// context an agent needs to play intelligently — the running round history (each
+// prize and both revealed bids), the opponent's remaining hand, rounds left, the
+// shot clock, and the fairness commit — not just the current prize. Older SDKs
+// that only read the original fields keep working (added fields are ignored).
 type goofspielTurnView struct {
-	Game         string `json:"game"`
-	MatchID      string `json:"match_id"`
-	Round        int    `json:"round"`
-	CurrentPrize int    `json:"current_prize"`
-	PrizePool    int    `json:"prize_pool"`
-	YourHand     []int  `json:"your_hand"`
-	LegalActions []int  `json:"legal_actions"`
-	YourScore    int    `json:"your_score"`
-	OppScore     int    `json:"opponent_score"`
+	Game             string           `json:"game"`
+	MatchID          string           `json:"match_id"`
+	Seat             int              `json:"seat"`
+	Round            int              `json:"round"`
+	TotalRounds      int              `json:"total_rounds"`
+	CurrentPrize     int              `json:"current_prize"`
+	PrizePool        int              `json:"prize_pool"`
+	YourHand         []int            `json:"your_hand"`
+	OpponentHand     []int            `json:"opponent_hand"`
+	LegalActions     []int            `json:"legal_actions"`
+	YourScore        int              `json:"your_score"`
+	OppScore         int              `json:"opponent_score"`
+	History          []goofspielRound `json:"history"`
+	PrizeOrderCommit string           `json:"prize_order_commit"`
+	MoveWindowMs     int64            `json:"move_window_ms"`
+	DeadlineMs       int64            `json:"deadline_ms,omitempty"`
+}
+
+// goofspielRound is one resolved round in the turn view's history: the prize, both
+// players' revealed bids, and who took it — enough to model opponent tendencies.
+type goofspielRound struct {
+	Round    int    `json:"round"`
+	Prize    int    `json:"prize"`
+	YourCard int    `json:"your_card"`
+	OppCard  int    `json:"opp_card"`
+	Winner   string `json:"winner"` // "you" | "opponent" | "tie"
 }
 
 type goofspielTurnMove struct {
-	Round int `json:"round"`
-	Card  int `json:"card"`
+	Round     int                   `json:"round"`
+	Card      int                   `json:"card"`
+	Rationale string                `json:"rationale,omitempty"` // optional agent reasoning, captured for observability
+	Usage     *benchmark.TokenUsage `json:"usage,omitempty"`
 }
 
 // maybeDrive spawns the auto-driver for a freshly-paired match when auto-driving is
@@ -129,8 +153,11 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 			if err != nil || !v.YourTurn || len(v.You.Hand) == 0 {
 				continue
 			}
-			card, outcome, latencyMS := d.decide(ctx, id, matchID, v)
-			rec.Record(benchmark.Decision{Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS})
+			card, outcome, latencyMS, rationale, usage := d.decide(ctx, id, seat, matchID, v)
+			rec.Record(benchmark.Decision{
+				Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
+				Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
+			})
 			if _, err := s.DriveAct(ctx, id, matchID, v.Round, card); err == nil {
 				acted = true
 			}
@@ -163,12 +190,26 @@ func (d *driver) flushBenchmark(rec *benchmark.Recorder) {
 // decide asks the connected agent for its card; on transport failure or an illegal
 // card it falls back to the lowest card in hand (deterministic, engine-legal) so a
 // flaky agent loses the round rather than wedging the match.
-func (d *driver) decide(ctx context.Context, agentID, matchID string, v AgentView) (int, benchmark.Outcome, int64) {
+func (d *driver) decide(ctx context.Context, agentID string, seat int, matchID string, v AgentView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+	hist := make([]goofspielRound, 0, len(v.History))
+	for _, r := range v.History {
+		hist = append(hist, goofspielRound{
+			Round: r.Round, Prize: r.Prize,
+			YourCard: r.YourCard, OppCard: r.OppCard, Winner: r.Winner,
+		})
+	}
 	req := goofspielTurnView{
-		Game: "goofspiel", MatchID: matchID, Round: v.Round,
+		Game: "goofspiel", MatchID: matchID, Seat: seat, Round: v.Round,
+		TotalRounds:  v.TotalRounds,
 		CurrentPrize: v.CurrentPrize, PrizePool: v.PrizePool,
-		YourHand: v.You.Hand, LegalActions: v.LegalActions.PlayCardFrom,
-		YourScore: v.You.Score, OppScore: v.Opponent.Score,
+		YourHand:     v.You.Hand,
+		OpponentHand: v.Opponent.Hand,
+		LegalActions: v.LegalActions.PlayCardFrom,
+		YourScore:    v.You.Score, OppScore: v.Opponent.Score,
+		History:          hist,
+		PrizeOrderCommit: v.PrizeOrderCommit,
+		MoveWindowMs:     v.MoveWindowMs,
+		DeadlineMs:       v.DeadlineMs,
 	}
 	var move goofspielTurnMove
 	start := time.Now()
@@ -177,12 +218,12 @@ func (d *driver) decide(ctx context.Context, agentID, matchID string, v AgentVie
 	switch {
 	case err != nil:
 		// Transport/timeout/disconnect: the engine falls back deterministically.
-		return lowestInt(v.You.Hand), benchmark.ClassifyError(err, errors.Is(err, agentgw.ErrNotConnected)), latencyMS
+		return lowestInt(v.You.Hand), benchmark.ClassifyError(err, errors.Is(err, agentgw.ErrNotConnected)), latencyMS, move.Rationale, move.Usage
 	case !containsInt(v.You.Hand, move.Card):
 		// The agent answered, but with an illegal card → fallback.
-		return lowestInt(v.You.Hand), benchmark.OutcomeIllegal, latencyMS
+		return lowestInt(v.You.Hand), benchmark.OutcomeIllegal, latencyMS, move.Rationale, move.Usage
 	default:
-		return move.Card, benchmark.OutcomeOK, latencyMS
+		return move.Card, benchmark.OutcomeOK, latencyMS, move.Rationale, move.Usage
 	}
 }
 

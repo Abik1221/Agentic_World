@@ -115,14 +115,22 @@ type MafiaPushView struct {
 	Legal    []string     `json:"legal"`
 	Public   []mf.Event   `json:"public,omitempty"`
 	Private  []mf.Event   `json:"private,omitempty"`
+	// Live voting state (voting phase only) + the shot clock, so the agent can
+	// reason about the current tally and pace its thinking.
+	Votes      map[int]int `json:"votes,omitempty"`       // voter seat -> target seat
+	VoteTally  map[int]int `json:"vote_tally,omitempty"`  // target seat -> vote count
+	DeadlineMs int64       `json:"deadline_ms,omitempty"` // ms left on the shot clock
 }
 
-// MafiaPushMove is the action the agent returns.
+// MafiaPushMove is the action the agent returns. Rationale is optional private
+// reasoning (NOT the public in-game Text) captured only for observability.
 type MafiaPushMove struct {
-	Action string `json:"action"`
-	Target int    `json:"target"`
-	Tone   string `json:"tone"`
-	Text   string `json:"text"`
+	Action    string                `json:"action"`
+	Target    int                   `json:"target"`
+	Tone      string                `json:"tone"`
+	Text      string                `json:"text"`
+	Rationale string                `json:"rationale,omitempty"`
+	Usage     *benchmark.TokenUsage `json:"usage,omitempty"`
 }
 
 // StartPushPlay opens a no-stakes table (creator seat 1), fills the rest with
@@ -238,8 +246,13 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 			if id == userAgent {
 				var outcome benchmark.Outcome
 				var latencyMS int64
-				act, outcome, latencyMS = p.decideRemote(ctx, tr, matchID, v)
-				rec.Record(benchmark.Decision{Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS})
+				var rationale string
+				var usage *benchmark.TokenUsage
+				act, outcome, latencyMS, rationale, usage = p.decideRemote(ctx, tr, matchID, v)
+				rec.Record(benchmark.Decision{
+					Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
+					Round: v.Day, Action: act.Kind, Rationale: rationale, Usage: usage,
+				})
 			} else {
 				act = botDecide(v)
 			}
@@ -303,11 +316,12 @@ func mafiaResult(r *EconomyResult, seat int) benchmark.Result {
 	return ""
 }
 
-func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mf.Action, benchmark.Outcome, int64) {
+func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mf.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	req := MafiaPushView{
 		Game: "mafia", MatchID: matchID, YourSeat: v.YourSeat, YourRole: v.YourRole,
 		Day: v.Day, Phase: v.Phase, Alive: v.Alive, Allies: v.Allies, Legal: v.Legal,
 		Public: v.Public, Private: v.Private,
+		Votes: v.Votes, VoteTally: v.VoteTally, DeadlineMs: v.DeadlineMs,
 	}
 	var move MafiaPushMove
 	start := time.Now()
@@ -315,11 +329,11 @@ func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, m
 	latencyMS := time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
-		return botDecide(v), benchmark.ClassifyError(err, false), latencyMS
+		return botDecide(v), benchmark.ClassifyError(err, false), latencyMS, move.Rationale, move.Usage
 	case !containsStr(v.Legal, move.Action):
-		return botDecide(v), benchmark.OutcomeIllegal, latencyMS
+		return botDecide(v), benchmark.OutcomeIllegal, latencyMS, move.Rationale, move.Usage
 	default:
-		return mf.Action{Kind: move.Action, Target: move.Target, Tone: move.Tone, Text: move.Text}, benchmark.OutcomeOK, latencyMS
+		return mf.Action{Kind: move.Action, Target: move.Target, Tone: move.Tone, Text: move.Text}, benchmark.OutcomeOK, latencyMS, move.Rationale, move.Usage
 	}
 }
 

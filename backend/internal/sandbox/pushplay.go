@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
@@ -236,8 +237,11 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			return
 		}
 
-		card, outcome, latencyMS := p.decide(ctx, tr, matchID, v, legal)
-		rec.Record(benchmark.Decision{Seat: 0, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS})
+		card, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, matchID, v, legal)
+		rec.Record(benchmark.Decision{
+			Seat: 0, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
+			Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
+		})
 		if outcome.Fallback() {
 			fallbacks++
 		}
@@ -272,7 +276,7 @@ func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, tr agentwire.Trans
 // decide asks the agent for a card over the transport and validates it against
 // the legal set, falling back to the lowest legal card on any error or illegal
 // response — so an absent/slow agent can never wedge the match.
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, benchmark.Outcome, int64) {
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	view := remoteplay.GoofspielView{
 		Game:         "goofspiel",
 		MatchID:      matchID,
@@ -291,11 +295,11 @@ func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID
 	latencyMS := time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
-		return lowestInt(legal), benchmark.ClassifyError(err, false), latencyMS
+		return lowestInt(legal), benchmark.ClassifyError(err, false), latencyMS, move.Rationale, move.Usage
 	case !containsInt(legal, move.Card):
-		return lowestInt(legal), benchmark.OutcomeIllegal, latencyMS
+		return lowestInt(legal), benchmark.OutcomeIllegal, latencyMS, move.Rationale, move.Usage
 	default:
-		return move.Card, benchmark.OutcomeOK, latencyMS
+		return move.Card, benchmark.OutcomeOK, latencyMS, move.Rationale, move.Usage
 	}
 }
 
