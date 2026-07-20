@@ -10,9 +10,24 @@ import (
 // MaxDays optionally caps the game length (0 = unlimited); when reached the game
 // is decided by the surviving majority. This guarantees termination for unattended
 // play and property tests, mirroring the Monopoly engine's turn cap.
-type Engine struct{ MaxDays int }
+type Engine struct {
+	MaxDays int
+	// Optional professional-rule toggles (default off = current behaviour):
+	RevealRoleOnDeath bool // reveal the eliminated seat's role in the public eliminate event
+	NoFirstNightKill  bool // suppress the Mafia kill on Night 1 (town gets a fair first day)
+}
 
 func New() *Engine { return &Engine{} }
+
+// elimPayload builds an eliminate event, attaching the dead seat's role only when
+// reveal-on-death is enabled (classic-Mafia graveyard reveal).
+func (e *Engine) elimPayload(s State, target int, cause string) EliminatePayload {
+	p := EliminatePayload{Target: target, Cause: cause}
+	if e.RevealRoleOnDeath {
+		p.Role = s.Roles[target]
+	}
+	return p
+}
 
 // NewWithMaxDays builds an engine that ends in a majority decision after maxDays
 // (<=0 means unlimited).
@@ -237,6 +252,12 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 	s.MafiaKill = nil
 	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseMorning}))
 
+	// Optional "no kill on the first night" — town gets an information-bearing
+	// opening day instead of losing a player before anyone has spoken.
+	if e.NoFirstNightKill && s.Day == 1 {
+		killTarget = 0
+	}
+
 	if killTarget > 0 && killTarget != protected {
 		s.PendingElim = killTarget
 		s.PendingCause = "mafia"
@@ -250,7 +271,7 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 	}
 
 	if s.PendingElim > 0 {
-		events = append(events, e.emit(&s, EvEliminate, EliminatePayload{s.PendingElim, s.PendingCause}))
+		events = append(events, e.emit(&s, EvEliminate, e.elimPayload(s, s.PendingElim, s.PendingCause)))
 		s.Alive[s.PendingElim] = false
 		s.PendingElim, s.PendingCause = 0, ""
 	}
@@ -384,7 +405,7 @@ func (e *Engine) resolveVote(s State, prefix []Event) (State, []Event, error) {
 		events = append(events, e.emit(&s, EvModerator, ModeratorPayload{
 			Text: fmt.Sprintf("Seat %d is eliminated by vote.", target),
 		}))
-		events = append(events, e.emit(&s, EvEliminate, EliminatePayload{target, "vote"}))
+		events = append(events, e.emit(&s, EvEliminate, e.elimPayload(s, target, "vote")))
 		s.Alive[target] = false
 	} else {
 		events = append(events, e.emit(&s, EvModerator, ModeratorPayload{Text: "The vote ties. Nobody is eliminated."}))

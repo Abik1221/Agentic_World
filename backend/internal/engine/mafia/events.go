@@ -58,6 +58,7 @@ type VotePayload struct {
 type EliminatePayload struct {
 	Target int    `json:"target"`
 	Cause  string `json:"cause"`
+	Role   string `json:"role,omitempty"` // revealed only when RevealRoleOnDeath is on
 }
 
 type VictoryPayload struct {
