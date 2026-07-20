@@ -702,7 +702,7 @@ func run() error {
 
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
-	autoplayRepo := autoplay.NewMemRepo()
+	autoplayRepo := store.NewAutoplayRepo(st.DB)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
 
 	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
