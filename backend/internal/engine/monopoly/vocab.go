@@ -42,6 +42,8 @@ var AllActions = []string{
 	ActProposeTrade,
 	ActAcceptTrade,
 	ActRejectTrade,
+	ActCounterTrade,
+	ActSkipTrade,
 }
 
 // AllEventTypes is every event `type` the engine emits.

@@ -284,7 +284,8 @@ func monopolyGame() Game {
 			{monopoly.PhaseAuction, "An auction is open (someone declined a property) — bid or pass."},
 			{monopoly.PhaseResolveDebt, "You owe more than your cash — raise funds or go bankrupt."},
 			{monopoly.PhaseManage, "Post-move: build / mortgage / trade, then end your turn (re-roll on doubles)."},
-			{monopoly.PhaseTradeResponse, "A trade was proposed to you — accept or reject."},
+			{monopoly.PhaseTradeResponse, "A trade was proposed to you — accept, reject, or counter."},
+			{monopoly.PhaseTrade, "Open trade floor at the top of a turn — propose a trade to anyone, or skip."},
 			{monopoly.PhaseGameOver, "Terminal phase — the match is over."},
 		},
 		Actions: []ActionSpec{
@@ -302,9 +303,11 @@ func monopolyGame() Game {
 			{monopoly.ActRollJail, "Try to roll doubles to escape jail.", []string{monopoly.PhaseJail}},
 			{monopoly.ActEndTurn, "Finish your turn (re-roll if you rolled doubles).", []string{monopoly.PhaseManage}},
 			{monopoly.ActBankrupt, "Give up — liquidate to the creditor.", []string{monopoly.PhaseResolveDebt}},
-			{monopoly.ActProposeTrade, "Offer a `trade` to another seat.", []string{monopoly.PhaseManage}},
+			{monopoly.ActProposeTrade, "Offer a `trade` to another seat.", []string{monopoly.PhaseManage, monopoly.PhaseTrade}},
 			{monopoly.ActAcceptTrade, "Accept the trade proposed to you.", []string{monopoly.PhaseTradeResponse}},
 			{monopoly.ActRejectTrade, "Reject the trade proposed to you.", []string{monopoly.PhaseTradeResponse}},
+			{monopoly.ActCounterTrade, "Counter the proposed trade with your own `trade`.", []string{monopoly.PhaseTradeResponse}},
+			{monopoly.ActSkipTrade, "Skip the open trade floor without proposing.", []string{monopoly.PhaseTrade}},
 		},
 		Events: []Term{
 			{string(monopoly.EvMatchCreated), "Match opened with the rule set + commitment."},
