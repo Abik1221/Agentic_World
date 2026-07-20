@@ -668,7 +668,7 @@ func run() error {
 	if cfg.RankedAutoDrive {
 		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
 		// default (auto-plays real staked matches) — enable post integration test.
-		matchSvc.EnableRankedDrive(agentGateway, lens, benchPersist, benchMeta, log)
+		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, manifestProbe, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
 	matchHandler := match.NewHandler(matchSvc, authn)

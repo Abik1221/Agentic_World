@@ -66,7 +66,7 @@ func TestDecide_ClassifiesOutcomes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDriver(tc.fn)
-			card, out, latency, _, _ := d.decide(context.Background(), "ag1", 0, "m1", viewWithHand(hand))
+			card, out, latency, _, _ := d.decide(context.Background(), socketSeat{gw: d.gw, id: "ag1", matchID: "m1"}, 0, "m1", viewWithHand(hand))
 			if card != tc.wantCard {
 				t.Errorf("card=%d want %d", card, tc.wantCard)
 			}
@@ -139,10 +139,10 @@ func TestDecide_FeedsRecorder(t *testing.T) {
 	timeout := newDriver(func(any) error { return context.DeadlineExceeded })
 
 	for i := 0; i < 3; i++ {
-		_, out, ms, _, _ := legal.decide(context.Background(), "ag0", 0, "m1", viewWithHand(hand))
+		_, out, ms, _, _ := legal.decide(context.Background(), socketSeat{gw: legal.gw, id: "ag0", matchID: "m1"}, 0, "m1", viewWithHand(hand))
 		rec.Record(benchmark.Decision{Seat: 0, AgentID: "ag0", Outcome: out, LatencyMS: ms})
 	}
-	_, out, ms, _, _ := timeout.decide(context.Background(), "ag0", 0, "m1", viewWithHand(hand))
+	_, out, ms, _, _ := timeout.decide(context.Background(), socketSeat{gw: timeout.gw, id: "ag0", matchID: "m1"}, 0, "m1", viewWithHand(hand))
 	rec.Record(benchmark.Decision{Seat: 0, AgentID: "ag0", Outcome: out, LatencyMS: ms})
 
 	s := rec.Summary().Seats[0]

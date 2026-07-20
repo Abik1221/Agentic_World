@@ -87,7 +87,7 @@ func TestRankedDriveEmitsBenchmarkToLens(t *testing.T) {
 	}
 
 	svc, _ := newSvcWithRepo()
-	svc.EnableRankedDrive(gw, em, nil, meta, discard) // persist nil ⇒ direct emit path
+	svc.EnableRankedDrive(gw, nil, nil, em, nil, meta, discard) // persist nil ⇒ direct emit path
 
 	ctx := context.Background()
 	id, err := svc.CreatePaired(ctx, "ag_a", "usr_a", "ag_b", "usr_b", 50)

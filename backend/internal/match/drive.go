@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/benchmark"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
@@ -19,6 +20,56 @@ type mover interface {
 	Connected(agentID string) bool
 	Turn(ctx context.Context, agentID string, view, out any) error
 	GameEnd(ctx context.Context, agentID, game, matchID string, result json.RawMessage) error
+}
+
+// RemoteResolver resolves a verified hosted endpoint for an agent (satisfied by
+// manifest.Service). PushClient POSTs a turn view to it and delivers game-end
+// (satisfied by *agentclient.Client). Together they let the ranked driver drive
+// an agent that registered an endpoint but is NOT connected over the socket.
+type RemoteResolver interface {
+	PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
+}
+type PushClient interface {
+	Play(ctx context.Context, t agentclient.Target, request, out any) (int, error)
+	GameEnd(ctx context.Context, t agentclient.Target, n agentclient.GameEndNotification) error
+}
+
+// seatDriver is one seat's turn/game-end surface — either the live socket or a
+// hosted HTTP endpoint — so the drive loop treats both identically.
+type seatDriver interface {
+	Turn(ctx context.Context, view, out any) error
+	GameEnd(ctx context.Context, result json.RawMessage) error
+}
+
+// socketSeat drives a seat over its live WebSocket (via the mover interface).
+type socketSeat struct {
+	gw      mover
+	id      string
+	matchID string
+}
+
+func (s socketSeat) Turn(ctx context.Context, view, out any) error {
+	return s.gw.Turn(ctx, s.id, view, out)
+}
+func (s socketSeat) GameEnd(ctx context.Context, result json.RawMessage) error {
+	return s.gw.GameEnd(ctx, s.id, "goofspiel", s.matchID, result)
+}
+
+// httpSeat drives a seat by calling its verified hosted endpoint (push model).
+type httpSeat struct {
+	client  PushClient
+	target  agentclient.Target
+	matchID string
+}
+
+func (h httpSeat) Turn(ctx context.Context, view, out any) error {
+	_, err := h.client.Play(ctx, h.target, view, out)
+	return err
+}
+func (h httpSeat) GameEnd(ctx context.Context, result json.RawMessage) error {
+	return h.client.GameEnd(ctx, h.target, agentclient.GameEndNotification{
+		MatchID: h.matchID, Game: "goofspiel", Result: result,
+	})
 }
 
 // driver auto-plays a paired, staked match by driving each agent's seat over its
@@ -33,11 +84,29 @@ type mover interface {
 // live agents); when off, paired agents self-drive over HTTP exactly as before.
 type driver struct {
 	gw       mover
+	resolver RemoteResolver // optional: resolve hosted endpoints for non-socket agents
+	client   PushClient     // optional: POST turns to hosted endpoints
 	em       *telemetry.Client
 	persist  benchmark.Persist
 	meta     benchmark.AgentMetaResolver
 	log      *slog.Logger
 	maxMatch time.Duration
+}
+
+// seatFor returns how to drive a seat: its live socket if connected, else its
+// verified hosted endpoint, else (nil,false) so the seat self-drives over HTTP +
+// the sweeper timeout as before. This is what lets an endpoint-only agent play
+// ranked without holding a socket open.
+func (d *driver) seatFor(ctx context.Context, id, matchID string) (seatDriver, bool) {
+	if d.gw != nil && d.gw.Connected(id) {
+		return socketSeat{gw: d.gw, id: id, matchID: matchID}, true
+	}
+	if d.resolver != nil && d.client != nil {
+		if t, ok, err := d.resolver.PlayTarget(ctx, id); ok && err == nil {
+			return httpSeat{client: d.client, target: t, matchID: matchID}, true
+		}
+	}
+	return nil, false
 }
 
 // EnableRankedDrive turns on socket auto-driving of paired matches. em may be
@@ -46,11 +115,11 @@ type driver struct {
 // best-effort emitter — so a staked match's benchmark fact is never dropped.
 // meta (optional) resolves each agent's manifest metadata (version + model) for
 // version-diff and provider benchmarks.
-func (s *Service) EnableRankedDrive(gw mover, em *telemetry.Client, persist benchmark.Persist, meta benchmark.AgentMetaResolver, log *slog.Logger) {
+func (s *Service) EnableRankedDrive(gw mover, resolver RemoteResolver, client PushClient, em *telemetry.Client, persist benchmark.Persist, meta benchmark.AgentMetaResolver, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
 	}
-	s.driver = &driver{gw: gw, em: em, persist: persist, meta: meta, log: log, maxMatch: 5 * time.Minute}
+	s.driver = &driver{gw: gw, resolver: resolver, client: client, em: em, persist: persist, meta: meta, log: log, maxMatch: 5 * time.Minute}
 }
 
 // goofspielTurnView is the self-contained per-seat JSON asked over the socket; it
@@ -98,10 +167,15 @@ type goofspielTurnMove struct {
 // maybeDrive spawns the auto-driver for a freshly-paired match when auto-driving is
 // enabled and at least one seat's agent is connected over the socket.
 func (s *Service) maybeDrive(matchID, aAgent, bAgent string) {
-	if s.driver == nil || s.driver.gw == nil {
+	if s.driver == nil {
 		return
 	}
-	if !s.driver.gw.Connected(aAgent) && !s.driver.gw.Connected(bAgent) {
+	// Spawn only if at least one seat is drivable (socket or hosted endpoint);
+	// otherwise both self-drive and there's nothing for the loop to do.
+	ctx := context.Background()
+	_, okA := s.driver.seatFor(ctx, aAgent, matchID)
+	_, okB := s.driver.seatFor(ctx, bAgent, matchID)
+	if !okA && !okB {
 		return
 	}
 	go s.driver.run(s, matchID, aAgent, bAgent)
@@ -137,23 +211,24 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 			for seat, id := range agents {
 				v, _ := s.State(ctx, matchID, id, false, 0)
 				rec.SetResult(seat, id, goofspielResult(v.Result))
-				if d.gw.Connected(id) {
+				if sd, ok := d.seatFor(ctx, id, matchID); ok {
 					result, _ := json.Marshal(v.Result)
-					_ = d.gw.GameEnd(context.WithoutCancel(ctx), id, "goofspiel", matchID, result)
+					_ = sd.GameEnd(context.WithoutCancel(ctx), result)
 				}
 			}
 			return
 		}
 		acted := false
 		for seat, id := range agents {
-			if !d.gw.Connected(id) {
-				continue // not connected — self-drive + sweeper timeout cover this seat
+			sd, ok := d.seatFor(ctx, id, matchID)
+			if !ok {
+				continue // neither socket nor endpoint — self-drive + sweeper timeout cover this seat
 			}
 			v, err := s.State(ctx, matchID, id, false, 0)
 			if err != nil || !v.YourTurn || len(v.You.Hand) == 0 {
 				continue
 			}
-			card, outcome, latencyMS, rationale, usage := d.decide(ctx, id, seat, matchID, v)
+			card, outcome, latencyMS, rationale, usage := d.decide(ctx, sd, seat, matchID, v)
 			rec.Record(benchmark.Decision{
 				Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 				Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
@@ -190,7 +265,7 @@ func (d *driver) flushBenchmark(rec *benchmark.Recorder) {
 // decide asks the connected agent for its card; on transport failure or an illegal
 // card it falls back to the lowest card in hand (deterministic, engine-legal) so a
 // flaky agent loses the round rather than wedging the match.
-func (d *driver) decide(ctx context.Context, agentID string, seat int, matchID string, v AgentView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, matchID string, v AgentView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	hist := make([]goofspielRound, 0, len(v.History))
 	for _, r := range v.History {
 		hist = append(hist, goofspielRound{
@@ -213,7 +288,7 @@ func (d *driver) decide(ctx context.Context, agentID string, seat int, matchID s
 	}
 	var move goofspielTurnMove
 	start := time.Now()
-	err := d.gw.Turn(ctx, agentID, req, &move)
+	err := sd.Turn(ctx, req, &move)
 	latencyMS := time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
