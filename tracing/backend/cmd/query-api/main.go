@@ -61,6 +61,7 @@ func main() {
 	app.Get("/v1/runs/:run_id", h.RunByID)
 	app.Get("/v1/traces/:trace_id/timeline", h.TraceTimeline)
 	app.Get("/v1/matches/:match_id", h.MatchByID)
+	app.Get("/v1/matches/:match_id/decisions", h.MatchDecisions)
 	app.Get("/v1/metrics/tools", h.ToolCalls)
 
 	// Agent benchmarks: reliability + latency leaderboard and per-agent breakdown.

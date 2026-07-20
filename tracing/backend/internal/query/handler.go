@@ -858,6 +858,42 @@ func (h Handler) MatchByID(c *fiber.Ctx) error {
 	return c.JSON(out)
 }
 
+// MatchDecisions returns, per agent, the full per-move decision trail for a match
+// — action, outcome, latency, agent reasoning, and token usage — plus the token
+// totals. It reads the benchmark_recorded event's payload_json (which carries the
+// decision_log the aggregate benchmark tables drop), keyed by run_id = match id.
+func (h Handler) MatchDecisions(c *fiber.Ctx) error {
+	orgID, err := requireOrgID(c)
+	if err != nil {
+		return err
+	}
+	id := c.Params("match_id")
+	// Accept either the bare match id (run_id) or the "match_<id>" trace id, so
+	// links from the run/trace views resolve without prefix juggling.
+	rows, err := h.Store.DB.QueryContext(c.UserContext(), `
+		SELECT actor_id, session_id, argMax(payload_json, ingested_at) AS payload_json
+		FROM events_raw
+		WHERE organization_id = ? AND event_type = 'benchmark_recorded' AND (run_id = ? OR trace_id = ?)
+		GROUP BY actor_id, session_id`, orgID, id, id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	defer rows.Close()
+	agents := make([]fiber.Map, 0)
+	for rows.Next() {
+		var actorID, session, payload string
+		if err := rows.Scan(&actorID, &session, &payload); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		var p map[string]any
+		if payload != "" {
+			_ = json.Unmarshal([]byte(payload), &p)
+		}
+		agents = append(agents, fiber.Map{"agent_id": actorID, "game": session, "benchmark": p})
+	}
+	return c.JSON(fiber.Map{"match_id": id, "agents": agents})
+}
+
 func (h Handler) ProjectionStatus(c *fiber.Ctx) error {
 	type countRow struct {
 		Name  string `json:"name"`

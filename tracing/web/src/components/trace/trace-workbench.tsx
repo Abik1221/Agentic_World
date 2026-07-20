@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TraceFlameGraph from "@/app/traces/[traceId]/TraceFlameGraph";
 import type { EventRow, SpanNode, TraceSummary } from "@/lib/pyyol-lens-api";
@@ -253,6 +254,14 @@ export default function TraceWorkbench({
             <span className="mono">{trace.trace_id}</span>
             {" · "}
             {trace.project_id} / {trace.environment}
+            {trace.trace_id.startsWith("match_") && (
+              <>
+                {" · "}
+                <Link className="agent-link" href={`/matches/${encodeURIComponent(trace.trace_id)}`}>
+                  agent decision trail →
+                </Link>
+              </>
+            )}
           </p>
         </div>
         <div className="trace-workbench-header-right">
