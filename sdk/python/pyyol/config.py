@@ -38,6 +38,8 @@ class Config:
     mode: str = "sandbox"
     entry: str = "agent.py:agent"
     agent_id: str = ""
+    endpoint: str = ""       # hosted-endpoint URL (Model B); empty ⇒ worker/dial-out
+    auto_play: bool = False  # keep the agent in matches automatically (`pyyol serve`)
     # Order in which keys are written, so the file stays stable + readable.
     _order: tuple = field(
         default=(
@@ -49,6 +51,8 @@ class Config:
             "mode",
             "entry",
             "agent_id",
+            "endpoint",
+            "auto_play",
         ),
         repr=False,
         compare=False,
@@ -151,8 +155,8 @@ def dumps(cfg: Config) -> str:
     lines = []
     for key in cfg._order:
         val = getattr(cfg, key)
-        if key == "agent_id" and not val:
-            continue  # omit until we actually have one
+        if key in ("agent_id", "endpoint") and not val:
+            continue  # omit optional string keys until they have a value
         lines.append(f"{key} = {_toml_escape(val)}")
     return "\n".join(lines) + "\n"
 

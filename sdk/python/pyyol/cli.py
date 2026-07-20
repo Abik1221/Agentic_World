@@ -825,6 +825,131 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- serve / autoplay (deploy once, plays anytime) -----------------------------
+
+
+def _load_agent(file: str, var: str):
+    """Import the developer's module and return the exposed Agent object (or None
+    after printing why). Shared by `serve`."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_pyyol_user_agent", file)
+    if spec is None or spec.loader is None:
+        print(f"{BAD} cannot load {file}", file=sys.stderr)
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    agent = getattr(mod, var, None)
+    if agent is None:
+        print(f"{BAD} no `{var}` found in {file} (expose your Agent as `{var}`)", file=sys.stderr)
+        return None
+    return agent
+
+
+def _autoplay_set(api: str, token: str, *, enabled: bool, mode: str, bid: int, games: list) -> tuple:
+    """PUT the agent's auto-play setting (availability). Returns (status, body)."""
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps({"enabled": enabled, "mode": mode, "bid": bid, "games": games}).encode()
+    req = urllib.request.Request(
+        api.rstrip("/") + "/v1/agent/autoplay",
+        data=body,
+        method="PUT",
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        return e.code, (json.loads(raw) if raw else {})
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return 0, {"error": _net_err(e)}
+
+
+def _autoplay_opts(args, cfg) -> tuple:
+    """Resolve (mode, games) from flags → pyyol.toml → defaults."""
+    mode = "ranked" if getattr(args, "ranked", False) else (args.mode or (cfg.mode if cfg else "") or "sandbox")
+    games = [g.strip() for g in (args.games or "").split(",") if g.strip()]
+    if not games and cfg and cfg.arena:
+        games = [cfg.arena]
+    return mode, games
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Deploy-once worker: switch auto-play ON, then hold the outbound WebSocket
+    open so the platform drives your agent for every match it is paired into.
+    Ctrl-C switches auto-play back OFF so you stop being matched once you exit."""
+    from . import config, credentials
+
+    creds = credentials.load()
+    api = (args.api or (creds.url if creds else "")).rstrip("/")
+    url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
+    token = args.token or os.environ.get("PYYOL_TOKEN", "") or (creds.access_token if creds else "")
+    agent_id = args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
+    if not (api and token):
+        print(f"{BAD} run `pyyol login` first (need the API base + token)", file=sys.stderr)
+        return 2
+
+    cfg = config.load()
+    mode, games = _autoplay_opts(args, cfg)
+    agent = _load_agent(args.file, args.var)
+    if agent is None:
+        return 2
+
+    _warn_insecure_transport(api, bool(token))
+    st, resp = _autoplay_set(api, token, enabled=True, mode=mode, bid=args.bid, games=games)
+    if st and 200 <= st < 300:
+        extra = f", bid={args.bid}" if mode == "ranked" else ""
+        print(f"{OK} auto-play ON — mode={mode}{extra}, games={games or 'default'}")
+    else:
+        print(f"{BAD} could not enable auto-play (status {st}: {resp}); holding the connection anyway", file=sys.stderr)
+
+    print("serving — the platform will drive your agent as matches are paired. Ctrl-C to stop.")
+    _log_file_handler()
+    from .console import build_console
+
+    console = build_console(
+        mode="json" if args.json else "pretty",
+        quiet=args.quiet,
+        color=False if args.no_color else None,
+    )
+    try:
+        agent.run(url=url, agent_id=agent_id, token=token, console=console)
+    except KeyboardInterrupt:
+        print("\nstopping…")
+    finally:
+        _autoplay_set(api, token, enabled=False, mode=mode, bid=args.bid, games=games)
+        print(f"{OK} auto-play OFF")
+    return 0
+
+
+def cmd_autoplay(args: argparse.Namespace) -> int:
+    """Toggle auto-play WITHOUT holding a connection — for a hosted endpoint the
+    platform calls in, so you just flip the switch (`pyyol autoplay on|off`)."""
+    from . import config, credentials
+
+    creds = credentials.load()
+    api = (args.api or (creds.url if creds else "")).rstrip("/")
+    token = args.token or (creds.access_token if creds else "")
+    if not (api and token):
+        print(f"{BAD} run `pyyol login` first", file=sys.stderr)
+        return 2
+    on = args.state == "on"
+    cfg = config.load()
+    mode, games = _autoplay_opts(args, cfg)
+    _warn_insecure_transport(api, bool(token))
+    st, resp = _autoplay_set(api, token, enabled=on, mode=mode, bid=args.bid, games=games)
+    if st and 200 <= st < 300:
+        detail = f" — mode={mode}, games={games or 'default'}" if on else ""
+        print(f"{OK} auto-play {'ON' if on else 'OFF'}{detail}")
+        return 0
+    print(f"{BAD} failed (status {st}): {resp}", file=sys.stderr)
+    return 1
+
+
 # --- init (scaffold) -----------------------------------------------------------
 
 _PY_STARTER_GOOFSPIEL = '''\
@@ -1521,6 +1646,32 @@ def build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--quiet", action="store_true")
     prun.add_argument("--no-color", action="store_true")
     prun.set_defaults(func=cmd_run)
+
+    psv = sub.add_parser("serve", help="deploy-once worker: enable auto-play + hold the connection so your agent plays anytime")
+    psv.add_argument("--file", default="agent.py")
+    psv.add_argument("--var", default="agent")
+    psv.add_argument("--url", default="")
+    psv.add_argument("--agent", default="")
+    psv.add_argument("--token", default="")
+    _add_api(psv)
+    psv.add_argument("--ranked", action="store_true", help="auto-play RANKED (real stakes); default sandbox")
+    psv.add_argument("--mode", default="", choices=["", "sandbox", "ranked"], help="explicit mode (overrides pyyol.toml)")
+    psv.add_argument("--bid", type=int, default=0, help="ranked stake per match")
+    psv.add_argument("--games", default="", help="comma-separated games to rotate (sandbox); default = your arena")
+    psv.add_argument("--json", action="store_true")
+    psv.add_argument("--quiet", action="store_true")
+    psv.add_argument("--no-color", action="store_true")
+    psv.set_defaults(func=cmd_serve)
+
+    pap = sub.add_parser("autoplay", help="toggle auto-play without holding a connection (for hosted endpoints)")
+    pap.add_argument("state", choices=["on", "off"])
+    _add_api(pap)
+    pap.add_argument("--token", default="")
+    pap.add_argument("--ranked", action="store_true", help="auto-play RANKED (real stakes); default sandbox")
+    pap.add_argument("--mode", default="", choices=["", "sandbox", "ranked"])
+    pap.add_argument("--bid", type=int, default=0)
+    pap.add_argument("--games", default="")
+    pap.set_defaults(func=cmd_autoplay)
 
     pst = sub.add_parser("status", help="[advanced] is your agent connected?")
     _add_api(pst)
