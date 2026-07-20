@@ -1,19 +1,22 @@
 :root {
-  --bg: #f7f8fc;
-  --bg-elevated: #ffffff;
-  --panel: #ffffff;
-  --panel-soft: #fafbff;
-  --border: #e4e7ef;
-  --text: #111827;
-  --muted: #667085;
-  --accent: #4f46e5;
-  --accent-strong: #4338ca;
-  --danger: #dc2626;
-  --success: #16a34a;
+  /* Black theme — surfaces are near-black, text near-white, aligned with the
+     already-dark trace workbench (--wb-*). Kept as tokens so the whole app
+     rethemes from here; scattered light literals below are mapped to these. */
+  --bg: #08090d;
+  --bg-elevated: #0f1218;
+  --panel: #0f1218;
+  --panel-soft: #14171f;
+  --border: #23262f;
+  --text: #e7e9ef;
+  --muted: #9096a3;
+  --accent: #6366f1;
+  --accent-strong: #818cf8;
+  --danger: #f87171;
+  --success: #34d399;
   --sidebar-width: 252px;
   --radius-md: 12px;
   --radius-lg: 14px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.04);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.35);
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "SFMono-Regular", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
 }
@@ -101,7 +104,7 @@ a {
 .shell-sidebar-collapse-btn {
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #f8f9fd;
+  background: var(--panel-soft);
   color: var(--muted);
   width: 2rem;
   height: 2rem;
@@ -113,7 +116,7 @@ a {
 }
 
 .shell-sidebar-collapse-btn:hover {
-  background: #eef1ff;
+  background: var(--panel-soft);
   color: var(--text);
 }
 
@@ -141,7 +144,7 @@ a {
 }
 
 .shell-sidebar-reveal:hover {
-  background: #f8f9fd;
+  background: var(--panel-soft);
   color: var(--accent-strong);
 }
 
@@ -152,7 +155,7 @@ a {
   display: grid;
   place-items: center;
   padding: 1.5rem;
-  background: var(--bg, #f7f8fc);
+  background: var(--bg, var(--bg));
 }
 .login-card {
   width: 100%;
@@ -162,7 +165,7 @@ a {
   gap: 0.5rem;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--bg-elevated, #fff);
+  background: var(--bg-elevated, var(--panel));
   padding: 1.6rem;
   box-shadow: 0 12px 40px rgba(15, 23, 42, 0.1);
 }
@@ -186,12 +189,12 @@ a {
   border-radius: 8px;
   padding: 0.55rem 0.7rem;
   font-size: 0.9rem;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
 }
 .login-input:focus {
   outline: none;
-  border-color: #c7ceff;
+  border-color: var(--border);
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 .login-btn {
@@ -220,7 +223,7 @@ a {
   display: none;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   width: 2.1rem;
   height: 2.1rem;
@@ -231,7 +234,7 @@ a {
   flex: none;
 }
 .shell-hamburger:hover {
-  background: #f8f9fd;
+  background: var(--panel-soft);
 }
 
 /* Off-canvas drawer backdrop — only rendered/visible on mobile when open. */
@@ -253,8 +256,8 @@ a {
   width: 2rem;
   height: 2rem;
   border-radius: 8px;
-  border: 1px solid #cdd4ff;
-  background: linear-gradient(135deg, #eef0ff, #fafaff);
+  border: 1px solid var(--border);
+  background: linear-gradient(135deg, var(--panel-soft), var(--panel-soft));
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 0.8rem;
@@ -282,7 +285,7 @@ a {
 .nav-link {
   border: 1px solid transparent;
   border-radius: 9px;
-  color: #344054;
+  color: var(--text);
   padding: 0.58rem 0.72rem;
   font-size: 0.84rem;
   font-weight: 500;
@@ -290,14 +293,14 @@ a {
 }
 
 .nav-link:hover {
-  border-color: #dfe3ee;
-  background: #f8f9fd;
-  color: #1f2937;
+  border-color: var(--border);
+  background: var(--panel-soft);
+  color: var(--text);
 }
 
 .nav-link-active {
-  border-color: #d7dcff;
-  background: #eef1ff;
+  border-color: var(--border);
+  background: var(--panel-soft);
   color: var(--accent-strong);
 }
 
@@ -330,7 +333,7 @@ a {
   gap: 0.8rem;
   align-items: center;
   border-bottom: 1px solid var(--border);
-  background: rgba(247, 248, 252, 0.9);
+  background: rgba(8, 9, 13, 0.85);
   backdrop-filter: blur(6px);
   padding: 0.72rem 1.2rem;
 }
@@ -351,27 +354,27 @@ a {
 .workspace-pill {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #d7ddec;
+  border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0.2rem 0.6rem;
-  background: #fff;
-  color: #374151;
+  background: var(--panel);
+  color: var(--text);
   font-size: 0.75rem;
   font-weight: 500;
 }
 
 .workspace-pill.subtle {
-  background: #f8f9ff;
-  color: #667085;
+  background: var(--panel-soft);
+  color: var(--muted);
 }
 
 .status-chip {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  border: 1px solid #e4e7ef;
-  background: #fff;
-  color: #475467;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
   padding: 0.2rem 0.52rem;
   font-size: 0.72rem;
   font-weight: 600;
@@ -491,8 +494,8 @@ a {
 .table-wrap {
   overflow: auto;
   border-radius: var(--radius-md);
-  border: 1px solid #e8ebf3;
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--panel);
   max-height: min(62vh, 760px);
 }
 
@@ -512,22 +515,22 @@ td {
 }
 
 th {
-  color: #6b7280;
+  color: var(--muted);
   font-size: 0.71rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #f9fafc;
+  background: var(--panel-soft);
 }
 
 tbody tr:hover td {
-  background: #f8faff;
+  background: var(--panel-soft);
 }
 
 .event-row-selected td {
-  background: #eef2ff;
+  background: var(--panel-soft);
 }
 
 .keyboard-zone:focus {
@@ -599,8 +602,8 @@ tbody tr:hover td {
 .filter-chip {
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: #fff;
-  color: #475467;
+  background: var(--panel);
+  color: var(--muted);
   padding: 0.28rem 0.7rem;
   font-size: 0.78rem;
   font-weight: 500;
@@ -608,12 +611,12 @@ tbody tr:hover td {
   white-space: nowrap;
 }
 .filter-chip:hover {
-  border-color: #cdd4ff;
-  background: #f8f9fd;
+  border-color: var(--border);
+  background: var(--panel-soft);
 }
 .filter-chip-active {
-  border-color: #c7ceff;
-  background: #eef1ff;
+  border-color: var(--border);
+  background: var(--panel-soft);
   color: var(--accent-strong);
   font-weight: 600;
 }
@@ -633,7 +636,7 @@ tbody tr:hover td {
 .rate-bar {
   height: 5px;
   border-radius: 999px;
-  background: #eef0f5;
+  background: var(--panel-soft);
   overflow: hidden;
 }
 .rate-bar > span {
@@ -692,9 +695,9 @@ tbody tr:hover td {
 .version-tag {
   display: inline-flex;
   align-items: center;
-  border: 1px solid #d7dcff;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #f5f6ff;
+  background: var(--panel-soft);
   color: var(--accent-strong);
   padding: 0.1rem 0.4rem;
   font-family: var(--font-mono);
@@ -703,9 +706,9 @@ tbody tr:hover td {
 
 .feed-search {
   width: 100%;
-  border: 1px solid #d9dfeb;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   padding: 0.68rem 0.8rem;
   font-size: 0.86rem;
@@ -713,7 +716,7 @@ tbody tr:hover td {
 
 .feed-search:focus {
   outline: 0;
-  border-color: #bfc8ff;
+  border-color: var(--border);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
@@ -730,7 +733,7 @@ tbody tr:hover td {
 }
 
 .tree-node {
-  border-left: 1px solid #e2e8f0;
+  border-left: 1px solid var(--border);
   margin-left: 0.25rem;
   padding-left: 0.7rem;
 }
@@ -738,9 +741,9 @@ tbody tr:hover td {
 .graph-wrap {
   position: relative;
   margin-top: 0.25rem;
-  border: 1px solid #e5e9f3;
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: #fbfcff;
+  background: var(--panel-soft);
   overflow: auto;
   height: 360px;
   cursor: grab;
@@ -822,7 +825,7 @@ tbody tr:hover td {
   bottom: 10px;
   width: 172px;
   height: 112px;
-  border: 1px solid #d7deec;
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.9);
   box-shadow: 0 2px 6px rgba(16, 24, 40, 0.08);
@@ -859,8 +862,8 @@ tbody tr:hover td {
 }
 
 .tree-node-selected > .tree-item.tree-details {
-  border-color: #c7d2fe;
-  background: #eef2ff;
+  border-color: var(--border);
+  background: var(--panel-soft);
 }
 
 .tree-item {
@@ -868,7 +871,7 @@ tbody tr:hover td {
 }
 
 .tree-details {
-  border: 1px solid #e5e9f3;
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--panel-soft);
   padding: 0.58rem 0.64rem;
@@ -941,9 +944,9 @@ tbody tr:hover td {
 
 .command-panel {
   width: min(560px, calc(100vw - 2rem));
-  border: 1px solid #d9dfeb;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--panel);
   box-shadow: 0 24px 40px rgba(15, 23, 42, 0.15);
   overflow: hidden;
 }
@@ -952,7 +955,7 @@ tbody tr:hover td {
   padding: 0.7rem 0.9rem;
   font-size: 0.78rem;
   color: var(--muted);
-  border-bottom: 1px solid #eceff5;
+  border-bottom: 1px solid var(--border);
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
@@ -964,9 +967,9 @@ tbody tr:hover td {
 .command-input {
   width: calc(100% - 1.2rem);
   margin: 0 0.6rem 0.5rem;
-  border: 1px solid #d9dfeb;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   padding: 0.6rem 0.75rem;
   font-size: 0.85rem;
@@ -974,7 +977,7 @@ tbody tr:hover td {
 
 .command-input:focus {
   outline: 0;
-  border-color: #bfc8ff;
+  border-color: var(--border);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
@@ -982,8 +985,8 @@ tbody tr:hover td {
   width: 100%;
   border: 0;
   border-bottom: 1px solid #f1f3f8;
-  background: #fff;
-  color: #0f172a;
+  background: var(--panel);
+  color: var(--text);
   text-align: left;
   display: flex;
   justify-content: space-between;
@@ -995,19 +998,19 @@ tbody tr:hover td {
 }
 
 .command-item:hover {
-  background: #f8faff;
+  background: var(--panel-soft);
 }
 
 .command-item-active {
-  background: #eef2ff;
+  background: var(--panel-soft);
 }
 
 .command-shortcut {
-  border: 1px solid #d8deea;
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0.1rem 0.4rem;
-  background: #f8fafc;
-  color: #475467;
+  background: var(--panel-soft);
+  color: var(--muted);
   font-size: 0.72rem;
   font-family: var(--font-mono);
 }
@@ -1019,7 +1022,7 @@ tbody tr:hover td {
 }
 
 .command-count {
-  color: #667085;
+  color: var(--muted);
   font-size: 0.72rem;
   font-family: var(--font-mono);
 }
@@ -1047,9 +1050,9 @@ tbody tr:hover td {
 }
 
 .toolbar-select {
-  border: 1px solid #d9dfeb;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   padding: 0.62rem 0.7rem;
   font-size: 0.84rem;
@@ -1063,10 +1066,10 @@ tbody tr:hover td {
 }
 
 .saved-view-btn {
-  border: 1px solid #d9dfeb;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  background: #fff;
-  color: #344054;
+  background: var(--panel);
+  color: var(--text);
   padding: 0.3rem 0.62rem;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1074,13 +1077,13 @@ tbody tr:hover td {
 }
 
 .saved-view-btn:hover {
-  background: #f5f7ff;
-  border-color: #cfd6f8;
+  background: var(--panel-soft);
+  border-color: var(--border);
 }
 
 .saved-view-btn-active {
-  background: #eef1ff;
-  border-color: #cfd6ff;
+  background: var(--panel-soft);
+  border-color: var(--border);
   color: #3730a3;
 }
 
@@ -1297,12 +1300,12 @@ tbody tr:hover td {
   border: 1px solid var(--border);
   border-radius: 9px;
   overflow: hidden;
-  background: #fff;
+  background: var(--panel);
 }
 
 .segmented-muted {
-  border-color: #e8ebf3;
-  background: #fafbff;
+  border-color: var(--border);
+  background: var(--panel-soft);
 }
 
 .segmented-btn {
@@ -1311,17 +1314,17 @@ tbody tr:hover td {
   padding: 0.38rem 0.72rem;
   font-size: 0.78rem;
   font-weight: 600;
-  color: #64748b;
+  color: var(--muted);
   cursor: pointer;
   font-family: inherit;
 }
 
 .segmented-btn:hover {
-  background: #f8fafc;
+  background: var(--panel-soft);
 }
 
 .segmented-btn-active {
-  background: #eef2ff;
+  background: var(--panel-soft);
   color: var(--accent-strong);
 }
 
@@ -1361,9 +1364,9 @@ tbody tr:hover td {
 }
 
 .json-panel {
-  border: 1px solid #e8ebf3;
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: #f9fafc;
+  background: var(--panel-soft);
   padding: 0.8rem;
   max-height: min(60vh, 780px);
   overflow: auto;
