@@ -118,8 +118,8 @@ func TestShouldPlay_StopConditions(t *testing.T) {
 		{"token budget under", Setting{DailyTokenBudget: 100000}, DailyStats{Tokens: 50000}, 12, true},
 		{"take-profit hit", Setting{TakeProfitCoins: 500}, DailyStats{NetCoins: 500}, 12, false},
 		{"take-profit under", Setting{TakeProfitCoins: 500}, DailyStats{NetCoins: 400}, 12, true},
-		{"loss-stop hit", Setting{DailyLossStop: 300}, DailyStats{NetCoins: -300}, 12, false},
-		{"loss-stop under", Setting{DailyLossStop: 300}, DailyStats{NetCoins: -200}, 12, true},
+		{"loss-stop hit", Setting{DailyLossStop: 300}, DailyStats{LossCoins: 300}, 12, false},
+		{"loss-stop under", Setting{DailyLossStop: 300}, DailyStats{LossCoins: 200}, 12, true},
 	}
 	for _, tc := range cases {
 		if ok, _ := shouldPlay(tc.s, tc.st, tc.hour); ok != tc.want {

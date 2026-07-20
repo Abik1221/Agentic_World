@@ -3,13 +3,42 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/agent-arena/arena/internal/autoplay"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/matchmaking"
 	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/sandbox"
+	"github.com/agent-arena/arena/internal/store"
+	"github.com/agent-arena/arena/internal/wallet"
 )
+
+// autoplayStats feeds the auto-play stop-conditions today's per-agent activity:
+// match count + token spend from the benchmark aggregate, and coins lost from the
+// wallet (same day boundary as the daily_loss_limit guardrail). NetCoins is left
+// 0 for now (take-profit needs a per-day gains figure the ledger doesn't expose
+// yet); the daily loss-stop rides LossCoins, and the wallet guardrail is the hard
+// backstop regardless.
+type autoplayStats struct {
+	pindex *store.PIndexRepo
+	wallet *wallet.Service
+	now    func() time.Time
+}
+
+func (a autoplayStats) Today(ctx context.Context, agentPublicID string) (autoplay.DailyStats, error) {
+	n := a.now()
+	dayStart := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, n.Location())
+	matches, tokens, err := a.pindex.TodayStats(ctx, agentPublicID, dayStart)
+	if err != nil {
+		return autoplay.DailyStats{}, err
+	}
+	loss, err := a.wallet.LossToday(ctx, agentPublicID)
+	if err != nil {
+		return autoplay.DailyStats{}, err
+	}
+	return autoplay.DailyStats{Matches: matches, Tokens: tokens, LossCoins: loss}, nil
+}
 
 // rankedQueueAdapter lets the auto-play reconciler use the real matchmaking queue.
 // Enqueue rides the queue's existing certification + affordability + guardrail

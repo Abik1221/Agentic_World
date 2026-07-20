@@ -53,9 +53,10 @@ type Setting struct {
 // DailyStats is an agent's activity SO FAR TODAY (UTC), read each tick to evaluate
 // the stop-conditions. Zero value ⇒ no activity ⇒ only the schedule gates play.
 type DailyStats struct {
-	Matches  int   // matches played today
-	Tokens   int64 // LLM tokens spent today
-	NetCoins int64 // coins won − lost today (can be negative)
+	Matches   int   // matches played today
+	Tokens    int64 // LLM tokens spent today
+	LossCoins int64 // coins lost today (positive; powers the daily loss-stop)
+	NetCoins  int64 // net coins today (won − lost; powers take-profit)
 }
 
 // StatsProvider returns an agent's activity today. Optional: a nil provider means
@@ -79,7 +80,7 @@ func shouldPlay(s Setting, st DailyStats, hourUTC int) (bool, string) {
 	if s.TakeProfitCoins > 0 && st.NetCoins >= s.TakeProfitCoins {
 		return false, "take-profit reached"
 	}
-	if s.DailyLossStop > 0 && st.NetCoins <= -s.DailyLossStop {
+	if s.DailyLossStop > 0 && st.LossCoins >= s.DailyLossStop {
 		return false, "daily loss-stop reached"
 	}
 	return true, ""

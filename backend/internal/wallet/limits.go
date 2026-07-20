@@ -13,6 +13,15 @@ import (
 // The limits are owner-configured columns on the agent; an agent credential can
 // never change them (enforced by the scope firewall in identity), so a runaway
 // or compromised agent cannot widen its own leash.
+// LossToday returns coins the agent has lost since the start of the current day
+// (same boundary as the daily_loss_limit guardrail) — the figure the auto-play
+// daily loss-stop reads.
+func (s *Service) LossToday(ctx context.Context, agentPublicID string) (int64, error) {
+	now := s.clock.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return s.repo.LossSince(ctx, agentPublicID, dayStart)
+}
+
 func (s *Service) CheckJoin(ctx context.Context, agentPublicID string, bid int64) error {
 	if bid <= 0 {
 		return ErrInvalidBid

@@ -129,15 +129,26 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 // RecordMatchBenchmark upserts one seat's per-match decision-quality counts (the
 // P-Index Intelligence projection over match.benchmark). A no-op when the agent's
 // public id is unknown (INSERT…SELECT yields no row) so it never errors on a bot.
-func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, matchID, agentPublicID string, decisions, legal, fallbacks int, latencySumMS int64) error {
+func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, matchID, agentPublicID string, decisions, legal, fallbacks int, latencySumMS, tokens int64) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO agent_match_benchmark (match_id, agent_id, decisions, legal, fallbacks, latency_sum_ms, updated_at)
-		 SELECT $1, a.id, $3, $4, $5, $6, now() FROM agents a WHERE a.public_id = $2
+		`INSERT INTO agent_match_benchmark (match_id, agent_id, decisions, legal, fallbacks, latency_sum_ms, tokens, updated_at)
+		 SELECT $1, a.id, $3, $4, $5, $6, $7, now() FROM agents a WHERE a.public_id = $2
 		 ON CONFLICT (match_id, agent_id) DO UPDATE SET
 		   decisions = EXCLUDED.decisions, legal = EXCLUDED.legal, fallbacks = EXCLUDED.fallbacks,
-		   latency_sum_ms = EXCLUDED.latency_sum_ms, updated_at = now()`,
-		matchID, agentPublicID, decisions, legal, fallbacks, latencySumMS)
+		   latency_sum_ms = EXCLUDED.latency_sum_ms, tokens = EXCLUDED.tokens, updated_at = now()`,
+		matchID, agentPublicID, decisions, legal, fallbacks, latencySumMS, tokens)
 	return err
+}
+
+// TodayStats returns an agent's match count + token spend since the given day
+// start (UTC), for the auto-play daily match-cap + token-budget stop-conditions.
+func (r *PIndexRepo) TodayStats(ctx context.Context, agentPublicID string, dayStart time.Time) (matches int, tokens int64, err error) {
+	err = r.db.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(amb.tokens), 0)
+		   FROM agent_match_benchmark amb JOIN agents a ON a.id = amb.agent_id
+		  WHERE a.public_id = $1 AND amb.updated_at >= $2`,
+		agentPublicID, dayStart).Scan(&matches, &tokens)
+	return matches, tokens, err
 }
 
 func (r *PIndexRepo) Save(ctx context.Context, userPublicID string, season int, res pindex.Result, inputsHash string, asOf time.Time) error {

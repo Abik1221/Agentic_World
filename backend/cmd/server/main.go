@@ -491,7 +491,7 @@ func run() error {
 				continue
 			}
 			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID,
-				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS); err != nil {
+				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS, seat.TotalTokens); err != nil {
 				return err // let the outbox retry
 			}
 		}
@@ -817,6 +817,9 @@ func run() error {
 			autoplay.Config{},
 			log,
 		)
+		// Feed the stop-conditions today's matches/tokens (benchmark aggregate) +
+		// losses (wallet); schedule works without it.
+		autoplaySvc.SetStats(autoplayStats{pindex: pindexRepo, wallet: walletSvc, now: clock.Now})
 		launch("autoplay", autoplay.NewTicker(autoplaySvc, cfg.AutoplayInterval).Run)
 	}
 	launch("ledger-reconciler", ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run)
