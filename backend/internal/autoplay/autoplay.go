@@ -15,6 +15,7 @@ package autoplay
 import (
 	"context"
 	"log/slog"
+	"time"
 )
 
 // Mode selects which arena an available agent auto-plays in.
@@ -25,7 +26,10 @@ const (
 	ModeRanked  Mode = "ranked"  // real matchmaking with escrowed stakes
 )
 
-// Setting is a single agent's auto-play configuration (one row per agent).
+// Setting is a single agent's auto-play configuration (one row per agent). The
+// owner controls WHEN it plays (active-hours window) and WHEN it stops (coin
+// stop-loss / take-profit, a daily match cap, and a daily token-spend budget) —
+// on top of the hard wallet guardrails, which always apply.
 type Setting struct {
 	AgentPublicID string   `json:"agent_id"`
 	OwnerPublicID string   `json:"-"` // resolved from the token, never client-set
@@ -33,6 +37,64 @@ type Setting struct {
 	Mode          Mode     `json:"mode"`
 	Bid           int64    `json:"bid,omitempty"`   // ranked stake per match (ignored for sandbox)
 	Games         []string `json:"games,omitempty"` // sandbox: games to rotate through; empty ⇒ DefaultGame
+
+	// Schedule: only auto-play between [ActiveFromUTC, ActiveUntilUTC) (hours 0–23,
+	// UTC). Equal values ⇒ always active. A window where From>Until wraps midnight.
+	ActiveFromUTC  int `json:"active_from_utc,omitempty"`
+	ActiveUntilUTC int `json:"active_until_utc,omitempty"`
+
+	// Stop-conditions (all coin amounts; 0 ⇒ that condition is off):
+	DailyMatchCap    int   `json:"daily_match_cap,omitempty"`    // stop after N matches today
+	DailyTokenBudget int64 `json:"daily_token_budget,omitempty"` // stop when today's LLM token spend hits this
+	TakeProfitCoins  int64 `json:"take_profit_coins,omitempty"`  // stop for the day once net coins today ≥ +this
+	DailyLossStop    int64 `json:"daily_loss_stop,omitempty"`    // stop for the day once net coins today ≤ −this
+}
+
+// DailyStats is an agent's activity SO FAR TODAY (UTC), read each tick to evaluate
+// the stop-conditions. Zero value ⇒ no activity ⇒ only the schedule gates play.
+type DailyStats struct {
+	Matches  int   // matches played today
+	Tokens   int64 // LLM tokens spent today
+	NetCoins int64 // coins won − lost today (can be negative)
+}
+
+// StatsProvider returns an agent's activity today. Optional: a nil provider means
+// the coin/token/match stop-conditions are not evaluated (only the schedule).
+type StatsProvider interface {
+	Today(ctx context.Context, agentPublicID string) (DailyStats, error)
+}
+
+// shouldPlay decides whether an available agent may be topped up right now, given
+// its config, today's stats, and the current UTC hour. Returns a reason when not.
+func shouldPlay(s Setting, st DailyStats, hourUTC int) (bool, string) {
+	if !withinActiveHours(s, hourUTC) {
+		return false, "outside active hours"
+	}
+	if s.DailyMatchCap > 0 && st.Matches >= s.DailyMatchCap {
+		return false, "daily match cap reached"
+	}
+	if s.DailyTokenBudget > 0 && st.Tokens >= s.DailyTokenBudget {
+		return false, "daily token budget spent"
+	}
+	if s.TakeProfitCoins > 0 && st.NetCoins >= s.TakeProfitCoins {
+		return false, "take-profit reached"
+	}
+	if s.DailyLossStop > 0 && st.NetCoins <= -s.DailyLossStop {
+		return false, "daily loss-stop reached"
+	}
+	return true, ""
+}
+
+// withinActiveHours reports whether hourUTC falls in the schedule window. Equal
+// bounds ⇒ always on; From>Until ⇒ the window wraps past midnight.
+func withinActiveHours(s Setting, hourUTC int) bool {
+	if s.ActiveFromUTC == s.ActiveUntilUTC {
+		return true
+	}
+	if s.ActiveFromUTC < s.ActiveUntilUTC {
+		return hourUTC >= s.ActiveFromUTC && hourUTC < s.ActiveUntilUTC
+	}
+	return hourUTC >= s.ActiveFromUTC || hourUTC < s.ActiveUntilUTC
 }
 
 // Repo persists auto-play settings.
@@ -80,6 +142,8 @@ type Service struct {
 	repo    Repo
 	ranked  RankedQueue
 	sandbox SandboxStarter
+	stats   StatsProvider    // optional: today's activity, for the stop-conditions
+	now     func() time.Time // injectable clock (schedule evaluation)
 	cfg     Config
 	log     *slog.Logger
 	// round-robins the sandbox game per agent across ticks so a multi-game
@@ -92,8 +156,12 @@ func New(repo Repo, ranked RankedQueue, sandbox SandboxStarter, cfg Config, log 
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{repo: repo, ranked: ranked, sandbox: sandbox, cfg: cfg, log: log, rr: map[string]int{}}
+	return &Service{repo: repo, ranked: ranked, sandbox: sandbox, now: time.Now, cfg: cfg, log: log, rr: map[string]int{}}
 }
+
+// SetStats wires the daily-activity source that powers the coin/token/match
+// stop-conditions. Without it, only the active-hours schedule gates play.
+func (s *Service) SetStats(stats StatsProvider) { s.stats = stats }
 
 // Tick reconciles every enabled agent once. It never returns an error: a failure
 // for one agent (guardrail trip, transient DB blip) is logged and the rest still
@@ -106,6 +174,21 @@ func (s *Service) Tick(ctx context.Context) {
 	}
 	for _, set := range settings {
 		if !set.Enabled || set.AgentPublicID == "" {
+			continue
+		}
+		// Schedule + owner stop-conditions gate BOTH modes. Stats are best-effort:
+		// on a read error we proceed with zero stats (schedule still applies) — the
+		// hard wallet guardrails remain the real money safety net.
+		var st DailyStats
+		if s.stats != nil {
+			if got, err := s.stats.Today(ctx, set.AgentPublicID); err != nil {
+				s.log.Warn("autoplay: daily stats read failed", "agent", set.AgentPublicID, "err", err)
+			} else {
+				st = got
+			}
+		}
+		if ok, reason := shouldPlay(set, st, s.now().UTC().Hour()); !ok {
+			s.log.Debug("autoplay: paused", "agent", set.AgentPublicID, "reason", reason)
 			continue
 		}
 		switch set.Mode {

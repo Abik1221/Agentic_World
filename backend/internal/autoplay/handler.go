@@ -46,10 +46,16 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		Enabled bool     `json:"enabled"`
-		Mode    string   `json:"mode"`
-		Bid     int64    `json:"bid"`
-		Games   []string `json:"games"`
+		Enabled          bool     `json:"enabled"`
+		Mode             string   `json:"mode"`
+		Bid              int64    `json:"bid"`
+		Games            []string `json:"games"`
+		ActiveFromUTC    int      `json:"active_from_utc"`
+		ActiveUntilUTC   int      `json:"active_until_utc"`
+		DailyMatchCap    int      `json:"daily_match_cap"`
+		DailyTokenBudget int64    `json:"daily_token_budget"`
+		TakeProfitCoins  int64    `json:"take_profit_coins"`
+		DailyLossStop    int64    `json:"daily_loss_stop"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
@@ -59,13 +65,34 @@ func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 	if mode != ModeRanked && mode != ModeSandbox {
 		mode = ModeSandbox // default to the free, no-stakes arena
 	}
+	clampHour := func(h int) int {
+		if h < 0 {
+			return 0
+		}
+		if h > 23 {
+			return 23
+		}
+		return h
+	}
+	nonNeg := func(v int64) int64 {
+		if v < 0 {
+			return 0
+		}
+		return v
+	}
 	s := Setting{
-		AgentPublicID: p.AgentPublicID,
-		OwnerPublicID: p.UserPublicID,
-		Enabled:       in.Enabled,
-		Mode:          mode,
-		Bid:           in.Bid,
-		Games:         in.Games,
+		AgentPublicID:    p.AgentPublicID,
+		OwnerPublicID:    p.UserPublicID,
+		Enabled:          in.Enabled,
+		Mode:             mode,
+		Bid:              in.Bid,
+		Games:            in.Games,
+		ActiveFromUTC:    clampHour(in.ActiveFromUTC),
+		ActiveUntilUTC:   clampHour(in.ActiveUntilUTC),
+		DailyMatchCap:    max(0, in.DailyMatchCap),
+		DailyTokenBudget: nonNeg(in.DailyTokenBudget),
+		TakeProfitCoins:  nonNeg(in.TakeProfitCoins),
+		DailyLossStop:    nonNeg(in.DailyLossStop),
 	}
 	if err := h.repo.Set(r.Context(), s); err != nil {
 		httpx.Error(w, err)
