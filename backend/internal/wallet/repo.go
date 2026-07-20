@@ -40,6 +40,9 @@ type Repo interface {
 	// LossSince returns the total coins lost (a non-negative number) in finished
 	// matches that finished at or after `since`.
 	LossSince(ctx context.Context, agentPublicID string, since time.Time) (int64, error)
+	// NetSince returns the NET coin change (wins − losses; may be negative) in
+	// finished matches at or after `since`.
+	NetSince(ctx context.Context, agentPublicID string, since time.Time) (int64, error)
 	// LossCountSince returns the number of matches lost at or after `since`.
 	LossCountSince(ctx context.Context, agentPublicID string, since time.Time) (int, error)
 	// ActiveMatchCount returns how many active matches the agent is currently in.

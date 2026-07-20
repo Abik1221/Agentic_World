@@ -37,7 +37,11 @@ func (a autoplayStats) Today(ctx context.Context, agentPublicID string) (autopla
 	if err != nil {
 		return autoplay.DailyStats{}, err
 	}
-	return autoplay.DailyStats{Matches: matches, Tokens: tokens, LossCoins: loss}, nil
+	net, err := a.wallet.NetToday(ctx, agentPublicID)
+	if err != nil {
+		return autoplay.DailyStats{}, err
+	}
+	return autoplay.DailyStats{Matches: matches, Tokens: tokens, LossCoins: loss, NetCoins: net}, nil
 }
 
 // rankedQueueAdapter lets the auto-play reconciler use the real matchmaking queue.

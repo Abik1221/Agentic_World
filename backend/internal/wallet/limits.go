@@ -22,6 +22,14 @@ func (s *Service) LossToday(ctx context.Context, agentPublicID string) (int64, e
 	return s.repo.LossSince(ctx, agentPublicID, dayStart)
 }
 
+// NetToday returns the agent's net coin change since the start of the current day
+// (wins − losses) — the figure the auto-play take-profit reads.
+func (s *Service) NetToday(ctx context.Context, agentPublicID string) (int64, error) {
+	now := s.clock.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return s.repo.NetSince(ctx, agentPublicID, dayStart)
+}
+
 func (s *Service) CheckJoin(ctx context.Context, agentPublicID string, bid int64) error {
 	if bid <= 0 {
 		return ErrInvalidBid

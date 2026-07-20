@@ -124,6 +124,21 @@ func (r *WalletRepo) LossSince(ctx context.Context, agentPublicID string, since 
 	return loss, err
 }
 
+// NetSince sums NET coin change (wins − losses; can be negative) in matches
+// finished at/after `since`. Powers the auto-play take-profit stop.
+func (r *WalletRepo) NetSince(ctx context.Context, agentPublicID string, since time.Time) (int64, error) {
+	var net int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(mp.coins_delta), 0)
+		 FROM match_players mp
+		 JOIN matches m ON m.id = mp.match_id
+		 JOIN agents  ag ON ag.id = mp.agent_id
+		 WHERE ag.public_id = $1 AND m.status = 'finished'
+		   AND m.finished_at >= $2`,
+		agentPublicID, since).Scan(&net)
+	return net, err
+}
+
 func (r *WalletRepo) LossCountSince(ctx context.Context, agentPublicID string, since time.Time) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx,

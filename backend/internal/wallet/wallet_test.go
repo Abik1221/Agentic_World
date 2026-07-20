@@ -75,6 +75,9 @@ func (f *fakeRepo) AgentLimits(context.Context, string) (wallet.AgentLimits, err
 func (f *fakeRepo) LossSince(context.Context, string, time.Time) (int64, error) {
 	return f.lossSince, nil
 }
+func (f *fakeRepo) NetSince(context.Context, string, time.Time) (int64, error) {
+	return -f.lossSince, nil
+}
 func (f *fakeRepo) LossCountSince(context.Context, string, time.Time) (int, error) {
 	return f.lossCount, nil
 }
