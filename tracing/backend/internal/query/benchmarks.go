@@ -97,7 +97,42 @@ func (h Handler) tokenUsageByAgent(c *fiber.Ctx, orgID string, since time.Time, 
 		}
 		m[agent+"|"+g] = t
 	}
-	return m, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fallback: arena agents report tokens via benchmark_recorded (rolled up into
+	// agent_benchmarks), not per-move model_call_completed events. For any agent
+	// not already covered above, surface its rollup token total so the leaderboard
+	// still shows usage. Different agent sets ⇒ no double-count; cost/calls stay 0
+	// (the arena doesn't price per-move).
+	bwhere := "organization_id = ? AND bucket_start >= ?"
+	bargs := []any{orgID, since}
+	if game != "" {
+		bwhere += " AND game = ?"
+		bargs = append(bargs, game)
+	}
+	brows, err := h.Store.DB.QueryContext(c.UserContext(), `
+		SELECT agent_id, game, sum(total_tokens)
+		FROM agent_benchmarks
+		WHERE `+bwhere+`
+		GROUP BY agent_id, game`, bargs...)
+	if err != nil {
+		return m, nil // best-effort: keep the model_call tokens we already have
+	}
+	defer brows.Close()
+	for brows.Next() {
+		var agent, g string
+		var toks int64
+		if err := brows.Scan(&agent, &g, &toks); err != nil {
+			return m, nil
+		}
+		key := agent + "|" + g
+		if _, ok := m[key]; !ok && toks > 0 {
+			m[key] = tokenAgg{tokens: toks}
+		}
+	}
+	return m, nil
 }
 
 // attachTokenUsage folds the token/cost aggregate into each stat + derives
