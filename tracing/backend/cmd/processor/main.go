@@ -21,6 +21,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Apply any un-applied ClickHouse migrations before consuming (the container
+	// entrypoint only runs SQL on a first-init empty volume, so incremental
+	// migrations must be applied in-process). Idempotent + version-tracked.
+	if err := chStore.Migrate(ctx); err != nil {
+		log.Fatal(err)
+	}
 	js, err := stream.New(cfg)
 	if err != nil {
 		log.Fatal(err)
