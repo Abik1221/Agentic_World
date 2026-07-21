@@ -146,17 +146,19 @@ func run() error {
 	log.Info("data layer connected")
 
 	// Durable benchmark sink: per-match decision-quality summaries ride the outbox
-	// (crash-safe, at-least-once) and the telemetry bridge projects them to Pyyol
-	// Lens. Wired only when telemetry is on, so we don't write rows nobody reads.
+	// (crash-safe, at-least-once). This is ALWAYS wired — the local P-Index
+	// Intelligence projection (eventBus.On(TypeMatchBenchmark) below) consumes
+	// these rows to feed agent_match_benchmark, and that recompute worker runs
+	// regardless of telemetry. Gating this on lens.Enabled() would silently starve
+	// the Intelligence dimension of all data in any deployment where the optional
+	// Pyyol Lens/tracing stack is off. (The Lens *emission* — the `em` telemetry
+	// client — is separately and correctly gated; see benchmark.Flush/Emit.)
 	// Shared by every game's drive loop (goofspiel ranked, mafia/monopoly push).
-	var benchPersist benchmark.Persist
 	var benchMeta benchmark.AgentMetaResolver
-	if lens.Enabled() {
-		benchPersist = func(ctx context.Context, eventType string, payload []byte) error {
-			_, err := store.InsertEvent(ctx, st.DB, eventType, payload)
-			return err
-		}
-	}
+	benchPersist := benchmark.Persist(func(ctx context.Context, eventType string, payload []byte) error {
+		_, err := store.InsertEvent(ctx, st.DB, eventType, payload)
+		return err
+	})
 
 	// Auto-migrate on startup: apply any pending schema migrations in-process
 	// before serving. Safe for multi-instance (advisory-locked); disable with

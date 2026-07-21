@@ -80,13 +80,19 @@ func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 		}
 		return v
 	}
+	// games is a NOT NULL text[] (empty ⇒ rotate through the defaults); a client
+	// that sends no games must persist as an empty array, not SQL NULL.
+	games := in.Games
+	if games == nil {
+		games = []string{}
+	}
 	s := Setting{
 		AgentPublicID:    p.AgentPublicID,
 		OwnerPublicID:    p.UserPublicID,
 		Enabled:          in.Enabled,
 		Mode:             mode,
 		Bid:              in.Bid,
-		Games:            in.Games,
+		Games:            games,
 		ActiveFromUTC:    clampHour(in.ActiveFromUTC),
 		ActiveUntilUTC:   clampHour(in.ActiveUntilUTC),
 		DailyMatchCap:    max(0, in.DailyMatchCap),

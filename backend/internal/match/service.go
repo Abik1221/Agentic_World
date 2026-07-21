@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
@@ -739,13 +740,19 @@ func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	var swept int
+	var errs error
 	for _, id := range ids {
 		if err := s.HandleTimeout(ctx, id); err != nil {
-			// Best-effort: log-and-continue is the caller's job (sweeper).
-			return 0, err
+			// Best-effort: one match that can't be resolved (e.g. a wedged/corrupt
+			// state) must not block the timeout of every other expired match.
+			// Collect and continue; the sweeper logs the joined error.
+			errs = errors.Join(errs, fmt.Errorf("timeout %s: %w", id, err))
+			continue
 		}
+		swept++
 	}
-	return len(ids), nil
+	return swept, errs
 }
 
 // pollSafetyTick bounds the long-poll wait if a push wake-up is ever missed

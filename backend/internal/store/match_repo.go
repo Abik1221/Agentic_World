@@ -279,9 +279,14 @@ func emitMatchStarted(ctx context.Context, tx pgx.Tx, matchPublicID, game string
 }
 
 func (r *MatchRepo) ListActiveExpired(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	// Scope to goofspiel: this repo drives the goofspiel timeout sweeper, and the
+	// mafia/monopoly services own their own rows in the shared `matches` table
+	// (their repos filter by game too). Without this, the goofspiel sweeper claims
+	// a mafia/monopoly match, runs it through the goofspiel engine, and fails
+	// (ErrIllegalCard) on every tick forever.
 	rows, err := r.db.Query(ctx,
 		`SELECT public_id FROM matches
-		 WHERE status='active' AND round_deadline IS NOT NULL AND round_deadline <= $1
+		 WHERE status='active' AND game='goofspiel' AND round_deadline IS NOT NULL AND round_deadline <= $1
 		 ORDER BY round_deadline ASC LIMIT $2`, now, limit)
 	if err != nil {
 		return nil, err

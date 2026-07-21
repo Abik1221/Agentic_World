@@ -20,6 +20,11 @@ func NewAutoplayRepo(db *pgxpool.Pool) *AutoplayRepo { return &AutoplayRepo{db: 
 // Set upserts the agent's availability. A missing agent (unknown public id) makes
 // the INSERT affect no rows — surfaced as an error the handler can report.
 func (r *AutoplayRepo) Set(ctx context.Context, s autoplay.Setting) error {
+	// games is NOT NULL text[]; a nil slice would encode as SQL NULL and violate
+	// the constraint. Persist "no games selected" as an empty array.
+	if s.Games == nil {
+		s.Games = []string{}
+	}
 	tag, err := r.db.Exec(ctx,
 		`INSERT INTO agent_autoplay (agent_id, owner_public_id, enabled, mode, bid, games,
 		   active_from_utc, active_until_utc, daily_match_cap, daily_token_budget, take_profit_coins, daily_loss_stop, updated_at)
