@@ -31,6 +31,14 @@ from . import __version__
 OK = "✓"
 BAD = "✗"
 
+# Public platform defaults. A dev who `pip install pyyol` and runs `pyyol login`
+# hits the live platform with no flags; self-hosted/local users override via
+# PYYOL_API / PYYOL_DASHBOARD env vars (or --api / --dashboard). The API host
+# serves the arena /v1/* endpoints; the dashboard host serves the /cli-login page
+# — they are DIFFERENT hosts in the split-domain deployment.
+DEFAULT_API_BASE = os.environ.get("PYYOL_API", "").rstrip("/") or "https://api.pyyol.com"
+DEFAULT_DASHBOARD = os.environ.get("PYYOL_DASHBOARD", "").rstrip("/") or "https://pyyol.com"
+
 
 # --- HTTP helper (signed, stdlib) ---------------------------------------------
 
@@ -413,12 +421,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
 def cmd_login(args: argparse.Namespace) -> int:
     from . import credentials, login
 
+    # The API host serves /v1/*; the dashboard host serves /cli-login — different
+    # hosts in prod, so the dashboard must NOT fall back to --api (that would open
+    # api.pyyol.com/cli-login → 404). Both default to the live platform.
+    api = (args.api or DEFAULT_API_BASE).rstrip("/")
+    dashboard = (args.dashboard or DEFAULT_DASHBOARD).rstrip("/")
+
     # Explicit token paste (headless/CI fallback) — normal onboarding uses the browser.
     if args.token:
         _warn_argv_secret()
         creds = credentials.Credentials(
-            url=args.api,
-            connect_url=args.connect or login.derive_connect_url(args.api),
+            url=api,
+            connect_url=args.connect or login.derive_connect_url(api),
             agent_id=args.agent,
             access_token=args.token,
         )
@@ -426,15 +440,11 @@ def cmd_login(args: argparse.Namespace) -> int:
         print(f"{OK} stored credentials ({backend})")
         return 0
 
-    dashboard = args.dashboard or args.api
-    if not dashboard:
-        print(f"{BAD} pass --dashboard (or --api), or --token for headless login", file=sys.stderr)
-        return 2
     provider = getattr(args, "provider", "")
     via = f" (via {provider})" if provider else ""
     print(f"opening {dashboard}/cli-login in your browser{via}…")
     try:
-        creds = login.run_login_flow(dashboard, api_url=args.api, provider=provider)
+        creds = login.run_login_flow(dashboard, api_url=api, provider=provider)
     except Exception as e:  # noqa: BLE001
         print(f"{BAD} login failed: {e}", file=sys.stderr)
         return 1
@@ -531,7 +541,8 @@ _TERMINAL_EVENTS = {"match_finished", "victory", "game_over", "game_finished", "
 
 def _http_base(args: argparse.Namespace, creds) -> str:
     """Resolve the HTTP API base for /v1/... calls: --api, PYYOL_API, the
-    logged-in api url, else derived from the WSS connect url (ws→http)."""
+    logged-in api url, derived from the WSS connect url (ws→http), else the live
+    platform default (so public reads work before login)."""
     if getattr(args, "api", ""):
         return args.api.rstrip("/")
     if os.environ.get("PYYOL_API"):
@@ -542,7 +553,7 @@ def _http_base(args: argparse.Namespace, creds) -> str:
         u = urllib.parse.urlsplit(creds.connect_url)
         scheme = "https" if u.scheme in ("wss", "https") else "http"
         return urllib.parse.urlunsplit((scheme, u.netloc, "", "", ""))
-    return ""
+    return DEFAULT_API_BASE
 
 
 def cmd_queue(args: argparse.Namespace) -> int:
@@ -1536,8 +1547,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl = sub.add_parser("login", help="log in via the browser (GitHub/Google/wallet/email)")
     pl.add_argument("--with", dest="provider", default="", choices=["github", "google", "wallet"],
                     help="pre-select a provider on the login page")
-    pl.add_argument("--dashboard", default="", help="dashboard base URL (opens {dashboard}/cli-login)")
-    pl.add_argument("--api", default="", help="platform API base URL to record")
+    pl.add_argument("--dashboard", default="", help="dashboard base URL that serves /cli-login (default: https://pyyol.com; or $PYYOL_DASHBOARD)")
+    pl.add_argument("--api", default="", help="platform API base URL to record (default: https://api.pyyol.com; or $PYYOL_API)")
     pl.add_argument("--connect", default="", help="override the WSS connect URL")
     pl.add_argument("--agent", default="", help="agent public id (if known)")
     pl.add_argument("--token", default="", help="paste a token / PAT directly (CI / headless)")

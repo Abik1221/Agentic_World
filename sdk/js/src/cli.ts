@@ -20,6 +20,14 @@ import { SDK_VERSION } from "./version.js";
 const OK = "✓";
 const BAD = "✗";
 
+// Public platform defaults. `pyyol login` with no flags hits the live platform;
+// self-hosted/local users override via PYYOL_API / PYYOL_DASHBOARD (or --api /
+// --dashboard). The API host serves /v1/*; the dashboard host serves /cli-login —
+// DIFFERENT hosts in the split-domain deployment, so dashboard must not fall back
+// to the API host.
+const DEFAULT_API_BASE = (process.env.PYYOL_API || "").replace(/\/$/, "") || "https://api.pyyol.com";
+const DEFAULT_DASHBOARD = (process.env.PYYOL_DASHBOARD || "").replace(/\/$/, "") || "https://pyyol.com";
+
 const PLAY_PATH: Record<string, string> = {
   goofspiel: "/v1/sandbox/pushplay",
   mafia: "/v1/mafia/pushplay",
@@ -151,7 +159,7 @@ function httpBase(a: Args, c: creds.Credentials | null): string {
       /* ignore */
     }
   }
-  return "";
+  return DEFAULT_API_BASE;
 }
 
 // ── load the developer's agent from pyyol.toml ────────────────────────────────
@@ -180,11 +188,15 @@ async function loadAgentFromConfig(cfg: config.Config) {
 
 async function cmdLogin(a: Args): Promise<number> {
   const token = str(a, "token");
+  // API host serves /v1/*; dashboard host serves /cli-login — different in prod,
+  // so dashboard must NOT fall back to --api. Both default to the live platform.
+  const api = (str(a, "api") || DEFAULT_API_BASE).replace(/\/$/, "");
+  const dashboard = (str(a, "dashboard") || DEFAULT_DASHBOARD).replace(/\/$/, "");
   if (token) {
     warnArgvSecret();
     creds.save({
-      url: str(a, "api"),
-      connectUrl: str(a, "connect") || deriveConnectUrl(str(a, "api")),
+      url: api,
+      connectUrl: str(a, "connect") || deriveConnectUrl(api),
       agentId: str(a, "agent"),
       accessToken: token,
       refreshToken: "",
@@ -192,15 +204,10 @@ async function cmdLogin(a: Args): Promise<number> {
     console.log(`${OK} stored credentials`);
     return 0;
   }
-  const dashboard = str(a, "dashboard") || str(a, "api");
-  if (!dashboard) {
-    console.error(`${BAD} pass --dashboard (or --api), or --token for headless login`);
-    return 2;
-  }
   const provider = str(a, "with");
   console.log(`opening ${dashboard}/cli-login in your browser${provider ? ` (via ${provider})` : ""}…`);
   try {
-    const c = await runLoginFlow({ dashboardUrl: dashboard, apiUrl: str(a, "api"), provider });
+    const c = await runLoginFlow({ dashboardUrl: dashboard, apiUrl: api, provider });
     if (str(a, "connect")) c.connectUrl = str(a, "connect");
     creds.save(c);
     console.log(`${OK} logged in as ${c.agentId || "(no agent yet)"} — credentials stored`);
