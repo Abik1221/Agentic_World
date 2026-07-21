@@ -118,6 +118,24 @@ type Repo interface {
 	LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mf.Event, error)
 	LiveMatches(ctx context.Context) ([]LiveMatch, error)
 	CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error
+
+	// AgentSigningKey returns the agent's registered Ed25519 public key (base64),
+	// or "" if unregistered (then moves are unsigned/trusted, like Goofspiel).
+	AgentSigningKey(ctx context.Context, agentPublicID string) (string, error)
+	// RecordMoveSignature persists a verified per-move authorship proof (audit trail).
+	RecordMoveSignature(ctx context.Context, matchPublicID string, seq, seat int, action, signature, pubkey string) error
+	// LoadMoveSignatures returns all recorded proofs for a match (replay re-verify).
+	LoadMoveSignatures(ctx context.Context, matchPublicID string) ([]MoveSig, error)
+}
+
+// MoveSig is one persisted per-move authorship proof: the agent's Ed25519
+// signature over the canonical (match, seq, seat, action) message.
+type MoveSig struct {
+	Seq       int
+	Seat      int
+	Action    string
+	Signature string
+	Pubkey    string
 }
 
 type CreateMatchInput struct {

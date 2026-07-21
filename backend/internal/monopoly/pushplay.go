@@ -242,9 +242,9 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 		if outcome.Fallback() {
 			fallbacks++
 		}
-		if _, err := s.Act(ctx, agentID, matchID, act); err != nil {
+		if _, err := s.Act(ctx, agentID, matchID, act, "", true); err != nil { // platform-driven: no per-move signature
 			// The chosen action was rejected; try a guaranteed-safe fallback once.
-			if _, err2 := s.Act(ctx, agentID, matchID, safeFallback(v.Legal)); err2 != nil {
+			if _, err2 := s.Act(ctx, agentID, matchID, safeFallback(v.Legal), "", true); err2 != nil {
 				p.log.Warn("monopoly pushplay: submit failed", "match", matchID, "err", err2)
 				return
 			}

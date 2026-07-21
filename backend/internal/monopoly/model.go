@@ -162,6 +162,24 @@ type Repo interface {
 	ListActiveExpired(ctx context.Context, game string, now time.Time, limit int) ([]string, error)
 	LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mono.Event, error)
 	LiveMatches(ctx context.Context) ([]LiveMatch, error)
+
+	// AgentSigningKey returns the agent's registered Ed25519 public key (base64),
+	// or "" if unregistered (moves are then unsigned/trusted, like Goofspiel).
+	AgentSigningKey(ctx context.Context, agentPublicID string) (string, error)
+	// RecordMoveSignature persists a verified per-move authorship proof (audit trail).
+	RecordMoveSignature(ctx context.Context, matchPublicID string, seq, seat int, action, signature, pubkey string) error
+	// LoadMoveSignatures returns all recorded proofs for a match (replay re-verify).
+	LoadMoveSignatures(ctx context.Context, matchPublicID string) ([]MoveSig, error)
+}
+
+// MoveSig is one persisted per-move authorship proof: the agent's Ed25519
+// signature over the canonical (match, seq, seat, action) message.
+type MoveSig struct {
+	Seq       int
+	Seat      int
+	Action    string
+	Signature string
+	Pubkey    string
 }
 
 // Locker serializes per-match mutations (same contract as the Mafia service).

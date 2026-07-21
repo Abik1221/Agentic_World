@@ -419,3 +419,26 @@ func insertMafiaEvents(ctx context.Context, tx pgx.Tx, matchID int64, events []m
 	}
 	return nil
 }
+
+// AgentSigningKey — see mafia.Repo. Reads the shared agents.signing_pubkey.
+func (r *MafiaRepo) AgentSigningKey(ctx context.Context, agentPublicID string) (string, error) {
+	return agentSigningKey(ctx, r.db, agentPublicID)
+}
+
+// RecordMoveSignature — see mafia.Repo. Persists a per-move authorship proof.
+func (r *MafiaRepo) RecordMoveSignature(ctx context.Context, matchPublicID string, seq, seat int, action, signature, pubkey string) error {
+	return recordGameMoveSig(ctx, r.db, "mafia", matchPublicID, seq, seat, action, signature, pubkey)
+}
+
+// LoadMoveSignatures — see mafia.Repo. Returns all proofs for replay re-verify.
+func (r *MafiaRepo) LoadMoveSignatures(ctx context.Context, matchPublicID string) ([]mafia.MoveSig, error) {
+	rows, err := loadGameMoveSigs(ctx, r.db, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mafia.MoveSig, len(rows))
+	for i, s := range rows {
+		out[i] = mafia.MoveSig{Seq: s.Seq, Seat: s.Seat, Action: s.Action, Signature: s.Signature, Pubkey: s.Pubkey}
+	}
+	return out, nil
+}

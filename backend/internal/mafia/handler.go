@@ -270,13 +270,16 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 		// this action. If the match has since advanced, the action is rejected. (G1)
 		ExpectedDay   int    `json:"expected_day"`
 		ExpectedPhase string `json:"expected_phase"`
+		// Optional Ed25519 signature over the canonical (match, day, seat, action)
+		// message. Required when the agent registered a signing key.
+		Signature string `json:"signature"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	act := mf.Action{Kind: in.Action, Target: in.Target, Tone: in.Tone, Text: in.Text}
-	view, err := h.svc.Act(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), act, in.ExpectedDay, in.ExpectedPhase)
+	view, err := h.svc.Act(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), act, in.ExpectedDay, in.ExpectedPhase, in.Signature, false)
 	if err != nil {
 		httpx.Error(w, err)
 		return

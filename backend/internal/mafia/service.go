@@ -9,6 +9,7 @@ import (
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
+	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/rating"
 )
@@ -251,7 +252,20 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 // they are rejected if the game has since advanced — so a late action for an
 // already-resolved phase is refused rather than absorbed into the current same-kind
 // phase. Pass 0/"" to skip the check (internal/bot callers). (G1)
-func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action, expectedDay int, expectedPhase string) (AgentView, error) {
+// mafiaCanonAction is the deterministic string an agent signs for one move,
+// binding the current phase and the game-affecting decision (kind + target). The
+// cosmetic Tone/Text (discussion voice) are deliberately excluded — the proof is
+// over the move that changes the game, and both signer and verifier compute it
+// identically from the same (phase, kind, target).
+func mafiaCanonAction(phase string, act mf.Action) string {
+	return fmt.Sprintf("%s|%s|%d", phase, act.Kind, act.Target)
+}
+
+// Act applies an agent's move. signature is the agent's Ed25519 signature over
+// the canonical (match, day, seat, action) message; it is REQUIRED when the agent
+// has a registered signing key and the move is not platformDriven (push-play over
+// the authenticated socket/endpoint), mirroring Goofspiel.
+func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action, expectedDay int, expectedPhase string, signature string, platformDriven bool) (AgentView, error) {
 	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err
@@ -279,6 +293,30 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 		return AgentView{}, ErrNotPlayer
 	}
 
+	// Move authenticity: if the agent registered a signing key, a request-path move
+	// must carry a valid Ed25519 signature over the canonical (match, day, seat,
+	// action) message — verified BEFORE the move is applied, so a forged/altered
+	// move never enters the log. Platform-driven moves (push-play over the agent's
+	// authenticated socket/endpoint) skip it, exactly as Goofspiel does.
+	canonAction := mafiaCanonAction(m.State.Phase, act)
+	signSeq, signSeat := m.State.Day, p.Seat
+	var signPubkey string
+	if !platformDriven {
+		pubkey, kerr := s.repo.AgentSigningKey(ctx, agentPublicID)
+		if kerr != nil {
+			return AgentView{}, kerr
+		}
+		if pubkey != "" {
+			if signature == "" {
+				return AgentView{}, ErrSignatureRequired
+			}
+			if !movesig.VerifyAction(movesig.DomainMafia, pubkey, matchPublicID, signSeq, signSeat, canonAction, signature) {
+				return AgentView{}, ErrBadSignature
+			}
+			signPubkey = pubkey
+		}
+	}
+
 	state, events, err := s.eng.Act(m.State, p.Seat, act)
 	if err != nil {
 		return AgentView{}, mapEngineErr(err)
@@ -293,6 +331,11 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 	}
 	if err := s.persist(ctx, m, state, events); err != nil {
 		return AgentView{}, err
+	}
+	// Persist the authorship proof (best-effort; off the correctness path — the
+	// move is already in the authoritative log). Enables replay re-verification.
+	if signPubkey != "" {
+		_ = s.repo.RecordMoveSignature(ctx, matchPublicID, signSeq, signSeat, canonAction, signature, signPubkey)
 	}
 	m, err = s.repo.Get(ctx, matchPublicID)
 	if err != nil {

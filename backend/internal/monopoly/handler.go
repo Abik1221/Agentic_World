@@ -274,13 +274,16 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 		Property int         `json:"property"`
 		Amount   int         `json:"amount"`
 		Trade    *mono.Trade `json:"trade"`
+		// Optional Ed25519 signature over the canonical (match, next_seq, seat,
+		// action) message. Required when the agent registered a signing key.
+		Signature string `json:"signature"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	act := mono.Action{Kind: in.Action, Property: in.Property, Amount: in.Amount, Trade: in.Trade}
-	view, err := h.svc.Act(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), act)
+	view, err := h.svc.Act(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), act, in.Signature, false)
 	if err != nil {
 		httpx.Error(w, err)
 		return

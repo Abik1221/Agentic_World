@@ -426,3 +426,26 @@ func insertMonopolyEvents(ctx context.Context, tx pgx.Tx, matchID int64, events 
 	}
 	return nil
 }
+
+// AgentSigningKey — see monopoly.Repo. Reads the shared agents.signing_pubkey.
+func (r *MonopolyRepo) AgentSigningKey(ctx context.Context, agentPublicID string) (string, error) {
+	return agentSigningKey(ctx, r.db, agentPublicID)
+}
+
+// RecordMoveSignature — see monopoly.Repo. Persists a per-move authorship proof.
+func (r *MonopolyRepo) RecordMoveSignature(ctx context.Context, matchPublicID string, seq, seat int, action, signature, pubkey string) error {
+	return recordGameMoveSig(ctx, r.db, "monopoly", matchPublicID, seq, seat, action, signature, pubkey)
+}
+
+// LoadMoveSignatures — see monopoly.Repo. Returns all proofs for replay re-verify.
+func (r *MonopolyRepo) LoadMoveSignatures(ctx context.Context, matchPublicID string) ([]monopoly.MoveSig, error) {
+	rows, err := loadGameMoveSigs(ctx, r.db, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]monopoly.MoveSig, len(rows))
+	for i, s := range rows {
+		out[i] = monopoly.MoveSig{Seq: s.Seq, Seat: s.Seat, Action: s.Action, Signature: s.Signature, Pubkey: s.Pubkey}
+	}
+	return out, nil
+}

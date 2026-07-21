@@ -3,14 +3,30 @@ package monopoly
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
+	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/rating"
 )
+
+// monopolyCanonAction is the deterministic string an agent signs for one move:
+// the verb + its params (property, amount, and the full trade for a proposal).
+// Both signer and verifier compute it identically from the same Action.
+func monopolyCanonAction(act mono.Action) string {
+	trade := ""
+	if act.Trade != nil {
+		if b, err := json.Marshal(act.Trade); err == nil {
+			trade = string(b)
+		}
+	}
+	return fmt.Sprintf("%s|%d|%d|%s", act.Kind, act.Property, act.Amount, trade)
+}
 
 // Config tunes move windows and table economics.
 type Config struct {
@@ -319,7 +335,11 @@ func (s *Service) Cancel(ctx context.Context, agentPublicID, matchPublicID strin
 // the UNIQUE(match_id, seq) event-log constraint rejects a racing writer
 // (ErrConcurrentUpdate) and we re-read + retry. So a Redis outage degrades to a
 // few extra retries, never a stuck/lost/double-applied move.
-func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action) (AgentView, error) {
+// Act applies an agent's move. signature is the agent's Ed25519 signature over
+// the canonical (match, next_seq, seat, action) message; REQUIRED when the agent
+// has a registered signing key and the move is not platformDriven (push-play/bot
+// over the authenticated socket/endpoint), mirroring Goofspiel.
+func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action, signature string, platformDriven bool) (AgentView, error) {
 	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
 		if !ok {
 			return AgentView{}, ErrBusy
@@ -330,7 +350,7 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 
 	const maxAttempts = 4
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, act)
+		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, act, signature, platformDriven)
 		if errors.Is(err, ErrConcurrentUpdate) {
 			continue // another writer advanced first; re-read and retry
 		}
@@ -341,7 +361,7 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 
 // tryAct is one optimistic-concurrency attempt: read the snapshot, validate, step,
 // persist. A racing writer surfaces as ErrConcurrentUpdate for Act's retry loop.
-func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action) (AgentView, error) {
+func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action, signature string, platformDriven bool) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
@@ -358,6 +378,31 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 		return AgentView{}, ErrNotYourTurn
 	}
 
+	// Move authenticity: if the agent registered a signing key, a request-path move
+	// must carry a valid Ed25519 signature over the canonical (match, next_seq,
+	// seat, action) message — verified BEFORE the move is applied. next_seq is the
+	// gap-free per-move counter (visible to the agent in view.State), so a captured
+	// signature can never be replayed onto a later move. Platform-driven moves
+	// (push-play/bot) skip it, exactly as Goofspiel does.
+	canonAction := monopolyCanonAction(act)
+	signSeq, signSeat := m.State.NextSeq, p.Seat
+	var signPubkey string
+	if !platformDriven {
+		pubkey, kerr := s.repo.AgentSigningKey(ctx, agentPublicID)
+		if kerr != nil {
+			return AgentView{}, kerr
+		}
+		if pubkey != "" {
+			if signature == "" {
+				return AgentView{}, ErrSignatureRequired
+			}
+			if !movesig.VerifyAction(movesig.DomainMonopoly, pubkey, matchPublicID, signSeq, signSeat, canonAction, signature) {
+				return AgentView{}, ErrBadSignature
+			}
+			signPubkey = pubkey
+		}
+	}
+
 	state, events, err := eng.Step(m.State, p.Seat, act, m.Seed)
 	if err != nil {
 		return AgentView{}, ErrIllegalAction
@@ -367,6 +412,10 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 
 	if err := s.persist(ctx, m, state, events); err != nil {
 		return AgentView{}, err // ErrConcurrentUpdate bubbles to Act's retry loop
+	}
+	// Persist the authorship proof (best-effort; the move is already in the log).
+	if signPubkey != "" {
+		_ = s.repo.RecordMoveSignature(ctx, matchPublicID, signSeq, signSeat, canonAction, signature, signPubkey)
 	}
 	m, err = s.repo.Get(ctx, matchPublicID)
 	if err != nil {

@@ -14,6 +14,11 @@ var (
 	ErrNotYourTurn   = httpx.NewError(http.StatusConflict, "not_your_turn", "It is not your seat's turn to act.")
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	ErrIllegalAction = httpx.NewError(http.StatusBadRequest, "illegal_action", "That action is not legal in the current phase.")
+	// ErrSignatureRequired / ErrBadSignature: the agent registered an Ed25519
+	// signing key, so a request-path move must carry a valid signature over the
+	// canonical (match, next_seq, seat, action) message (per-move non-repudiation).
+	ErrSignatureRequired = httpx.NewError(http.StatusBadRequest, "signature_required", "This agent registered a signing key; the move must be signed.")
+	ErrBadSignature      = httpx.NewError(http.StatusForbidden, "bad_signature", "Move signature verification failed.")
 	ErrBadConfig     = httpx.NewError(http.StatusBadRequest, "bad_config", "Invalid table configuration.")
 	// Waiting-lobby errors (agent-vs-agent staked tables).
 	ErrNotWaiting    = httpx.NewError(http.StatusConflict, "match_not_waiting", "This table is no longer open to join.")

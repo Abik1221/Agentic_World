@@ -75,3 +75,42 @@ func TestValidPublicKey(t *testing.T) {
 		t.Fatal("a malformed key should be invalid")
 	}
 }
+
+func signAction(priv ed25519.PrivateKey, domain, matchID string, seq, seat int, action string) string {
+	return base64.StdEncoding.EncodeToString(ed25519.Sign(priv, movesig.ActionMessage(domain, matchID, seq, seat, action)))
+}
+
+func TestVerifyActionRoundTrip(t *testing.T) {
+	pub, priv := keypair(t)
+	sig := signAction(priv, movesig.DomainMafia, "mf_1", 2, 1, "night|kill|3")
+	if !movesig.VerifyAction(movesig.DomainMafia, pub, "mf_1", 2, 1, "night|kill|3", sig) {
+		t.Fatal("authentic action move must verify")
+	}
+}
+
+func TestVerifyActionRejectsTampering(t *testing.T) {
+	pub, priv := keypair(t)
+	sig := signAction(priv, movesig.DomainMonopoly, "mn_1", 7, 0, "buy|12|0|")
+	// Each field is bound: any change must invalidate the signature.
+	cases := []struct {
+		name                 string
+		domain, match, action string
+		seq, seat            int
+	}{
+		{"wrong domain", movesig.DomainMafia, "mn_1", "buy|12|0|", 7, 0},
+		{"wrong match", movesig.DomainMonopoly, "mn_2", "buy|12|0|", 7, 0},
+		{"wrong seq", movesig.DomainMonopoly, "mn_1", "buy|12|0|", 8, 0},
+		{"wrong seat", movesig.DomainMonopoly, "mn_1", "buy|12|0|", 7, 1},
+		{"wrong action", movesig.DomainMonopoly, "mn_1", "buy|13|0|", 7, 0},
+	}
+	for _, c := range cases {
+		if movesig.VerifyAction(c.domain, pub, c.match, c.seq, c.seat, c.action, sig) {
+			t.Fatalf("%s: a tampered move must NOT verify", c.name)
+		}
+	}
+	// A different keypair's signature must also fail (forgery).
+	other, _ := keypair(t)
+	if movesig.VerifyAction(movesig.DomainMonopoly, other, "mn_1", 7, 0, "buy|12|0|", sig) {
+		t.Fatal("a forged (wrong-key) move must NOT verify")
+	}
+}

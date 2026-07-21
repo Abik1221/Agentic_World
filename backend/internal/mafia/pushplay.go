@@ -256,7 +256,7 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 			} else {
 				act = botDecide(v)
 			}
-			if _, err := s.Act(ctx, id, matchID, act, 0, ""); err == nil { // bots act on fresh state; no stale-phase guard
+			if _, err := s.Act(ctx, id, matchID, act, 0, "", "", true); err == nil { // platform-driven: no stale-phase guard, no per-move signature
 				acted = true
 			}
 		}

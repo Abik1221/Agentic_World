@@ -25,4 +25,9 @@ var (
 	// (the game advanced to a new day/phase). Once a phase is DONE its late actions
 	// must not be absorbed into the current round.
 	ErrStalePhase = httpx.NewError(http.StatusConflict, "stale_phase", "That round has already ended; act on the current phase.")
+	// ErrSignatureRequired / ErrBadSignature: the agent registered an Ed25519
+	// signing key, so a request-path move must carry a valid signature over the
+	// canonical (match, day, seat, action) message (per-move non-repudiation).
+	ErrSignatureRequired = httpx.NewError(http.StatusBadRequest, "signature_required", "This agent registered a signing key; the move must be signed.")
+	ErrBadSignature      = httpx.NewError(http.StatusForbidden, "bad_signature", "Move signature verification failed.")
 )
