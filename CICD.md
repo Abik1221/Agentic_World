@@ -73,6 +73,7 @@ Replace `pyyol.com` with your domain in each file before enabling.
 
 ### `Pyyol_client` (`deploy-landing.yml`)
 `NEXT_PUBLIC_API_BASE` (the public arena API origin), `NEXT_PUBLIC_SITE_URL`,
+`NEXT_PUBLIC_DOCS_API` (admin public docs API, e.g. `https://admin.pyyol.com/api/public` — powers the /docs page; unset ⇒ static-only docs),
 `NEXT_PUBLIC_PRIVY_APP_ID` (opt), `LANDING_PORT` (opt).
 
 ## Keys that MUST MATCH across repos (or the bus/telemetry silently breaks)
