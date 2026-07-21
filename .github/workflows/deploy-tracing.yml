@@ -1,0 +1,185 @@
+name: deploy-tracing
+
+# CI + CD for the Pyyol Lens observability stack (tracing/) → VPS.
+# Served privately on the trace subdomain (nginx fronts the web dashboard on
+# 127.0.0.1:3100; see tracing/deploy/nginx/trace.pyyol.com.conf).
+#
+# Stack (tracing/docker-compose.yml + deploy/docker-compose.prod.yml overlay):
+#   clickhouse, postgres, nats, minio  — internal data plane (never public)
+#   ingest-api (8081), processor, query-api (8082), control-api (8083) — backend
+#   web (3100, loopback) — the dashboard nginx fronts on the subdomain
+# The processor applies ClickHouse migrations in-process on boot (idempotent), so
+# ClickHouse comes up healthy → processor migrates → ingest/query serve.
+#
+# The stack joins the shared external `pyyol` network so the arena (arena-server)
+# POSTs telemetry to pyyol-lens-ingest:8081 and the admin + web read
+# pyyol-lens-query:8082 — all by container name, nothing else public.
+#
+# ── Required GitHub Secrets (this repo) ────────────────────────────────────────
+#   SSH:  DEPLOY_SSH_KEY, SSH_HOST, SSH_USER (default root), SSH_PORT (default 22)
+#   App:  QUERY_API_KEY            gate for the query-api (MUST equal admin LENS_API_KEY
+#                                  and the web's key; arena reads Lens with it)
+#         INGEST_API_KEY           gate for ingest (MUST equal the arena PYYOL_LENS_API_KEY)
+#         PYYOL_LENS_AUTH_PASSWORD dashboard login password
+#         PYYOL_LENS_SESSION_SECRET dashboard session-signing secret
+#         PYYOL_LENS_AUTH_USER     dashboard login user            [optional, default admin]
+#         PYYOL_LENS_DEFAULT_ORG_ID org scope                       [optional, default pyyol]
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tracing/**"
+      - ".github/workflows/deploy-tracing.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-tracing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REMOTE_DIR: "/opt/pyyol-lens"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tracing/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+          cache-dependency-path: tracing/backend/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate prod .env from secrets
+        env:
+          QUERY_API_KEY: ${{ secrets.QUERY_API_KEY }}
+          INGEST_API_KEY: ${{ secrets.INGEST_API_KEY }}
+          PYYOL_LENS_AUTH_USER: ${{ secrets.PYYOL_LENS_AUTH_USER }}
+          PYYOL_LENS_AUTH_PASSWORD: ${{ secrets.PYYOL_LENS_AUTH_PASSWORD }}
+          PYYOL_LENS_SESSION_SECRET: ${{ secrets.PYYOL_LENS_SESSION_SECRET }}
+          PYYOL_LENS_DEFAULT_ORG_ID: ${{ secrets.PYYOL_LENS_DEFAULT_ORG_ID }}
+        run: |
+          set -euo pipefail
+          : "${QUERY_API_KEY:?QUERY_API_KEY secret is required}"
+          : "${INGEST_API_KEY:?INGEST_API_KEY secret is required}"
+          : "${PYYOL_LENS_AUTH_PASSWORD:?PYYOL_LENS_AUTH_PASSWORD secret is required}"
+          : "${PYYOL_LENS_SESSION_SECRET:?PYYOL_LENS_SESSION_SECRET secret is required}"
+          umask 077
+          cat > tracing/deploy/.env <<EOF
+          PYYOL_LENS_ENV=production
+          QUERY_API_KEY=${QUERY_API_KEY}
+          INGEST_API_KEY=${INGEST_API_KEY}
+          PYYOL_LENS_AUTH_USER=${PYYOL_LENS_AUTH_USER:-admin}
+          PYYOL_LENS_AUTH_PASSWORD=${PYYOL_LENS_AUTH_PASSWORD}
+          PYYOL_LENS_SESSION_SECRET=${PYYOL_LENS_SESSION_SECRET}
+          PYYOL_LENS_DEFAULT_ORG_ID=${PYYOL_LENS_DEFAULT_ORG_ID:-pyyol}
+          EOF
+          echo "Generated tracing/deploy/.env ($(wc -l < tracing/deploy/.env) lines)"
+
+      - name: Set up SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Ship the tracing stack source + .env to the server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"; USER="${SSH_USER:-root}"
+          # Ship source (multi-stage Dockerfiles build on the host); exclude heavy
+          # build artifacts. The generated .env rides along under deploy/.
+          tar czf /tmp/tracing.tar.gz -C tracing \
+            --exclude=web/node_modules --exclude=web/.next --exclude=web/.next-dev \
+            --exclude=backend/server .
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no "$USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
+          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
+            /tmp/tracing.tar.gz "$USER@$SSH_HOST:$REMOTE_DIR/tracing.tar.gz"
+
+      - name: Deploy (build + up + ClickHouse-healthy + migrate-on-boot)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"; USER="${SSH_USER:-root}"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no \
+            "$USER@$SSH_HOST" "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'ENDSSH'
+          set -euo pipefail
+          cd "$REMOTE_DIR"
+          if ! command -v docker >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sh; fi
+          DC="docker compose"; docker compose version >/dev/null 2>&1 || DC="docker-compose"
+
+          tar xzf tracing.tar.gz && rm -f tracing.tar.gz
+
+          # Shared cross-repo network (arena + admin attach to it). Idempotent.
+          docker network create pyyol 2>/dev/null || true
+
+          echo "Building + starting the Lens stack (ClickHouse → processor migrates → ingest/query)..."
+          $DC -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build --remove-orphans
+          docker image prune -f >/dev/null 2>&1 || true
+
+          echo "Waiting for ClickHouse to be healthy..."
+          for i in $(seq 1 40); do
+            if docker exec pyyol-lens-clickhouse clickhouse-client -q "SELECT 1" >/dev/null 2>&1; then
+              echo "✅ ClickHouse healthy."; break; fi
+            [ "$i" -eq 40 ] && { echo "❌ ClickHouse never healthy."; $DC logs --tail=60 clickhouse; exit 1; }
+            sleep 3
+          done
+
+          echo "Waiting for the processor to apply ClickHouse migrations..."
+          for i in $(seq 1 30); do
+            if docker exec pyyol-lens-clickhouse clickhouse-client --database pyyol_lens \
+                 -q "SELECT count() FROM schema_migrations" 2>/dev/null | grep -qE '[1-9]'; then
+              echo "✅ Migrations applied ($(docker exec pyyol-lens-clickhouse clickhouse-client --database pyyol_lens -q 'SELECT count() FROM schema_migrations') tracked)."; break; fi
+            [ "$i" -eq 30 ] && { echo "❌ Migrations never applied."; $DC logs --tail=60 processor; exit 1; }
+            sleep 2
+          done
+
+          echo "Waiting for ingest + query APIs..."
+          for svc in "ingest:8081" "query:8082"; do
+            name="${svc%%:*}"; p="${svc##*:}"
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:${p}/health" >/dev/null 2>&1; then echo "✅ ${name}-api healthy on :${p}."; break; fi
+              [ "$i" -eq 30 ] && { echo "❌ ${name}-api never healthy."; $DC logs --tail=60 "${name}-api"; exit 1; }
+              sleep 2
+            done
+          done
+          echo "✅ Pyyol Lens stack up. Front the web dashboard on the trace subdomain via nginx (deploy/nginx/trace.pyyol.com.conf)."
+          ENDSSH
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Pyyol Lens deployed ✅"
+            echo "- ClickHouse healthy, migrations applied, ingest(8081)+query(8082) serving."
+            echo "- On the shared \`pyyol\` network: arena → pyyol-lens-ingest:8081, admin/web → pyyol-lens-query:8082."
+            echo "- Dashboard: front \`127.0.0.1:3100\` with the trace-subdomain nginx vhost + TLS."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,4 @@
-# Production stack for the Agent Arena backend on the Hostinger VPS.
+# Production stack for the Agent Arena backend on the VPS.
 #
 # Self-contained: Postgres + Redis + the arena server. The server image is built
 # in CI and shipped as a tarball (not built here), then referenced by tag. The
@@ -8,11 +8,18 @@
 # Config comes from a sibling `.env` file that the deploy workflow generates from
 # GitHub Secrets. `docker compose --env-file .env` uses it for ${VAR} interpolation
 # below, and the server also loads it via env_file for its own settings.
+#
+# CROSS-REPO NETWORKING: postgres/redis/server also join the shared external
+# network `pyyol` under stable container names (arena-postgres, arena-redis,
+# arena-server). The Super_Admin API reaches this Redis (the config bus + event
+# stream) and this server over that network, and the arena reaches the Pyyol Lens
+# ingest container over it. The deploy workflow creates the network if absent.
 name: agent-arena
 
 services:
   postgres:
     image: postgres:15-alpine
+    container_name: arena-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: arena
@@ -20,6 +27,7 @@ services:
       POSTGRES_DB: arena
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks: [default, pyyol]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U arena -d arena"]
       interval: 5s
@@ -28,10 +36,12 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: arena-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
+    networks: [default, pyyol]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -41,6 +51,7 @@ services:
   server:
     # Image is loaded on the host from the CI-built tarball; never built here.
     image: ${ARENA_IMAGE:-agent-arena-server:latest}
+    container_name: arena-server
     restart: unless-stopped
     env_file:
       - .env
@@ -49,6 +60,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks: [default, pyyol]
     # Host port is configurable (80 = Mega Hub, 8090 = arena UI already in use).
     ports:
       - "${ARENA_PORT:-8091}:8080"
@@ -59,3 +71,12 @@ services:
 volumes:
   pgdata:
   redisdata:
+
+# Shared cross-repo network. external:true ⇒ the deploy workflow creates it once
+# (`docker network create pyyol`). Admin + tracing projects attach to the same
+# network to resolve arena-redis / arena-server / pyyol-lens-* by container name.
+networks:
+  default:
+  pyyol:
+    external: true
+    name: pyyol

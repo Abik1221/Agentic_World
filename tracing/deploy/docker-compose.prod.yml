@@ -1,0 +1,66 @@
+# Production overlay for the Pyyol Lens stack.
+#
+# Usage (on the host, from tracing/):
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml \
+#     --env-file deploy/.env up -d
+#
+# What it changes vs the base compose:
+#   • Attaches ingest-api + query-api to the shared external `pyyol` network so
+#     the arena (arena-server) can POST telemetry to pyyol-lens-ingest:8081 and
+#     the Super_Admin API + this web app can read pyyol-lens-query:8082.
+#   • Enforces the query-api shared-secret gate (QUERY_API_KEY) and a real
+#     INGEST_API_KEY — both fail closed in production.
+#   • Binds the web dashboard to loopback (an nginx/Caddy vhost fronts it) and
+#     requires a dashboard login.
+# Everything else (ClickHouse, NATS, processor, control) stays internal to the
+# base project network and is never exposed publicly. Migrations apply in-process
+# on the processor's boot (no manual step).
+
+services:
+  ingest-api:
+    # Reached by the arena via pyyol (pyyol-lens-ingest:8081); loopback publish is
+    # only for host-side health checks — never world-exposed.
+    ports: !override
+      - "127.0.0.1:8081:8081"
+    environment:
+      PYYOL_LENS_ENV: production
+      INGEST_API_KEY: ${INGEST_API_KEY:?set INGEST_API_KEY (must equal the arena PYYOL_LENS_API_KEY)}
+    networks: [default, pyyol]
+    restart: always
+
+  query-api:
+    # Reached by the admin + web via pyyol (pyyol-lens-query:8082); loopback only.
+    ports: !override
+      - "127.0.0.1:8082:8082"
+    environment:
+      PYYOL_LENS_ENV: production
+      QUERY_API_KEY: ${QUERY_API_KEY:?set QUERY_API_KEY (must equal admin LENS_API_KEY + web PYYOL_LENS_API_KEY)}
+    networks: [default, pyyol]
+    restart: always
+
+  processor:
+    environment:
+      PYYOL_LENS_ENV: production
+    restart: always
+
+  web:
+    ports:
+      - "127.0.0.1:3100:3100" # loopback only — reachable solely via the nginx vhost
+    environment:
+      PYYOL_LENS_QUERY_URL: http://pyyol-lens-query:8082
+      PYYOL_LENS_CONTROL_URL: http://pyyol-lens-control:8083
+      PYYOL_LENS_API_KEY: ${QUERY_API_KEY:?set QUERY_API_KEY}
+      PYYOL_LENS_DEFAULT_ORG_ID: ${PYYOL_LENS_DEFAULT_ORG_ID:-pyyol}
+      PYYOL_LENS_ALLOW_DIRECT_FALLBACK: "true"
+      PYYOL_LENS_AUTH_USER: ${PYYOL_LENS_AUTH_USER:-admin}
+      PYYOL_LENS_AUTH_PASSWORD: ${PYYOL_LENS_AUTH_PASSWORD:?set a dashboard password}
+      PYYOL_LENS_SESSION_SECRET: ${PYYOL_LENS_SESSION_SECRET:?set a session secret}
+    networks: [default, pyyol]
+    restart: always
+
+# Shared cross-repo network (created by the arena deploy; created here too if the
+# tracing stack deploys first). external:true ⇒ it is not owned by this project.
+networks:
+  pyyol:
+    external: true
+    name: pyyol

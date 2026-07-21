@@ -90,6 +90,7 @@ jobs:
           PYYOL_LENS_ENABLED: ${{ secrets.PYYOL_LENS_ENABLED }}
           PYYOL_LENS_ENDPOINT: ${{ secrets.PYYOL_LENS_ENDPOINT }}
           PYYOL_LENS_API_KEY: ${{ secrets.PYYOL_LENS_API_KEY }}
+          PYYOL_LENS_ORG: ${{ secrets.PYYOL_LENS_ORG }}
         run: |
           set -euo pipefail
           : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD secret is required}"
@@ -135,9 +136,13 @@ jobs:
           CHECKOUT_CANCEL_URL=${BASE_URL}/billing/cancel
 
           # ── Pyyol Lens telemetry (optional) ──
+          # Endpoint defaults to the Lens ingest container on the shared `pyyol`
+          # network; ORG must equal the admin's LENS_ORG_ID + the query-api org.
           PYYOL_LENS_ENABLED=${PYYOL_LENS_ENABLED:-false}
-          PYYOL_LENS_ENDPOINT=${PYYOL_LENS_ENDPOINT:-}
+          PYYOL_LENS_ENDPOINT=${PYYOL_LENS_ENDPOINT:-http://pyyol-lens-ingest:8081}
           PYYOL_LENS_API_KEY=${PYYOL_LENS_API_KEY:-}
+          PYYOL_LENS_ORG=${PYYOL_LENS_ORG:-pyyol}
+          PYYOL_LENS_PROJECT=arena
 
           # ── Compose interpolation ──
           ARENA_IMAGE=${IMAGE}
@@ -197,6 +202,9 @@ jobs:
 
           # Read the published port from the generated .env.
           ARENA_PORT="$(grep -E '^ARENA_PORT=' .env | cut -d= -f2)"; ARENA_PORT="${ARENA_PORT:-8091}"
+
+          # Shared cross-repo network (admin + tracing attach to it too). Idempotent.
+          docker network create pyyol 2>/dev/null || true
 
           echo "Starting stack (server auto-migrates on boot)..."
           $DC -f docker-compose.prod.yml --env-file .env up -d --remove-orphans
