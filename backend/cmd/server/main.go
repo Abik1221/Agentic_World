@@ -371,11 +371,16 @@ func run() error {
 	// just another idempotent outbox handler — a publish failure leaves the event
 	// unpublished for the dispatcher to retry, and consumers dedupe on event id.
 	platformEvents := store.NewPlatformEventStream(st.Redis, enginePrivKey)
+	// Only publish events the Super Admin mirror actually consumes. Deliberately
+	// excluded: badge.awarded (never emitted — badges are DB+log only), and
+	// season.rolled / pindex.updated (the mirror projects season/P-Index from its
+	// 30s HTTP backfill, not the live delta — publishing them was wasted stream
+	// volume the consumer dropped). Add one back here only when the mirror grows a
+	// handler for it.
 	for _, t := range []string{
 		events.TypeAgentCertified, events.TypeMatchStarted, events.TypeMatchFinished,
-		events.TypeSeasonRolled, events.TypeBadgeAwarded,
 		events.TypeDisputeOpened, events.TypeWithdrawalRequested,
-		events.TypeRatingUpdated, events.TypePIndexUpdated,
+		events.TypeRatingUpdated,
 	} {
 		eventBus.On(t, platformEvents.Publish)
 	}

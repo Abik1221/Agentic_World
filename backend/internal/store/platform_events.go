@@ -41,10 +41,23 @@ func NewPlatformEventStream(rdb *redis.Client, signer *platformsign.Signer) *Pla
 	return &PlatformEventStream{rdb: rdb, signer: signer}
 }
 
+// platformEventSchemaVersion versions the platform:events envelope + payload
+// contract. It travels in the signed envelope so a consumer can detect field
+// drift (e.g. a renamed payload key) instead of silently mis-decoding — the class
+// of bug that once zeroed the admin leaderboard Elo. Bump on any breaking payload
+// change; the Super Admin mirror must recognize the value.
+const platformEventSchemaVersion = "1"
+
 // eventSigningInput is the exact byte string signed and verified for one event.
-// Both sides MUST build it identically from the stream field STRINGS.
-func eventSigningInput(id, typ, payload, ts string) []byte {
-	return []byte(id + "\n" + typ + "\n" + payload + "\n" + ts)
+// Both sides MUST build it identically from the stream field STRINGS. The schema
+// version is appended ONLY when non-empty, so pre-version events (no `v` field)
+// still verify with the original id\ntype\npayload\nts form.
+func eventSigningInput(id, typ, payload, ts, v string) []byte {
+	b := id + "\n" + typ + "\n" + payload + "\n" + ts
+	if v != "" {
+		b += "\n" + v
+	}
+	return []byte(b)
 }
 
 // Publish appends one event to the stream. The event id is the idempotency key
@@ -55,7 +68,7 @@ func (s *PlatformEventStream) Publish(ctx context.Context, e events.Event) error
 	defer cancel()
 	ts := strconv.FormatInt(e.CreatedAt.UnixMilli(), 10)
 	payload := string(e.Payload)
-	sig := s.signer.Sign(eventSigningInput(e.ID, e.Type, payload, ts))
+	sig := s.signer.Sign(eventSigningInput(e.ID, e.Type, payload, ts, platformEventSchemaVersion))
 	return s.rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamPlatformEvents,
 		MaxLen: platformEventsMaxLen,
@@ -65,6 +78,7 @@ func (s *PlatformEventStream) Publish(ctx context.Context, e events.Event) error
 			"type":    e.Type,
 			"payload": payload,
 			"ts":      ts,
+			"v":       platformEventSchemaVersion,
 			"sig":     sig,
 		},
 	}).Err()

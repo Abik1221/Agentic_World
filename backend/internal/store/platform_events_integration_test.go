@@ -64,11 +64,11 @@ func TestEventStreamEndToEnd(t *testing.T) {
 	if id != "evt_int_1" || typ != events.TypeMatchFinished {
 		t.Fatalf("wrong fields on the wire: id=%q type=%q", id, typ)
 	}
-	if !verifier.Verify(eventSigningInput(id, typ, payload, ts), sig) {
+	if !verifier.Verify(eventSigningInput(id, typ, payload, ts, ""), sig) {
 		t.Fatal("consumer-side verification of the published event failed")
 	}
 	// A tampered payload must fail verification.
-	if verifier.Verify(eventSigningInput(id, typ, `{"winner":"attacker"}`, ts), sig) {
+	if verifier.Verify(eventSigningInput(id, typ, `{"winner":"attacker"}`, ts, ""), sig) {
 		t.Fatal("tampered payload verified — signature does not cover payload")
 	}
 }

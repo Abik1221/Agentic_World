@@ -15,7 +15,7 @@ const (
 )
 
 func TestEventSigningInputFormat(t *testing.T) {
-	got := string(eventSigningInput("evt_kat_1", "match.finished", `{"a":1}`, "1720099200000"))
+	got := string(eventSigningInput("evt_kat_1", "match.finished", `{"a":1}`, "1720099200000", ""))
 	want := "evt_kat_1\nmatch.finished\n{\"a\":1}\n1720099200000"
 	if got != want {
 		t.Fatalf("signing input format drifted:\n got  %q\n want %q", got, want)
@@ -27,7 +27,7 @@ func TestEventSignatureMatchesKAT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := s.Sign(eventSigningInput("evt_kat_1", "match.finished", `{"a":1}`, "1720099200000"))
+	sig := s.Sign(eventSigningInput("evt_kat_1", "match.finished", `{"a":1}`, "1720099200000", ""))
 	if sig != katSigB64 {
 		t.Fatalf("engine event signature drifted from KAT:\n got  %s\n want %s", sig, katSigB64)
 	}
