@@ -101,6 +101,7 @@ func (h *Handler) allocate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Agent  string `json:"agent"`
 		Amount int64  `json:"amount"`
+		IdemKey string `json:"idempotency_key"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
@@ -110,7 +111,13 @@ func (h *Handler) allocate(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.Allocate(r.Context(), p.UserPublicID, in.Agent, in.Amount); err != nil {
+	// Idempotency key: body field, else the standard header. When present, a
+	// retried allocate is a no-op instead of double-moving the owner's treasury.
+	idemKey := in.IdemKey
+	if idemKey == "" {
+		idemKey = r.Header.Get("Idempotency-Key")
+	}
+	if err := h.svc.Allocate(r.Context(), p.UserPublicID, in.Agent, in.Amount, idemKey); err != nil {
 		httpx.Error(w, err)
 		return
 	}

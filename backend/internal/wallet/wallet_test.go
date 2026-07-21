@@ -311,6 +311,30 @@ func TestTopupCreditsUserTreasury(t *testing.T) {
 	}
 }
 
+// TestAllocateIdempotencyKey locks in the retry-safety contract: two allocates
+// with the SAME client key post the identical ledger key (so the ledger's UNIQUE
+// key dedups a retry to a no-op), while an empty client key falls back to a
+// distinct time-based key per call (legacy behaviour, each call a new txn).
+func TestAllocateIdempotencyKey(t *testing.T) {
+	fl := &fakeLedger{}
+	svc := newSvc(fl, &fakeRepo{owner: "usr_a"})
+	for i := 0; i < 2; i++ {
+		if err := svc.Allocate(context.Background(), "usr_a", "ag_x", 100, "req-1"); err != nil {
+			t.Fatalf("Allocate: %v", err)
+		}
+	}
+	if fl.posts[0].Key != "allocate:ag_x:req-1" || fl.posts[1].Key != fl.posts[0].Key {
+		t.Fatalf("same client key must yield the same ledger key; got %q and %q", fl.posts[0].Key, fl.posts[1].Key)
+	}
+	// Empty client key → distinct (time-based) keys, so it is NOT dedup-safe.
+	if err := svc.Allocate(context.Background(), "usr_a", "ag_x", 100, ""); err != nil {
+		t.Fatalf("Allocate (no key): %v", err)
+	}
+	if fl.posts[2].Key == fl.posts[0].Key {
+		t.Fatalf("empty client key must not collide with a keyed allocate")
+	}
+}
+
 // ── limits ───────────────────────────────────────────────────────────────────
 
 func baseLimits() wallet.AgentLimits {

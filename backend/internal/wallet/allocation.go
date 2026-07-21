@@ -11,7 +11,13 @@ import (
 
 // Allocate moves coins from the owner's treasury wallet to one of their agents.
 // Agents in active matches cannot receive rebalancing (caller must check).
-func (s *Service) Allocate(ctx context.Context, ownerUserPublicID, agentPublicID string, coins int64) error {
+//
+// clientKey is an optional caller-supplied idempotency key: when non-empty, a
+// retried request carrying the same key is a no-op (the ledger's UNIQUE key
+// dedupes it), so a network retry can't double-move the owner's treasury. When
+// empty the key is time-based (legacy behaviour: every call is a distinct txn),
+// so callers that need retry-safety MUST pass a stable key.
+func (s *Service) Allocate(ctx context.Context, ownerUserPublicID, agentPublicID string, coins int64, clientKey string) error {
 	if coins <= 0 {
 		return httpx.NewError(http.StatusBadRequest, "invalid_amount", "Amount must be positive.")
 	}
@@ -30,6 +36,9 @@ func (s *Service) Allocate(ctx context.Context, ownerUserPublicID, agentPublicID
 		return httpx.NewError(http.StatusConflict, "agent_in_match", "Cannot rebalance coins while the agent is in an active match.")
 	}
 	key := fmt.Sprintf("allocate:%s:%d", agentPublicID, s.clock.Now().UnixNano())
+	if clientKey != "" {
+		key = fmt.Sprintf("allocate:%s:%s", agentPublicID, clientKey)
+	}
 	_, err = s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindAllocate,
 		Key:      key,
