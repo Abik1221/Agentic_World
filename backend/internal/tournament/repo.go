@@ -11,6 +11,8 @@ import "context"
 type Repo interface {
 	Create(ctx context.Context, in CreateInput) (publicID string, err error)
 	Get(ctx context.Context, publicID string) (Tournament, error)
+	// List returns tournaments for discovery, open/upcoming first then most recent.
+	List(ctx context.Context, limit int) ([]Tournament, error)
 	// Enter records a free entry (idempotent); errors if the tournament is closed.
 	Enter(ctx context.Context, publicID, agentPublicID string) error
 	// Eligible reports whether an agent may enter/win: tournament_ready badge and

@@ -25,6 +25,7 @@ func NewHandler(svc *Service, authn *auth.Authenticator, adminUserIDs []string) 
 }
 
 func (h *Handler) Register(r chi.Router) {
+	r.Get("/v1/tournaments", h.list)     // public: discovery list
 	r.Get("/v1/tournaments/{id}", h.get) // public
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
@@ -35,6 +36,19 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(admin).Post("/v1/tournaments", h.create)
 		r.With(admin).Post("/v1/admin/tournaments/{id}/finalize", h.finalize)
 	})
+}
+
+func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
+	ts, err := h.svc.List(r.Context(), 100)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if ts == nil {
+		ts = []Tournament{}
+	}
+	w.Header().Set("Cache-Control", "public, max-age=5")
+	httpx.JSON(w, http.StatusOK, map[string]any{"tournaments": ts})
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {

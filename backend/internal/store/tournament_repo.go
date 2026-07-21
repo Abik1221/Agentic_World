@@ -42,6 +42,33 @@ func (r *TournamentRepo) Get(ctx context.Context, publicID string) (tournament.T
 	return t, err
 }
 
+func (r *TournamentRepo) List(ctx context.Context, limit int) ([]tournament.Tournament, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT t.public_id, t.name, COALESCE(t.sponsor, ''), t.prize_pool, t.status,
+		        COALESCE(wa.public_id, ''),
+		        (SELECT COUNT(*) FROM tournament_entries te WHERE te.tournament_id = t.id)
+		 FROM tournaments t
+		 LEFT JOIN agents wa ON wa.id = t.winner_agent_id
+		 ORDER BY (t.status = 'open') DESC, (t.status = 'upcoming') DESC, t.created_at DESC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []tournament.Tournament
+	for rows.Next() {
+		var t tournament.Tournament
+		if err := rows.Scan(&t.PublicID, &t.Name, &t.Sponsor, &t.PrizePool, &t.Status, &t.Winner, &t.Entries); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (r *TournamentRepo) Enter(ctx context.Context, publicID, agentPublicID string) error {
 	var status string
 	err := r.db.QueryRow(ctx, `SELECT status FROM tournaments WHERE public_id = $1`, publicID).Scan(&status)

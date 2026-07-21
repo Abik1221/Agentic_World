@@ -64,6 +64,11 @@ func (s *Service) Get(ctx context.Context, tournamentPublicID string) (Tournamen
 	return s.repo.Get(ctx, tournamentPublicID)
 }
 
+// List returns tournaments for discovery (open/upcoming first).
+func (s *Service) List(ctx context.Context, limit int) ([]Tournament, error) {
+	return s.repo.List(ctx, limit)
+}
+
 // Finalize names the champion (first call) and pays the pool, idempotently. The
 // winner must be eligible (no fraud hold) before the pool is decided — money is
 // never paid to a flagged agent.

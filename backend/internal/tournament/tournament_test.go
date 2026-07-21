@@ -26,6 +26,13 @@ func (r *fakeRepo) Create(_ context.Context, in tournament.CreateInput) (string,
 func (r *fakeRepo) Get(_ context.Context, id string) (tournament.Tournament, error) {
 	return r.tourneys[id], nil
 }
+func (r *fakeRepo) List(_ context.Context, _ int) ([]tournament.Tournament, error) {
+	out := make([]tournament.Tournament, 0, len(r.tourneys))
+	for _, t := range r.tourneys {
+		out = append(out, t)
+	}
+	return out, nil
+}
 func (r *fakeRepo) Enter(_ context.Context, id, _ string) error {
 	if r.tourneys[id].Status != "open" {
 		return tournament.ErrClosed
