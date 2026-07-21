@@ -717,7 +717,12 @@ func run() error {
 		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
-	matchmakingSvc.SetEligibility(manifestSvc) // ranked queue requires a certified agent
+	// Ranked queue entry gate: certified AND not suspended. Enforcing suspension
+	// here (not just at CreatePaired) means a suspended agent fails fast at enqueue
+	// with a specific error, instead of getting a misleading 202 and squatting a
+	// `waiting` slot forever for a pairing that CheckEligible would always reject —
+	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
+	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
@@ -1002,6 +1007,23 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 		return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
 	}
 	return nil
+}
+
+// rankedEntryGate is the matchmaking.Eligibility gate: an agent may enter the
+// ranked queue only if it is not Super-Admin-suspended AND is certified. The
+// authoritative money/play gate is still CreatePaired (verifierAdapter.CheckEligible);
+// this just fails suspended/uncertified agents fast at enqueue rather than letting
+// them sit in `waiting` for a pairing that can never escrow.
+type rankedEntryGate struct {
+	cert *manifest.Service
+	susp *platformcfg.Provider // may be nil (suspension list unavailable)
+}
+
+func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID string) error {
+	if g.susp != nil && g.susp.Get().IsSuspended(agentPublicID) {
+		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
+	}
+	return g.cert.RequireCertified(ctx, agentPublicID)
 }
 
 // finishHook fans the match-finalize signal out to the engagement workers. Both
