@@ -15,8 +15,8 @@ const nav = [
   { label: "Costs", href: "/costs" },
   { label: "Cost Analytics", href: "/cost-analytics" },
   { label: "Events", href: "/events" },
-  { label: "Alerts", href: "/alerts" },
-  { label: "Settings", href: "/settings" },
+  // Alerts + Settings are hidden until the control-api backs them with real data
+  // (their handlers are empty stubs today) — no dead surfaces in the nav.
 ];
 
 export default function Shell({
