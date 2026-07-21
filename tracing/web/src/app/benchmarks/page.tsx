@@ -65,6 +65,12 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
             matches won&apos;t top the board), then reliability (legal-move rate) and latency.
             Server-authoritative across all games.
           </p>
+          <p style={{ marginTop: 8 }}>
+            For per-move reasoning, decisions &amp; token spend, open a match&apos;s{" "}
+            <Link className="agent-link" href="/traces">
+              decision trail in Traces →
+            </Link>
+          </p>
         </div>
       </section>
 

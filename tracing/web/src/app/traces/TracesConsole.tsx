@@ -115,6 +115,18 @@ export default function TracesConsole({ traces }: Props) {
                     <Link className="trace-link" href={`/traces/${trace.trace_id}`}>
                       {trace.trace_id}
                     </Link>
+                    {trace.trace_id.startsWith("match_") && (
+                      <>
+                        {" "}
+                        <Link
+                          className="agent-link"
+                          href={`/matches/${encodeURIComponent(trace.trace_id)}`}
+                          title="Per-move reasoning, decisions & tokens"
+                        >
+                          decision trail →
+                        </Link>
+                      </>
+                    )}
                   </td>
                   <td>
                     <span className={`status ${trace.status === "error" ? "status-error" : "status-ok"}`}>
