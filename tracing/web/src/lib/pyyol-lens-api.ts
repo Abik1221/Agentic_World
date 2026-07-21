@@ -10,6 +10,10 @@ const CONTROL_URL = process.env.PYYOL_LENS_CONTROL_URL ?? "http://localhost:8083
 const INGEST_URL = process.env.PYYOL_LENS_INGEST_URL ?? "http://localhost:8081";
 const DEFAULT_ORG_ID = process.env.PYYOL_LENS_DEFAULT_ORG_ID ?? "local-dev-org";
 const DEFAULT_USER_ID = process.env.PYYOL_LENS_DEFAULT_USER_ID ?? "local-dev-user";
+// Shared secret for the direct query/control APIs (X-Pyyol-Key). Must match the
+// backend's QUERY_API_KEY; empty when the APIs are unsecured (localhost dev).
+const QUERY_API_KEY = process.env.PYYOL_LENS_API_KEY ?? "";
+const keyHeader = (): Record<string, string> => (QUERY_API_KEY ? { "X-Pyyol-Key": QUERY_API_KEY } : {});
 const ALLOW_DIRECT_FALLBACK = process.env.PYYOL_LENS_ALLOW_DIRECT_FALLBACK
   ? process.env.PYYOL_LENS_ALLOW_DIRECT_FALLBACK === "true"
   : process.env.NODE_ENV !== "production";
@@ -61,6 +65,7 @@ export async function fetchQuery<T>(path: string): Promise<T | null> {
     headers: {
       "x-organization-id": DEFAULT_ORG_ID,
       "x-user-id": DEFAULT_USER_ID,
+      ...keyHeader(),
     },
   });
 }
@@ -77,6 +82,7 @@ export async function fetchControl<T>(path: string): Promise<T | null> {
     headers: {
       "x-organization-id": DEFAULT_ORG_ID,
       "x-user-id": DEFAULT_USER_ID,
+      ...keyHeader(),
     },
   });
 }

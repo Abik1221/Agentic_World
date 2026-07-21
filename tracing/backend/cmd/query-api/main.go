@@ -11,6 +11,15 @@ import (
 
 func main() {
 	cfg := config.Load()
+	// Fail closed in production: the query-api trusts x-organization-id verbatim,
+	// so an unset shared secret would let any network-reachable caller read any
+	// org's telemetry (incl. the projections/ops endpoints). Require the key.
+	if cfg.Environment == "production" && cfg.QueryAPIKey == "" {
+		log.Fatal("QUERY_API_KEY must be set in production (query-api trusts x-organization-id; a shared secret gates access)")
+	}
+	if cfg.QueryAPIKey == "" {
+		log.Println("WARNING: QUERY_API_KEY unset — query-api is UNAUTHENTICATED (dev only; bind to localhost)")
+	}
 	s, err := store.New(cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -23,7 +32,14 @@ func main() {
 	})
 	app.Get("/health/ready", h.HealthReady)
 	app.Use("/v1", func(c *fiber.Ctx) error {
-		// Projections/ops endpoints can be queried without org header for platform diagnostics.
+		// Shared-secret gate (fail-closed when configured): applies to EVERY /v1
+		// route including projections, so no endpoint leaks cross-org/ops data to
+		// an unauthenticated caller.
+		if cfg.QueryAPIKey != "" && c.Get("X-Pyyol-Key") != cfg.QueryAPIKey {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		}
+		// Projections/ops endpoints don't need an org header (platform diagnostics),
+		// but they DO require the key above.
 		if len(c.Path()) >= len("/v1/projections") && c.Path()[:len("/v1/projections")] == "/v1/projections" {
 			return c.Next()
 		}

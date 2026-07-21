@@ -38,6 +38,13 @@ type Config struct {
 	IngestAPIKey string
 	// AdminAPIKey secures control-api replay routes; if empty, replay POSTs are rejected (set in production).
 	AdminAPIKey string
+	// QueryAPIKey secures the query-api read plane. The query-api trusts the
+	// x-organization-id header verbatim (no per-caller identity), so without a
+	// shared secret any network-reachable client could read ANY org's telemetry.
+	// Empty in dev = open (localhost only); in production the query-api refuses to
+	// boot when empty. Trusted callers (admin lens client, web proxy) send it as
+	// the X-Pyyol-Key header.
+	QueryAPIKey string
 
 	DefaultProject   string
 	RetentionDays    int
@@ -55,6 +62,8 @@ func Load() Config {
 		IngestPort:  get("PORT_INGEST", "8081"),
 		QueryPort:   get("PORT_QUERY", "8082"),
 		ControlPort: get("PORT_CONTROL", "8083"),
+
+		QueryAPIKey: os.Getenv("QUERY_API_KEY"),
 
 		CHAddr:   get("CH_ADDR", "localhost:9000"),
 		CHDB:     get("CH_DB", "pyyol_lens"),
