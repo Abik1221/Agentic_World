@@ -155,7 +155,11 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
                       <RateCell value={r.fallback_rate} kind="bad" />
                     </td>
                     <td>{ms(r.avg_latency_ms)}</td>
-                    <td>{r.model_calls ? ktoks(r.tokens_per_match) : <span className="muted">—</span>}</td>
+                    {/* Tokens come from either per-move model_call events OR the
+                        arena benchmark fallback (model_calls=0 but tokens_per_match>0),
+                        so gate on the token figure itself, not model_calls. Cost stays
+                        gated on model_calls — the arena doesn't price per move. */}
+                    <td>{r.tokens_per_match ? ktoks(r.tokens_per_match) : <span className="muted">—</span>}</td>
                     <td>{r.model_calls ? `$${r.cost_per_match.toFixed(4)}` : <span className="muted">—</span>}</td>
                   </tr>
                 ))
