@@ -91,6 +91,22 @@ jobs:
           PYYOL_LENS_ENDPOINT: ${{ secrets.PYYOL_LENS_ENDPOINT }}
           PYYOL_LENS_API_KEY: ${{ secrets.PYYOL_LENS_API_KEY }}
           PYYOL_LENS_ORG: ${{ secrets.PYYOL_LENS_ORG }}
+          # Privy wallet/social login (empty ⇒ email/password only)
+          PRIVY_APP_ID: ${{ secrets.PRIVY_APP_ID }}
+          PRIVY_VERIFICATION_KEY: ${{ secrets.PRIVY_VERIFICATION_KEY }}
+          # Solana USDC deposits (all four required to enable real deposits)
+          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+          SOLANA_USDC_MINT: ${{ secrets.SOLANA_USDC_MINT }}
+          SOLANA_PLATFORM_OWNER: ${{ secrets.SOLANA_PLATFORM_OWNER }}
+          SOLANA_PLATFORM_ATA: ${{ secrets.SOLANA_PLATFORM_ATA }}
+          SOLANA_COMMITMENT: ${{ secrets.SOLANA_COMMITMENT }}
+          # Solana withdrawals (encrypted hot-wallet secret + its master key)
+          SOLANA_HOT_WALLET_SECRET_ENC: ${{ secrets.SOLANA_HOT_WALLET_SECRET_ENC }}
+          SOLANA_HOT_WALLET_ENC_KEY: ${{ secrets.SOLANA_HOT_WALLET_ENC_KEY }}
+          # Coin economy / withdrawal policy (optional tuning)
+          COIN_CENTS: ${{ secrets.COIN_CENTS }}
+          WITHDRAW_SELL_FEE_PCT: ${{ secrets.WITHDRAW_SELL_FEE_PCT }}
+          WITHDRAW_MIN_COINS: ${{ secrets.WITHDRAW_MIN_COINS }}
         run: |
           set -euo pipefail
           : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD secret is required}"
@@ -143,6 +159,26 @@ jobs:
           PYYOL_LENS_API_KEY=${PYYOL_LENS_API_KEY:-}
           PYYOL_LENS_ORG=${PYYOL_LENS_ORG:-pyyol}
           PYYOL_LENS_PROJECT=arena
+
+          # ── Privy login (empty ⇒ Privy disabled, email/password still works) ──
+          PRIVY_APP_ID=${PRIVY_APP_ID:-}
+          PRIVY_VERIFICATION_KEY=${PRIVY_VERIFICATION_KEY:-}
+
+          # ── Solana USDC deposits (need RPC + mint + owner + ATA to enable) ──
+          SOLANA_RPC_URL=${SOLANA_RPC_URL:-}
+          SOLANA_USDC_MINT=${SOLANA_USDC_MINT:-}
+          SOLANA_PLATFORM_OWNER=${SOLANA_PLATFORM_OWNER:-}
+          SOLANA_PLATFORM_ATA=${SOLANA_PLATFORM_ATA:-}
+          SOLANA_COMMITMENT=${SOLANA_COMMITMENT:-finalized}
+
+          # ── Solana withdrawals (encrypted hot-wallet secret; deposits must be on) ──
+          SOLANA_HOT_WALLET_SECRET_ENC=${SOLANA_HOT_WALLET_SECRET_ENC:-}
+          SOLANA_HOT_WALLET_ENC_KEY=${SOLANA_HOT_WALLET_ENC_KEY:-}
+
+          # ── Coin economy / withdrawal policy (optional; sensible engine defaults) ──
+          COIN_CENTS=${COIN_CENTS:-1}
+          WITHDRAW_SELL_FEE_PCT=${WITHDRAW_SELL_FEE_PCT:-}
+          WITHDRAW_MIN_COINS=${WITHDRAW_MIN_COINS:-}
 
           # ── Compose interpolation ──
           ARENA_IMAGE=${IMAGE}

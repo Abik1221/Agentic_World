@@ -66,6 +66,25 @@ Replace `pyyol.com` with your domain in each file before enabling.
 `QUERY_API_KEY`, `INGEST_API_KEY`, `PYYOL_LENS_AUTH_PASSWORD`,
 `PYYOL_LENS_SESSION_SECRET`, `PYYOL_LENS_AUTH_USER` (opt), `PYYOL_LENS_DEFAULT_ORG_ID` (opt).
 
+### `Agentic_World` — WALLET / crypto (arena, `deploy-backend.yml`)
+Set these in the **Agentic_World** repo. The coin economy (mint/stake/settle)
+works without any of them; these enable **real-money** rails + Privy login.
+- **Privy login:** `PRIVY_APP_ID`, `PRIVY_VERIFICATION_KEY` (empty ⇒ email/password only).
+- **Solana USDC deposits (ALL four required to turn deposits on):** `SOLANA_RPC_URL`
+  (a paid RPC — Helius/QuickNode), `SOLANA_USDC_MINT` (mainnet USDC mint),
+  `SOLANA_PLATFORM_OWNER` (platform wallet address), `SOLANA_PLATFORM_ATA` (its USDC
+  token account). Optional: `SOLANA_COMMITMENT` (default `finalized`).
+- **Solana withdrawals (needs deposits on + a funded hot wallet):**
+  `SOLANA_HOT_WALLET_SECRET_ENC` + `SOLANA_HOT_WALLET_ENC_KEY` — produce the
+  encrypted form with `cd backend && go run ./cmd/wallet-secret-encrypt` (never
+  store the raw base58 key). Fund the hot wallet with USDC (payouts) + SOL (fees).
+- **Economy (optional):** `COIN_CENTS` (default 1), `WITHDRAW_SELL_FEE_PCT`, `WITHDRAW_MIN_COINS`.
+
+Operational prereqs (not just secrets): a reachable Solana RPC, a platform wallet +
+its USDC ATA created on-chain, and a funded hot wallet. Until all deposit vars are
+set, `/v1/deposits` returns 503 and the deposit listener stays off; until the hot
+wallet is set, withdrawals stay off — the app boots fine either way.
+
 ### `Super_Admin` (`deploy.yml`)
 `ADMIN_POSTGRES_PASSWORD`, `JWT_SECRET` (≥32), `PLATFORM_ADMIN_PRIVATE_KEY`,
 `PLATFORM_ENGINE_PUBLIC_KEY`, `LENS_API_KEY`, `LENS_ORG_ID`, `ADMIN_CORS_ORIGIN`,
