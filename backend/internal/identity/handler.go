@@ -16,14 +16,15 @@ import (
 // and loginRL rate-limits password logins (brute-force defense); both are
 // injected so the handler stays decoupled from the limiter backend.
 type Handler struct {
-	svc        *Service
-	authn      *auth.Authenticator
-	privy      *auth.PrivyVerifier // nil ⇒ Privy login disabled (503)
-	registerRL func(http.Handler) http.Handler
-	loginRL    func(http.Handler) http.Handler
-	keysRL     func(http.Handler) http.Handler
-	dev        bool // non-prod: surface the magic-link token in the response (no email wired)
-	xClaim     bool // X-claim (tweet) onboarding available (needs a real verifier)
+	svc          *Service
+	authn        *auth.Authenticator
+	privy        *auth.PrivyVerifier // nil ⇒ Privy login disabled (503)
+	registerRL   func(http.Handler) http.Handler
+	loginRL      func(http.Handler) http.Handler
+	keysRL       func(http.Handler) http.Handler
+	dev          bool // non-prod: surface the magic-link token in the response (no email wired)
+	xClaim       bool // X-claim (tweet) onboarding available (needs a real verifier)
+	emailEnabled bool // an email sender is wired so magic-link delivery actually works
 	// twoFAStatus reports whether the user has 2FA enabled, surfaced in /v1/me so a
 	// profile/security page can render the preference. Injected to avoid coupling
 	// identity to the twofa package; nil ⇒ the field is simply omitted.
@@ -35,7 +36,7 @@ func (h *Handler) SetTwoFAStatus(fn func(ctx context.Context, userPublicID strin
 	h.twoFAStatus = fn
 }
 
-func NewHandler(svc *Service, authn *auth.Authenticator, privy *auth.PrivyVerifier, registerRL, loginRL func(http.Handler) http.Handler, dev, xClaim bool) *Handler {
+func NewHandler(svc *Service, authn *auth.Authenticator, privy *auth.PrivyVerifier, registerRL, loginRL func(http.Handler) http.Handler, dev, xClaim, emailEnabled bool) *Handler {
 	noop := func(n http.Handler) http.Handler { return n }
 	if registerRL == nil {
 		registerRL = noop // no-op fallback
@@ -43,7 +44,7 @@ func NewHandler(svc *Service, authn *auth.Authenticator, privy *auth.PrivyVerifi
 	if loginRL == nil {
 		loginRL = noop
 	}
-	return &Handler{svc: svc, authn: authn, privy: privy, registerRL: registerRL, loginRL: loginRL, keysRL: noop, dev: dev, xClaim: xClaim}
+	return &Handler{svc: svc, authn: authn, privy: privy, registerRL: registerRL, loginRL: loginRL, keysRL: noop, dev: dev, xClaim: xClaim, emailEnabled: emailEnabled}
 }
 
 // SetKeysRateLimit installs a per-user limiter on API-key creation (credential
@@ -428,6 +429,15 @@ func (h *Handler) notifications(w http.ResponseWriter, r *http.Request) {
 // how other dev-only affordances are gated; PROD must deliver it by email
 // (delivery is not yet wired — do not enable this path in prod expecting mail).
 func (h *Handler) requestMagicLink(w http.ResponseWriter, r *http.Request) {
+	// Fail closed when there is no way to deliver the link: in prod without an
+	// email sender wired, the token is never surfaced (dev-only) and no email goes
+	// out, so returning {"sent":true} would be a lie. Steer callers to password
+	// login instead of silently dropping their sign-in request.
+	if !h.dev && !h.emailEnabled {
+		httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "magic_link_unavailable",
+			"Email sign-in links are not available here. Sign in with your email and password (POST /v1/auth/login)."))
+		return
+	}
 	var in struct {
 		Email string `json:"email"`
 	}

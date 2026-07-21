@@ -281,7 +281,7 @@ func run() error {
 	withdrawRL := middleware.RateLimit(limiter, 20, time.Minute, userKey("withdrawals"))
 	verifyRL := middleware.RateLimit(limiter, 12, time.Minute, userKey("manifest-verify"))
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
-	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled)
+	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
 	idHandler.SetKeysRateLimit(keysRL)
 
 	// Agent manifests: the metadata contract a developer submits per agent

@@ -113,6 +113,12 @@ type Config struct {
 	AutoplayEnabled  bool
 	AutoplayInterval time.Duration
 
+	// EmailDeliveryEnabled: an email sender is wired, so passwordless magic-link
+	// sign-in can actually deliver its token. Off by default — with no mailer, the
+	// magic-link request fails closed in prod (503) instead of falsely reporting
+	// the link was sent.
+	EmailDeliveryEnabled bool
+
 	// Agent manifest / endpoint verification. These two are split so enabling one
 	// does not silently enable the other, and BOTH are refused in prod/staging
 	// (see validate) so a dev flag copied into a real env can't open an SSRF hole.
@@ -275,15 +281,16 @@ func Load() (*Config, error) {
 		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
-		MoveWindow:      time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
-		RakePct:         l.intVal("RAKE_PCT", 5),
-		DefaultRounds:   l.intVal("DEFAULT_ROUNDS", 13),
-		SSEMaxConns:     l.intVal("SSE_MAX_CONNS", 20000),
-		AutoMigrate:     l.boolVal("AUTO_MIGRATE", true),
-		SandboxEnabled:  l.boolVal("SANDBOX_ENABLED", true),
-		RankedAutoDrive:  l.boolVal("RANKED_AUTODRIVE", false),
-		AutoplayEnabled:  l.boolVal("AUTOPLAY_ENABLED", false),
-		AutoplayInterval: l.dur("AUTOPLAY_INTERVAL", 10*time.Second),
+		MoveWindow:           time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
+		RakePct:              l.intVal("RAKE_PCT", 5),
+		DefaultRounds:        l.intVal("DEFAULT_ROUNDS", 13),
+		SSEMaxConns:          l.intVal("SSE_MAX_CONNS", 20000),
+		AutoMigrate:          l.boolVal("AUTO_MIGRATE", true),
+		SandboxEnabled:       l.boolVal("SANDBOX_ENABLED", true),
+		RankedAutoDrive:      l.boolVal("RANKED_AUTODRIVE", false),
+		AutoplayEnabled:      l.boolVal("AUTOPLAY_ENABLED", false),
+		EmailDeliveryEnabled: l.boolVal("EMAIL_DELIVERY_ENABLED", false),
+		AutoplayInterval:     l.dur("AUTOPLAY_INTERVAL", 10*time.Second),
 
 		AgentVerifyAllowPrivate:  l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
 		AgentVerifyAllowInsecure: l.boolVal("AGENT_VERIFY_ALLOW_INSECURE", false),
