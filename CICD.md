@@ -34,13 +34,19 @@ Each deploy runs `docker network create pyyol || true`. Postgres/Redis/ClickHous
 stay internal; only the web apps + arena API are published (loopback) for the
 host nginx/Caddy to front on subdomains with TLS.
 
-## Reverse proxy (host nginx/Caddy → loopback ports)
-| Public | → | Loopback |
-|---|---|---|
-| `api.<domain>` | arena API | `:8091` |
-| `<domain>` (user app) | Pyyol_client | `:3000` (LANDING_PORT) |
-| `admin.<domain>` | admin-web | `:8095` (ADMIN_WEB_PORT) |
-| `trace.<domain>` | Lens dashboard | `:3100` (nginx vhost in `tracing/deploy/nginx/`) |
+## Reverse proxy (host nginx → loopback ports) — vhosts provided
+Copy each vhost to `sites-available`, symlink to `sites-enabled`, and copy
+`deploy/nginx/websocket-upgrade.conf` to `/etc/nginx/conf.d/` (defines
+`$connection_upgrade` for the WS proxies). Then `certbot --nginx -d <host>`.
+
+| Public | → | Loopback | vhost file |
+|---|---|---|---|
+| `api.<domain>` | arena API | `:8091` | `deploy/nginx/api.pyyol.com.conf` |
+| `<domain>` (user app) | Pyyol_client | `:3000` | `Pyyol_client/deploy/nginx/pyyol.com.conf` |
+| `admin.<domain>` | admin-web | `:8095` | `Super_Admin/deploy/nginx/admin.pyyol.com.conf` |
+| `trace.<domain>` | Lens dashboard | `:3100` | `tracing/deploy/nginx/trace.pyyol.com.conf` |
+
+Replace `pyyol.com` with your domain in each file before enabling.
 
 ## GitHub Secrets — set per repo
 
