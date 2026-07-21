@@ -1,16 +1,15 @@
 name: deploy-ui
 
-# Deploys the static Agent Arena UI (Swagger reference page + OpenAPI spec) to the
-# Hostinger VPS on every push to main. The page is served by nginx on port 80, so
-# it is reachable at http://76.13.48.131 with no domain required.
+# Deploys the static Agent Arena UI (Swagger reference page + OpenAPI spec) to an
+# older demo VPS. MANUAL-ONLY: this is a legacy demo page pointed at a hard-coded
+# host (76.13.48.131) that is not part of the main deployment, so it must NOT run
+# on every push (it was failing every merge). The real user UI is the Pyyol_client
+# repo. Trigger by hand from the Actions tab if you still want the Swagger demo.
 #
 # One-time setup: add a GitHub repo secret named DEPLOY_SSH_KEY containing the
 # PRIVATE SSH key whose public half is in /root/.ssh/authorized_keys on the server.
-# The host/user are hard-coded below (root@76.13.48.131) as requested.
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
