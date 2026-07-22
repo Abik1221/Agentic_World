@@ -1,0 +1,40 @@
+name: dns
+
+# Reconcile Cloudflare DNS for the domain (apex, www, api, admin, trace) against
+# the origin server IP. Manual-only (never on push) because DNS is sensitive and
+# rarely changes. Idempotent + safe to re-run; also removes stale apex/www A
+# records that point at a different IP.
+#
+# Required repo secrets:
+#   CLOUDFLARE_API_TOKEN  token with Zone:Read + Zone.DNS:Edit on the zone (no future
+#                         Start Date — a not-yet-valid token fails with 9109)
+#   SERVER_IP             origin server public IPv4 (e.g. 76.13.48.131)
+# Optional:
+#   DOMAIN                defaults to pyyol.com
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview changes without applying"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Reconcile Cloudflare DNS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          DOMAIN: ${{ vars.DOMAIN || 'pyyol.com' }}
+        run: |
+          python3 deploy/cloudflare-dns.py ${{ inputs.dry_run && '--dry-run' || '' }}
