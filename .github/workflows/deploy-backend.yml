@@ -4,13 +4,15 @@ name: deploy-backend
 #
 # Flow on every push to main (or manual dispatch):
 #   1. test  — go build + vet + race tests. Deploy is gated on this (fail = no deploy).
-#   2. deploy — build the distroless server image, ship it over SSH, generate the
-#      prod .env from GitHub Secrets, `docker compose up -d`. The server applies DB
-#      migrations in-process on boot (AUTO_MIGRATE=true), then we poll /readyz until
-#      it reports the DB + Redis are healthy (i.e. migrations succeeded).
+#   2. deploy — build the distroless server image and PUSH it to the private Docker
+#      Hub repo (DOCKERHUB_REPO:<sha> + :latest); ship only the compose file + the
+#      prod .env (generated from GitHub Secrets) over SSH; the server logs in to the
+#      registry, `docker compose pull`s the pinned image, logs out, and `up -d`. The
+#      server applies DB migrations in-process on boot (AUTO_MIGRATE=true), then we
+#      poll /readyz until DB + Redis are healthy (i.e. migrations succeeded).
 #
-# Required GitHub Secrets — see the list printed at the bottom of this file's PR /
-# the deploy summary. SSH: DEPLOY_SSH_KEY, SSH_HOST, SSH_USER, SSH_PORT.
+# Required GitHub Secrets. SSH: DEPLOY_SSH_KEY, SSH_HOST, SSH_USER, SSH_PORT.
+# Registry: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_REPO (e.g. nahi12/pyyol_backend).
 # App secrets: POSTGRES_PASSWORD, JWT_SIGNING_KEY, API_KEY_PEPPER, … (full list below).
 
 on:
@@ -29,7 +31,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: "agent-arena-server:latest"
+  # The image ref is DOCKERHUB_REPO:<sha>, built + pushed then pulled on the server.
   REMOTE_DIR: "/opt/agent-arena"
 
 jobs:
@@ -65,11 +67,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build server image
-        run: docker build -f backend/Dockerfile -t "$IMAGE" --build-arg VERSION="${GITHUB_SHA::12}" backend
-
-      - name: Save image to a tarball
-        run: docker save "$IMAGE" | gzip > /tmp/arena-server.tar.gz
+      - name: Build, tag, and push image to Docker Hub (private)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_REPO:?DOCKERHUB_REPO secret is required}"
+          SHA="${GITHUB_SHA::12}"
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          docker build -f backend/Dockerfile \
+            -t "$DOCKERHUB_REPO:$SHA" -t "$DOCKERHUB_REPO:latest" \
+            --build-arg VERSION="$SHA" backend
+          docker push "$DOCKERHUB_REPO:$SHA"
+          docker push "$DOCKERHUB_REPO:latest"
+          docker logout
+          # Pin the deploy to this immutable SHA tag (consumed by the .env step).
+          echo "IMAGE_REF=$DOCKERHUB_REPO:$SHA" >> "$GITHUB_ENV"
 
       - name: Generate prod .env from secrets
         env:
@@ -181,7 +196,7 @@ jobs:
           WITHDRAW_MIN_COINS=${WITHDRAW_MIN_COINS:-}
 
           # ── Compose interpolation ──
-          ARENA_IMAGE=${IMAGE}
+          ARENA_IMAGE=${IMAGE_REF}
           ARENA_PORT=${PORT_PUB}
           EOF
           echo "Generated /tmp/arena.env ($(wc -l < /tmp/arena.env) lines)"
@@ -197,7 +212,7 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Ship image, compose file, and .env to the server
+      - name: Ship compose file + .env to the server (image comes from the registry)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -207,22 +222,25 @@ jobs:
           PORT="${SSH_PORT:-22}"
           ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
           scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
-            /tmp/arena-server.tar.gz "$SSH_USER@$SSH_HOST:$REMOTE_DIR/arena-server.tar.gz"
-          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
             backend/deploy/docker-compose.prod.yml "$SSH_USER@$SSH_HOST:$REMOTE_DIR/docker-compose.prod.yml"
           scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
             /tmp/arena.env "$SSH_USER@$SSH_HOST:$REMOTE_DIR/.env"
 
-      - name: Deploy (load image + compose up + migrate-on-boot)
+      - name: Deploy (pull image from registry + compose up + migrate-on-boot)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
           PORT="${SSH_PORT:-22}"
+          # Docker Hub creds are passed into the remote shell env (masked in CI logs)
+          # so the server can pull the private image, then it logs out immediately.
           ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no \
-            "$SSH_USER@$SSH_HOST" "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'ENDSSH'
+            "$SSH_USER@$SSH_HOST" \
+            "REMOTE_DIR='$REMOTE_DIR' DHUSER='$DOCKERHUB_USERNAME' DHTOKEN='$DOCKERHUB_TOKEN' bash -s" <<'ENDSSH'
           set -euo pipefail
           cd "$REMOTE_DIR"
 
@@ -232,15 +250,16 @@ jobs:
           fi
           DC="docker compose"; docker compose version >/dev/null 2>&1 || DC="docker-compose"
 
-          echo "Loading server image..."
-          docker load < arena-server.tar.gz
-          rm -f arena-server.tar.gz
-
           # Read the published port from the generated .env.
           ARENA_PORT="$(grep -E '^ARENA_PORT=' .env | cut -d= -f2)"; ARENA_PORT="${ARENA_PORT:-8091}"
 
           # Shared cross-repo network (admin + tracing attach to it too). Idempotent.
           docker network create pyyol 2>/dev/null || true
+
+          echo "Pulling the server image from the private registry..."
+          echo "$DHTOKEN" | docker login -u "$DHUSER" --password-stdin
+          $DC -f docker-compose.prod.yml --env-file .env pull server
+          docker logout >/dev/null 2>&1 || true   # don't leave the token on disk
 
           echo "Starting stack (server auto-migrates on boot)..."
           $DC -f docker-compose.prod.yml --env-file .env up -d --remove-orphans

@@ -61,6 +61,10 @@ Replace `pyyol.com` with your domain in each file before enabling.
 `ADMIN_USER_IDS`, `PLATFORM_ENGINE_PRIVATE_KEY`, `PLATFORM_ADMIN_PUBLIC_KEY`,
 `PYYOL_LENS_ENABLED`(=true), `PYYOL_LENS_API_KEY`(==tracing `INGEST_API_KEY`),
 `PYYOL_LENS_ORG`, `BASE_URL`, `CORS_ALLOWED_ORIGINS`, `ARENA_PORT`, `STRIPE_*` (optional).
+**Registry (image push/pull):** `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (a Docker Hub
+PAT with read+write), `DOCKERHUB_REPO` (e.g. `nahi12/pyyol_backend`). CI builds → pushes
+`DOCKERHUB_REPO:<sha>`+`:latest`; the server logs in, pulls the pinned `<sha>`, logs out.
+**DNS/Cloudflare (used by `dns.yml`):** `CLOUDFLARE_API_TOKEN`, `SERVER_IP`, `CLOUDFLARE_ZONE_ID`.
 
 ### `Agentic_World` — tracing (`deploy-tracing.yml`)
 `QUERY_API_KEY`, `INGEST_API_KEY`, `PYYOL_LENS_AUTH_PASSWORD`,
