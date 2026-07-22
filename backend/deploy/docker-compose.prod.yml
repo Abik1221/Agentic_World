@@ -49,10 +49,14 @@ services:
       retries: 20
 
   server:
-    # Image is loaded on the host from the CI-built tarball; never built here.
+    # Built + pushed by CI; pulled here, never built on the server.
     image: ${ARENA_IMAGE:-agent-arena-server:latest}
     container_name: arena-server
     restart: unless-stopped
+    # Cap container logs so they can't fill the shared VPS disk.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     env_file:
       - .env
     depends_on:
