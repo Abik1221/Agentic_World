@@ -150,7 +150,7 @@ class _TurnSpanCtx:
         self._trace_id = trace_id
         self._base = base
         self._span: Optional[Span] = None
-        self._token = None
+        self._token: Optional[contextvars.Token] = None
         self._start = 0.0
 
     def __enter__(self) -> Span:
@@ -162,7 +162,7 @@ class _TurnSpanCtx:
         self._token = _current.set(self._span)
         return self._span
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type, exc, tb) -> None:
         ms = int((time.perf_counter() - self._start) * 1000)
         end = {**self._base, "latency_ms": ms}
         if exc_type is not None:
@@ -172,7 +172,7 @@ class _TurnSpanCtx:
         self._t._emit(end)
         if self._token is not None:
             _current.reset(self._token)
-        return False  # never swallow the handler's exception
+        return  # None ⇒ never swallow the handler's exception
 
 
 class Tracer:
@@ -295,7 +295,7 @@ class Tracer:
                         return
             except Exception:  # noqa: BLE001 - telemetry must never raise into the app
                 pass
-            time.sleep(0.25 * (2 ** attempt))
+            time.sleep(0.25 * (2**attempt))
         self.dropped += len(batch)
 
     def close(self, timeout: float = 3.0) -> None:
@@ -313,8 +313,8 @@ class _NoopTurnCtx(_TurnSpanCtx):
     def __enter__(self) -> Span:
         return _NOOP_SPAN
 
-    def __exit__(self, *a: Any) -> bool:
-        return False
+    def __exit__(self, *a: Any) -> None:
+        return None
 
 
 def _id() -> str:

@@ -31,6 +31,7 @@ def test_banner_labels():
 
 def test_confirm_ranked_requires_explicit_yes():
     assert mode.confirm_ranked(assume_yes=True) is True
+
     # Non-interactive (CI) without --yes must NOT auto-enter real stakes.
     class NoTTY(io.StringIO):
         def isatty(self):

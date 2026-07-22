@@ -466,6 +466,47 @@ def cmd_logout(_args: argparse.Namespace) -> int:
 # --- status / logs -------------------------------------------------------------
 
 
+def cmd_wallet(args: argparse.Namespace) -> int:
+    """Show the owner's coin balance + per-agent playing wallets, so a developer can
+    see why ranked play was refused ("not enough coins") without leaving the CLI."""
+    from . import credentials
+
+    creds = credentials.load()
+    if creds is None or not creds.access_token:
+        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
+        return 2
+    base = _http_base(args, creds)
+    st, w = _api_get(f"{base}/v1/user/wallet", creds.access_token)
+    if st != 200:
+        print(f"{BAD} could not fetch wallet ({st}): {w}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(w, indent=2))
+        return 0
+    cents = w.get("coin_cents") or 1
+    avail = int(w.get("available_balance", 0) or 0)
+
+    def _usd(coins: int) -> str:
+        return f"${(coins * cents) / 100:,.2f}"
+
+    print("Treasury")
+    print(f"  Available   {avail:,} coins  ({_usd(avail)})")
+    if w.get("locked_balance"):
+        print(f"  Locked      {int(w['locked_balance']):,} coins (in active matches)")
+    if w.get("lifetime_earnings"):
+        print(f"  Earned      {int(w['lifetime_earnings']):,} coins (lifetime)")
+    agents = w.get("agents") or []
+    if agents:
+        print("\nAgent wallets")
+        for ag in agents:
+            wd = int(ag.get("withdrawable", 0) or 0)
+            print(
+                f"  {str(ag.get('name') or ag.get('agent') or '?'):<20} "
+                f"{int(ag.get('balance', 0) or 0):>10,} coins   withdrawable {wd:,}"
+            )
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     import urllib.error
     import urllib.request
@@ -580,7 +621,9 @@ def cmd_queue(args: argparse.Namespace) -> int:
             return 0
         print(f"{game} stake tiers:")
         for t in tiers:
-            print(f"  {str(t.get('key','')):8} {int(t.get('coins',0)):>8} coins  {t.get('label','')}")
+            print(
+                f"  {str(t.get('key', '')):8} {int(t.get('coins', 0)):>8} coins  {t.get('label', '')}"
+            )
         return 0
 
     token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
@@ -606,16 +649,24 @@ def cmd_queue(args: argparse.Namespace) -> int:
         code = str(resp.get("code") or resp.get("error") or "")
         msg = resp.get("message") or ""
         if "certified" in code:
-            print(f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.", file=sys.stderr)
+            print(
+                f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+                file=sys.stderr,
+            )
         elif "tier" in code:
             print(f"{BAD} {msg or code} — see `pyyol queue --list`", file=sys.stderr)
         elif "balance" in code or "insufficient" in code:
-            print(f"{BAD} not enough coins to stake this tier (or below your min balance).", file=sys.stderr)
+            print(
+                f"{BAD} not enough coins to stake this tier (or below your min balance).",
+                file=sys.stderr,
+            )
         else:
             print(f"{BAD} could not queue ({st}): {resp}", file=sys.stderr)
         return 1
 
-    print(f"{OK} queued for {game}. Keep your agent connected (`pyyol run`) — it plays automatically when matched.")
+    print(
+        f"{OK} queued for {game}. Keep your agent connected (`pyyol run`) — it plays automatically when matched."
+    )
     deadline = time.time() + args.wait
     while time.time() < deadline:
         st, s = _api_get(f"{base}/v1/queue", token)
@@ -678,7 +729,8 @@ def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
 def _render_sse(lines, console) -> None:
     """Parse a text/event-stream and render each frame via the console (read-only).
     Returns when the match reaches a terminal event or the stream closes."""
-    event, data = None, []
+    event: Optional[str] = None
+    data: List[str] = []
     for raw in lines:
         line = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else raw
         line = line.rstrip("\r\n")
@@ -851,7 +903,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         color=False if args.no_color else None,
     )
     try:
-        agent.run(url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds))
+        agent.run(
+            url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds)
+        )
     except KeyboardInterrupt:
         print("\nstopped.")
     return 0
@@ -878,7 +932,9 @@ def _load_agent(file: str, var: str):
     return agent
 
 
-def _autoplay_set(api: str, token: str, *, enabled: bool, mode: str, bid: int, games: list) -> tuple:
+def _autoplay_set(
+    api: str, token: str, *, enabled: bool, mode: str, bid: int, games: list
+) -> tuple:
     """PUT the agent's auto-play setting (availability). Returns (status, body)."""
     import urllib.error
     import urllib.request
@@ -903,7 +959,11 @@ def _autoplay_set(api: str, token: str, *, enabled: bool, mode: str, bid: int, g
 
 def _autoplay_opts(args, cfg) -> tuple:
     """Resolve (mode, games) from flags → pyyol.toml → defaults."""
-    mode = "ranked" if getattr(args, "ranked", False) else (args.mode or (cfg.mode if cfg else "") or "sandbox")
+    mode = (
+        "ranked"
+        if getattr(args, "ranked", False)
+        else (args.mode or (cfg.mode if cfg else "") or "sandbox")
+    )
     games = [g.strip() for g in (args.games or "").split(",") if g.strip()]
     if not games and cfg and cfg.arena:
         games = [cfg.arena]
@@ -920,7 +980,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     api = (args.api or (creds.url if creds else "")).rstrip("/")
     url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
     token = args.token or os.environ.get("PYYOL_TOKEN", "") or (creds.access_token if creds else "")
-    agent_id = args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
+    agent_id = (
+        args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
+    )
     if not (api and token):
         print(f"{BAD} run `pyyol login` first (need the API base + token)", file=sys.stderr)
         return 2
@@ -937,7 +999,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
         extra = f", bid={args.bid}" if mode == "ranked" else ""
         print(f"{OK} auto-play ON — mode={mode}{extra}, games={games or 'default'}")
     else:
-        print(f"{BAD} could not enable auto-play (status {st}: {resp}); holding the connection anyway", file=sys.stderr)
+        print(
+            f"{BAD} could not enable auto-play (status {st}: {resp}); holding the connection anyway",
+            file=sys.stderr,
+        )
 
     print("serving — the platform will drive your agent as matches are paired. Ctrl-C to stop.")
     _log_file_handler()
@@ -949,7 +1014,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
         color=False if args.no_color else None,
     )
     try:
-        agent.run(url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds))
+        agent.run(
+            url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds)
+        )
     except KeyboardInterrupt:
         print("\nstopping…")
     finally:
@@ -1197,11 +1264,16 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     agent_id = args.agent or (creds.agent_id if creds else "") or cfg.agent_id
     token = args.token or os.environ.get("PYYOL_TOKEN", "") or creds.access_token
     if not connect_url or not agent_id:
-        print(f"{BAD} missing connect URL or agent id — run `pyyol login` (or pass --url/--agent).", file=sys.stderr)
+        print(
+            f"{BAD} missing connect URL or agent id — run `pyyol login` (or pass --url/--agent).",
+            file=sys.stderr,
+        )
         return 2
 
     arena = getattr(args, "arena", "") or cfg.arena
-    m = mode.resolve(ranked_flag=getattr(args, "ranked", False), cfg_mode=cfg.mode, dev_locked=dev_locked)
+    m = mode.resolve(
+        ranked_flag=getattr(args, "ranked", False), cfg_mode=cfg.mode, dev_locked=dev_locked
+    )
     print(mode.banner(m))
 
     # Real-stakes guardrails: explicit opt-in confirmation. Certification is enforced
@@ -1223,8 +1295,13 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
 
     console = build_console(quiet=getattr(args, "quiet", False))
     conn = RuntimeConnector(
-        agent, url=connect_url, agent_id=agent_id, token=token,
-        name=agent.name, games=agent.supported_games, console=console,
+        agent,
+        url=connect_url,
+        agent_id=agent_id,
+        token=token,
+        name=agent.name,
+        games=agent.supported_games,
+        console=console,
         **_refresh_kwargs(creds),
     )
     stop = threading.Event()
@@ -1330,9 +1407,9 @@ def cmd_arenas(args: argparse.Namespace) -> int:
     for a in arenas:
         players = f"{a.get('min_players')}-{a.get('max_players')}"
         print(
-            f"{a.get('id',''):<12}{players:<10}"
+            f"{a.get('id', ''):<12}{players:<10}"
             f"{('yes' if a.get('sandbox') else 'no'):<9}"
-            f"{('yes' if a.get('ranked') else 'no'):<8}{a.get('status','')}"
+            f"{('yes' if a.get('ranked') else 'no'):<8}{a.get('status', '')}"
         )
     return 0
 
@@ -1353,7 +1430,7 @@ def cmd_leaderboard(args: argparse.Namespace) -> int:
         print(f"{'#':<5}{'DEVELOPER':<24}P-INDEX")
         for r in rows:
             who = r.get("username") or r.get("developer") or "?"
-            print(f"{r.get('rank',''):<5}{who:<24}{r.get('p_index','')}")
+            print(f"{r.get('rank', ''):<5}{who:<24}{r.get('p_index', '')}")
         return 0 if st == 200 else 1
     q = []
     if args.game:
@@ -1363,13 +1440,18 @@ def cmd_leaderboard(args: argparse.Namespace) -> int:
     url = f"{base}/v1/leaderboard" + (("?" + "&".join(q)) if q else "")
     st, resp = _api_get(url)
     if st != 200:
-        print(f"{BAD} could not fetch leaderboard ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch leaderboard ({st}): {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     rows = resp.get("entries") or []
     print(f"{'#':<5}{'AGENT':<24}{'ELO':<7}W-L-T")
     for r in rows:
-        wlt = f"{r.get('wins',0)}-{r.get('losses',0)}-{r.get('ties',0)}"
-        print(f"{r.get('rank',''):<5}{(r.get('name') or r.get('slug') or '?'):<24}{r.get('elo',''):<7}{wlt}")
+        wlt = f"{r.get('wins', 0)}-{r.get('losses', 0)}-{r.get('ties', 0)}"
+        print(
+            f"{r.get('rank', ''):<5}{(r.get('name') or r.get('slug') or '?'):<24}{r.get('elo', ''):<7}{wlt}"
+        )
     return 0
 
 
@@ -1395,13 +1477,17 @@ def cmd_profile(args: argparse.Namespace) -> int:
     dev = p.get("developer", {})
     pidx = p.get("p_index") or {}
     stats = p.get("stats") or {}
-    print(f"@{dev.get('username') or dev.get('developer','?')}")
+    print(f"@{dev.get('username') or dev.get('developer', '?')}")
     if pidx:
-        print(f"  P-Index   {pidx.get('p_index','?')}  (rank #{pidx.get('global_rank','?')}, top {pidx.get('percentile','?')}%)")
-    print(f"  Record    {stats.get('wins',0)}W-{stats.get('losses',0)}L-{stats.get('draws',0)}D over {stats.get('total_matches',0)} matches")
+        print(
+            f"  P-Index   {pidx.get('p_index', '?')}  (rank #{pidx.get('global_rank', '?')}, top {pidx.get('percentile', '?')}%)"
+        )
+    print(
+        f"  Record    {stats.get('wins', 0)}W-{stats.get('losses', 0)}L-{stats.get('draws', 0)}D over {stats.get('total_matches', 0)} matches"
+    )
     if stats.get("favorite_arena"):
         print(f"  Favorite  {stats.get('favorite_arena')}")
-    print(f"  Agents    {len(p.get('agents') or [])}   Followers {p.get('followers',0)}")
+    print(f"  Agents    {len(p.get('agents') or [])}   Followers {p.get('followers', 0)}")
     return 0
 
 
@@ -1421,7 +1507,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
         print(f"{BAD} no API url — pass --api or run `pyyol login`.", file=sys.stderr)
         return 2
     game = args.game or (creds and _cfg_arena()) or "goofspiel"
-    path = _REPLAY_PATH.get(game, _REPLAY_PATH["goofspiel"]).format(id=urllib.parse.quote(args.match))
+    path = _REPLAY_PATH.get(game, _REPLAY_PATH["goofspiel"]).format(
+        id=urllib.parse.quote(args.match)
+    )
     st, resp = _api_get(f"{base}{path}")
     if st != 200:
         print(f"{BAD} could not fetch replay ({st}): {resp.get('error') or resp}", file=sys.stderr)
@@ -1465,8 +1553,12 @@ def _replay_outcome(resp: Dict[str, Any]):
     for ev in reversed(resp.get("events") or []):
         if not isinstance(ev, dict):
             continue
-        payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
-        if ev.get("type") in ("match_finished", "game_over", "victory", "finished") or "winner" in payload:
+        pl = ev.get("payload")
+        payload = pl if isinstance(pl, dict) else {}
+        if (
+            ev.get("type") in ("match_finished", "game_over", "victory", "finished")
+            or "winner" in payload
+        ):
             return _winner_label(payload.get("winner")), payload.get("scores")
     return "", None
 
@@ -1484,14 +1576,26 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     checks: List[tuple[str, bool, str]] = []
     creds = credentials.load()
-    checks.append(("logged in", bool(creds and creds.access_token), creds.url if creds else "run `pyyol login`"))
+    checks.append(
+        (
+            "logged in",
+            bool(creds and creds.access_token),
+            creds.url if creds else "run `pyyol login`",
+        )
+    )
 
     cfg = cfgmod.load()
     if cfg is None:
         checks.append(("pyyol.toml", False, "run `pyyol init`"))
     else:
         problems = cfgmod.validate(cfg)
-        checks.append(("pyyol.toml", not problems, "; ".join(problems) or f"{cfg.name} · {cfg.arena} · {cfg.mode}"))
+        checks.append(
+            (
+                "pyyol.toml",
+                not problems,
+                "; ".join(problems) or f"{cfg.name} · {cfg.arena} · {cfg.mode}",
+            )
+        )
         # Agent module imports?
         try:
             _load_agent_from_config(cfg)
@@ -1514,8 +1618,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         all_ok = all_ok and ok
         print(f"  {OK if ok else BAD} {name:<20} {detail}")
     ready = all_ok
-    print("\n" + ("✓ ready — `pyyol dev` to practice, `pyyol play <arena>` to compete." if ready
-                  else "fix the ✗ items above."))
+    print(
+        "\n"
+        + (
+            "✓ ready — `pyyol dev` to practice, `pyyol play <arena>` to compete."
+            if ready
+            else "fix the ✗ items above."
+        )
+    )
     return 0 if ready else 1
 
 
@@ -1567,10 +1677,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- auth ---
     pl = sub.add_parser("login", help="log in via the browser (GitHub/Google/wallet/email)")
-    pl.add_argument("--with", dest="provider", default="", choices=["github", "google", "wallet"],
-                    help="pre-select a provider on the login page")
-    pl.add_argument("--dashboard", default="", help="dashboard base URL that serves /cli-login (default: https://pyyol.com; or $PYYOL_DASHBOARD)")
-    pl.add_argument("--api", default="", help="platform API base URL to record (default: https://api.pyyol.com; or $PYYOL_API)")
+    pl.add_argument(
+        "--with",
+        dest="provider",
+        default="",
+        choices=["github", "google", "wallet"],
+        help="pre-select a provider on the login page",
+    )
+    pl.add_argument(
+        "--dashboard",
+        default="",
+        help="dashboard base URL that serves /cli-login (default: https://pyyol.com; or $PYYOL_DASHBOARD)",
+    )
+    pl.add_argument(
+        "--api",
+        default="",
+        help="platform API base URL to record (default: https://api.pyyol.com; or $PYYOL_API)",
+    )
     pl.add_argument("--connect", default="", help="override the WSS connect URL")
     pl.add_argument("--agent", default="", help="agent public id (if known)")
     pl.add_argument("--token", default="", help="paste a token / PAT directly (CI / headless)")
@@ -1592,7 +1715,9 @@ def build_parser() -> argparse.ArgumentParser:
     pi.set_defaults(func=cmd_init)
 
     # --- develop (sandbox-locked) ---
-    pdev = sub.add_parser("dev", help="run your agent locally in SANDBOX (no stakes) — the dev loop")
+    pdev = sub.add_parser(
+        "dev", help="run your agent locally in SANDBOX (no stakes) — the dev loop"
+    )
     pdev.add_argument("--matches", type=int, default=3, help="practice matches to auto-start")
     pdev.add_argument("--url", default="", help="connect URL (or PYYOL_URL; defaults to login)")
     pdev.add_argument("--agent", default="", help="agent id (or PYYOL_AGENT_ID; defaults to login)")
@@ -1603,9 +1728,13 @@ def build_parser() -> argparse.ArgumentParser:
     pdev.set_defaults(func=cmd_dev)
 
     # --- compete (explicit; --ranked = real stakes) ---
-    pp = sub.add_parser("play", help="compete in an arena. SANDBOX by default; --ranked = real stakes")
+    pp = sub.add_parser(
+        "play", help="compete in an arena. SANDBOX by default; --ranked = real stakes"
+    )
     pp.add_argument("arena", choices=["goofspiel", "mafia", "monopoly"])
-    pp.add_argument("--ranked", action="store_true", help="REAL stakes (needs `pyyol publish`; confirmed)")
+    pp.add_argument(
+        "--ranked", action="store_true", help="REAL stakes (needs `pyyol publish`; confirmed)"
+    )
     pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
     pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start")
     pp.add_argument("--yes", action="store_true", help="skip the ranked confirmation (CI)")
@@ -1617,7 +1746,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_api(pp)
     pp.set_defaults(func=cmd_play)
 
-    ppub = sub.add_parser("publish", help="certify your agent for RANKED play (verify a hosted endpoint)")
+    ppub = sub.add_parser(
+        "publish", help="certify your agent for RANKED play (verify a hosted endpoint)"
+    )
     ppub.add_argument("--api", default="", help="platform API base (or from login)")
     ppub.add_argument("--agent", default="", help="agent public id (or from login)")
     ppub.add_argument("--token", default="", help="dashboard/access token (or from login)")
@@ -1656,20 +1787,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("update", help="check for a newer pyyol").set_defaults(func=cmd_update)
 
     # --- advanced / compatibility aliases (lower-level; dev/play front-end these) ---
-    pv = sub.add_parser("validate", help="[advanced] probe a hosted endpoint like the platform does")
+    pv = sub.add_parser(
+        "validate", help="[advanced] probe a hosted endpoint like the platform does"
+    )
     pv.add_argument("--url", required=True)
     pv.add_argument("--secret", default="")
     pv.add_argument("--game", choices=["goofspiel", "monopoly", "mafia"], default="goofspiel")
     pv.set_defaults(func=cmd_validate)
 
-    ps = sub.add_parser("simulate", help="[advanced] drive a full local match against a hosted endpoint")
+    ps = sub.add_parser(
+        "simulate", help="[advanced] drive a full local match against a hosted endpoint"
+    )
     ps.add_argument("--url", required=True)
     ps.add_argument("--secret", default="")
     ps.add_argument("--game", choices=["goofspiel"], default="goofspiel")
     ps.add_argument("--hand", type=int, default=13)
     ps.set_defaults(func=cmd_simulate)
 
-    prun = sub.add_parser("run", help="[advanced] connect your agent over WSS (dev/play front-end this)")
+    prun = sub.add_parser(
+        "run", help="[advanced] connect your agent over WSS (dev/play front-end this)"
+    )
     prun.add_argument("--file", default="agent.py")
     prun.add_argument("--var", default="agent")
     prun.add_argument("--url", default="")
@@ -1680,27 +1817,45 @@ def build_parser() -> argparse.ArgumentParser:
     prun.add_argument("--no-color", action="store_true")
     prun.set_defaults(func=cmd_run)
 
-    psv = sub.add_parser("serve", help="deploy-once worker: enable auto-play + hold the connection so your agent plays anytime")
+    psv = sub.add_parser(
+        "serve",
+        help="deploy-once worker: enable auto-play + hold the connection so your agent plays anytime",
+    )
     psv.add_argument("--file", default="agent.py")
     psv.add_argument("--var", default="agent")
     psv.add_argument("--url", default="")
     psv.add_argument("--agent", default="")
     psv.add_argument("--token", default="")
     _add_api(psv)
-    psv.add_argument("--ranked", action="store_true", help="auto-play RANKED (real stakes); default sandbox")
-    psv.add_argument("--mode", default="", choices=["", "sandbox", "ranked"], help="explicit mode (overrides pyyol.toml)")
+    psv.add_argument(
+        "--ranked", action="store_true", help="auto-play RANKED (real stakes); default sandbox"
+    )
+    psv.add_argument(
+        "--mode",
+        default="",
+        choices=["", "sandbox", "ranked"],
+        help="explicit mode (overrides pyyol.toml)",
+    )
     psv.add_argument("--bid", type=int, default=0, help="ranked stake per match")
-    psv.add_argument("--games", default="", help="comma-separated games to rotate (sandbox); default = your arena")
+    psv.add_argument(
+        "--games",
+        default="",
+        help="comma-separated games to rotate (sandbox); default = your arena",
+    )
     psv.add_argument("--json", action="store_true")
     psv.add_argument("--quiet", action="store_true")
     psv.add_argument("--no-color", action="store_true")
     psv.set_defaults(func=cmd_serve)
 
-    pap = sub.add_parser("autoplay", help="toggle auto-play without holding a connection (for hosted endpoints)")
+    pap = sub.add_parser(
+        "autoplay", help="toggle auto-play without holding a connection (for hosted endpoints)"
+    )
     pap.add_argument("state", choices=["on", "off"])
     _add_api(pap)
     pap.add_argument("--token", default="")
-    pap.add_argument("--ranked", action="store_true", help="auto-play RANKED (real stakes); default sandbox")
+    pap.add_argument(
+        "--ranked", action="store_true", help="auto-play RANKED (real stakes); default sandbox"
+    )
     pap.add_argument("--mode", default="", choices=["", "sandbox", "ranked"])
     pap.add_argument("--bid", type=int, default=0)
     pap.add_argument("--games", default="")
@@ -1722,6 +1877,22 @@ def build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--json", action="store_true")
     pw.add_argument("--no-color", action="store_true")
     pw.set_defaults(func=cmd_watch)
+
+    pq = sub.add_parser(
+        "queue", help="enter ranked matchmaking at a stake tier (your connected agent plays)"
+    )
+    pq.add_argument("game")
+    _add_api(pq)
+    pq.add_argument("--list", action="store_true", help="show the game's stake tiers and exit")
+    pq.add_argument("--tier", default="", help="stake tier key (see --list)")
+    pq.add_argument("--bid", type=int, default=0, help="explicit coin stake for a tier-less game")
+    pq.add_argument("--token", default="")
+    pq.set_defaults(func=cmd_queue)
+
+    pwal = sub.add_parser("wallet", help="show your coin balance + per-agent playing wallets")
+    _add_api(pwal)
+    pwal.add_argument("--json", action="store_true")
+    pwal.set_defaults(func=cmd_wallet)
 
     return p
 

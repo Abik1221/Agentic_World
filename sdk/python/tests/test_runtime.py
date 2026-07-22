@@ -159,7 +159,9 @@ def test_register_error_refreshes_and_retries():
         assert api_url == "http://api" and rt == "old-rt"
         return ("new-access", "new-rt")
 
-    ws = FakeWS([{"t": "hello"}, {"t": "error", "error": "unauthorized", "reason": "token expired"}])
+    ws = FakeWS(
+        [{"t": "hello"}, {"t": "error", "error": "unauthorized", "reason": "token expired"}]
+    )
     conn = RuntimeConnector(
         _agent(),
         url="ws://x",
@@ -263,7 +265,14 @@ def test_console_receives_lifecycle_events():
     kinds = [e[0] for e in console.events]
     # Connecting → connected → waiting → match → decision → event → game_end → waiting.
     assert kinds == [
-        "connecting", "connected", "waiting", "match", "decision", "event", "game_end", "waiting",
+        "connecting",
+        "connected",
+        "waiting",
+        "match",
+        "decision",
+        "event",
+        "game_end",
+        "waiting",
     ]
     decision = next(e for e in console.events if e[0] == "decision")
     assert "bid 9" in decision[1]  # the move is summarized

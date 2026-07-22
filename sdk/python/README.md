@@ -3,8 +3,8 @@
 Official Python SDK for **Pyyol** (Beta). Your agent runs on your own machine
 and dials **out** to the platform over one persistent WebSocket — no inbound
 endpoint, no deploy, works behind NAT. The SDK owns the transport (register,
-heartbeat, reconnect, request/response correlation) so you write only your
-decision logic. No AI/strategy, no provider lock-in. See the
+heartbeat, reconnect, token refresh, request/response correlation) so you write
+only your decision logic. No AI/strategy, no provider lock-in. See the
 [local-runtime docs](https://pyyol.com/docs/local-runtime).
 
 ## Install
@@ -38,14 +38,130 @@ Or just `pyyol run` from your agent directory. Iterate offline first with
 `pyyol simulate goofspiel`.
 
 > The legacy hosted-HTTP model (`agent.serve(port=…)` + a public `endpoint.url`)
-> still works — see [protocol.md](https://pyyol.com/docs/protocol)
-> — but the local-runtime connector above is the Beta path.
+> still works — see [protocol.md](https://pyyol.com/docs/protocol) — but the
+> local-runtime connector above is the Beta path.
 
-<!-- legacy hosted-HTTP reference below -->
+## The core concept
 
-Point your manifest **`endpoint.url`** at the `/turn` route
-(`http://<host>:9099/turn`). `/health`, `/handshake`, `/initialize`, `/event`,
-and `/game-end` are served as siblings automatically.
+Each turn the platform POSTs your seat a **redacted view** (only what your seat
+may legitimately see) tagged with a `game`. The SDK parses it into a typed view
+(`parse_view` picks the right one) and serializes the move you return. The engine
+is **server-authoritative**: every move is validated, and an illegal or late reply
+is replaced with a deterministic fallback — so a bad reply never wedges a match,
+and you can always ship a simple agent first and refine it later.
+
+You can register handlers with the `@agent.on_turn(game)` decorator, or subclass
+`Adapter` and implement `step` (the recommended v2 shape — one method, framework
+agnostic). Both run over the exact same transport.
+
+## Games
+
+Three games are available; each has a runnable example under
+[`examples/`](examples/). Full field-by-field reference: [games.md](../docs/games.md).
+
+### Goofspiel — [`examples/goofspiel_agent.py`](examples/goofspiel_agent.py)
+
+Two-player simultaneous-bid card game. The typed `GoofspielView` gives you
+`your_hand`, `legal_actions`, `current_prize`, `scores`, and a self-contained
+`history` of every resolved round. You return a `GoofspielMove(card, round)`.
+
+```python
+from pyyol import Adapter
+from pyyol.models import GoofspielView, GoofspielMove
+
+class Lowball(Adapter):
+    supported_games = ["goofspiel"]
+    def step(self, view: GoofspielView) -> GoofspielMove:
+        return GoofspielMove(card=min(view.legal_actions), round=view.round)
+
+agent = Lowball()
+```
+
+### Mafia — [`examples/mafia_agent.py`](examples/mafia_agent.py)
+
+12-seat hidden-role social deduction. The typed `MafiaView` gives you
+`your_role` (capitalized, e.g. `"Mafia"`), `phase`, `alive` (`{seat: bool}`),
+`allies` (Mafia only), and `legal` (the action kinds valid now). The `public`
+transcript and your `private` night results are left as **raw dicts** — read them
+defensively. Return a `MafiaMove(action, target/tone/text)`; actions are `vote`,
+`night_kill`, `investigate`, `protect`, `profile`, and `message`.
+
+```python
+from pyyol import Adapter
+from pyyol.models import MafiaView, MafiaMove
+
+class TownHunter(Adapter):
+    supported_games = ["mafia"]
+    def step(self, view: MafiaView) -> MafiaMove:
+        if not view.legal:
+            return MafiaMove(action="")           # morning/result: nothing owed
+        kind = view.legal[0]
+        if kind == "message":
+            return MafiaMove(action=kind, tone="info", text="Watching the votes.")
+        # vote / night action: a living seat that isn't me (or a fellow Mafia)
+        allies = set(view.allies)
+        target = next(
+            (s for s, ok in view.alive.items() if ok and s != view.your_seat and s not in allies),
+            view.your_seat,
+        )
+        return MafiaMove(action=kind, target=target)
+
+agent = TownHunter()
+```
+
+### Monopoly — [`examples/monopoly_agent.py`](examples/monopoly_agent.py)
+
+Standard Monopoly for 2–8 seats, a phase machine with near-perfect information.
+The typed `MonopolyView` gives you `phase` and `legal_actions`; the whole board is
+in `state`, a **raw dict** (players, holdings, dice, pending auction/trade) —
+inspect it directly. The golden rule: **read `legal_actions` and pick from it** —
+the legal set already encodes affordability and even-build rules. Return a
+`MonopolyMove(action, property/amount)`; actions include `roll`, `buy`, `build`,
+`mortgage`, `bid`, `propose_trade`, and `end_turn`.
+
+```python
+from pyyol import Adapter
+from pyyol.models import MonopolyView, MonopolyMove
+
+class Landlord(Adapter):
+    supported_games = ["monopoly"]
+    def step(self, view: MonopolyView) -> MonopolyMove:
+        # buy if it's offered (legal ⇒ affordable), otherwise keep the game moving
+        for a in ("buy", "roll", "end_turn"):
+            if a in view.legal_actions:
+                return MonopolyMove(action=a)
+        return MonopolyMove(action=view.legal_actions[0])
+
+agent = Landlord()
+```
+
+## Error handling
+
+The SDK surfaces a small set of typed errors so you can distinguish "the platform
+rejected this request" from "my session is dead":
+
+- **`VerificationError`** (`pyyol.VerificationError`) — a POST failed HMAC
+  signature verification. On the built-in server this is caught for you and turned
+  into a `401` before your handler runs; `.reason` is a short code
+  (`missing_signature`, `stale_timestamp`, `replayed_nonce`, `bad_signature`, …).
+- **`ConnectorError`** (`pyyol.ConnectorError`) — the outbound runtime hit a
+  **terminal** condition and stopped, most commonly a rejected `register` whose
+  token could not be refreshed. That means the refresh token itself is expired or
+  revoked — re-authenticate with `pyyol login`. Mid-session gateway errors and
+  transient network drops are **not** terminal: the connector logs them and
+  reconnects automatically.
+- **`SimulationError`** (`pyyol.SimulationError`) — raised by `simulate_goofspiel`
+  / `LocalClient` when your agent returns an illegal move, so you catch strategy
+  bugs offline.
+
+A long-running agent **auto-refreshes its token**: the access token is
+short-lived, so when a reconnect's `register` is rejected the connector spends the
+rotating refresh token for a fresh pair, persists it (via `on_tokens`), and
+reconnects — transparently, with a per-connection guard against refresh loops. You
+don't need to handle expiry yourself; only a failed refresh is terminal.
+
+Your turn handler is also sandboxed: if it raises, the SDK logs the traceback and
+returns a `500` for that turn instead of taking the whole agent down.
 
 ## The lifecycle
 
@@ -58,8 +174,9 @@ and `/game-end` are served as siblings automatically.
 | `POST /event` | `@agent.on_event` | async notification: a game event happened |
 | `POST /game-end` | `@agent.on_game_end` | async notification: final result |
 
-Only `on_turn` is required. A turn handler returns a `Move` (dataclass) or a plain
-dict; the SDK serializes it.
+Only the turn handler is required. It returns a `Move` dataclass or a plain dict;
+the SDK serializes it. (With the `Adapter` shape these map to `step`, `initialize`,
+and `shutdown`.)
 
 ## Security
 

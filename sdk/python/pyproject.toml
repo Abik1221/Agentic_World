@@ -37,6 +37,8 @@ dependencies = ["websockets>=13"]
 # Source lives in a private repo; users are pointed at the public site + docs.
 Homepage = "https://pyyol.com"
 Documentation = "https://pyyol.com/docs"
+Changelog = "https://pyyol.com/docs/changelog"
+Issues = "https://pyyol.com/support"
 
 [project.scripts]
 pyyol = "pyyol.cli:main"
@@ -55,8 +57,10 @@ where = ["."]
 include = ["pyyol*"]
 
 [tool.setuptools.package-data]
-# Ship the PEP 561 marker so downstream type checkers see our annotations.
-pyyol = ["py.typed"]
+# Ship the PEP 561 marker so downstream type checkers see our annotations, plus the
+# engine-generated game rules (rules/games.md + llms-full.txt) so an LLM/agent that
+# only has the installed package still gets the full, current rules for all 3 games.
+pyyol = ["py.typed", "rules/*.md", "rules/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,3 +68,15 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py39"
 line-length = 100
+
+[tool.mypy]
+# mypy's own analysis floor is 3.10 even though the package runs on 3.9+.
+python_version = "3.10"
+files = ["pyyol"]
+# Pragmatic strictness for a shipped-but-not-fully-annotated SDK: type-check what IS
+# annotated and flag dead ignores/casts, but don't fail on third-party stubs. The
+# `py.typed` guarantee is now actually verified in CI. Tightened over time.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

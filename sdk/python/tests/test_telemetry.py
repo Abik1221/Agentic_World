@@ -46,8 +46,11 @@ def test_turn_span_and_model_call_reach_ingest(server):
     with tr.turn_span(match_id="m42", game="goofspiel", round_no=2) as span:
         assert current_span() is span  # installed as current for handler code
         span.log_model_call(
-            provider="openai", model="gpt-4o",
-            prompt_tokens=1000, completion_tokens=50, latency_ms=600,
+            provider="openai",
+            model="gpt-4o",
+            prompt_tokens=1000,
+            completion_tokens=50,
+            latency_ms=600,
         )
         span.log("chose high card", reason="opp low")
     tr.close()

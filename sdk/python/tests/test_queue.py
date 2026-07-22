@@ -20,10 +20,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/v1/games/"):  # public tier menu
-            self._json(200, {"game": "goofspiel", "tiers": [
-                {"key": "low", "label": "Low", "coins": 100},
-                {"key": "mid", "label": "Mid", "coins": 500},
-            ]})
+            self._json(
+                200,
+                {
+                    "game": "goofspiel",
+                    "tiers": [
+                        {"key": "low", "label": "Low", "coins": 100},
+                        {"key": "mid", "label": "Mid", "coins": 500},
+                    ],
+                },
+            )
         elif self.path == "/v1/queue":  # status poll → matched
             self._json(200, {"status": "matched", "match_id": "mt_test"})
         else:

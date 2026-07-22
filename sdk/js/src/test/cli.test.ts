@@ -1,0 +1,257 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+
+import { main } from "../cli.js";
+
+/**
+ * Drive `main()` with a stubbed global fetch, captured stdout/stderr, and an
+ * isolated PYYOL_HOME so nothing touches the real network or the user's creds.
+ * Everything is saved and restored so tests don't leak into each other.
+ */
+async function run(
+  argv: string[],
+  opts: { fetch?: typeof fetch; home?: string } = {},
+): Promise<{ code: number; out: string; err: string }> {
+  const origLog = console.log;
+  const origErr = console.error;
+  const origFetch = globalThis.fetch;
+  const origHome = process.env.PYYOL_HOME;
+  const origApi = process.env.PYYOL_API;
+  const out: string[] = [];
+  const err: string[] = [];
+  console.log = (...a: unknown[]) => out.push(a.join(" "));
+  console.error = (...a: unknown[]) => err.push(a.join(" "));
+  delete process.env.PYYOL_API; // keep httpBase deterministic
+  if (opts.home) process.env.PYYOL_HOME = opts.home;
+  if (opts.fetch) globalThis.fetch = opts.fetch;
+  try {
+    const code = await main(argv);
+    return { code, out: out.join("\n"), err: err.join("\n") };
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+    globalThis.fetch = origFetch;
+    if (origHome === undefined) delete process.env.PYYOL_HOME;
+    else process.env.PYYOL_HOME = origHome;
+    if (origApi === undefined) delete process.env.PYYOL_API;
+    else process.env.PYYOL_API = origApi;
+  }
+}
+
+function seedCreds(home: string, extra: Record<string, unknown> = {}): void {
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    join(home, "credentials.json"),
+    JSON.stringify({
+      url: "http://localhost:9999",
+      connectUrl: "ws://localhost:9999/connect",
+      agentId: "ag_test",
+      accessToken: "tok",
+      refreshToken: "",
+      ...extra,
+    }),
+  );
+}
+
+const json = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status });
+
+// ── status ──────────────────────────────────────────────────────────────────
+
+test("status prints Online + details when the agent is up", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  seedCreds(home);
+  let calledUrl = "";
+  const { code, out } = await run(["status", "--api", "http://localhost:9999", "--agent", "ag_test"], {
+    home,
+    fetch: async (u) => {
+      calledUrl = String(u);
+      return json({ online: true, sdk_version: "1.2.3", games: ["goofspiel"], last_seen: "2026-07-22" });
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(calledUrl, /\/v1\/agent\/status\?agent_id=ag_test$/);
+  assert.match(out, /Online/);
+  assert.match(out, /1\.2\.3/);
+  assert.match(out, /goofspiel/);
+});
+
+test("status prints Offline and omits details when the agent is down", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  seedCreds(home);
+  const { code, out } = await run(["status", "--api", "http://localhost:9999", "--agent", "ag_test"], {
+    home,
+    fetch: async () => json({ online: false }),
+  });
+  assert.equal(code, 0);
+  assert.match(out, /Offline/);
+  assert.doesNotMatch(out, /SDK/);
+});
+
+test("status without login is a usage error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  const { code, err } = await run(["status"], { home });
+  assert.equal(code, 2);
+  assert.match(err, /not logged in/);
+});
+
+// ── autoplay ──────────────────────────────────────────────────────────────────
+
+test("autoplay on PUTs enabled=true with resolved mode/bid/games", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  seedCreds(home);
+  let captured: { url: string; method: string; body: Record<string, unknown> } | undefined;
+  const { code, out } = await run(
+    ["autoplay", "on", "--api", "http://localhost:9999", "--mode", "sandbox", "--games", "goofspiel,mafia", "--bid", "5"],
+    {
+      home,
+      fetch: async (u, init) => {
+        captured = { url: String(u), method: String(init?.method), body: JSON.parse(String(init?.body)) };
+        return json({ ok: true });
+      },
+    },
+  );
+  assert.equal(code, 0);
+  assert.ok(captured);
+  assert.equal(captured!.method, "PUT");
+  assert.match(captured!.url, /\/v1\/agent\/autoplay$/);
+  assert.deepEqual(captured!.body, { enabled: true, mode: "sandbox", bid: 5, games: ["goofspiel", "mafia"] });
+  assert.match(out, /auto-play ON/);
+});
+
+test("autoplay off PUTs enabled=false", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  seedCreds(home);
+  let body: Record<string, unknown> | null = null;
+  const { code, out } = await run(["autoplay", "off", "--api", "http://localhost:9999"], {
+    home,
+    fetch: async (_u, init) => {
+      body = JSON.parse(String(init?.body));
+      return json({});
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(body!.enabled, false);
+  assert.match(out, /auto-play OFF/);
+});
+
+test("autoplay surfaces a non-2xx failure", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  seedCreds(home);
+  const { code, err } = await run(["autoplay", "on", "--api", "http://localhost:9999"], {
+    home,
+    fetch: async () => json({ error: "nope" }, 500),
+  });
+  assert.equal(code, 1);
+  assert.match(err, /failed \(status 500\)/);
+});
+
+// ── logs ────────────────────────────────────────────────────────────────────
+
+test("logs tails the last N lines of the run log", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  mkdirSync(join(home, "logs"), { recursive: true });
+  const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`);
+  writeFileSync(join(home, "logs", "agent.log"), lines.join("\n") + "\n");
+  const { code, out } = await run(["logs", "--n", "3"], { home });
+  assert.equal(code, 0);
+  assert.deepEqual(out.split("\n"), ["line 7", "line 8", "line 9"]);
+});
+
+test("logs reports 'no logs yet' when the file is missing", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  const { code, out } = await run(["logs"], { home });
+  assert.equal(code, 0);
+  assert.match(out, /no logs yet/);
+});
+
+// ── simulate ──────────────────────────────────────────────────────────────────
+
+test("simulate runs a local Goofspiel match against the configured agent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pyyol-p-"));
+  // Import the built Agent by absolute path so the temp project needn't resolve
+  // the `pyyol` package; asAgent is duck-typed so a different module copy is fine.
+  const serverUrl = new URL("../server.js", import.meta.url).href;
+  writeFileSync(
+    join(dir, "agent.mjs"),
+    `import { Agent } from ${JSON.stringify(serverUrl)};\n` +
+      `const a = new Agent({ supportedGames: ["goofspiel"], name: "t" });\n` +
+      `a.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.min(...v.legal_actions) }));\n` +
+      `export const agent = a;\n`,
+  );
+  writeFileSync(
+    join(dir, "pyyol.toml"),
+    `name = "t"\nlanguage = "javascript"\narena = "goofspiel"\nmode = "sandbox"\nentry = "agent.mjs:agent"\n`,
+  );
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const { code, out } = await run(["simulate", "--rounds", "5", "--seed", "1"]);
+    assert.equal(code, 0);
+    assert.match(out, /simulate goofspiel \(5 rounds\)/);
+    assert.match(out, /winner=(agent|baseline|tie)/);
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test("simulate rejects a non-goofspiel game", async () => {
+  const { code, err } = await run(["simulate", "--game", "mafia"]);
+  assert.equal(code, 2);
+  assert.match(err, /supports goofspiel/);
+});
+
+// ── validate ──────────────────────────────────────────────────────────────────
+
+test("validate reports PASS against a fully compliant endpoint", async () => {
+  const url = "http://localhost:9099/turn";
+  const { code, out } = await run(["validate", "--url", url, "--game", "goofspiel"], {
+    fetch: async (u) => {
+      const p = new URL(String(u)).pathname;
+      if (p.endsWith("/health")) return json({ status: "healthy" });
+      if (p.endsWith("/handshake")) return json({ accepted: true, supportedGames: ["goofspiel"] });
+      if (p.endsWith("/turn")) return json({ round: 0, card: 1 });
+      return json({}); // initialize / event / game-end
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(out, /PASS/);
+  assert.match(out, /✓ health/);
+});
+
+test("validate reports FAIL when the endpoint misbehaves", async () => {
+  const url = "http://localhost:9099/turn";
+  const { code, out } = await run(["validate", "--url", url], {
+    fetch: async (u) => {
+      const p = new URL(String(u)).pathname;
+      if (p.endsWith("/health")) return json({ status: "down" }, 500);
+      if (p.endsWith("/turn")) return json({}); // no legal card
+      return json({});
+    },
+  });
+  assert.equal(code, 1);
+  assert.match(out, /FAIL/);
+});
+
+test("validate signs handshake/turn when a secret is given", async () => {
+  const url = "http://localhost:9099/turn";
+  const signed: string[] = [];
+  const { code } = await run(["validate", "--url", url, "--secret", "S"], {
+    fetch: async (u, init) => {
+      const p = new URL(String(u)).pathname;
+      const headers = new Headers(init?.headers as HeadersInit);
+      if (headers.get("x-arena-signature")) signed.push(p);
+      if (p.endsWith("/health")) return json({ status: "healthy" });
+      if (p.endsWith("/handshake")) return json({ accepted: true, supportedGames: ["goofspiel"] });
+      if (p.endsWith("/turn")) return json({ round: 0, card: 1 });
+      return json({});
+    },
+  });
+  assert.equal(code, 0);
+  // health is unsigned (GET, no secret); the POSTs carry a signature.
+  assert.ok(signed.includes("/handshake"));
+  assert.ok(signed.includes("/turn"));
+  assert.ok(!signed.includes("/health"));
+});

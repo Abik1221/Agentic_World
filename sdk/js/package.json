@@ -18,6 +18,7 @@
   "sideEffects": false,
   "files": [
     "dist",
+    "rules",
     "README.md",
     "LICENSE"
   ],
@@ -43,8 +44,13 @@
   "license": "MIT",
   "author": "Pyyol",
   "homepage": "https://pyyol.com/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abik1221/Agentic_World.git",
+    "directory": "sdk/js"
+  },
   "bugs": {
-    "url": "https://pyyol.com/docs"
+    "url": "https://pyyol.com/support"
   },
   "publishConfig": {
     "access": "public"

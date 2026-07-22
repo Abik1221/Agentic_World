@@ -91,6 +91,23 @@ def main() -> None:
     print("wrote", DOCS / "llms.txt")
     print("wrote", DOCS / "llms-full.txt")
 
+    # Bundle the engine-generated game rules INTO both SDK packages so an agent/LLM
+    # that only has the installed package (pip/npm) still gets the full, current
+    # rules for all three games. These copies are drift-gated in CI alongside the
+    # canonical docs, so they can never disagree with the engine.
+    sdk_root = DOCS.parent
+    bundles = [
+        sdk_root / "python" / "pyyol" / "rules",  # shipped via package-data
+        sdk_root / "js" / "rules",  # shipped via the package.json `files` allowlist
+    ]
+    games_md = (DOCS / "games.md").read_text(encoding="utf-8")
+    full_txt = (DOCS / "llms-full.txt").read_text(encoding="utf-8")
+    for dest in bundles:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "games.md").write_text(games_md, encoding="utf-8")
+        (dest / "llms-full.txt").write_text(full_txt, encoding="utf-8")
+        print("bundled rules →", dest)
+
 
 if __name__ == "__main__":
     main()

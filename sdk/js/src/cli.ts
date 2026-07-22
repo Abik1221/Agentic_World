@@ -15,6 +15,13 @@ import * as creds from "./credentials.js";
 import { deriveConnectUrl, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
+import {
+  REQUEST_ID_HEADER,
+  SIGNATURE_HEADER,
+  SIGNATURE_VERSION,
+  TIMESTAMP_HEADER,
+  computeSignature,
+} from "./signing.js";
 import { SDK_VERSION } from "./version.js";
 
 const OK = "✓";
@@ -360,16 +367,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     return 2;
   }
 
-  const quiet = bool(a, "quiet");
-  const glyph: Record<string, string> = {
-    connecting: "◔", connected: "●", reconnecting: "↻", reauth: "🔑", turn: "→", event: "·", game_end: "★",
-  };
-  const feed = (kind: string, detail: string) => {
-    if (quiet && kind === "turn") return; // keep lifecycle milestones even in --quiet
-    const ts = new Date().toISOString().slice(11, 19);
-    console.log(`${ts}  ${glyph[kind] ?? "·"}  ${kind.padEnd(10)} ${detail}`);
-    if (kind === "connected") console.log(`${ts}  ◌  waiting    waiting for a match…`);
-  };
+  const feed = makeFeed(bool(a, "quiet"));
 
   const conn = new RuntimeConnector(agent, {
     url: connectUrl,
@@ -381,13 +379,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     // Silent access-token refresh: on a rejected register, spend the rotating
     // refresh token for a fresh access token and persist the pair back to creds —
     // keeps a long `pyyol dev`/`play` authenticated past the short access TTL.
-    refreshToken: c.refreshToken,
-    apiUrl: base,
-    onTokens: (access: string, refresh: string) => {
-      c.accessToken = access;
-      if (refresh) c.refreshToken = refresh;
-      creds.save(c);
-    },
+    ...refreshOpts(c, base),
   });
 
   // Kick match(es) after the socket registers; retry while it comes online.
@@ -670,6 +662,537 @@ async function apiRequest(method: string, url: string, token: string, body: unkn
   }
 }
 
+// ── shared: live feed + token-refresh options (used by orchestrate/run) ────────
+
+/** Build the one-line lifecycle feed printer shared by `dev`/`play`/`run`. */
+function makeFeed(quiet: boolean): (kind: string, detail: string) => void {
+  const glyph: Record<string, string> = {
+    connecting: "◔", connected: "●", reconnecting: "↻", reauth: "🔑", turn: "→", event: "·", game_end: "★",
+  };
+  return (kind: string, detail: string) => {
+    if (quiet && kind === "turn") return; // keep lifecycle milestones even in --quiet
+    const ts = new Date().toISOString().slice(11, 19);
+    console.log(`${ts}  ${glyph[kind] ?? "·"}  ${kind.padEnd(10)} ${detail}`);
+    if (kind === "connected") console.log(`${ts}  ◌  waiting    waiting for a match…`);
+  };
+}
+
+/** Connector kwargs enabling silent access-token refresh from stored creds. The
+ *  onTokens callback writes the rotated pair back so a long run stays authed past
+ *  the short access-token TTL. */
+function refreshOpts(c: creds.Credentials | null, base: string) {
+  return {
+    refreshToken: c?.refreshToken,
+    apiUrl: base,
+    onTokens: (access: string, refresh: string) => {
+      if (!c) return;
+      c.accessToken = access;
+      if (refresh) c.refreshToken = refresh;
+      creds.save(c);
+    },
+  };
+}
+
+/** Import a developer's agent from an explicit file (used by `run`/`serve`), then
+ *  normalize it to an Agent. Mirrors loadAgentFromConfig but file-based. */
+async function loadAgentFromFile(file: string, varName: string) {
+  const abs = resolve(file);
+  if (!existsSync(abs)) throw new Error(`cannot load ${file}`);
+  const mod = await import(pathToFileURL(abs).href);
+  const obj = mod[varName] ?? mod.default;
+  if (obj === undefined) throw new Error(`no \`${varName}\` found in ${file} (expose your Agent as \`${varName}\`)`);
+  return asAgent(obj);
+}
+
+// ── status ─────────────────────────────────────────────────────────────────────
+
+async function cmdStatus(a: Args): Promise<number> {
+  const c = creds.load();
+  if (!c?.accessToken) {
+    console.error(`${BAD} not logged in — run \`pyyol login\` first`);
+    return 2;
+  }
+  const api = (str(a, "api") || c.url).replace(/\/$/, "");
+  const agentId = str(a, "agent") || c.agentId;
+  if (!api || !agentId) {
+    console.error(`${BAD} need an API url and agent id (login or pass --api/--agent)`);
+    return 2;
+  }
+  const [st, body] = await apiGet(`${api}/v1/agent/status?agent_id=${encodeURIComponent(agentId)}`, c.accessToken);
+  if (st !== 200) {
+    console.error(`${BAD} status failed (${st}): ${JSON.stringify(body)}`);
+    return 1;
+  }
+  const online = Boolean(body.online);
+  console.log(`Agent ${agentId}\n  ${online ? "🟢 Online" : "⚪ Offline"}`);
+  if (online) {
+    console.log(`  SDK       ${body.sdk_version ?? "?"}`);
+    console.log(`  Games     ${(body.games ?? []).join(", ")}`);
+    console.log(`  Last seen ${body.last_seen ?? "?"}`);
+  }
+  return 0;
+}
+
+// ── autoplay (toggle hosted auto-play without holding a connection) ─────────────
+
+/** Resolve (mode, games) from flags → pyyol.toml → defaults. */
+function autoplayOpts(a: Args, cfg: config.Config | null): [string, string[]] {
+  const m = bool(a, "ranked") ? "ranked" : str(a, "mode") || cfg?.mode || "sandbox";
+  let games = str(a, "games").split(",").map((g) => g.trim()).filter(Boolean);
+  if (games.length === 0 && cfg?.arena) games = [cfg.arena];
+  return [m, games];
+}
+
+/** PUT the agent's auto-play availability. Matches the Python `_autoplay_set`
+ *  (PUT /v1/agent/autoplay {enabled, mode, bid, games}). */
+async function autoplaySet(
+  api: string,
+  token: string,
+  enabled: boolean,
+  m: string,
+  bid: number,
+  games: string[],
+): Promise<[number, any]> {
+  return apiRequest("PUT", `${api.replace(/\/$/, "")}/v1/agent/autoplay`, token, { enabled, mode: m, bid, games });
+}
+
+async function cmdAutoplay(a: Args): Promise<number> {
+  const state = a.positionals[0];
+  if (state !== "on" && state !== "off") {
+    console.error(`${BAD} usage: pyyol autoplay on|off`);
+    return 2;
+  }
+  const c = creds.load();
+  const api = (str(a, "api") || c?.url || "").replace(/\/$/, "");
+  const token = str(a, "token") || c?.accessToken || "";
+  if (!api || !token) {
+    console.error(`${BAD} run \`pyyol login\` first`);
+    return 2;
+  }
+  if (str(a, "token")) warnArgvSecret();
+  const on = state === "on";
+  const [m, games] = autoplayOpts(a, config.load());
+  const [st, resp] = await autoplaySet(api, token, on, m, num(a, "bid", 0), games);
+  if (st >= 200 && st < 300) {
+    const detail = on ? ` — mode=${m}, games=${games.length ? games.join(",") : "default"}` : "";
+    console.log(`${OK} auto-play ${on ? "ON" : "OFF"}${detail}`);
+    return 0;
+  }
+  console.error(`${BAD} failed (status ${st}): ${JSON.stringify(resp)}`);
+  return 1;
+}
+
+// ── logs (tail the local run log) ───────────────────────────────────────────────
+
+async function cmdLogs(a: Args): Promise<number> {
+  const { existsSync: exists, readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const path = str(a, "file") || join(creds.configDir(), "logs", "agent.log");
+  if (!exists(path)) {
+    console.log(`no logs yet at ${path} (run \`pyyol run\` to generate them)`);
+    return 0;
+  }
+  const lines = readFileSync(path, "utf8").split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // drop trailing newline's empty tail
+  const n = num(a, "n", 200);
+  for (const line of lines.slice(-n)) console.log(line);
+  return 0;
+}
+
+// ── simulate (local in-process Goofspiel match against the configured agent) ────
+
+async function cmdSimulate(a: Args): Promise<number> {
+  const game = str(a, "game") || "goofspiel";
+  if (game !== "goofspiel") {
+    console.error(`simulate currently supports goofspiel (got '${game}'); use \`validate\` for a single-turn check of any game.`);
+    return 2;
+  }
+  const opponent = str(a, "opponent") || "baseline";
+  if (opponent !== "baseline") {
+    console.error(`${BAD} unknown opponent '${opponent}' — only 'baseline' is supported`);
+    return 2;
+  }
+  const cfg = config.load();
+  if (!cfg) {
+    console.error(`${BAD} no pyyol.toml here — run \`pyyol init <dir>\` first.`);
+    return 2;
+  }
+  let agent;
+  try {
+    agent = await loadAgentFromConfig(cfg);
+  } catch (e) {
+    console.error(`${BAD} could not load your agent: ${e}`);
+    return 2;
+  }
+  const { simulateGoofspiel, SimulationError } = await import("./simulator.js");
+  try {
+    const r = await simulateGoofspiel(agent, { handSize: num(a, "rounds", 13), seed: num(a, "seed", 1) });
+    console.log(
+      `simulate goofspiel (${r.rounds} rounds): winner=${r.winner} scores agent=${r.scores.agent} baseline=${r.scores.baseline}`,
+    );
+    return 0;
+  } catch (e) {
+    if (e instanceof SimulationError) {
+      console.error(`${BAD} ${e.message}`);
+      return 1;
+    }
+    throw e;
+  }
+}
+
+// ── validate (probe a hosted endpoint like the platform does) ───────────────────
+
+function rfc3339(): string {
+  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+/** Derive {dir(url)}/name — matches the platform's sibling routing. */
+function sibling(url: string, name: string): string {
+  const trimmed = url.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return `${idx >= 0 ? trimmed.slice(0, idx) : ""}/${name}`;
+}
+
+/** Send an optionally-signed request; signs iff a secret is set and there's a body
+ *  (mirrors the Python `_request`). `signPath` binds the signature to a path;
+ *  defaults to the URL's path. */
+async function signedRequest(
+  url: string,
+  method: string,
+  secret: string,
+  payload: unknown,
+  signPath?: string,
+): Promise<[number, any]> {
+  warnInsecureTransport(url, Boolean(secret));
+  const hasBody = payload !== undefined && payload !== null;
+  const body = hasBody ? Buffer.from(JSON.stringify(payload)) : Buffer.alloc(0);
+  let path = signPath;
+  if (path === undefined) {
+    try {
+      path = new URL(url).pathname || "/";
+    } catch {
+      path = "/";
+    }
+  }
+  const headers: Record<string, string> = {};
+  if (hasBody) headers["Content-Type"] = "application/json";
+  if (secret && hasBody) {
+    const nonce = `cli_${Date.now()}`;
+    const ts = rfc3339();
+    headers[TIMESTAMP_HEADER] = ts;
+    headers[REQUEST_ID_HEADER] = nonce;
+    headers[SIGNATURE_HEADER] = `${SIGNATURE_VERSION}=${computeSignature(secret, ts, nonce, method, path, body)}`;
+    headers["Authorization"] = "Bearer " + secret;
+  }
+  try {
+    const r = await fetch(url, {
+      method,
+      headers,
+      body: hasBody ? body : undefined,
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+    const text = await r.text();
+    return [r.status, text ? JSON.parse(text) : {}];
+  } catch (e) {
+    return [0, { error: netErr(e) }];
+  }
+}
+
+/** (view, legal, isLegalMove) for a probe turn — mirrors Python `_synthetic_turn`. */
+function syntheticTurn(game: string): [Record<string, unknown>, unknown[], (m: any) => boolean] {
+  if (game === "monopoly") {
+    const view = {
+      game: "monopoly", match_id: "validate", seat: 0, phase: "roll",
+      legal_actions: ["roll", "end_turn"], state: { players: [], phase: "roll" },
+    };
+    return [view, ["roll", "end_turn"], (m) => Boolean(m) && ["roll", "end_turn"].includes(m.action)];
+  }
+  if (game === "mafia") {
+    const view = {
+      game: "mafia", match_id: "validate", your_seat: 1, your_role: "Villager", day: 1,
+      phase: "voting", alive: { "1": true, "2": true, "3": true }, legal: ["vote"], public: [], private: [],
+    };
+    return [view, ["vote"], (m) => Boolean(m) && m.action === "vote"];
+  }
+  const view = {
+    game: "goofspiel", match_id: "validate", seat: 0, round: 0, current_prize: 5,
+    prize_pool: 5, your_hand: [1, 2, 3, 4, 5], scores: [0, 0], legal_actions: [1, 2, 3, 4, 5],
+  };
+  return [view, [1, 2, 3, 4, 5], (m) => Boolean(m) && [1, 2, 3, 4, 5].includes(m.card)];
+}
+
+/** Lifecycle notification probes — mirrors Python `_lifecycle_probes`. */
+function lifecycleProbes(game: string): [string, Record<string, unknown>][] {
+  return [
+    ["initialize", { protocol: "1.0", match_id: "validate", game, seat: 0, players: 2 }],
+    ["event", { protocol: "1.0", match_id: "validate", game, seq: 1, type: "probe" }],
+    ["game-end", { protocol: "1.0", match_id: "validate", game, result: {} }],
+  ];
+}
+
+async function cmdValidate(a: Args): Promise<number> {
+  const url = str(a, "url");
+  if (!url) {
+    console.error(`${BAD} usage: pyyol validate --url <endpoint> [--secret S] [--game G]`);
+    return 2;
+  }
+  const secret = str(a, "secret");
+  if (secret) warnArgvSecret();
+  const game = str(a, "game") || "goofspiel";
+  const checks: [string, boolean, string][] = [];
+
+  // 1. health (unsigned GET on the sibling)
+  {
+    const [st, body] = await signedRequest(sibling(url, "health"), "GET", "", null);
+    const healthy = st === 200 && String(body.status ?? "").toLowerCase() === "healthy";
+    checks.push(["health", healthy, `${st} ${body.status ?? ""}`]);
+  }
+  // 2. handshake (signed POST)
+  {
+    const [st, body] = await signedRequest(sibling(url, "handshake"), "POST", secret, {
+      platform: "agent-arena", protocol: "1.0",
+    });
+    const acc = st === 200 && Boolean(body.accepted);
+    const games = (body.supportedGames ?? []).join(",");
+    checks.push(["handshake", acc, `${st} accepted=${body.accepted} games=[${games}]`]);
+  }
+  // 3. a real signed turn — the platform's core call.
+  {
+    const [view, , pick] = syntheticTurn(game);
+    const [st, move] = await signedRequest(url, "POST", secret, view);
+    checks.push(["turn", st === 200 && pick(move), `${st} -> ${JSON.stringify(move)}`]);
+  }
+  // 4. lifecycle notifications must ack 200.
+  for (const [name, payload] of lifecycleProbes(game)) {
+    const [st] = await signedRequest(sibling(url, name), "POST", secret, payload);
+    checks.push([name, st === 200, String(st)]);
+  }
+
+  console.log(`pyyol validate — ${url}\n`);
+  let allOk = true;
+  for (const [name, ok, detail] of checks) {
+    allOk = allOk && ok;
+    console.log(`  ${ok ? OK : BAD} ${name.padEnd(12)} ${detail}`);
+  }
+  console.log("\n" + (allOk ? "PASS — endpoint speaks the push protocol." : "FAIL — fix the checks marked ✗ above."));
+  return allOk ? 0 : 1;
+}
+
+// ── watch (spectate a match over SSE, read-only) ────────────────────────────────
+
+/** SSE event types that end a match, so `watch` can return control. */
+const TERMINAL_EVENTS = new Set(["match_finished", "victory", "game_over", "game_finished", "finished"]);
+
+/** A short, human line for a spectator event payload (mirrors Python `_sse_summary`). */
+function sseSummary(obj: any): string {
+  if (!obj || typeof obj !== "object") return String(obj);
+  for (const k of ["winner", "text", "action", "card", "phase", "message"]) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return `${k}: ${obj[k]}`;
+  }
+  return JSON.stringify(obj).slice(0, 70);
+}
+
+async function cmdWatch(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  if (!base) {
+    console.error(`${BAD} no API url — pass --api or run \`pyyol login\`.`);
+    return 2;
+  }
+  const match = a.positionals[0];
+  if (!match) {
+    console.error(`${BAD} usage: pyyol watch <match_id>`);
+    return 2;
+  }
+  const asJson = bool(a, "json");
+  const emit = (kind: string, detail: string) => {
+    const ts = new Date().toISOString().slice(11, 19);
+    console.log(`${ts}  ${kind.padEnd(12)} ${detail}`);
+  };
+  const url = `${base}/v1/match/${encodeURIComponent(match)}/watch`;
+  emit("match", `spectating ${match} (read-only)`);
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { Accept: "text/event-stream" } });
+  } catch (e) {
+    console.error(`${BAD} watch failed: ${netErr(e)}`);
+    return 1;
+  }
+  if (!res.ok || !res.body) {
+    const t = await res.text().catch(() => "");
+    console.error(`${BAD} watch failed (${res.status}): ${t}`);
+    return 1;
+  }
+
+  const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+  process.on("SIGINT", () => {
+    console.log("\nstopped watching.");
+    reader.cancel().catch(() => {});
+  });
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let event: string | null = null;
+  let data: string[] = [];
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      let line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line === "") {
+        // frame boundary
+        if (data.length) {
+          const payload = data.join("\n");
+          let obj: any;
+          try {
+            obj = JSON.parse(payload);
+          } catch {
+            obj = { raw: payload };
+          }
+          const kind = event || "event";
+          emit(kind, asJson ? JSON.stringify(obj) : sseSummary(obj));
+          if (TERMINAL_EVENTS.has(kind)) {
+            emit("game_end", "match finished");
+            reader.cancel().catch(() => {});
+            return 0;
+          }
+        }
+        event = null;
+        data = [];
+        continue;
+      }
+      if (line.startsWith(":")) continue; // keepalive comment
+      const ci = line.indexOf(":");
+      const field = ci >= 0 ? line.slice(0, ci) : line;
+      let value2 = ci >= 0 ? line.slice(ci + 1) : "";
+      if (value2.startsWith(" ")) value2 = value2.slice(1);
+      if (field === "event") event = value2;
+      else if (field === "data") data.push(value2);
+    }
+  }
+  return 0;
+}
+
+// ── run (connect a file-loaded agent over WSS) ──────────────────────────────────
+
+async function cmdRun(a: Args): Promise<number> {
+  const c = creds.load();
+  const connectUrl = str(a, "url") || process.env.PYYOL_URL || c?.connectUrl || "";
+  if (!connectUrl) {
+    console.error(`${BAD} no platform URL — pass --url, set PYYOL_URL, or run \`pyyol login\``);
+    return 2;
+  }
+  const agentId = str(a, "agent") || process.env.PYYOL_AGENT_ID || c?.agentId || "";
+  const token = str(a, "token") || process.env.PYYOL_TOKEN || c?.accessToken || "";
+  if (str(a, "token")) warnArgvSecret();
+  const file = str(a, "file") || "agent.mjs";
+  const varName = str(a, "var") || "agent";
+
+  let agent;
+  try {
+    agent = await loadAgentFromFile(file, varName);
+  } catch (e) {
+    console.error(`${BAD} ${e instanceof Error ? e.message : String(e)}`);
+    return 2;
+  }
+
+  const base = httpBase(a, c);
+  const conn = new RuntimeConnector(agent, {
+    url: connectUrl,
+    agentId,
+    token,
+    name: agent.name,
+    games: agent.supportedGames,
+    onFeed: makeFeed(bool(a, "quiet")),
+    // Same silent access-token refresh wiring as `dev`/`play`.
+    ...refreshOpts(c, base),
+  });
+  process.on("SIGINT", () => conn.stop());
+  try {
+    await conn.run();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`\n${BAD} ${msg}`);
+    if (/unauthorized|token|register/i.test(msg)) {
+      console.error("  your token was rejected — run `pyyol login` again (agent id + agent key must match).");
+    }
+    return 1;
+  }
+  console.log("\nstopped.");
+  return 0;
+}
+
+// ── serve (deploy-once HTTP worker: enable auto-play + run the built-in server) ──
+
+async function cmdServe(a: Args): Promise<number> {
+  const c = creds.load();
+  const api = (str(a, "api") || c?.url || "").replace(/\/$/, "");
+  const token = str(a, "token") || process.env.PYYOL_TOKEN || c?.accessToken || "";
+  if (str(a, "token")) warnArgvSecret();
+  if (!api || !token) {
+    console.error(`${BAD} run \`pyyol login\` first (need the API base + token)`);
+    return 2;
+  }
+
+  // Load the agent: an explicit --file wins over pyyol.toml.
+  let agent;
+  const file = str(a, "file");
+  try {
+    if (file) {
+      agent = await loadAgentFromFile(file, str(a, "var") || "agent");
+    } else {
+      const cfg = config.load();
+      if (!cfg) {
+        console.error(`${BAD} no pyyol.toml here — run \`pyyol init <dir>\` first (or pass --file).`);
+        return 2;
+      }
+      agent = await loadAgentFromConfig(cfg);
+    }
+  } catch (e) {
+    console.error(`${BAD} could not load your agent: ${e}`);
+    return 2;
+  }
+
+  const [m, games] = autoplayOpts(a, config.load());
+  const bid = num(a, "bid", 0);
+  const [st, resp] = await autoplaySet(api, token, true, m, bid, games);
+  if (st >= 200 && st < 300) {
+    const extra = m === "ranked" ? `, bid=${bid}` : "";
+    console.log(`${OK} auto-play ON — mode=${m}${extra}, games=${games.length ? games.join(",") : "default"}`);
+  } else {
+    console.error(`${BAD} could not enable auto-play (status ${st}: ${JSON.stringify(resp)}); serving anyway`);
+  }
+
+  const port = num(a, "port", 9099);
+  const host = str(a, "host") || "127.0.0.1";
+  const server = agent.serve(port, host);
+  console.log("serving — the platform will drive your agent as matches are paired. Ctrl-C to stop.");
+
+  // Hold until Ctrl-C, then flip auto-play OFF so you stop being matched once you exit.
+  return new Promise<number>((done) => {
+    let stopping = false;
+    const shutdown = async () => {
+      if (stopping) return;
+      stopping = true;
+      console.log("\nstopping…");
+      try {
+        server.close();
+      } catch {
+        /* ignore */
+      }
+      await autoplaySet(api, token, false, m, bid, games);
+      console.log(`${OK} auto-play OFF`);
+      done(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  });
+}
+
 const HELP = `pyyol — build, run, and rank autonomous AI agents.
 Quickstart: pyyol login → pyyol init <dir> → pyyol dev
 
@@ -685,6 +1208,14 @@ Commands:
   profile [handle]
   leaderboard [--game G] [--developers] [--season N]
   arenas
+  status [--agent A]                (advanced) is your agent connected?
+  autoplay on|off [--ranked|--mode] [--bid N] [--games G,…]
+  serve [--file F] [--var V] [--port P] [--host H]  enable auto-play + run the HTTP server
+  run [--file F] [--var V]          (advanced) connect a file-loaded agent over WSS
+  simulate [--rounds N] [--seed N] [--opponent O]   local Goofspiel match
+  validate --url URL [--secret S] [--game G]        probe a hosted endpoint
+  watch <match_id> [--json]         spectate a match (read-only)
+  logs [--file F] [--n N]           recent local agent logs
   doctor
   update
 `;
@@ -715,6 +1246,22 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdProfile(a);
     case "replay":
       return cmdReplay(a);
+    case "status":
+      return cmdStatus(a);
+    case "autoplay":
+      return cmdAutoplay(a);
+    case "serve":
+      return cmdServe(a);
+    case "run":
+      return cmdRun(a);
+    case "simulate":
+      return cmdSimulate(a);
+    case "validate":
+      return cmdValidate(a);
+    case "watch":
+      return cmdWatch(a);
+    case "logs":
+      return cmdLogs(a);
     case "doctor":
       return cmdDoctor(a);
     case "update":

@@ -38,7 +38,7 @@ class Config:
     mode: str = "sandbox"
     entry: str = "agent.py:agent"
     agent_id: str = ""
-    endpoint: str = ""       # hosted-endpoint URL (Model B); empty ⇒ worker/dial-out
+    endpoint: str = ""  # hosted-endpoint URL (Model B); empty ⇒ worker/dial-out
     auto_play: bool = False  # keep the agent in matches automatically (`pyyol serve`)
     # Order in which keys are written, so the file stays stable + readable.
     _order: tuple = field(

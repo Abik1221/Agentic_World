@@ -36,6 +36,17 @@ __all__ = [
     "ConnectorError",
     "Tracer",
     "current_span",
+    # Typed game models — re-exported here so `from pyyol import GoofspielView`
+    # works (parity with the JS SDK's `export * from "./models"`).
+    "GoofspielView",
+    "GoofspielMove",
+    "MonopolyView",
+    "MonopolyMove",
+    "MafiaView",
+    "MafiaMove",
+    "parse_view",
+    "move_to_dict",
+    "game_rules",
     "__version__",
 ]
 
@@ -53,7 +64,36 @@ _LAZY = {
     "ConnectorError": "runtime",
     "Tracer": "telemetry",
     "current_span": "telemetry",
+    # models is annotation-only + stdlib, so importing it stays cheap.
+    "GoofspielView": "models",
+    "GoofspielMove": "models",
+    "MonopolyView": "models",
+    "MonopolyMove": "models",
+    "MafiaView": "models",
+    "MafiaMove": "models",
+    "parse_view": "models",
+    "move_to_dict": "models",
 }
+
+
+def game_rules(game: str = "") -> str:
+    """The engine-generated rules bundled with this package (all 3 games as
+    Markdown). Pass a game name ("goofspiel"|"monopoly"|"mafia") to slice just that
+    section, or nothing for the full reference. This is the same text an LLM/agent
+    author needs — it ships INSIDE the wheel (pyyol/rules/games.md), so it is always
+    available offline and can never drift from the deployed engine."""
+    from importlib import resources
+
+    text = (resources.files(__name__) / "rules" / "games.md").read_text(encoding="utf-8")
+    if not game:
+        return text
+    # Section headers in games.md are "## <Game>" — return that section only.
+    marker = f"## {game.capitalize()}"
+    start = text.find(marker)
+    if start == -1:
+        return text
+    nxt = text.find("\n## ", start + len(marker))
+    return text[start:] if nxt == -1 else text[start:nxt]
 
 
 def __getattr__(name):

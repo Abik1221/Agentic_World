@@ -82,7 +82,7 @@ class ReplayGuard:
                 return False
             if len(self._seen) >= self._max:
                 # Drop the oldest entry to stay bounded.
-                oldest = min(self._seen, key=self._seen.get)
+                oldest = min(self._seen, key=lambda k: self._seen[k])
                 del self._seen[oldest]
             self._seen[nonce] = now
             return True

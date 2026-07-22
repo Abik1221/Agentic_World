@@ -40,8 +40,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pipx run ruff check .
-      - run: pipx run ruff format --check .
+      # Pin ruff so lint/format is deterministic — an unpinned `pipx run ruff`
+      # silently tracks the latest release and its formatter can drift between runs.
+      - run: pipx run ruff@0.15.5 check .
+      - run: pipx run ruff@0.15.5 format --check .
+
+  python-typecheck:
+    # We ship py.typed (a PEP 561 typing guarantee); verify it with mypy so the
+    # guarantee is real, not aspirational.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]" mypy
+      - run: mypy pyyol
 
   python-pack:
     runs-on: ubuntu-latest
@@ -97,7 +114,9 @@ jobs:
       - name: regenerate llms corpus
         run: python sdk/docs/gen_llms.py
       - name: docs are up to date (run `go run ./cmd/gamespec` + `python sdk/docs/gen_llms.py` and commit)
-        run: git diff --exit-code -- sdk/docs/games.md sdk/docs/gamespec.json sdk/docs/llms.txt sdk/docs/llms-full.txt
+        # Includes the copies bundled into each SDK package (pyyol/rules, js/rules)
+        # so the shipped game rules can never drift from the engine-generated source.
+        run: git diff --exit-code -- sdk/docs/games.md sdk/docs/gamespec.json sdk/docs/llms.txt sdk/docs/llms-full.txt sdk/python/pyyol/rules sdk/js/rules
 
   js-lint-and-pack:
     runs-on: ubuntu-latest

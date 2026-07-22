@@ -384,8 +384,10 @@ class RuntimeConnector:
         # Bracket the developer's handler in a Lens span. Inside on_turn, the
         # author can reach it via pyyol.current_span() to record model/tool calls.
         with self._tracer.turn_span(
-            match_id=view.get("match_id", ""), game=game,
-            round_no=int(view.get("round", 0) or 0), agent_id=self.agent_id,
+            match_id=view.get("match_id", ""),
+            game=game,
+            round_no=int(view.get("round", 0) or 0),
+            agent_id=self.agent_id,
         ):
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
@@ -443,7 +445,8 @@ def _summarize_result(result: Any) -> str:
     """A short outcome summary for the game_end line."""
     if not isinstance(result, dict):
         return "game finished"
-    inner = result.get("result") if isinstance(result.get("result"), dict) else result
+    nested = result.get("result")
+    inner = nested if isinstance(nested, dict) else result
     bits = []
     winner = inner.get("winner")
     if winner is not None:

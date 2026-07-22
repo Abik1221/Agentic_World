@@ -47,7 +47,7 @@ class Credentials:
 
 def _try_keyring():
     try:
-        import keyring  # type: ignore
+        import keyring
 
         return keyring
     except Exception:  # noqa: BLE001 — any import/backend error → file fallback

@@ -197,7 +197,7 @@ def parse_view(d: Dict[str, Any]):
     """Parse a turn body into the typed view for its ``game``; unknown games
     fall back to the raw dict so a new game can be handled generically."""
     cls = _VIEW_BY_GAME.get(d.get("game", ""))
-    return cls.from_dict(d) if cls else d
+    return cls.from_dict(d) if cls else d  # type: ignore[attr-defined]
 
 
 # --- Moves (what a turn handler returns) ---------------------------------------
