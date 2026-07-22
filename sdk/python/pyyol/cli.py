@@ -769,31 +769,55 @@ def _sse_summary(obj) -> str:
     return json.dumps(obj, separators=(",", ":"))[:70]
 
 
-def _api_get(url: str, token: str = ""):
+def _retry_after_seconds(headers, attempt: int) -> float:
+    """Delay before retrying a 429: honor the server's ``Retry-After`` (seconds,
+    capped at 30s); otherwise a short exponential backoff (0.5s, 1s)."""
+    ra = headers.get("Retry-After") if headers else None
+    if ra:
+        try:
+            return min(float(int(ra)), 30.0)
+        except (TypeError, ValueError):
+            pass
+    return 0.5 * (2**attempt)
+
+
+def _urlopen_json(req, timeout: float = 15.0):
+    """urlopen → (status, parsed_json), retrying a 429 up to 2× while honoring
+    ``Retry-After``. A rate-limited call (e.g. `pyyol publish` → manifest verify)
+    then waits and succeeds instead of failing the developer outright."""
     import urllib.error
+    import urllib.request
+
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                return resp.status, (json.loads(raw) if raw else {})
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 2:
+                time.sleep(_retry_after_seconds(e.headers, attempt))
+                continue
+            raw = e.read()
+            try:
+                return e.code, (json.loads(raw) if raw else {})
+            except json.JSONDecodeError:
+                return e.code, {"raw": raw.decode(errors="replace")}
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return 0, {"error": _net_err(e)}
+    return 0, {"error": "rate_limited"}  # retries exhausted (defensive; unreachable)
+
+
+def _api_get(url: str, token: str = ""):
     import urllib.request
 
     headers = {}
     if token:
         headers["Authorization"] = "Bearer " + token
         _warn_insecure_transport(url, True)
-    req = urllib.request.Request(url, method="GET", headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-            return resp.status, (json.loads(raw) if raw else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        try:
-            return e.code, (json.loads(raw) if raw else {})
-        except json.JSONDecodeError:
-            return e.code, {"raw": raw.decode(errors="replace")}
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        return 0, {"error": _net_err(e)}
+    return _urlopen_json(urllib.request.Request(url, method="GET", headers=headers))
 
 
 def _api_post(url: str, token: str, body):
-    import urllib.error
     import urllib.request
 
     _warn_insecure_transport(url, bool(token))
@@ -804,18 +828,7 @@ def _api_post(url: str, token: str, body):
         method="POST",
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read()
-            return resp.status, (json.loads(raw) if raw else {})
-    except urllib.error.HTTPError as e:
-        raw = e.read()
-        try:
-            return e.code, (json.loads(raw) if raw else {})
-        except json.JSONDecodeError:
-            return e.code, {"raw": raw.decode(errors="replace")}
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        return 0, {"error": _net_err(e)}
+    return _urlopen_json(req)
 
 
 # --- run (connect the local agent over WSS) ------------------------------------
