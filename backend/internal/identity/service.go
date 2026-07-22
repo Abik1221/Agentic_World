@@ -65,6 +65,7 @@ type VerifyResult struct {
 	APIKey         string // shown exactly once
 	AgentID        string
 	DashboardToken string // user-scope JWT for the owner
+	UserPublicID   string
 }
 
 // VerifyClaim checks the captcha and the public claim post; on success it creates
@@ -125,7 +126,7 @@ func (s *Service) VerifyClaim(ctx context.Context, token, captchaToken, remoteIP
 	if err != nil {
 		return VerifyResult{}, err
 	}
-	return VerifyResult{APIKey: key.Raw, AgentID: agent.PublicID, DashboardToken: dash}, nil
+	return VerifyResult{APIKey: key.Raw, AgentID: agent.PublicID, DashboardToken: dash, UserPublicID: owner.PublicID}, nil
 }
 
 // SignUpResult is returned when a new email+password account is created. The API
@@ -135,6 +136,7 @@ type SignUpResult struct {
 	AgentID        string
 	AgentName      string
 	DashboardToken string
+	UserPublicID   string
 }
 
 // SignUp creates an owner from an email + password plus their first agent, in one
@@ -182,7 +184,7 @@ func (s *Service) SignUp(ctx context.Context, email, password, agentName, descri
 	if err != nil {
 		return SignUpResult{}, err
 	}
-	return SignUpResult{APIKey: key.Raw, AgentID: agent.PublicID, AgentName: agent.Name, DashboardToken: dash}, nil
+	return SignUpResult{APIKey: key.Raw, AgentID: agent.PublicID, AgentName: agent.Name, DashboardToken: dash, UserPublicID: owner.PublicID}, nil
 }
 
 // LoginResult is returned on a successful email + password login. No API key is
@@ -192,6 +194,7 @@ type LoginResult struct {
 	DashboardToken string
 	AgentID        string
 	AgentName      string
+	UserPublicID   string
 }
 
 // LogIn authenticates an email + password and mints a fresh dashboard session.
@@ -216,7 +219,7 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 	if err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{DashboardToken: dash, AgentID: rec.AgentPublicID, AgentName: rec.AgentName}, nil
+	return LoginResult{DashboardToken: dash, AgentID: rec.AgentPublicID, AgentName: rec.AgentName, UserPublicID: rec.UserPublicID}, nil
 }
 
 // RotateKey issues a fresh API key for an agent the caller owns and REVOKES any
@@ -391,7 +394,7 @@ func (s *Service) VerifyMagicLink(ctx context.Context, token string) (LoginResul
 	if err != nil {
 		return LoginResult{}, err
 	}
-	return LoginResult{DashboardToken: dash, AgentID: ml.AgentPublicID}, nil
+	return LoginResult{DashboardToken: dash, AgentID: ml.AgentPublicID, UserPublicID: ml.UserPublicID}, nil
 }
 
 // hashToken returns the hex SHA-256 of a raw token; only the hash is persisted,

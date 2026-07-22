@@ -29,6 +29,7 @@ type Handler struct {
 	// profile/security page can render the preference. Injected to avoid coupling
 	// identity to the twofa package; nil ⇒ the field is simply omitted.
 	twoFAStatus func(ctx context.Context, userPublicID string) (bool, error)
+	refresh     *auth.RefreshService // nil ⇒ refresh tokens disabled (access-token only)
 }
 
 // SetTwoFAStatus wires the 2FA-enabled lookup surfaced in the profile (GET /v1/me).
@@ -71,6 +72,8 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.loginRL)
 		r.Post("/v1/auth/login", h.login)
+		r.Post("/v1/auth/refresh", h.refreshSession)
+		r.Post("/v1/auth/logout", h.logout)
 		r.Post("/v1/auth/magic-link", h.requestMagicLink)
 		// Privy token exchange: verify Privy's access token, find-or-create the
 		// owner, return a dashboard session. Rate-limited alongside login.
@@ -179,6 +182,7 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]any{
 		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
 		"api_key":         res.APIKey, // shown exactly once
 		"agent_id":        res.AgentID,
 		"agent_name":      res.AgentName,
@@ -202,6 +206,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
 		"agent_id":        res.AgentID,
 		"agent_name":      res.AgentName,
 	})
@@ -257,6 +262,7 @@ func (h *Handler) privyLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, status, map[string]any{
 		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
 		"user_id":         res.UserPublicID,
 		"created":         res.Created,
 	})
@@ -466,6 +472,7 @@ func (h *Handler) verifyMagicLink(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
 		"agent_id":        res.AgentID,
 	})
 }
@@ -488,4 +495,58 @@ func clientIP(r *http.Request) string {
 		return id
 	}
 	return r.RemoteAddr
+}
+
+// SetRefresh wires the rotating refresh-token service (nil keeps access-token-only).
+func (h *Handler) SetRefresh(rs *auth.RefreshService) { h.refresh = rs }
+
+// issueRefresh mints a refresh token for a freshly-authenticated user. Best-effort:
+// if refresh is disabled or minting fails, the session still works as a short-lived
+// access token — we never fail the login over the refresh token.
+func (h *Handler) issueRefresh(ctx context.Context, userPublicID string) string {
+	if h.refresh == nil || userPublicID == "" {
+		return ""
+	}
+	tok, err := h.refresh.Issue(ctx, userPublicID)
+	if err != nil {
+		return ""
+	}
+	return tok
+}
+
+// refreshSession rotates a refresh token → a fresh access JWT + a new refresh token.
+// A 401 means the session is genuinely over (expired/revoked/reused) → sign in again.
+func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request) {
+	if h.refresh == nil {
+		httpx.Error(w, httpx.NewError(http.StatusNotFound, "not_found", "refresh not available"))
+		return
+	}
+	var in struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	access, next, _, err := h.refresh.Rotate(r.Context(), in.RefreshToken)
+	if err != nil {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "refresh_invalid", "Your session expired. Please sign in again."))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"dashboard_token": access,
+		"refresh_token":   next,
+	})
+}
+
+// logout revokes the whole refresh-token family (best-effort; always 200).
+func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	_ = httpx.DecodeJSON(w, r, &in)
+	if h.refresh != nil && in.RefreshToken != "" {
+		_ = h.refresh.Revoke(r.Context(), in.RefreshToken)
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -47,7 +47,8 @@ type Config struct {
 	// Auth & onboarding (Stage 1)
 	JWTSigningKey     string
 	APIKeyPepper      string
-	DashboardTokenTTL time.Duration
+	DashboardTokenTTL time.Duration // short-lived access JWT (kept small for security)
+	RefreshTokenTTL   time.Duration // rotating refresh token — sliding idle window
 	ClaimTTL          time.Duration
 
 	// Privy authentication (Beta wallet pipeline P1). Privy is the front door for
@@ -264,7 +265,8 @@ func Load() (*Config, error) {
 
 		JWTSigningKey:     l.required("JWT_SIGNING_KEY"),
 		APIKeyPepper:      l.required("API_KEY_PEPPER"),
-		DashboardTokenTTL: l.dur("DASHBOARD_TOKEN_TTL", 24*time.Hour),
+		DashboardTokenTTL: l.dur("DASHBOARD_TOKEN_TTL", 1*time.Hour),      // short access token
+		RefreshTokenTTL:   l.dur("REFRESH_TOKEN_TTL", 30*24*time.Hour),   // 30-day sliding idle
 		ClaimTTL:          l.dur("CLAIM_TTL", 30*time.Minute),
 		HCaptchaSecret:    l.str("HCAPTCHA_SECRET", ""),
 		XBearerToken:      l.str("X_BEARER_TOKEN", ""),

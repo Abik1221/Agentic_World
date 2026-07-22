@@ -283,6 +283,11 @@ func run() error {
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
 	idHandler.SetKeysRateLimit(keysRL)
+	// Rotating refresh tokens: short-lived access JWT (above) + a long-lived,
+	// single-use refresh token with a sliding idle window, so active users stay
+	// signed in and idle ones are logged out after RefreshTokenTTL.
+	refreshSvc := auth.NewRefreshService(store.NewRefreshRepo(st.DB), jwt, cfg.RefreshTokenTTL)
+	idHandler.SetRefresh(refreshSvc)
 
 	// Agent manifests: the metadata contract a developer submits per agent
 	// version (info, supported games, hosted endpoint, runtime, model, SDK). The

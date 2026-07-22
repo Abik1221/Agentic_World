@@ -93,6 +93,11 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           JWT_SIGNING_KEY: ${{ secrets.JWT_SIGNING_KEY }}
           API_KEY_PEPPER: ${{ secrets.API_KEY_PEPPER }}
+          # Session TTLs — short access JWT + long rotating refresh (industry-standard
+          # sliding session). Configured via secrets, never hardcoded. Defaults below
+          # if unset: 1h access / 720h (30d) refresh.
+          DASHBOARD_TOKEN_TTL: ${{ secrets.DASHBOARD_TOKEN_TTL }}
+          REFRESH_TOKEN_TTL: ${{ secrets.REFRESH_TOKEN_TTL }}
           AGENT_ENDPOINT_SECRET_KEY: ${{ secrets.AGENT_ENDPOINT_SECRET_KEY }}
           ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
           PLATFORM_ENGINE_PRIVATE_KEY: ${{ secrets.PLATFORM_ENGINE_PRIVATE_KEY }}
@@ -156,6 +161,10 @@ jobs:
           API_KEY_PEPPER=${API_KEY_PEPPER}
           AGENT_ENDPOINT_SECRET_KEY=${AGENT_ENDPOINT_SECRET_KEY:-}
           ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
+          # Short access JWT; the BFF silently rotates the refresh token so active
+          # users stay signed in, and only true absence (past the refresh TTL) logs out.
+          DASHBOARD_TOKEN_TTL=${DASHBOARD_TOKEN_TTL:-1h}
+          REFRESH_TOKEN_TTL=${REFRESH_TOKEN_TTL:-720h}
 
           # ── Platform bus (Super Admin) ──
           PLATFORM_ENGINE_PRIVATE_KEY=${PLATFORM_ENGINE_PRIVATE_KEY:-}
