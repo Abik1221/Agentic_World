@@ -98,9 +98,13 @@ def main():
 
     for d in desired:
         name = fqdn(d["name"])
-        existing = ok(cf(f"/zones/{zid}/dns_records?name={name}", token=token), f"list {name}")
-        # Remove any record on this name that is NOT the one we want (stale A on a
-        # different IP, wrong type, a conflicting CNAME/A, etc.).
+        # Scope to the SAME record type: we only reconcile the A/CNAME we manage and
+        # never touch other types on the name (MX, TXT/SPF, etc. — e.g. email stays
+        # intact). This matches the intent: "remove stale A records", not everything.
+        existing = ok(cf(f"/zones/{zid}/dns_records?name={name}&type={d['type']}", token=token),
+                      f"list {name}")
+        # Remove any same-type record on this name that isn't the one we want
+        # (a stale A on a different IP, a duplicate, etc.).
         keep = None
         for r in existing:
             same = (r["type"] == d["type"] and r["content"] == d["content"])
