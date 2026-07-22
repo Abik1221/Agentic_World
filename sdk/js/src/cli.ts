@@ -362,7 +362,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
 
   const quiet = bool(a, "quiet");
   const glyph: Record<string, string> = {
-    connecting: "◔", connected: "●", reconnecting: "↻", turn: "→", event: "·", game_end: "★",
+    connecting: "◔", connected: "●", reconnecting: "↻", reauth: "🔑", turn: "→", event: "·", game_end: "★",
   };
   const feed = (kind: string, detail: string) => {
     if (quiet && kind === "turn") return; // keep lifecycle milestones even in --quiet
@@ -378,6 +378,16 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     name: agent.name,
     games: agent.supportedGames,
     onFeed: feed,
+    // Silent access-token refresh: on a rejected register, spend the rotating
+    // refresh token for a fresh access token and persist the pair back to creds —
+    // keeps a long `pyyol dev`/`play` authenticated past the short access TTL.
+    refreshToken: c.refreshToken,
+    apiUrl: base,
+    onTokens: (access: string, refresh: string) => {
+      c.accessToken = access;
+      if (refresh) c.refreshToken = refresh;
+      creds.save(c);
+    },
   });
 
   // Kick match(es) after the socket registers; retry while it comes online.

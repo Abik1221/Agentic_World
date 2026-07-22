@@ -91,10 +91,56 @@ test("event + game_end callbacks fire", async () => {
 });
 
 test("bad token is terminal", async () => {
+  // No refresh creds → a rejected register is terminal (must re-login).
   const conn = new RuntimeConnector(goofAgent(), {
     url: "ws://x", token: "bad", reconnect: false,
     WebSocketImpl: class extends FakeWS {
       constructor(_u: string) { super([{ t: "hello" }, { t: "error", error: "unauthorized", reason: "nope" }]); }
+    } as any,
+  });
+  await assert.rejects(conn.run(), (e) => e instanceof ConnectorError);
+});
+
+test("expired access token refreshes and reconnects with the new token", async () => {
+  let calls = 0;
+  let ws2!: FakeWS;
+  const persisted: { access?: string; refresh?: string } = {};
+  let conn!: RuntimeConnector;
+  conn = new RuntimeConnector(goofAgent(), {
+    url: "ws://x", agentId: "ag", token: "expired",
+    refreshToken: "old-rt", apiUrl: "http://api",
+    refreshHttp: async (api, rt) => {
+      assert.equal(api, "http://api");
+      assert.equal(rt, "old-rt");
+      return { access: "new-access", refresh: "new-rt" };
+    },
+    onTokens: (a, r) => { persisted.access = a; persisted.refresh = r; },
+    // Stop once the refreshed session registers, so run() returns.
+    onFeed: (kind) => { if (kind === "connected") conn.stop(); },
+    WebSocketImpl: class extends FakeWS {
+      constructor(_u: string) {
+        calls++;
+        super(calls === 1
+          ? [{ t: "hello" }, { t: "error", error: "unauthorized", reason: "token expired" }]
+          : [{ t: "hello" }, { t: "registered", agent_id: "ag" }]);
+        if (calls === 2) ws2 = this;
+      }
+    } as any,
+  });
+  await conn.run();
+  assert.equal(persisted.access, "new-access"); // rotated pair persisted
+  assert.equal(persisted.refresh, "new-rt");
+  // The second (post-refresh) session registered with the refreshed access token.
+  assert.equal(ws2.sent.find((f) => f.t === "register")!.token, "new-access");
+});
+
+test("dead refresh token is terminal", async () => {
+  const conn = new RuntimeConnector(goofAgent(), {
+    url: "ws://x", token: "expired", reconnect: false,
+    refreshToken: "old-rt", apiUrl: "http://api",
+    refreshHttp: async () => null, // refresh token expired/revoked
+    WebSocketImpl: class extends FakeWS {
+      constructor(_u: string) { super([{ t: "hello" }, { t: "error", error: "unauthorized" }]); }
     } as any,
   });
   await assert.rejects(conn.run(), (e) => e instanceof ConnectorError);

@@ -59,6 +59,37 @@ class ConnectorError(RuntimeError):
     """Terminal connector failure (e.g. auth rejected) — not retried."""
 
 
+class _RefreshRetry(Exception):
+    """Internal: the access token was just refreshed; reconnect immediately with
+    the new token (not a transport error, so no backoff / scary log)."""
+
+
+def _default_refresh_http(api_url: str, refresh_token: str):
+    """POST {api_url}/v1/auth/refresh {refresh_token} → (access, refresh) or None.
+
+    Uses only the stdlib so the connector stays dependency-light. A non-200 (the
+    refresh token itself is expired/revoked) returns None → the caller treats the
+    session as terminally unauthenticated and the developer must `pyyol login`."""
+    import urllib.request
+
+    url = api_url.rstrip("/") + "/v1/auth/refresh"
+    body = json.dumps({"refresh_token": refresh_token}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST", headers={"content-type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 — our own API
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — 401/network/parse all mean "cannot refresh"
+        return None
+    access = data.get("dashboard_token") or ""
+    if not access:
+        return None
+    return access, data.get("refresh_token") or ""
+
+
 class RuntimeConnector:
     """Drives one agent over an outbound WebSocket to the platform.
 
@@ -80,7 +111,11 @@ class RuntimeConnector:
         reconnect: bool = True,
         max_backoff: float = 30.0,
         console: Optional[Console] = None,
+        refresh_token: str = "",
+        api_url: str = "",
+        on_tokens=None,  # callback(access, refresh) to persist a rotated pair
         _connect=None,  # injectable for tests (defaults to websockets.sync.client.connect)
+        _refresh_http=None,  # injectable for tests (defaults to _default_refresh_http)
     ):
         self.agent = agent
         self.url = url
@@ -93,6 +128,14 @@ class RuntimeConnector:
         self.reconnect = reconnect
         self.max_backoff = max_backoff
         self.console = console or Console()  # silent base unless the CLI installs one
+        # Token refresh (opt-in): the access token is short-lived; when register is
+        # rejected we spend the rotating refresh token for a fresh one and reconnect,
+        # so a long-running agent stays authenticated. No-op unless both are set.
+        self.refresh_token = refresh_token
+        self.api_url = api_url
+        self.on_tokens = on_tokens
+        self._refresh_http = _refresh_http or _default_refresh_http
+        self._refresh_attempts = 0  # per-connection guard against a refresh loop
         self._connect = _connect
         self._stop = threading.Event()
         self._turn_no = 0
@@ -145,6 +188,12 @@ class RuntimeConnector:
             try:
                 self._session()
                 backoff = 1.0  # a clean session resets backoff
+            except _RefreshRetry:
+                # Token was just refreshed — reconnect right away with the new one,
+                # no backoff and no "connection lost" noise.
+                self._emit("reauth", "access token refreshed — reconnecting")
+                backoff = 1.0
+                continue
             except ConnectorError:
                 raise  # terminal (auth) — don't spin
             except KeyboardInterrupt:
@@ -212,9 +261,16 @@ class RuntimeConnector:
             )
             reg = _recv(ws)
             if reg.get("t") == ERROR:
+                # A rejected register with valid-looking creds is almost always an
+                # expired access token. If we hold a refresh token, spend it for a
+                # fresh access token and reconnect; only give up (terminal) when the
+                # refresh itself fails (refresh token expired/revoked → must re-login).
+                if self._try_refresh():
+                    raise _RefreshRetry()
                 raise ConnectorError(f"register rejected: {reg.get('error')} ({reg.get('reason')})")
             if reg.get("t") != REGISTERED:
                 raise ConnectorError(f"expected registered, got {reg.get('t')!r}")
+            self._refresh_attempts = 0  # a good register clears the refresh guard
             self._maybe_nudge(reg.get("latest_sdk"))
             self._emit(
                 "connected",
@@ -243,6 +299,32 @@ class RuntimeConnector:
                 ws.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _try_refresh(self) -> bool:
+        """Spend the refresh token for a fresh access token. Returns True on success
+        (self.token updated + persisted). Bounded per connection so a server that
+        keeps rejecting can never spin us in a refresh loop."""
+        if not (self.refresh_token and self.api_url) or self._refresh_attempts >= 2:
+            return False
+        self._refresh_attempts += 1
+        try:
+            pair = self._refresh_http(self.api_url, self.refresh_token)
+        except Exception:  # noqa: BLE001 — any failure ⇒ can't refresh ⇒ terminal
+            return False
+        if not pair:
+            return False
+        access, refresh = pair
+        if not access:
+            return False
+        self.token = access
+        if refresh:
+            self.refresh_token = refresh
+        if self.on_tokens:
+            try:
+                self.on_tokens(access, self.refresh_token)
+            except Exception:  # noqa: BLE001 — persistence is best-effort
+                pass
+        return True
 
     def _heartbeat(self, send, stop: threading.Event) -> None:
         while not stop.wait(self.heartbeat_interval):

@@ -141,8 +141,56 @@ def test_event_and_game_end_callbacks_fire():
 
 
 def test_bad_token_is_terminal():
+    # No refresh creds → a rejected register is terminal (must re-login).
     ws = FakeWS([{"t": "hello"}, {"t": "error", "error": "unauthorized", "reason": "nope"}])
     conn = RuntimeConnector(_agent(), url="ws://x", token="bad", _connect=lambda *a, **k: ws)
+    with pytest.raises(ConnectorError):
+        conn._session()
+
+
+def test_register_error_refreshes_and_retries():
+    """An expired access token → the connector spends the refresh token for a fresh
+    one, persists the rotated pair, and signals a reconnect (not a terminal error)."""
+    from pyyol.runtime import _RefreshRetry
+
+    persisted = {}
+
+    def fake_refresh(api_url, rt):
+        assert api_url == "http://api" and rt == "old-rt"
+        return ("new-access", "new-rt")
+
+    ws = FakeWS([{"t": "hello"}, {"t": "error", "error": "unauthorized", "reason": "token expired"}])
+    conn = RuntimeConnector(
+        _agent(),
+        url="ws://x",
+        agent_id="ag",
+        token="expired",
+        refresh_token="old-rt",
+        api_url="http://api",
+        on_tokens=lambda a, r: persisted.update(access=a, refresh=r),
+        _connect=lambda *a, **k: ws,
+        _refresh_http=fake_refresh,
+    )
+    with pytest.raises(_RefreshRetry):
+        conn._session()
+    assert conn.token == "new-access"  # rotated in memory
+    assert conn.refresh_token == "new-rt"
+    assert persisted == {"access": "new-access", "refresh": "new-rt"}  # persisted to disk
+
+
+def test_refresh_failure_is_terminal():
+    """When the refresh token itself is dead (endpoint returns nothing), the session
+    is terminally unauthenticated — no infinite retry."""
+    ws = FakeWS([{"t": "hello"}, {"t": "error", "error": "unauthorized"}])
+    conn = RuntimeConnector(
+        _agent(),
+        url="ws://x",
+        token="expired",
+        refresh_token="old-rt",
+        api_url="http://api",
+        _connect=lambda *a, **k: ws,
+        _refresh_http=lambda *a: None,
+    )
     with pytest.raises(ConnectorError):
         conn._session()
 

@@ -786,6 +786,27 @@ def _log_file_handler():
     logger.addHandler(handler)
 
 
+def _refresh_kwargs(creds) -> dict:
+    """Connector kwargs that enable silent access-token refresh from stored creds.
+
+    Returns empty (refresh disabled) unless we hold both a refresh token and the API
+    base URL. The ``on_tokens`` callback writes the rotated pair back to the same
+    store so the next run/reconnect starts from a fresh token — this is what keeps a
+    long-running ``pyyol dev``/``serve`` authenticated past the short access-token TTL."""
+    from . import credentials
+
+    if not creds or not getattr(creds, "refresh_token", "") or not getattr(creds, "url", ""):
+        return {}
+
+    def _persist(access: str, refresh: str) -> None:
+        creds.access_token = access
+        if refresh:
+            creds.refresh_token = refresh
+        credentials.save(creds)
+
+    return {"refresh_token": creds.refresh_token, "api_url": creds.url, "on_tokens": _persist}
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Load the developer's agent object and connect it to the platform over the
     outbound WebSocket. This is the local-runtime path: no inbound endpoint."""
@@ -830,7 +851,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         color=False if args.no_color else None,
     )
     try:
-        agent.run(url=url, agent_id=agent_id, token=token, console=console)
+        agent.run(url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds))
     except KeyboardInterrupt:
         print("\nstopped.")
     return 0
@@ -928,7 +949,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         color=False if args.no_color else None,
     )
     try:
-        agent.run(url=url, agent_id=agent_id, token=token, console=console)
+        agent.run(url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds))
     except KeyboardInterrupt:
         print("\nstopping…")
     finally:
@@ -1204,6 +1225,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     conn = RuntimeConnector(
         agent, url=connect_url, agent_id=agent_id, token=token,
         name=agent.name, games=agent.supported_games, console=console,
+        **_refresh_kwargs(creds),
     )
     stop = threading.Event()
 

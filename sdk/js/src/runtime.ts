@@ -52,8 +52,39 @@ export interface RuntimeOptions {
    *  newer SDK is available. Defaults to console.warn. */
   onNotice?: (message: string) => void;
   /** Optional live feed of match lifecycle for a CLI/console. kind is one of
-   *  "connected" | "turn" | "event" | "game_end". No-op if unset. */
+   *  "connected" | "turn" | "event" | "game_end" | "reauth". No-op if unset. */
   onFeed?: (kind: string, detail: string) => void;
+  /** Rotating refresh token. When set (with apiUrl), a rejected register spends it
+   *  for a fresh access token and reconnects — so long-running agents stay authed
+   *  past the short access-token TTL. */
+  refreshToken?: string;
+  /** API base URL for POST /v1/auth/refresh (e.g. https://api.pyyol.com). */
+  apiUrl?: string;
+  /** Persist a rotated (access, refresh) pair, e.g. back to the credentials file. */
+  onTokens?: (access: string, refresh: string) => void | Promise<void>;
+  /** Inject the refresh HTTP call (tests). Defaults to a fetch of /v1/auth/refresh. */
+  refreshHttp?: (apiUrl: string, refreshToken: string) => Promise<{ access: string; refresh: string } | null>;
+}
+
+/** POST {apiUrl}/v1/auth/refresh {refresh_token} → {access, refresh} or null.
+ *  A non-200 (refresh token expired/revoked) → null → terminal (must re-login). */
+async function defaultRefreshHttp(
+  apiUrl: string,
+  refreshToken: string,
+): Promise<{ access: string; refresh: string } | null> {
+  try {
+    const res = await fetch(apiUrl.replace(/\/$/, "") + "/v1/auth/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return null;
+    const j = (await res.json().catch(() => null)) as { dashboard_token?: string; refresh_token?: string } | null;
+    if (!j?.dashboard_token) return null;
+    return { access: j.dashboard_token, refresh: j.refresh_token ?? "" };
+  } catch {
+    return null;
+  }
 }
 
 function summarizeMove(game: string, move: unknown): string {
@@ -86,6 +117,10 @@ function summarizeResult(result: unknown): string {
 /** Terminal connector failure (e.g. auth rejected) — not retried. */
 export class ConnectorError extends Error {}
 
+/** Internal: the access token was just refreshed; reconnect immediately with the
+ *  new token (not a transport error, so no backoff / scary log). */
+class RefreshRetry extends Error {}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Parse a dotted version into a comparable number array; unparseable ⇒ [0] so a
@@ -112,6 +147,8 @@ function isOlder(a: string, b: string): boolean {
 export class RuntimeConnector {
   private stopped = false;
   private nudged = false; // print the "upgrade available" notice at most once
+  private registered = false; // true once this session's register succeeded
+  private refreshAttempts = 0; // per-connection guard against a refresh loop
   // Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
   // Correlated to the match trace so the agent's model/tool calls render with
   // the platform's authoritative gateway spans.
@@ -143,6 +180,13 @@ export class RuntimeConnector {
         backoff = 1000;
         if (this.opts.reconnect === false) return;
       } catch (e) {
+        if (e instanceof RefreshRetry) {
+          // Token was just refreshed — reconnect right away with the new one, no
+          // backoff and no "connection lost" noise (even in one-shot mode).
+          this.feed("reauth", "access token refreshed — reconnecting");
+          backoff = 1000;
+          continue;
+        }
         if (e instanceof ConnectorError) throw e; // terminal (auth) — don't spin
         if (this.opts.reconnect === false || this.stopped) throw e;
         // Surface the retry so a bad/absent network doesn't look like a frozen
@@ -185,8 +229,35 @@ export class RuntimeConnector {
   }
 
   /** One connection lifetime: resolves on a clean stop, rejects on transport loss. */
+  /** Spend the refresh token for a fresh access token; returns true on success
+   *  (opts.token rotated + persisted). Bounded per connection to avoid a loop. */
+  private async tryRefresh(): Promise<boolean> {
+    const rt = this.opts.refreshToken;
+    const api = this.opts.apiUrl;
+    if (!rt || !api || this.refreshAttempts >= 2) return false;
+    this.refreshAttempts++;
+    let pair: { access: string; refresh: string } | null;
+    try {
+      pair = await (this.opts.refreshHttp ?? defaultRefreshHttp)(api, rt);
+    } catch {
+      return false;
+    }
+    if (!pair?.access) return false;
+    this.opts.token = pair.access;
+    if (pair.refresh) this.opts.refreshToken = pair.refresh;
+    if (this.opts.onTokens) {
+      try {
+        await this.opts.onTokens(pair.access, this.opts.refreshToken ?? "");
+      } catch {
+        /* persistence is best-effort */
+      }
+    }
+    return true;
+  }
+
   private session(): Promise<void> {
     this.securityCheck();
+    this.registered = false;
     const WS = this.opts.WebSocketImpl ?? (globalThis as any).WebSocket;
     if (!WS) throw new ConnectorError("no WebSocket implementation (Node >=22 or pass WebSocketImpl)");
     let host = this.opts.url;
@@ -257,12 +328,22 @@ export class RuntimeConnector {
         });
         break;
       case REGISTERED:
+        this.registered = true;
+        this.refreshAttempts = 0; // a good register clears the refresh guard
         this.maybeNudge(frame.latest_sdk);
         this.feed("connected", `as ${frame.agent_id ?? this.opts.agentId ?? ""} · games=${(this.opts.games ?? []).join(",")}`);
         onRegistered();
         break;
       case ERROR:
-        throw new ConnectorError(`gateway error: ${frame.error} (${frame.reason ?? ""})`);
+        if (!this.registered) {
+          // Register rejected — almost always an expired access token. If we hold a
+          // refresh token, spend it and reconnect; only terminal when refresh fails.
+          if (await this.tryRefresh()) throw new RefreshRetry();
+          throw new ConnectorError(`register rejected: ${frame.error} (${frame.reason ?? ""})`);
+        }
+        // Mid-session gateway error — surface it, not terminal (mirrors Python).
+        this.feed("error", `${frame.error} (${frame.reason ?? ""})`);
+        break;
       case PING:
         send({ t: PONG, id: frame.id ?? "" });
         break;
