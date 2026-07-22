@@ -17,10 +17,7 @@ name: deploy-backend
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "backend/**"
-      - ".github/workflows/deploy-backend.yml"
+    branches: [main] # any push to main auto-deploys (build in CI → pull on server)
   workflow_dispatch:
 
 concurrency:
@@ -107,6 +104,9 @@ jobs:
           PYYOL_LENS_ENDPOINT: ${{ secrets.PYYOL_LENS_ENDPOINT }}
           PYYOL_LENS_API_KEY: ${{ secrets.PYYOL_LENS_API_KEY }}
           PYYOL_LENS_ORG: ${{ secrets.PYYOL_LENS_ORG }}
+          # Anti-bot on onboarding — REQUIRED in prod (fail-closed). Get a real key
+          # at hcaptcha.com; the frontend uses the matching sitekey.
+          HCAPTCHA_SECRET: ${{ secrets.HCAPTCHA_SECRET }}
           # Privy wallet/social login (empty ⇒ email/password only)
           PRIVY_APP_ID: ${{ secrets.PRIVY_APP_ID }}
           PRIVY_VERIFICATION_KEY: ${{ secrets.PRIVY_VERIFICATION_KEY }}
@@ -144,6 +144,7 @@ jobs:
           SANDBOX_ENABLED=true
           AGENT_VERIFY_ALLOW_PRIVATE=false
           ALLOW_MINT=false
+          HCAPTCHA_SECRET=${HCAPTCHA_SECRET}
 
           # ── Data layer (Postgres + Redis run in this compose) ──
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
