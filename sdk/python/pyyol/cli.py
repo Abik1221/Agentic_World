@@ -31,6 +31,10 @@ from . import __version__
 OK = "✓"
 BAD = "✗"
 
+# Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
+# connection credential (mirrors backend platform.PrefixKey).
+_AGENT_KEY_PREFIX = "sk_arena_"
+
 # Public platform defaults. A dev who `pip install pyyol` and runs `pyyol login`
 # hits the live platform with no flags; self-hosted/local users override via
 # PYYOL_API / PYYOL_DASHBOARD env vars (or --api / --dashboard). The API host
@@ -450,9 +454,28 @@ def cmd_login(args: argparse.Namespace) -> int:
         return 1
     if args.connect:
         creds.connect_url = args.connect
+    # Mint a long-lived agent key for THIS machine (unless the dashboard already
+    # handed one back). This is the credential the agent connection uses — like an
+    # OpenAI/`gh` token, it never expires on a timer, so `pyyol dev`/`serve` keeps
+    # working forever until you revoke it, re-login elsewhere, or lose the machine.
+    # Best-effort: if it fails we still store the session and fall back to the
+    # short-lived JWT + refresh for the connection.
+    if not creds.api_key and creds.agent_id and creds.access_token:
+        st, resp = _api_post(
+            f"{api}/v1/agent/keys", creds.access_token, {"agent_id": creds.agent_id}
+        )
+        if st == 201 and resp.get("api_key"):
+            creds.api_key = resp["api_key"]
+        else:
+            print(
+                f"note: couldn't mint a persistent agent key ({st}); "
+                "using the refreshable session instead.",
+                file=sys.stderr,
+            )
     backend = credentials.save(creds)
     who = creds.agent_id or "(no agent yet)"
-    print(f"{OK} logged in as {who} — credentials stored ({backend})")
+    persist = " · persistent agent key" if creds.api_key else ""
+    print(f"{OK} logged in as {who} — credentials stored ({backend}){persist}")
     return 0
 
 
@@ -851,6 +874,22 @@ def _log_file_handler():
     logger.addHandler(handler)
 
 
+def _connection_token(args, creds):
+    """The credential the agent CONNECTION registers with, and whether it's the
+    long-lived agent key. Prefer the agent key (``sk_arena_…``, no timer expiry) so
+    the connection persists forever — like an OpenAI/`gh` token — falling back to the
+    short-lived dashboard JWT (which the connector then auto-refreshes).
+    Returns ``(token, using_agent_key)``."""
+    explicit = getattr(args, "token", "") or os.environ.get("PYYOL_TOKEN", "")
+    if explicit:
+        return explicit, explicit.startswith(_AGENT_KEY_PREFIX)
+    if creds and getattr(creds, "api_key", ""):
+        return creds.api_key, True
+    if creds:
+        return creds.access_token, False
+    return "", False
+
+
 def _refresh_kwargs(creds) -> dict:
     """Connector kwargs that enable silent access-token refresh from stored creds.
 
@@ -890,7 +929,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     agent_id = (
         args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
     )
-    token = args.token or os.environ.get("PYYOL_TOKEN", "") or (creds.access_token if creds else "")
+    token, _using_key = _connection_token(args, creds)
     _log_file_handler()
 
     # Load the agent module and find the `Agent` instance (var name configurable).
@@ -917,7 +956,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     try:
         agent.run(
-            url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds)
+            url=url,
+            agent_id=agent_id,
+            token=token,
+            console=console,
+            **({} if _using_key else _refresh_kwargs(creds)),
         )
     except KeyboardInterrupt:
         print("\nstopped.")
@@ -992,7 +1035,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     creds = credentials.load()
     api = (args.api or (creds.url if creds else "")).rstrip("/")
     url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
-    token = args.token or os.environ.get("PYYOL_TOKEN", "") or (creds.access_token if creds else "")
+    token, _using_key = _connection_token(args, creds)
     agent_id = (
         args.agent or os.environ.get("PYYOL_AGENT_ID", "") or (creds.agent_id if creds else "")
     )
@@ -1028,7 +1071,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
     try:
         agent.run(
-            url=url, agent_id=agent_id, token=token, console=console, **_refresh_kwargs(creds)
+            url=url,
+            agent_id=agent_id,
+            token=token,
+            console=console,
+            **({} if _using_key else _refresh_kwargs(creds)),
         )
     except KeyboardInterrupt:
         print("\nstopping…")
@@ -1045,7 +1092,8 @@ def cmd_autoplay(args: argparse.Namespace) -> int:
 
     creds = credentials.load()
     api = (args.api or (creds.url if creds else "")).rstrip("/")
-    token = args.token or (creds.access_token if creds else "")
+    # Auto-play is agent-scoped (/v1/agent/autoplay), so it needs the agent key.
+    token, _ = _connection_token(args, creds)
     if not (api and token):
         print(f"{BAD} run `pyyol login` first", file=sys.stderr)
         return 2
@@ -1263,7 +1311,9 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     if cfg is None:
         return 2
     creds = credentials.load()
-    if creds is None or not creds.access_token:
+    # The connection runs on the agent key OR the dashboard JWT — either proves a
+    # session. (The agent key is the persistent, no-expiry one.)
+    if creds is None or not (creds.access_token or creds.api_key):
         print(f"{BAD} not logged in — run `pyyol login` first.", file=sys.stderr)
         return 2
 
@@ -1275,7 +1325,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     # creds.agent_id (its matched pair) wins over a possibly-stale pyyol.toml pin —
     # else the socket's "key.agent == claimed agent_id" check rejects the register.
     agent_id = args.agent or (creds.agent_id if creds else "") or cfg.agent_id
-    token = args.token or os.environ.get("PYYOL_TOKEN", "") or creds.access_token
+    token, _using_key = _connection_token(args, creds)
     if not connect_url or not agent_id:
         print(
             f"{BAD} missing connect URL or agent id — run `pyyol login` (or pass --url/--agent).",
@@ -1315,7 +1365,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         name=agent.name,
         games=agent.supported_games,
         console=console,
-        **_refresh_kwargs(creds),
+        **({} if _using_key else _refresh_kwargs(creds)),
     )
     stop = threading.Event()
 
@@ -1399,6 +1449,9 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     print(f"user      {user}")
     print(f"agent     {agent}")
     print(f"platform  {creds.url or base or '(unset)'}")
+    # Persistent agent key ⇒ the connection never needs re-login (revoke/PC-change
+    # only); otherwise the session rides the refreshable dashboard token.
+    print(f"session   {'persistent agent key' if creds.api_key else 'refreshable token'}")
     if cfg is not None:
         print(f"project   {cfg.name}  ·  arena {cfg.arena}  ·  mode {cfg.mode}")
     return 0

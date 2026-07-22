@@ -41,8 +41,9 @@ class Credentials:
     url: str = ""  # platform API/base URL
     connect_url: str = ""  # WSS connect URL (derived if empty)
     agent_id: str = ""
-    access_token: str = ""
-    refresh_token: str = ""
+    access_token: str = ""  # dashboard JWT (short-lived; owner-scope mgmt commands)
+    refresh_token: str = ""  # rotates the dashboard JWT
+    api_key: str = ""  # long-lived agent key — the connection credential (no expiry)
 
 
 def _try_keyring():
@@ -66,14 +67,18 @@ def save(creds: Credentials) -> str:
     backend = "file"
     meta = asdict(creds)
     kr = _try_keyring()
-    if kr is not None and creds.access_token:
+    if kr is not None and (creds.access_token or creds.api_key):
         try:
-            kr.set_password(SERVICE, _KEYRING_KEY, creds.access_token)
+            if creds.access_token:
+                kr.set_password(SERVICE, _KEYRING_KEY, creds.access_token)
             if creds.refresh_token:
                 kr.set_password(SERVICE, "refresh_token", creds.refresh_token)
+            if creds.api_key:
+                kr.set_password(SERVICE, "api_key", creds.api_key)
             # Don't duplicate secrets into the file when the keyring holds them.
             meta["access_token"] = ""
             meta["refresh_token"] = ""
+            meta["api_key"] = ""
             backend = "keyring"
         except Exception:  # noqa: BLE001 — backend locked/unavailable → file fallback
             backend = "file"
@@ -109,13 +114,15 @@ def load() -> Optional[Credentials]:
         agent_id=data.get("agent_id", ""),
         access_token=data.get("access_token", ""),
         refresh_token=data.get("refresh_token", ""),
+        api_key=data.get("api_key", ""),
     )
-    if not creds.access_token:
+    if not (creds.access_token or creds.api_key):
         kr = _try_keyring()
         if kr is not None:
             try:
                 creds.access_token = kr.get_password(SERVICE, _KEYRING_KEY) or ""
                 creds.refresh_token = kr.get_password(SERVICE, "refresh_token") or ""
+                creds.api_key = kr.get_password(SERVICE, "api_key") or ""
             except Exception:  # noqa: BLE001
                 pass
     return creds
@@ -126,7 +133,7 @@ def clear() -> bool:
     removed = False
     kr = _try_keyring()
     if kr is not None:
-        for key in (_KEYRING_KEY, "refresh_token"):
+        for key in (_KEYRING_KEY, "refresh_token", "api_key"):
             try:
                 kr.delete_password(SERVICE, key)
                 removed = True

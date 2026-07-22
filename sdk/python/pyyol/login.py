@@ -76,6 +76,9 @@ def run_login_flow(
                     agent_id=(q.get("agent_id") or [""])[0],
                     connect_url=(q.get("connect_url") or [""])[0],
                     refresh=(q.get("refresh_token") or [""])[0],
+                    # Optional: the dashboard may hand back a long-lived agent key
+                    # directly. If it doesn't, `pyyol login` mints one post-auth.
+                    api_key=(q.get("api_key") or [""])[0],
                 )
             done.set()
 
@@ -106,4 +109,5 @@ def run_login_flow(
         agent_id=captured.get("agent_id", ""),
         access_token=captured["token"],
         refresh_token=captured.get("refresh", ""),
+        api_key=captured.get("api_key", ""),
     )
