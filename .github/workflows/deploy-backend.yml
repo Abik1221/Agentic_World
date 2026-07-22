@@ -11,7 +11,7 @@ name: deploy-backend
 #      server applies DB migrations in-process on boot (AUTO_MIGRATE=true), then we
 #      poll /readyz until DB + Redis are healthy (i.e. migrations succeeded).
 #
-# Required GitHub Secrets. SSH: DEPLOY_SSH_KEY, SSH_HOST, SSH_USER, SSH_PORT.
+# Required GitHub Secrets. SSH: SSH_PASSWORD, SSH_HOST, SSH_USER, SSH_PORT (password auth).
 # Registry: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_REPO (e.g. nahi12/pyyol_backend).
 # App secrets: POSTGRES_PASSWORD, JWT_SIGNING_KEY, API_KEY_PEPPER, … (full list below).
 
@@ -201,29 +201,25 @@ jobs:
           EOF
           echo "Generated /tmp/arena.env ($(wc -l < /tmp/arena.env) lines)"
 
-      - name: Set up SSH
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
 
       - name: Ship compose file + .env to the server (image comes from the registry)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           set -euo pipefail
+          : "${SSHPASS:?SSH_PASSWORD secret is required}"
           PORT="${SSH_PORT:-22}"
-          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
-          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
+          # Password auth via sshpass -e (password read from $SSHPASS, never on argv).
+          SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+          sshpass -e ssh $SSHOPT -p "$PORT" "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
+          sshpass -e scp $SSHOPT -P "$PORT" \
             backend/deploy/docker-compose.prod.yml "$SSH_USER@$SSH_HOST:$REMOTE_DIR/docker-compose.prod.yml"
-          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
+          sshpass -e scp $SSHOPT -P "$PORT" \
             /tmp/arena.env "$SSH_USER@$SSH_HOST:$REMOTE_DIR/.env"
 
       - name: Deploy (pull image from registry + compose up + migrate-on-boot)
@@ -231,14 +227,17 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
+          : "${SSHPASS:?SSH_PASSWORD secret is required}"
           PORT="${SSH_PORT:-22}"
+          SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
           # Docker Hub creds are passed into the remote shell env (masked in CI logs)
           # so the server can pull the private image, then it logs out immediately.
-          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no \
+          sshpass -e ssh $SSHOPT -p "$PORT" \
             "$SSH_USER@$SSH_HOST" \
             "REMOTE_DIR='$REMOTE_DIR' DHUSER='$DOCKERHUB_USERNAME' DHTOKEN='$DOCKERHUB_TOKEN' bash -s" <<'ENDSSH'
           set -euo pipefail
@@ -283,6 +282,6 @@ jobs:
         if: success()
         run: echo "🚀 Deployed ${GITHUB_SHA::12} to ${{ secrets.SSH_HOST }}. Health = http://${{ secrets.SSH_HOST }}:${{ secrets.ARENA_PORT || '8091' }}/readyz"
 
-      - name: Cleanup key
+      - name: Cleanup
         if: always()
-        run: rm -f ~/.ssh/id_deploy /tmp/arena.env
+        run: rm -f /tmp/arena.env
