@@ -1,7 +1,7 @@
 # JS SDK build + deps
 js/node_modules/
 js/dist/
-js/package-lock.json
+# NOTE: package-lock.json IS committed — `npm ci` (CI + release) requires it.
 
 # Python SDK build + caches
 python/build/
