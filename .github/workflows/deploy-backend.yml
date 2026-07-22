@@ -77,14 +77,15 @@ jobs:
           : "${DOCKERHUB_REPO:?DOCKERHUB_REPO secret is required}"
           SHA="${GITHUB_SHA::12}"
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          # One shared private repo, per-service tag prefix (arena-*).
           docker build -f backend/Dockerfile \
-            -t "$DOCKERHUB_REPO:$SHA" -t "$DOCKERHUB_REPO:latest" \
+            -t "$DOCKERHUB_REPO:arena-$SHA" -t "$DOCKERHUB_REPO:arena-latest" \
             --build-arg VERSION="$SHA" backend
-          docker push "$DOCKERHUB_REPO:$SHA"
-          docker push "$DOCKERHUB_REPO:latest"
+          docker push "$DOCKERHUB_REPO:arena-$SHA"
+          docker push "$DOCKERHUB_REPO:arena-latest"
           docker logout
           # Pin the deploy to this immutable SHA tag (consumed by the .env step).
-          echo "IMAGE_REF=$DOCKERHUB_REPO:$SHA" >> "$GITHUB_ENV"
+          echo "IMAGE_REF=$DOCKERHUB_REPO:arena-$SHA" >> "$GITHUB_ENV"
 
       - name: Generate prod .env from secrets
         env:
