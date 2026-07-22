@@ -84,14 +84,15 @@ func TestValidate(t *testing.T) {
 			c.PlatformEnginePrivateKey = "engine-key"
 			c.AgentVerifyAllowPrivate = true // dev SSRF-bypass flag must not reach prod
 		}, "AGENT_VERIFY_ALLOW_PRIVATE"},
-		{"prod requires captcha secret", func(c *Config) {
+		{"prod allows empty captcha secret (agents don't solve captchas)", func(c *Config) {
 			c.Env = "prod"
 			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
 			c.APIKeyPepper = "real-pepper"
 			c.PlatformAdminPublicKey = "some-key"
 			c.PlatformEnginePrivateKey = "engine-key"
-			// HCaptchaSecret left empty -> must be rejected (fail closed).
-		}, "HCAPTCHA_SECRET"},
+			// HCaptchaSecret intentionally empty — captcha is optional and only gates
+			// the human web-onboarding flow; leaving it unset must NOT fail validation.
+		}, ""},
 		{"prod rejects plaintext hot-wallet key (H1)", func(c *Config) {
 			c.Env = "prod"
 			c.JWTSigningKey = "a-sufficiently-long-prod-signing-key!!"
