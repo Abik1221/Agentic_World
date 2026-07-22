@@ -263,7 +263,12 @@ jobs:
           $DC -f docker-compose.prod.yml --env-file .env pull server
           docker logout >/dev/null 2>&1 || true   # don't leave the token on disk
 
-          echo "Starting stack (server auto-migrates on boot)..."
+          echo "Starting stack fresh (DB keeps its named volume; app is recreated)..."
+          # Postgres is NEVER force-recreated — its named volume (pgdata) holds all
+          # data, so it survives every deploy. The app + cache are force-recreated so
+          # each deploy starts from a clean container (server re-runs AUTO_MIGRATE).
+          $DC -f docker-compose.prod.yml --env-file .env up -d postgres
+          $DC -f docker-compose.prod.yml --env-file .env up -d --force-recreate --no-deps server redis
           $DC -f docker-compose.prod.yml --env-file .env up -d --remove-orphans
           docker image prune -f >/dev/null 2>&1 || true
 

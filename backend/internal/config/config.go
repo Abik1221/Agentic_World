@@ -474,11 +474,11 @@ func (c *Config) validate() error {
 		if c.PlatformEnginePrivateKey == "" {
 			errs = append(errs, "PLATFORM_ENGINE_PRIVATE_KEY is required in prod/staging (domain events would otherwise be published unsigned)")
 		}
-		// Fail closed: without a captcha secret the dev accept-all captcha is used,
-		// removing the only non-rate-limit anti-automation control on onboarding.
-		if c.HCaptchaSecret == "" {
-			errs = append(errs, "HCAPTCHA_SECRET is required in prod/staging (onboarding would otherwise use the dev accept-all captcha)")
-		}
+		// hCaptcha is OPTIONAL: Pyyol is an agent/SDK platform — agents authenticate
+		// by API key and never solve a captcha, so we do NOT force one in prod. When
+		// HCAPTCHA_SECRET is set it gates only the human web-onboarding flow
+		// (/v1/register/verify); when empty, that single flow relies on rate limits
+		// alone. Set the secret if you want captcha on human signup.
 		// A wildcard CORS origin lets any site read authenticated JSON responses.
 		for _, o := range c.CORSAllowedOrigins {
 			if strings.TrimSpace(o) == "*" {

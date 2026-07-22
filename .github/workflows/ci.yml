@@ -1,9 +1,8 @@
 name: ci
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  pull_request: # validation runs on PRs; push-to-main is handled by the deploy workflow
+  workflow_dispatch:
 
 permissions:
   contents: read

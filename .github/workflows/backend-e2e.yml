@@ -6,11 +6,9 @@ name: backend-e2e
 # These need real infra, so they're gated behind //go:build integration and run
 # here (not in the unit `ci` job). Path-filtered to backend changes.
 on:
-  push:
-    branches: [main]
+  pull_request: # runs on PRs; deploy-backend gates prod with its own test job + /readyz
     paths: ["backend/**", ".github/workflows/backend-e2e.yml"]
-  pull_request:
-    paths: ["backend/**", ".github/workflows/backend-e2e.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: read
