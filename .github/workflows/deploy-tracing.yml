@@ -16,7 +16,7 @@ name: deploy-tracing
 # pyyol-lens-query:8082 — all by container name, nothing else public.
 #
 # ── Required GitHub Secrets (this repo) ────────────────────────────────────────
-#   SSH:  SSH_PASSWORD, SSH_HOST, SSH_USER (default root), SSH_PORT (default 22)
+#   SSH:  DEPLOY_SSH_KEY, SSH_HOST, SSH_USER (default root), SSH_PORT (default 22)
 #   App:  QUERY_API_KEY            gate for the query-api (MUST equal admin LENS_API_KEY
 #                                  and the web's key; arena reads Lens with it)
 #         INGEST_API_KEY           gate for ingest (MUST equal the arena PYYOL_LENS_API_KEY)
@@ -93,27 +93,32 @@ jobs:
           EOF
           echo "Generated tracing/deploy/.env ($(wc -l < tracing/deploy/.env) lines)"
 
-      - name: Install sshpass
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Set up SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Ship the tracing stack source + .env to the server
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           set -euo pipefail
-          : "${SSHPASS:?SSH_PASSWORD secret is required}"
           PORT="${SSH_PORT:-22}"; USER="${SSH_USER:-root}"
-          SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
           # Ship source (multi-stage Dockerfiles build on the host); exclude heavy
           # build artifacts. The generated .env rides along under deploy/.
           tar czf /tmp/tracing.tar.gz -C tracing \
             --exclude=web/node_modules --exclude=web/.next --exclude=web/.next-dev \
             --exclude=backend/server .
-          sshpass -e ssh $SSHOPT -p "$PORT" "$USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
-          sshpass -e scp $SSHOPT -P "$PORT" \
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no "$USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
+          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
             /tmp/tracing.tar.gz "$USER@$SSH_HOST:$REMOTE_DIR/tracing.tar.gz"
 
       - name: Deploy (build + up + ClickHouse-healthy + migrate-on-boot)
@@ -121,13 +126,10 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           set -euo pipefail
-          : "${SSHPASS:?SSH_PASSWORD secret is required}"
           PORT="${SSH_PORT:-22}"; USER="${SSH_USER:-root}"
-          SSHOPT="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
-          sshpass -e ssh $SSHOPT -p "$PORT" \
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no \
             "$USER@$SSH_HOST" "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'ENDSSH'
           set -euo pipefail
           cd "$REMOTE_DIR"
