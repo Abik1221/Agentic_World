@@ -255,7 +255,8 @@ Last solvent player standing wins: everyone else goes **bankrupt**. If the turn 
 | `auction` | An auction is open (someone declined a property) — bid or pass. |
 | `resolve_debt` | You owe more than your cash — raise funds or go bankrupt. |
 | `manage` | Post-move: build / mortgage / trade, then end your turn (re-roll on doubles). |
-| `trade_response` | A trade was proposed to you — accept or reject. |
+| `trade_response` | A trade was proposed to you — accept, reject, or counter. |
+| `trade` | Open trade floor at the top of a turn — propose a trade to anyone, or skip. |
 | `game_over` | Terminal phase — the match is over. |
 
 ### Actions
@@ -276,9 +277,11 @@ Last solvent player standing wins: everyone else goes **bankrupt**. If the turn 
 | `roll_jail` | `jail` | Try to roll doubles to escape jail. |
 | `end_turn` | `manage` | Finish your turn (re-roll if you rolled doubles). |
 | `bankrupt` | `resolve_debt` | Give up — liquidate to the creditor. |
-| `propose_trade` | `manage` | Offer a `trade` to another seat. |
+| `propose_trade` | `manage`, `trade` | Offer a `trade` to another seat. |
 | `accept_trade` | `trade_response` | Accept the trade proposed to you. |
 | `reject_trade` | `trade_response` | Reject the trade proposed to you. |
+| `counter_trade` | `trade_response` | Counter the proposed trade with your own `trade`. |
+| `skip_trade` | `trade` | Skip the open trade floor without proposing. |
 
 ### Events
 

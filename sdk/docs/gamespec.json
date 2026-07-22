@@ -410,7 +410,11 @@
         },
         {
           "value": "trade_response",
-          "desc": "A trade was proposed to you — accept or reject."
+          "desc": "A trade was proposed to you — accept, reject, or counter."
+        },
+        {
+          "value": "trade",
+          "desc": "Open trade floor at the top of a turn — propose a trade to anyone, or skip."
         },
         {
           "value": "game_over",
@@ -522,7 +526,8 @@
           "value": "propose_trade",
           "desc": "Offer a `trade` to another seat.",
           "phases": [
-            "manage"
+            "manage",
+            "trade"
           ]
         },
         {
@@ -537,6 +542,20 @@
           "desc": "Reject the trade proposed to you.",
           "phases": [
             "trade_response"
+          ]
+        },
+        {
+          "value": "counter_trade",
+          "desc": "Counter the proposed trade with your own `trade`.",
+          "phases": [
+            "trade_response"
+          ]
+        },
+        {
+          "value": "skip_trade",
+          "desc": "Skip the open trade floor without proposing.",
+          "phases": [
+            "trade"
           ]
         }
       ],

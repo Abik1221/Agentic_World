@@ -42,8 +42,8 @@ jobs:
           python-version: "3.12"
       # Pin ruff so lint/format is deterministic — an unpinned `pipx run ruff`
       # silently tracks the latest release and its formatter can drift between runs.
-      - run: pipx run ruff@0.15.5 check .
-      - run: pipx run ruff@0.15.5 format --check .
+      - run: pipx run --spec 'ruff==0.15.5' ruff check .
+      - run: pipx run --spec 'ruff==0.15.5' ruff format --check .
 
   python-typecheck:
     # We ship py.typed (a PEP 561 typing guarantee); verify it with mypy so the
