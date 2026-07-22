@@ -31,7 +31,7 @@ func main() {
 
 	games := gamespec.All()
 
-	if err := os.WriteFile(filepath.Join(*out, "games.md"), []byte(renderMarkdown(games)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(*out, "games.md"), []byte(renderMarkdown(games)), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, "write games.md:", err)
 		os.Exit(1)
 	}
@@ -41,7 +41,7 @@ func main() {
 		os.Exit(1)
 	}
 	buf = append(buf, '\n')
-	if err := os.WriteFile(filepath.Join(*out, "gamespec.json"), buf, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(*out, "gamespec.json"), buf, 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, "write gamespec.json:", err)
 		os.Exit(1)
 	}

@@ -93,7 +93,7 @@ func (r *MatchmakingRepo) ClaimPair(ctx context.Context, agentA, agentB string) 
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	ids := []string{agentA, agentB}
 	rows, err := tx.Query(ctx,

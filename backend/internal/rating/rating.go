@@ -226,10 +226,7 @@ func (s *Service) Rate(ctx context.Context, res MatchResult) error {
 	}
 	players := make([]ApplyPlayer, len(res.Players))
 	for i, p := range res.Players {
-		players[i] = ApplyPlayer{
-			AgentPublicID: p.AgentPublicID, Seat: p.Seat,
-			Placement: p.Placement, CoinsDelta: p.CoinsDelta,
-		}
+		players[i] = ApplyPlayer(p)
 	}
 	applied, err := s.repo.ApplyMatch(ctx, ApplyInput{
 		MatchPublicID: res.MatchPublicID,

@@ -7,8 +7,12 @@ import "testing"
 func TestConnectionCaps(t *testing.T) {
 	g := New(nil, Options{MaxConns: 3, MaxConnsPerIP: 2}, nil)
 
-	// Per-IP cap: 2 from the same IP succeed, the 3rd is rejected.
-	if !g.acquireSlot("1.1.1.1") || !g.acquireSlot("1.1.1.1") {
+	// Per-IP cap: 2 from the same IP succeed, the 3rd is rejected. Bind each
+	// acquire to its own variable so BOTH run (|| short-circuits) and the two
+	// expressions aren't identical (SA4000).
+	first := g.acquireSlot("1.1.1.1")
+	second := g.acquireSlot("1.1.1.1")
+	if !first || !second {
 		t.Fatal("first two slots for an IP should be granted")
 	}
 	if g.acquireSlot("1.1.1.1") {

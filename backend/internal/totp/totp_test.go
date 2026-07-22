@@ -41,9 +41,6 @@ func TestValidateWindowAndSkew(t *testing.T) {
 		t.Fatal("far code must not validate")
 	}
 	// Wrong / malformed codes are rejected.
-	if Validate(secret, "000000", now.Add(15*time.Second), 1) && code == "000000" {
-		// extremely unlikely; ignore the 1-in-1e6 coincidence
-	}
 	if Validate(secret, "abc", now, 1) || Validate(secret, "", now, 1) || Validate("!!bad!!", code, now, 1) {
 		t.Fatal("malformed input must be rejected")
 	}

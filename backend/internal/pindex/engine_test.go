@@ -145,8 +145,9 @@ func TestComputeDeterministic(t *testing.T) {
 	}
 	a := NewEngine().Compute(in, cfg)
 	b := NewEngine().Compute(in, cfg)
-	if a.PIndex != b.PIndex || in.Hash() != in.Hash() {
-		t.Fatalf("non-deterministic: %.4f vs %.4f", a.PIndex, b.PIndex)
+	h1, h2 := in.Hash(), in.Hash()
+	if a.PIndex != b.PIndex || h1 != h2 {
+		t.Fatalf("non-deterministic: PIndex %.4f vs %.4f, hash %q vs %q", a.PIndex, b.PIndex, h1, h2)
 	}
 }
 

@@ -117,17 +117,6 @@ func cloneActMap(m map[int]Action) map[int]Action {
 	return out
 }
 
-func (s *State) aliveSeats() []int {
-	var seats []int
-	for seat, ok := range s.Alive {
-		if ok {
-			seats = append(seats, seat)
-		}
-	}
-	sort.Ints(seats)
-	return seats
-}
-
 func (s *State) countTeam(team string) int {
 	n := 0
 	for seat, alive := range s.Alive {

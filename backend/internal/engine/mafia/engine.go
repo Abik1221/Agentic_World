@@ -491,22 +491,6 @@ func defaultActionFor(s State, seat int, seed []byte) Action {
 	return Action{Kind: ActAbstain}
 }
 
-func defaultTarget(s State, seat int, seed []byte, tag string) int {
-	seats := s.aliveSeats()
-	var candidates []int
-	for _, t := range seats {
-		if t != seat {
-			candidates = append(candidates, t)
-		}
-	}
-	if len(candidates) == 0 {
-		return seat
-	}
-	h := sha256.Sum256(append(append(append(seed, byte(seat)), byte(s.Day)), []byte(tag)...))
-	idx := int(uint32(h[0])<<24|uint32(h[1])<<16|uint32(h[2])<<8|uint32(h[3])) % len(candidates)
-	return candidates[idx]
-}
-
 func pluralityTarget(votes map[int]int) int {
 	if len(votes) == 0 {
 		return 0
