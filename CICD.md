@@ -71,7 +71,8 @@ Set these in the **Agentic_World** repo. The coin economy (mint/stake/settle)
 works without any of them; these enable **real-money** rails + Privy login.
 - **Privy login:** `PRIVY_APP_ID`, `PRIVY_VERIFICATION_KEY` (empty ⇒ email/password only).
 - **Solana USDC deposits (ALL four required to turn deposits on):** `SOLANA_RPC_URL`
-  (a paid RPC — Helius/QuickNode), `SOLANA_USDC_MINT` (mainnet USDC mint),
+  (the **free public RPC** `https://api.mainnet-beta.solana.com` is fine at launch;
+  swap to a paid RPC only if you hit rate limits), `SOLANA_USDC_MINT` (mainnet USDC mint),
   `SOLANA_PLATFORM_OWNER` (platform wallet address), `SOLANA_PLATFORM_ATA` (its USDC
   token account). Optional: `SOLANA_COMMITMENT` (default `finalized`).
 - **Solana withdrawals (needs deposits on + a funded hot wallet):**

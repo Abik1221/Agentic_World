@@ -737,18 +737,21 @@ func run() error {
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
 
-	// Payments: real money → coins via Stripe Checkout, with idempotent webhook
-	// processing into the ledger. A configured secret key selects the live Stripe
-	// gateway; otherwise the offline DevGateway runs the whole flow locally.
+	// Payments — fiat (card) top-ups via Stripe. This is OPTIONAL: Pyyol's on-ramp
+	// is a real USDC deposit (see the Solana deposit rail), so a card gateway is a
+	// convenience, not a requirement. Three modes, chosen with security first:
 	//
-	// Guard: in production/staging we must NEVER silently run the DevGateway (it
-	// credits coins with NO real charge) or accept unsigned webhooks — refuse to
-	// boot without real Stripe configuration.
-	if cfg.IsProd() {
+	//   • Stripe configured  → live Stripe gateway (real charges). In prod we then
+	//     REQUIRE the rest of the Stripe config (webhook secret + real redirect
+	//     URLs); a *partial* Stripe setup refuses to boot rather than run half-wired.
+	//   • No Stripe, prod     → DisabledGateway: card endpoints return 503. It never
+	//     credits coins, so there is no free-coin hole — deposits/withdrawals (Solana)
+	//     remain the sole money rail. This is the default Solana-only deployment.
+	//   • No Stripe, non-prod → offline DevGateway for local testing (credits coins
+	//     with no charge — NEVER reachable in prod by construction below).
+	stripeConfigured := cfg.StripeSecretKey != ""
+	if stripeConfigured && cfg.IsProd() {
 		var missing []string
-		if cfg.StripeSecretKey == "" {
-			missing = append(missing, "STRIPE_SECRET_KEY")
-		}
 		if cfg.StripeWebhookSecret == "" {
 			missing = append(missing, "STRIPE_WEBHOOK_SECRET")
 		}
@@ -766,19 +769,28 @@ func run() error {
 			missing = append(missing, "CONNECT_REFRESH_URL")
 		}
 		if len(missing) > 0 {
-			return fmt.Errorf("payments: %s=%q requires real Stripe configuration; missing/placeholder: %s "+
-				"(refusing to run the offline DevGateway that credits coins with no charge)",
-				"APP_ENV", cfg.Env, strings.Join(missing, ", "))
+			return fmt.Errorf("payments: STRIPE_SECRET_KEY is set (fiat top-ups on) but the setup is incomplete; "+
+				"missing/placeholder: %s — set them, or unset STRIPE_SECRET_KEY to run Solana-only (card top-ups disabled)",
+				strings.Join(missing, ", "))
 		}
 	}
 
-	var gateway payments.Gateway = &payments.DevGateway{}
-	devPayments := true
-	if cfg.StripeSecretKey != "" {
+	var gateway payments.Gateway
+	var billingGW subscription.BillingGateway
+	devPayments := false
+	switch {
+	case stripeConfigured:
 		gateway = payments.NewStripeGateway(cfg.StripeSecretKey)
-		devPayments = false
-	} else {
-		log.Warn("STRIPE_SECRET_KEY unset: payments using the offline DevGateway (no real charges, coins credited immediately)")
+		billingGW = subscription.NewStripeBillingGateway(cfg.StripeSecretKey)
+	case cfg.IsProd():
+		gateway = payments.DisabledGateway{}
+		billingGW = subscription.DisabledBillingGateway{}
+		log.Info("STRIPE_SECRET_KEY unset in prod: fiat card top-ups DISABLED (Solana USDC deposits are the on-ramp)")
+	default:
+		gateway = &payments.DevGateway{}
+		billingGW = subscription.DevBillingGateway{}
+		devPayments = true
+		log.Warn("STRIPE_SECRET_KEY unset (non-prod): payments using the offline DevGateway (no real charges, coins credited immediately)")
 	}
 	paymentsSvc := payments.New(gateway, walletSvc, store.NewPaymentsRepo(st.DB), clock,
 		payments.Config{
@@ -792,10 +804,6 @@ func run() error {
 			DevMode:           devPayments,
 		}, log, metrics.Registry())
 
-	var billingGW subscription.BillingGateway = subscription.DevBillingGateway{}
-	if cfg.StripeSecretKey != "" {
-		billingGW = subscription.NewStripeBillingGateway(cfg.StripeSecretKey)
-	}
 	subscriptionSvc := subscription.New(billingGW, walletSvc, store.NewSubscriptionRepo(st.DB),
 		subscription.Config{
 			Plan: subscription.Plan{

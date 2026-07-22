@@ -71,9 +71,12 @@ substitute for an external security review before handling real funds.
    than double-paying, M3). The reconciler flags `stuck_processing`; recover
    manually by matching the tx on-chain. Consider durable-nonce transactions for
    exactly-once broadcast.
-5. **RPC provider trust.** Use a reputable RPC (Helius/Triton/QuickNode);
-   consider dual-RPC confirmation for high-value withdrawals. Prefer a webhook/
-   indexer over polling at scale.
+5. **RPC provider trust.** The **free public RPC** (`https://api.mainnet-beta.solana.com`)
+   is fine for launch volume — Pyyol only needs read (confirm deposits) + send
+   (broadcast withdrawals) on `finalized`; no indexer, webhooks, or on-chain
+   programs. If you hit public-RPC rate limits at scale, swap `SOLANA_RPC_URL` to a
+   paid provider (no code change). Consider dual-RPC confirmation only for
+   high-value withdrawals.
 6. **Confirmations:** deposits + withdrawals use `finalized` (strongest) — good;
    keep it there for money movement.
 
@@ -109,7 +112,8 @@ Coin peg is derived from `COIN_CENTS` (1 USDC = 100/COIN_CENTS credits).
 
 1. **Provision custody:** create the platform Solana wallet + its **USDC ATA**;
    fund the wallet with SOL for tx fees. Store the key in KMS/secretbox.
-2. **RPC:** point `SOLANA_RPC_URL` at a mainnet provider; keep `finalized`.
+2. **RPC:** point `SOLANA_RPC_URL` at mainnet (the free public
+   `https://api.mainnet-beta.solana.com` is fine to start); keep `finalized`.
 3. **Mint:** set `SOLANA_USDC_MINT` to mainnet USDC
    (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`).
 4. **Privy:** switch to the production Privy app id + verification key on both
@@ -128,3 +132,31 @@ Coin peg is derived from `COIN_CENTS` (1 USDC = 100/COIN_CENTS credits).
 
 **Rollback:** set `maintenance_mode=true` (pauses deposits + withdrawals
 instantly) or flip the individual switches; freeze specific wallets as needed.
+
+---
+
+## 4. devnet → mainnet: the exact GitHub Secrets to flip (`Agentic_World` repo)
+
+Deploys read all config from GitHub Secrets, so a mainnet cutover is a **6-secret
+swap + redeploy** — no code change. Fund a fresh mainnet wallet first (never reuse
+the devnet key), then update these in `Agentic_World → Settings → Secrets`:
+
+| Secret | devnet (testing) | mainnet (production) |
+|---|---|---|
+| `SOLANA_RPC_URL` | `https://api.devnet.solana.com` | `https://api.mainnet-beta.solana.com` |
+| `SOLANA_USDC_MINT` | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (devnet USDC) | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (mainnet USDC) |
+| `SOLANA_PLATFORM_OWNER` | devnet platform wallet address | **mainnet** platform wallet address |
+| `SOLANA_PLATFORM_ATA` | devnet platform USDC ATA | **mainnet** platform USDC ATA |
+| `SOLANA_HOT_WALLET_SECRET_ENC` | `secretbox(devnet payout key)` | `secretbox(mainnet payout key)` |
+| `SOLANA_HOT_WALLET_ENC_KEY` | devnet master key | **new** mainnet master key |
+
+`SOLANA_COMMITMENT` stays `finalized`. `PRIVY_*` switch to the production Privy app.
+Produce each `*_ENC` value locally with `cd backend && go run ./cmd/wallet-secret-encrypt`
+(paste the base58 key, keep the emitted `ENC` + `ENC_KEY`; never commit the raw key).
+
+**Fiat is optional.** Leave `STRIPE_SECRET_KEY` unset to run Solana-only: the arena
+boots, card top-ups return 503 (never credited free), and USDC deposits are the sole
+on-ramp. Only set the full `STRIPE_*` set if you later add card top-ups.
+
+After swapping, redeploy (push or `workflow_dispatch`), keep the wallet gate closed
+(`deposits_enabled=false`), run the tiny-amount smoke test in §3.8, then open up.
