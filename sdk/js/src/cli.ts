@@ -35,6 +35,10 @@ const BAD = "✗";
 const DEFAULT_API_BASE = (process.env.PYYOL_API || "").replace(/\/$/, "") || "https://api.pyyol.com";
 const DEFAULT_DASHBOARD = (process.env.PYYOL_DASHBOARD || "").replace(/\/$/, "") || "https://pyyol.com";
 
+// Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
+// connection credential (mirrors backend platform.PrefixKey).
+const AGENT_KEY_PREFIX = "sk_arena_";
+
 const PLAY_PATH: Record<string, string> = {
   goofspiel: "/v1/sandbox/pushplay",
   mafia: "/v1/mafia/pushplay",
@@ -48,7 +52,7 @@ const REPLAY_PATH: Record<string, string> = {
 
 // ── arg parsing (tiny, dependency-free) ───────────────────────────────────────
 
-interface Args {
+export interface Args {
   positionals: string[];
   flags: Record<string, string | boolean>;
 }
@@ -202,6 +206,19 @@ function httpBase(a: Args, c: creds.Credentials | null): string {
   return DEFAULT_API_BASE;
 }
 
+/** The credential the agent CONNECTION registers with, and whether it's the
+ *  long-lived agent key. Prefer the agent key (`sk_arena_…`, no timer expiry) so
+ *  the connection persists forever — like an OpenAI/`gh` token — falling back to
+ *  the short-lived dashboard JWT (which the connector then auto-refreshes).
+ *  Mirrors the Python `_connection_token`. */
+export function connectionToken(a: Args, c: creds.Credentials | null): { token: string; usingAgentKey: boolean } {
+  const explicit = str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (explicit) return { token: explicit, usingAgentKey: explicit.startsWith(AGENT_KEY_PREFIX) };
+  if (c?.apiKey) return { token: c.apiKey, usingAgentKey: true };
+  if (c) return { token: c.accessToken, usingAgentKey: false };
+  return { token: "", usingAgentKey: false };
+}
+
 // ── load the developer's agent from pyyol.toml ────────────────────────────────
 
 async function loadAgentFromConfig(cfg: config.Config) {
@@ -240,6 +257,8 @@ async function cmdLogin(a: Args): Promise<number> {
       agentId: str(a, "agent"),
       accessToken: token,
       refreshToken: "",
+      // An explicit sk_arena_… token IS the persistent agent key; a dashboard JWT isn't.
+      apiKey: token.startsWith(AGENT_KEY_PREFIX) ? token : "",
     });
     console.log(`${OK} stored credentials`);
     return 0;
@@ -249,8 +268,20 @@ async function cmdLogin(a: Args): Promise<number> {
   try {
     const c = await runLoginFlow({ dashboardUrl: dashboard, apiUrl: api, provider });
     if (str(a, "connect")) c.connectUrl = str(a, "connect");
+    // Mint a long-lived agent key for THIS machine (unless the dashboard already
+    // handed one back). This is the credential the agent connection uses — like an
+    // OpenAI/`gh` token, it never expires on a timer, so `pyyol dev`/`serve` keeps
+    // working forever until you revoke it, re-login elsewhere, or lose the machine.
+    // Best-effort: if it fails we still store the session and fall back to the
+    // short-lived JWT + refresh for the connection.
+    if (!c.apiKey && c.agentId && c.accessToken) {
+      const [st, resp] = await apiPost(`${api}/v1/agent/keys`, c.accessToken, { agent_id: c.agentId });
+      if (st === 201 && resp.api_key) c.apiKey = resp.api_key;
+      else console.error(`note: couldn't mint a persistent agent key (${st}); using the refreshable session instead.`);
+    }
     creds.save(c);
-    console.log(`${OK} logged in as ${c.agentId || "(no agent yet)"} — credentials stored`);
+    const persist = c.apiKey ? " · persistent agent key" : "";
+    console.log(`${OK} logged in as ${c.agentId || "(no agent yet)"} — credentials stored${persist}`);
     return 0;
   } catch (e) {
     console.error(`${BAD} login failed: ${e}`);
@@ -274,6 +305,9 @@ async function cmdWhoami(a: Args): Promise<number> {
   console.log(`user      ${me.user_id ?? "(unknown)"}`);
   console.log(`agent     ${me.agent_id ?? c.agentId ?? "(none)"}`);
   console.log(`platform  ${c.url || base || "(unset)"}`);
+  // Persistent agent key ⇒ the connection never needs re-login (revoke/PC-change
+  // only); otherwise the session rides the refreshable dashboard token.
+  console.log(`session   ${c.apiKey ? "persistent agent key" : "refreshable token"}`);
   const cfg = config.load();
   if (cfg) console.log(`project   ${cfg.name}  ·  arena ${cfg.arena}  ·  mode ${cfg.mode}`);
   return 0;
@@ -364,7 +398,9 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     return 2;
   }
   const c = creds.load();
-  if (!c?.accessToken) {
+  // The connection runs on the agent key OR the dashboard JWT — either proves a
+  // session. (The agent key is the persistent, no-expiry one.)
+  if (!c || !(c.accessToken || c.apiKey)) {
     console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
     return 2;
   }
@@ -374,7 +410,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
   // so creds.agentId (its matched pair) wins over a possibly-stale pyyol.toml pin —
   // otherwise the socket's "key.agent == claimed agent_id" check rejects the register.
   const agentId = str(a, "agent") || c.agentId || cfg.agent_id;
-  const token = str(a, "token") || process.env.PYYOL_TOKEN || c.accessToken;
+  const { token, usingAgentKey } = connectionToken(a, c);
   if (!connectUrl || !agentId) {
     console.error(`${BAD} missing connect URL or agent id — run \`pyyol login\` (or pass --url/--agent).`);
     return 2;
@@ -411,8 +447,9 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     onFeed: feed,
     // Silent access-token refresh: on a rejected register, spend the rotating
     // refresh token for a fresh access token and persist the pair back to creds —
-    // keeps a long `pyyol dev`/`play` authenticated past the short access TTL.
-    ...refreshOpts(c, base),
+    // keeps a long `pyyol dev`/`play` authenticated past the short access TTL. The
+    // agent key can't expire, so refresh is only wired when NOT using it.
+    ...(usingAgentKey ? {} : refreshOpts(c, base)),
   });
 
   // Kick match(es) after the socket registers; retry while it comes online.
@@ -799,7 +836,8 @@ async function cmdAutoplay(a: Args): Promise<number> {
   }
   const c = creds.load();
   const api = (str(a, "api") || c?.url || "").replace(/\/$/, "");
-  const token = str(a, "token") || c?.accessToken || "";
+  // Auto-play is agent-scoped (/v1/agent/autoplay), so it needs the agent key.
+  const { token } = connectionToken(a, c);
   if (!api || !token) {
     console.error(`${BAD} run \`pyyol login\` first`);
     return 2;
@@ -1122,7 +1160,7 @@ async function cmdRun(a: Args): Promise<number> {
     return 2;
   }
   const agentId = str(a, "agent") || process.env.PYYOL_AGENT_ID || c?.agentId || "";
-  const token = str(a, "token") || process.env.PYYOL_TOKEN || c?.accessToken || "";
+  const { token, usingAgentKey } = connectionToken(a, c);
   if (str(a, "token")) warnArgvSecret();
   const file = str(a, "file") || "agent.mjs";
   const varName = str(a, "var") || "agent";
@@ -1143,8 +1181,9 @@ async function cmdRun(a: Args): Promise<number> {
     name: agent.name,
     games: agent.supportedGames,
     onFeed: makeFeed(bool(a, "quiet")),
-    // Same silent access-token refresh wiring as `dev`/`play`.
-    ...refreshOpts(c, base),
+    // Same silent access-token refresh wiring as `dev`/`play` — only when NOT on
+    // the (non-expiring) agent key.
+    ...(usingAgentKey ? {} : refreshOpts(c, base)),
   });
   process.on("SIGINT", () => conn.stop());
   try {
@@ -1166,7 +1205,9 @@ async function cmdRun(a: Args): Promise<number> {
 async function cmdServe(a: Args): Promise<number> {
   const c = creds.load();
   const api = (str(a, "api") || c?.url || "").replace(/\/$/, "");
-  const token = str(a, "token") || process.env.PYYOL_TOKEN || c?.accessToken || "";
+  // Auto-play + the connection are agent-scoped, so this rides the agent key
+  // (falling back to the dashboard JWT).
+  const { token } = connectionToken(a, c);
   if (str(a, "token")) warnArgvSecret();
   if (!api || !token) {
     console.error(`${BAD} run \`pyyol login\` first (need the API base + token)`);

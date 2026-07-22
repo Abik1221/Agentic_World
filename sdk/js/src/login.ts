@@ -94,6 +94,9 @@ export function runLoginFlow(opts: {
         agentId: u.searchParams.get("agent_id") ?? "",
         accessToken: token,
         refreshToken: u.searchParams.get("refresh_token") ?? "",
+        // Optional: the dashboard may hand back a long-lived agent key directly.
+        // If it doesn't, `pyyol login` mints one post-auth.
+        apiKey: u.searchParams.get("api_key") ?? "",
         authUrl: "",
       });
     });

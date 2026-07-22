@@ -33,6 +33,7 @@ const sample: Credentials = {
   agentId: "ag_test",
   accessToken: "acc-tok",
   refreshToken: "ref-tok",
+  apiKey: "sk_arena_abc_def",
 };
 
 test("save reports the file backend and load round-trips tokens + metadata", async () => {
@@ -42,10 +43,30 @@ test("save reports the file backend and load round-trips tokens + metadata", asy
     const raw = JSON.parse(readFileSync(join(configDir(), "credentials.json"), "utf8"));
     assert.equal(raw.accessToken, "acc-tok");
     assert.equal(raw.refreshToken, "ref-tok");
+    assert.equal(raw.apiKey, "sk_arena_abc_def");
     assert.equal(raw.agentId, "ag_test");
     assert.equal(raw.url, "https://api.pyyol.com");
 
     assert.deepEqual(load(), sample);
+  });
+});
+
+test("the long-lived agent key (apiKey) round-trips through the file fallback", async () => {
+  await withStore(() => {
+    // A session with ONLY the agent key (no dashboard JWT) — the persistent
+    // connection credential must survive save→load on its own.
+    const keyOnly: Credentials = {
+      url: "https://api.pyyol.com",
+      connectUrl: "",
+      agentId: "ag_key",
+      accessToken: "",
+      refreshToken: "",
+      apiKey: "sk_arena_lookup_secret",
+    };
+    save(keyOnly);
+    const loaded = load();
+    assert.equal(loaded?.apiKey, "sk_arena_lookup_secret");
+    assert.equal(loaded?.accessToken, "");
   });
 });
 

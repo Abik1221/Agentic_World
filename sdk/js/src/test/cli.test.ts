@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { apiGet, apiPost, apiRequest, main } from "../cli.js";
+import { apiGet, apiPost, apiRequest, connectionToken, main, type Args } from "../cli.js";
+import type { Credentials } from "../credentials.js";
 
 /**
  * Drive `main()` with a stubbed global fetch, captured stdout/stderr, and an
@@ -106,6 +107,46 @@ test("apiRequest stops after the retry cap and returns the final 429", async () 
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+// ── connectionToken (the agent-key-vs-JWT connection credential) ──────────────
+
+const noArgs: Args = { positionals: [], flags: {} };
+const withToken = (t: string): Args => ({ positionals: [], flags: { token: t } });
+const credsOf = (extra: Partial<Credentials>): Credentials => ({
+  url: "http://localhost:9999",
+  connectUrl: "ws://localhost:9999/connect",
+  agentId: "ag_test",
+  accessToken: "",
+  refreshToken: "",
+  apiKey: "",
+  ...extra,
+});
+
+test("connectionToken prefers the long-lived agent key over the dashboard JWT", () => {
+  const c = credsOf({ accessToken: "jwt-tok", apiKey: "sk_arena_a_b" });
+  const r = connectionToken(noArgs, c);
+  assert.equal(r.token, "sk_arena_a_b");
+  assert.equal(r.usingAgentKey, true);
+});
+
+test("connectionToken falls back to the dashboard JWT when there is no agent key", () => {
+  const c = credsOf({ accessToken: "jwt-tok" });
+  const r = connectionToken(noArgs, c);
+  assert.equal(r.token, "jwt-tok");
+  assert.equal(r.usingAgentKey, false);
+});
+
+test("connectionToken: an explicit sk_arena_ token is treated as the agent key", () => {
+  const r = connectionToken(withToken("sk_arena_x_y"), credsOf({ accessToken: "jwt-tok", apiKey: "sk_arena_a_b" }));
+  assert.equal(r.token, "sk_arena_x_y"); // explicit --token wins over stored creds
+  assert.equal(r.usingAgentKey, true);
+});
+
+test("connectionToken: an explicit non-key token is NOT the agent key", () => {
+  const r = connectionToken(withToken("some-jwt"), credsOf({ apiKey: "sk_arena_a_b" }));
+  assert.equal(r.token, "some-jwt");
+  assert.equal(r.usingAgentKey, false);
 });
 
 // ── status ──────────────────────────────────────────────────────────────────

@@ -20,13 +20,15 @@ import { join } from "node:path";
 const SERVICE = "pyyol";
 const ACCESS_KEY = "access_token";
 const REFRESH_KEY = "refresh_token";
+const API_KEY = "api_key";
 
 export interface Credentials {
   url: string; // platform API/base URL
   connectUrl: string; // WSS connect URL (derived if empty)
   agentId: string;
-  accessToken: string;
-  refreshToken: string;
+  accessToken: string; // dashboard JWT (short-lived; owner-scope mgmt commands)
+  refreshToken: string; // rotates the dashboard JWT
+  apiKey: string; // long-lived agent key — the connection credential (no expiry)
 }
 
 export function configDir(): string {
@@ -120,12 +122,17 @@ export function save(creds: Credentials): "keychain" | "file" {
   let backend: "keychain" | "file" = "file";
   const meta: Credentials = { ...creds };
   const kc = keychain();
-  if (kc && creds.accessToken) {
-    // Both writes must land before we drop the secrets from the file, so a partial
+  if (kc && (creds.accessToken || creds.apiKey)) {
+    // All writes must land before we drop the secrets from the file, so a partial
     // failure (store locked mid-write) leaves a complete 0600 file to fall back to.
-    if (kc.set(ACCESS_KEY, creds.accessToken) && (!creds.refreshToken || kc.set(REFRESH_KEY, creds.refreshToken))) {
+    if (
+      (!creds.accessToken || kc.set(ACCESS_KEY, creds.accessToken)) &&
+      (!creds.refreshToken || kc.set(REFRESH_KEY, creds.refreshToken)) &&
+      (!creds.apiKey || kc.set(API_KEY, creds.apiKey))
+    ) {
       meta.accessToken = "";
       meta.refreshToken = "";
+      meta.apiKey = "";
       backend = "keychain";
     }
   }
@@ -154,16 +161,18 @@ export function load(): Credentials | null {
       agentId: d.agentId ?? d.agent_id ?? "",
       accessToken: d.accessToken ?? d.access_token ?? "",
       refreshToken: d.refreshToken ?? d.refresh_token ?? "",
+      apiKey: d.apiKey ?? d.api_key ?? "",
     };
   } catch {
     return null;
   }
   // File held only metadata (keychain-backed) → fill the secrets from the store.
-  if (!creds.accessToken) {
+  if (!creds.accessToken && !creds.apiKey) {
     const kc = keychain();
     if (kc) {
       creds.accessToken = kc.get(ACCESS_KEY) ?? "";
       creds.refreshToken = kc.get(REFRESH_KEY) ?? "";
+      creds.apiKey = kc.get(API_KEY) ?? "";
     }
   }
   return creds;
@@ -175,6 +184,7 @@ export function clear(): boolean {
   if (kc) {
     if (kc.del(ACCESS_KEY)) removed = true;
     if (kc.del(REFRESH_KEY)) removed = true;
+    if (kc.del(API_KEY)) removed = true;
   }
   const path = credPath();
   if (existsSync(path)) {
