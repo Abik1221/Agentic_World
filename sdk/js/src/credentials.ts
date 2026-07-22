@@ -1,12 +1,25 @@
 /**
- * Local credential storage for the `pyyol` CLI (mirrors the Python SDK's ~/.pyyol
- * store). Tokens are written to a 0600 JSON file under the config dir. Override the
- * location with PYYOL_HOME (tests/CI). The token arrives via the browser login flow
+ * Local credential storage for the `pyyol` CLI (mirrors the Python SDK's
+ * keyring-or-0600-file model). The access/refresh tokens go into the OS secret
+ * store when one is reachable — Keychain on macOS (`security`), Secret Service on
+ * Linux (`secret-tool`) — otherwise they fall back to a 0600 JSON file under the
+ * config dir. Non-secret metadata (platform URL, connect URL, agent id) is always
+ * kept in that file, so the CLI can show which platform you're logged into without
+ * unlocking the secret store. Override the location with PYYOL_HOME (tests/CI).
+ *
+ * Zero runtime deps: the secret store is driven by shelling out to the platform
+ * CLI via node:child_process (spawnSync, arg arrays — never a shell string, so a
+ * token can't leak into a shell log). The token arrives via the browser login flow
  * — the developer never pastes a key during normal onboarding.
  */
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+const SERVICE = "pyyol";
+const ACCESS_KEY = "access_token";
+const REFRESH_KEY = "refresh_token";
 
 export interface Credentials {
   url: string; // platform API/base URL
@@ -24,7 +37,78 @@ function credPath(): string {
   return join(configDir(), "credentials.json");
 }
 
-export function save(creds: Credentials): string {
+/** A minimal OS secret-store backend. Every method is best-effort: a false/null
+ *  return (tool absent, store locked, item missing) sends the caller to the file. */
+interface Keychain {
+  set(key: string, secret: string): boolean;
+  get(key: string): string | null;
+  del(key: string): boolean;
+}
+
+/** macOS Keychain via the `security` CLI. `-U` updates an existing item. The
+ *  secret rides in the argv array (no shell) — not a shell string we could log. */
+const macKeychain: Keychain = {
+  set(key, secret) {
+    const r = spawnSync(
+      "security",
+      ["add-generic-password", "-U", "-s", SERVICE, "-a", key, "-w", secret],
+      { encoding: "utf8" },
+    );
+    return !r.error && r.status === 0;
+  },
+  get(key) {
+    const r = spawnSync("security", ["find-generic-password", "-s", SERVICE, "-a", key, "-w"], {
+      encoding: "utf8",
+    });
+    if (r.error || r.status !== 0) return null;
+    return (r.stdout ?? "").replace(/\n$/, "");
+  },
+  del(key) {
+    const r = spawnSync("security", ["delete-generic-password", "-s", SERVICE, "-a", key], {
+      encoding: "utf8",
+    });
+    return !r.error && r.status === 0;
+  },
+};
+
+/** Linux Secret Service via the `secret-tool` CLI (libsecret). The secret is fed
+ *  over stdin on store so it never appears in argv/ps. */
+const linuxKeychain: Keychain = {
+  set(key, secret) {
+    const r = spawnSync(
+      "secret-tool",
+      ["store", "--label=pyyol", "service", SERVICE, "key", key],
+      { input: secret, encoding: "utf8" },
+    );
+    return !r.error && r.status === 0;
+  },
+  get(key) {
+    const r = spawnSync("secret-tool", ["lookup", "service", SERVICE, "key", key], {
+      encoding: "utf8",
+    });
+    if (r.error || r.status !== 0) return null;
+    const v = r.stdout ?? "";
+    return v.length ? v.replace(/\n$/, "") : null;
+  },
+  del(key) {
+    const r = spawnSync("secret-tool", ["clear", "service", SERVICE, "key", key], {
+      encoding: "utf8",
+    });
+    return !r.error && r.status === 0;
+  },
+};
+
+/** The OS secret store to use, or null → 0600-file fallback (Windows, unknown
+ *  platforms). Setting PYYOL_KEYCHAIN=none forces the file path — an internal seam
+ *  for deterministic tests/CI, and an escape hatch for users who prefer the file. */
+function keychain(): Keychain | null {
+  if (process.env.PYYOL_KEYCHAIN === "none") return null;
+  if (process.platform === "darwin") return macKeychain;
+  if (process.platform === "linux") return linuxKeychain;
+  return null;
+}
+
+export function save(creds: Credentials): "keychain" | "file" {
   const d = configDir();
   mkdirSync(d, { recursive: true });
   try {
@@ -32,24 +116,39 @@ export function save(creds: Credentials): string {
   } catch {
     /* best effort */
   }
+
+  let backend: "keychain" | "file" = "file";
+  const meta: Credentials = { ...creds };
+  const kc = keychain();
+  if (kc && creds.accessToken) {
+    // Both writes must land before we drop the secrets from the file, so a partial
+    // failure (store locked mid-write) leaves a complete 0600 file to fall back to.
+    if (kc.set(ACCESS_KEY, creds.accessToken) && (!creds.refreshToken || kc.set(REFRESH_KEY, creds.refreshToken))) {
+      meta.accessToken = "";
+      meta.refreshToken = "";
+      backend = "keychain";
+    }
+  }
+
   const path = credPath();
   // mode:0o600 applies on creation (subject to umask), so the token is never in a
   // world/group-readable file; chmod afterward covers an existing file + umask.
-  writeFileSync(path, JSON.stringify(creds, null, 2), { mode: 0o600 });
+  writeFileSync(path, JSON.stringify(meta, null, 2), { mode: 0o600 });
   try {
     chmodSync(path, 0o600);
   } catch {
     /* best effort */
   }
-  return path;
+  return backend;
 }
 
 export function load(): Credentials | null {
   const path = credPath();
   if (!existsSync(path)) return null;
+  let creds: Credentials;
   try {
     const d = JSON.parse(readFileSync(path, "utf8"));
-    return {
+    creds = {
       url: d.url ?? "",
       connectUrl: d.connectUrl ?? d.connect_url ?? "",
       agentId: d.agentId ?? d.agent_id ?? "",
@@ -59,15 +158,32 @@ export function load(): Credentials | null {
   } catch {
     return null;
   }
+  // File held only metadata (keychain-backed) → fill the secrets from the store.
+  if (!creds.accessToken) {
+    const kc = keychain();
+    if (kc) {
+      creds.accessToken = kc.get(ACCESS_KEY) ?? "";
+      creds.refreshToken = kc.get(REFRESH_KEY) ?? "";
+    }
+  }
+  return creds;
 }
 
 export function clear(): boolean {
-  const path = credPath();
-  if (!existsSync(path)) return false;
-  try {
-    rmSync(path);
-    return true;
-  } catch {
-    return false;
+  let removed = false;
+  const kc = keychain();
+  if (kc) {
+    if (kc.del(ACCESS_KEY)) removed = true;
+    if (kc.del(REFRESH_KEY)) removed = true;
   }
+  const path = credPath();
+  if (existsSync(path)) {
+    try {
+      rmSync(path);
+      removed = true;
+    } catch {
+      /* best effort */
+    }
+  }
+  return removed;
 }

@@ -118,14 +118,45 @@ function warnArgvSecret(): void {
   );
 }
 
-async function apiGet(url: string, token = ""): Promise<[number, any]> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Rate-limited endpoints (manifest verify, deposits, withdrawals — which `publish`
+// hits) answer 429 with a Retry-After header (seconds). Retry a small, bounded
+// number of times so a transient limit doesn't fail the command outright.
+const RETRY_MAX = 2; // retries after the first attempt → 3 total
+const RETRY_AFTER_CAP_MS = 30_000; // never honor a Retry-After longer than this
+const RETRY_BACKOFF_MS = [500, 1000]; // fallback when no Retry-After header
+
+/** Parse a Retry-After header (delta-seconds) to ms, capped; null if absent/unparseable. */
+function retryAfterMs(header: string | null): number | null {
+  if (!header) return null;
+  const secs = Number(header.trim());
+  if (!Number.isFinite(secs) || secs < 0) return null;
+  return Math.min(secs * 1000, RETRY_AFTER_CAP_MS);
+}
+
+/** Run a fetch thunk, retrying ONLY on HTTP 429 up to RETRY_MAX times (3 total).
+ *  Sleeps for Retry-After (capped) when present, else exponential backoff. Returns
+ *  the final Response (including a 429 once the cap is reached). The thunk builds a
+ *  fresh init each call so every attempt gets its own AbortSignal.timeout. */
+async function fetchWithRetry(doFetch: () => Promise<Response>): Promise<Response> {
+  let res = await doFetch();
+  for (let attempt = 0; res.status === 429 && attempt < RETRY_MAX; attempt++) {
+    const wait = retryAfterMs(res.headers.get("retry-after")) ?? RETRY_BACKOFF_MS[attempt];
+    await sleep(wait);
+    res = await doFetch();
+  }
+  return res;
+}
+
+export async function apiGet(url: string, token = ""): Promise<[number, any]> {
   const headers: Record<string, string> = {};
   if (token) {
     headers.Authorization = "Bearer " + token;
     warnInsecureTransport(url, true);
   }
   try {
-    const r = await fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+    const r = await fetchWithRetry(() => fetch(url, { headers, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) }));
     const text = await r.text();
     return [r.status, text ? JSON.parse(text) : {}];
   } catch (e) {
@@ -133,19 +164,21 @@ async function apiGet(url: string, token = ""): Promise<[number, any]> {
   }
 }
 
-async function apiPost(url: string, token: string, body: unknown): Promise<[number, any]> {
+export async function apiPost(url: string, token: string, body: unknown): Promise<[number, any]> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) {
     headers.Authorization = "Bearer " + token;
     warnInsecureTransport(url, true);
   }
   try {
-    const r = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body ?? {}),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
+    const r = await fetchWithRetry(() =>
+      fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      }),
+    );
     const text = await r.text();
     return [r.status, text ? JSON.parse(text) : {}];
   } catch (e) {
@@ -646,15 +679,17 @@ async function cmdPublish(a: Args): Promise<number> {
   return verified ? 0 : 1;
 }
 
-async function apiRequest(method: string, url: string, token: string, body: unknown): Promise<[number, any]> {
+export async function apiRequest(method: string, url: string, token: string, body: unknown): Promise<[number, any]> {
   warnInsecureTransport(url, Boolean(token));
   try {
-    const r = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify(body ?? {}),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
+    const r = await fetchWithRetry(() =>
+      fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+        body: JSON.stringify(body ?? {}),
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      }),
+    );
     const text = await r.text();
     return [r.status, text ? JSON.parse(text) : {}];
   } catch (e) {

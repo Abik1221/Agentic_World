@@ -165,6 +165,29 @@ test("register sends sdk_language and a newer latest_sdk triggers one nudge", as
   assert.match(notices[0], /9\.9\.9/);
 });
 
+test("liveness watchdog treats a silent (half-open) link as transport loss", async () => {
+  // A socket that opens then goes completely silent — no frames, no close. Without
+  // the watchdog this hangs forever; with it, the connector fails the session so
+  // run() would reconnect (here reconnect:false → the run rejects transiently).
+  class SilentWS implements WebSocketLike {
+    readyState = 1;
+    private listeners: Record<string, ((ev: any) => void)[]> = {};
+    constructor(_u: string) {
+      queueMicrotask(() => this.emit("open", {})); // opens, then eternal silence
+    }
+    send() { /* swallow the register frame */ }
+    close() { this.readyState = 3; }
+    addEventListener(type: string, l: (ev: any) => void) { (this.listeners[type] ??= []).push(l); }
+    private emit(type: string, ev: any) { for (const fn of this.listeners[type] ?? []) fn(ev); }
+  }
+  const conn = new RuntimeConnector(goofAgent(), {
+    url: "ws://x", reconnect: false, livenessTimeoutMs: 20,
+    WebSocketImpl: SilentWS as any,
+  });
+  // Rejects (transient Error, NOT a terminal ConnectorError) rather than hanging.
+  await assert.rejects(conn.run(), (e: any) => e instanceof Error && !(e instanceof ConnectorError) && /liveness/.test(e.message));
+});
+
 test("an older-or-equal latest_sdk triggers no nudge", async () => {
   const notices: string[] = [];
   const conn = new RuntimeConnector(goofAgent(), {

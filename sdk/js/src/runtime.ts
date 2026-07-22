@@ -46,6 +46,12 @@ export interface RuntimeOptions {
   maxBackoffMs?: number;
   /** Bound the opening WS handshake (ms); dead-air links hang without it. Default 10s. */
   connectTimeoutMs?: number;
+  /** Liveness watchdog: if NO frame (of any type) arrives within this window (ms),
+   *  treat the link as dead and close it. Catches a half-open (silently dropped) TCP
+   *  link that app-level PINGs alone can miss — the platform sets protocol-level
+   *  ping_timeout for the same reason. Closing makes session() reject → run()
+   *  reconnects. Defaults to max(30s, 3× heartbeat). */
+  livenessTimeoutMs?: number;
   /** Inject a WebSocket implementation (defaults to globalThis.WebSocket). */
   WebSocketImpl?: WebSocketCtor;
   /** Called (once per process) with a one-line notice when the gateway reports a
@@ -277,16 +283,32 @@ export class RuntimeConnector {
       const openTimer = setTimeout(() => {
         if (!opened) fail(new Error("connect timed out (platform unreachable)"));
       }, this.opts.connectTimeoutMs ?? 10000);
+      // Liveness watchdog — a window with zero frames means the link is (half-)dead.
+      // Rearmed on every received frame below; a healthy socket sees gateway PINGs
+      // well inside the window, so it only fires when the link has actually gone away.
+      const hbMs = this.opts.heartbeatMs ?? 10000;
+      const liveWindow = this.opts.livenessTimeoutMs ?? Math.max(30000, hbMs * 3);
+      let liveTimer: ReturnType<typeof setTimeout> | undefined;
+      const armLive = () => {
+        if (liveTimer) clearTimeout(liveTimer);
+        liveTimer = setTimeout(
+          () => fail(new Error("liveness timeout — no frames received (link half-open?)")),
+          liveWindow,
+        );
+      };
       const cleanup = () => {
         clearTimeout(openTimer);
+        if (liveTimer) clearTimeout(liveTimer);
         if (hb) clearInterval(hb);
         try { ws.close(); } catch { /* already closing */ }
       };
       const fail = (e: Error) => { if (!settled) { settled = true; cleanup(); reject(e); } };
       const done = () => { if (!settled) { settled = true; cleanup(); resolve(); } };
+      armLive(); // start the clock now; the first HELLO should arrive promptly
       ws.addEventListener("open", () => { opened = true; });
 
       ws.addEventListener("message", (ev: any) => {
+        armLive(); // any frame (of any type) proves the link is alive → reset
         let frame: Record<string, any>;
         try {
           frame = JSON.parse(typeof ev.data === "string" ? ev.data : String(ev.data));

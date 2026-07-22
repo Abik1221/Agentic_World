@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { main } from "../cli.js";
+import { apiGet, apiPost, apiRequest, main } from "../cli.js";
 
 /**
  * Drive `main()` with a stubbed global fetch, captured stdout/stderr, and an
@@ -57,6 +57,56 @@ function seedCreds(home: string, extra: Record<string, unknown> = {}): void {
 }
 
 const json = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status });
+
+const rateLimited = () =>
+  new Response(JSON.stringify({ error: "rate_limited" }), {
+    status: 429,
+    headers: { "Retry-After": "0" }, // 0s → no real sleep, keeps the test fast
+  });
+
+// ── 429 / Retry-After retry (HTTP helpers) ────────────────────────────────────
+
+test("apiGet retries a 429 (Retry-After) then returns the 200", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => (++calls === 1 ? rateLimited() : json({ ok: true }))) as typeof fetch;
+  try {
+    const [status, body] = await apiGet("http://localhost:9999/v1/thing");
+    assert.equal(calls, 2); // one retry after the 429
+    assert.equal(status, 200);
+    assert.deepEqual(body, { ok: true });
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("apiPost retries a 429 then returns the 200", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => (++calls === 1 ? rateLimited() : json({ done: true }))) as typeof fetch;
+  try {
+    const [status, body] = await apiPost("http://localhost:9999/v1/thing", "tok", { a: 1 });
+    assert.equal(calls, 2);
+    assert.equal(status, 200);
+    assert.deepEqual(body, { done: true });
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test("apiRequest stops after the retry cap and returns the final 429", async () => {
+  const origFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => (calls++, rateLimited())) as typeof fetch;
+  try {
+    const [status, body] = await apiRequest("PUT", "http://localhost:9999/v1/x", "tok", {});
+    assert.equal(calls, 3); // 1 initial + 2 retries, then give up
+    assert.equal(status, 429);
+    assert.deepEqual(body, { error: "rate_limited" });
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
 
 // ── status ──────────────────────────────────────────────────────────────────
 
