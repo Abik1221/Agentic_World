@@ -49,6 +49,14 @@ jobs:
       ALLOW_MINT: "true"
       AUTO_MIGRATE: "true" # apply migrations in-process on boot
       PORT: "8080"
+      # The harness mock agents run on http://127.0.0.1 (loopback, plaintext), so
+      # the SSRF/https guard must be relaxed for endpoint verification (local-only;
+      # config.Validate rejects these in prod). AllowPrivate implies AllowInsecure.
+      AGENT_VERIFY_ALLOW_PRIVATE: "true"
+      # The whole suite signs up many users from one IP; raise the per-IP auth
+      # limits well above the secure prod defaults (5/h register, 10/min login).
+      AUTH_REGISTER_LIMIT: "10000"
+      AUTH_LOGIN_LIMIT: "10000"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

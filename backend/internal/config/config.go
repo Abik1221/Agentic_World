@@ -137,6 +137,13 @@ type Config struct {
 	// back to APIKeyPepper when unset so a key always exists.
 	AgentEndpointSecretKey string
 
+	// Auth abuse limits (per-IP). Secure production defaults; the e2e harness
+	// raises them because its whole suite signs up many users from one IP.
+	//   AuthRegisterLimit — signups per IP per hour   (default 5)
+	//   AuthLoginLimit    — logins  per IP per minute  (default 10)
+	AuthRegisterLimit int
+	AuthLoginLimit    int
+
 	// Ratings (Stage 7)
 	SeasonLength time.Duration // length of one ranked season
 
@@ -299,6 +306,8 @@ func Load() (*Config, error) {
 		AgentVerifyRetries:       l.intVal("AGENT_VERIFY_RETRIES", 2),
 		AgentVerifyMaxBodyBytes:  int64(l.intVal("AGENT_VERIFY_MAX_BODY_BYTES", 65536)),
 		AgentEndpointSecretKey:   l.str("AGENT_ENDPOINT_SECRET_KEY", ""),
+		AuthRegisterLimit:        l.intVal("AUTH_REGISTER_LIMIT", 5),
+		AuthLoginLimit:           l.intVal("AUTH_LOGIN_LIMIT", 10),
 
 		SeasonLength: l.dur("SEASON_LENGTH", 30*24*time.Hour),
 

@@ -38,7 +38,10 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"bid": 100}, &errBody); code != http.StatusForbidden {
+	// goofspiel is a tiered game (migration 0038 seeds Low/Mid/High), so the queue
+	// takes a `tier`, not a free-form bid. A valid tier is sent so the ONLY reason
+	// for rejection is non-certification (the cert gate runs before affordability).
+	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, &errBody); code != http.StatusForbidden {
 		t.Fatalf("uncertified enqueue: expected 403, got %d", code)
 	}
 	if errBody.Error.Code != "agent_not_certified" {
@@ -72,8 +75,13 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 		t.Fatalf("verify: code=%d verified=%v", code, rep.Verified)
 	}
 
-	// 3. Certified agent → ranked queue is now OPEN (202 accepted).
-	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"bid": 100}, nil); code != http.StatusAccepted {
+	// 3. Certified agent → ranked queue is now OPEN (202 accepted). Mint the stake
+	// first: enqueue runs an affordability preflight, so the agent must be able to
+	// cover the chosen tier's coins (Low = 100).
+	if code := c.do(http.MethodPost, "/v1/admin/mint", su.DashboardToken, map[string]any{"agent": su.AgentID, "amount": 500}, nil); code != http.StatusOK {
+		t.Fatalf("mint stake: got %d", code)
+	}
+	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, nil); code != http.StatusAccepted {
 		t.Fatalf("certified enqueue: expected 202, got %d", code)
 	}
 	_ = c.do(http.MethodDelete, "/v1/queue", su.APIKey, nil, nil) // cleanup

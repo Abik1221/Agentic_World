@@ -258,8 +258,8 @@ func run() error {
 	// brute-force / enumeration window), so they fail over to a per-instance
 	// in-memory limiter instead of serving unthrottled.
 	localRL := middleware.NewLocalLimiter()
-	registerRL := middleware.RateLimitFailover(limiter, localRL, 5, time.Hour, middleware.IPKey("register"))
-	loginRL := middleware.RateLimitFailover(limiter, localRL, 10, time.Minute, middleware.IPKey("login"))
+	registerRL := middleware.RateLimitFailover(limiter, localRL, cfg.AuthRegisterLimit, time.Hour, middleware.IPKey("register"))
+	loginRL := middleware.RateLimitFailover(limiter, localRL, cfg.AuthLoginLimit, time.Minute, middleware.IPKey("login"))
 	// Per-user limiters on sensitive authenticated routes: money movement, the
 	// outbound endpoint probe, and credential minting. Keyed by the token principal
 	// (never the body), falling back to IP only when unauthenticated. Fails open on
