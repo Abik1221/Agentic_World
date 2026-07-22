@@ -41,6 +41,23 @@ func (r *DevProfileRepo) ResolveHandle(ctx context.Context, handle string) (devp
 	return id, true, nil
 }
 
+// LifetimeCoinsEarned sums coins_earned across every season for all of the
+// developer's non-house agents — the developer's total net match winnings (in
+// coins). Mirrors the per-season aggregate in Stats but without a season filter.
+func (r *DevProfileRepo) LifetimeCoinsEarned(ctx context.Context, userPublicID string) (int64, error) {
+	var coins int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(r.coins_earned),0)
+		 FROM ratings r JOIN agents a ON a.id = r.agent_id
+		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
+		   AND a.kind <> 'house'`,
+		userPublicID).Scan(&coins)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return coins, err
+}
+
 func (r *DevProfileRepo) Stats(ctx context.Context, userPublicID string, season int) (devprofile.Stats, []devprofile.ArenaStat, error) {
 	var st devprofile.Stats
 	err := r.db.QueryRow(ctx,

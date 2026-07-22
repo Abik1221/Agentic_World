@@ -84,6 +84,9 @@ type Repo interface {
 	// ResolveHandle finds a developer by username OR user public id.
 	ResolveHandle(ctx context.Context, handle string) (Identity, bool, error)
 	Stats(ctx context.Context, userPublicID string, season int) (Stats, []ArenaStat, error)
+	// LifetimeCoinsEarned sums net coins earned across all of the developer's
+	// (non-house) agents and every season — the basis for total USD earnings.
+	LifetimeCoinsEarned(ctx context.Context, userPublicID string) (int64, error)
 	Agents(ctx context.Context, userPublicID string, season int) ([]AgentCard, error)
 	RecentMatches(ctx context.Context, userPublicID string, limit int) ([]MatchRow, error)
 	FollowCounts(ctx context.Context, userPublicID string) (followers, following int, err error)

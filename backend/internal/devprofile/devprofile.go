@@ -8,6 +8,7 @@ package devprofile
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -34,18 +35,30 @@ type DeveloperProfile struct {
 	Achievements  []Badge          `json:"achievements"`
 	Followers     int              `json:"followers"`
 	Following     int              `json:"following"`
+	// TotalEarningsUSD is the developer's lifetime net winnings (coins earned across
+	// all of their agents and seasons) converted to US dollars via the coin peg.
+	TotalEarningsUSD float64 `json:"total_earnings_usd"`
 }
 
 // Service assembles developer profiles from the repo + the P-Index service.
 type Service struct {
-	repo   Repo
-	pindex *pindex.Service
-	season func() int
+	repo      Repo
+	pindex    *pindex.Service
+	season    func() int
+	coinCents int64 // face value of one coin in cents (peg); defaults to 1
 }
 
 // New builds the service.
 func New(repo Repo, pindexSvc *pindex.Service, season func() int) *Service {
-	return &Service{repo: repo, pindex: pindexSvc, season: season}
+	return &Service{repo: repo, pindex: pindexSvc, season: season, coinCents: 1}
+}
+
+// SetCoinCents wires the coin→USD peg (config CoinCents) used to price lifetime
+// earnings. A non-positive value is ignored so the safe 1¢ default stands.
+func (s *Service) SetCoinCents(cents int64) {
+	if cents > 0 {
+		s.coinCents = cents
+	}
 }
 
 var usernameRe = regexp.MustCompile(`^[a-zA-Z0-9_]{3,30}$`)
@@ -79,6 +92,16 @@ func (s *Service) Profile(ctx context.Context, handle string) (DeveloperProfile,
 	if p.Followers, p.Following, err = s.repo.FollowCounts(ctx, id.UserPublicID); err != nil {
 		return DeveloperProfile{}, true, err
 	}
+	// Lifetime net winnings (all agents, all seasons) priced in USD via the peg.
+	coins, err := s.repo.LifetimeCoinsEarned(ctx, id.UserPublicID)
+	if err != nil {
+		return DeveloperProfile{}, true, err
+	}
+	cents := s.coinCents
+	if cents <= 0 {
+		cents = 1
+	}
+	p.TotalEarningsUSD = math.Round(float64(coins*cents)) / 100 // coins*cents = whole cents
 	if snap, ok, err := s.pindex.Get(ctx, id.UserPublicID, season); err != nil {
 		return DeveloperProfile{}, true, err
 	} else if ok {

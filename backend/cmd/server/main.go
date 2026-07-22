@@ -509,8 +509,9 @@ func run() error {
 
 	// Public developer reputation surface (@handle profile, P-Index transparency,
 	// match history, developer follow graph), aggregated across a developer's agents.
-	devProfileHandler := devprofile.NewHandler(
-		devprofile.New(store.NewDevProfileRepo(st.DB), pindexSvc, ratingSvc.CurrentSeason), authn)
+	devProfileSvc := devprofile.New(store.NewDevProfileRepo(st.DB), pindexSvc, ratingSvc.CurrentSeason)
+	devProfileSvc.SetCoinCents(cfg.CoinCents) // price lifetime earnings in USD
+	devProfileHandler := devprofile.NewHandler(devProfileSvc, authn)
 
 	// All event handlers are now registered — start the dispatcher (see the NOTE at
 	// its handler-registration block above).
