@@ -4,6 +4,18 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.2.1](https://github.com/Abik1221/Agentic_World/compare/js-v1.2.0...js-v1.2.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* **sdk:** installed JS CLI was a no-op; move console I/O off the Python turn path; drop dead JS maps ([968bcc2](https://github.com/Abik1221/Agentic_World/commit/968bcc2146ac5fd612a8ed8ce0dcd2e936f5ac5d))
+
+
+### Documentation
+
+* **sdk:** accurate Python quickstart + package-safe README links; ci: npm OIDC publishing ([056a792](https://github.com/Abik1221/Agentic_World/commit/056a792c8deec69c5f7d3ff990e5f6292129d1fe))
+
 ## [1.2.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.1.0...js-v1.2.0) (2026-07-23)
 
 
