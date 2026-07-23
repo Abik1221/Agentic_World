@@ -392,15 +392,18 @@ class RuntimeConnector:
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
         rid = frame.get("id", "")
+        # Send the move FIRST, then log — a console flush / log-file write must never
+        # sit on the move's latency path (the platform is waiting on this response).
+        # Mirrors the JS connector's send-before-feed ordering.
         if status == 200:
-            self._emit("decision", f"turn {self._turn_no}: {_summarize_move(game, move)}", ms=ms)
             send({"t": RESPONSE, "id": rid, "payload": move})
+            self._emit("decision", f"turn {self._turn_no}: {_summarize_move(game, move)}", ms=ms)
         else:
             # Signal an error so the platform applies its deterministic fallback.
+            send({"t": RESPONSE, "id": rid, "error": move.get("error", "handler_error")})
             self._emit(
                 "error", f"turn {self._turn_no}: handler error → fallback", level=logging.WARNING
             )
-            send({"t": RESPONSE, "id": rid, "error": move.get("error", "handler_error")})
 
     @staticmethod
     def _event_dict(frame: Dict[str, Any]) -> Dict[str, Any]:

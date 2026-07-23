@@ -2,6 +2,14 @@
   // Production build: same settings as tsconfig.json but WITHOUT the test files,
   // so compiled tests never ship in the published tarball. `npm run build`
   // (and prepack) use this; `npm test` uses tsconfig.json to compile tests too.
+  //
+  // Maps are OFF for the published artifact: the source repo is private, so neither
+  // the .js.map source maps nor the .d.ts.map declaration maps can resolve to any
+  // shipped .ts — they were ~208 KB (>50% of the tarball) of pure dead weight.
   "extends": "./tsconfig.json",
-  "exclude": ["src/test/**"]
+  "exclude": ["src/test/**"],
+  "compilerOptions": {
+    "sourceMap": false,
+    "declarationMap": false
+  }
 }

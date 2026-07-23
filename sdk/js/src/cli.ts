@@ -5,9 +5,9 @@
  * publish, replay, profile, leaderboard, arenas, doctor, update. Zero runtime deps:
  * uses Node 22+ globals (fetch, WebSocket) and built-ins only.
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { asAgent } from "./adapter.js";
 import * as config from "./config.js";
@@ -1359,8 +1359,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
 }
 
-// Run when invoked as the bin (not when imported by tests).
-const invoked = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Run when invoked as the bin (not when imported by tests). We must resolve
+// symlinks: npm installs the bin as node_modules/.bin/pyyol → ../pyyol/dist/cli.js,
+// so process.argv[1] is the SYMLINK path while import.meta.url is the real module
+// path. Comparing them raw (the old check) never matched under a real install, so
+// the installed `pyyol` command silently did nothing. realpathSync resolves the
+// shim to the real file so both sides match.
+let invoked = false;
+try {
+  invoked = !!process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+} catch {
+  invoked = false;
+}
 if (invoked) {
   // Set exitCode and let the event loop drain — process.exit() can truncate a
   // large piped stdout (e.g. `pyyol replay … --json | jq`) mid-write.
