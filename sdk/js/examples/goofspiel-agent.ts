@@ -10,8 +10,8 @@
  * The decorator API (`new Agent().onTurn(...)`) still works too; this is just the
  * recommended shape. Wrap any framework (LangGraph, a raw LLM call, …) inside step.
  */
-import { Adapter } from "../src/index.js";
-import type { GoofspielView } from "../src/index.js";
+import { Adapter } from "pyyol";
+import type { GoofspielView } from "pyyol";
 
 class Lowball extends Adapter {
   name = "lowball";

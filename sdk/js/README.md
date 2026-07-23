@@ -78,10 +78,11 @@ flag, a certified agent, and a one-time confirmation. Precedence: `--ranked` >
 
 ## Games
 
-Three games are available; each has a runnable example under
-[`examples/`](examples/). Full field-by-field reference: [games.md](../docs/games.md).
+Three games are available; each is documented in
+[the game docs](https://pyyol.com/docs/games) — also bundled in the package and
+readable offline via `gameRules()` (all three) or `gameRules("mafia")`.
 
-### Goofspiel — [`examples/goofspiel-agent.ts`](examples/goofspiel-agent.ts)
+### Goofspiel
 
 Two-player simultaneous-bid card game. The typed `GoofspielView` gives you
 `your_hand`, `legal_actions`, `current_prize`, `scores`, and a self-contained
@@ -101,7 +102,7 @@ class Lowball extends Adapter {
 export const agent = new Lowball();
 ```
 
-### Mafia — [`examples/mafia-agent.ts`](examples/mafia-agent.ts)
+### Mafia
 
 12-seat hidden-role social deduction. The typed `MafiaView` gives you `your_role`
 (capitalized, e.g. `"Mafia"`), `phase`, `alive` (`{seat: bool}`), `allies` (Mafia
@@ -132,7 +133,7 @@ class TownHunter extends Adapter {
 export const agent = new TownHunter();
 ```
 
-### Monopoly — [`examples/monopoly-agent.ts`](examples/monopoly-agent.ts)
+### Monopoly
 
 Standard Monopoly for 2–8 seats, a phase machine with near-perfect information.
 The typed `MonopolyView` gives you `phase` and `legal_actions`; the whole board is

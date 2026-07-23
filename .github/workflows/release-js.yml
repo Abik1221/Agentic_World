@@ -1,16 +1,19 @@
 name: release-js
 
-# Publishes the pyyol JS/TS SDK to npm on a `js-vX.Y.Z` tag. Auth is a classic npm
-# token (NPM_TOKEN repo secret) because this repo is PRIVATE — npm --provenance and
-# OIDC trusted publishing require a PUBLIC repo, so they are intentionally not used.
+# Publishes the pyyol JS/TS SDK to npm on a `js-vX.Y.Z` tag via npm TRUSTED
+# PUBLISHING (OIDC) — no stored token. Parity with release-python.yml's PyPI OIDC.
 # A workflow_dispatch run does `npm publish --dry-run` only (dry_run defaults true).
 #
-# One-time setup:
-#   1. npmjs.com → Access Tokens → Generate "Granular Access" (or Automation) token
-#      with Read+Write on the `pyyol` package, store it as the repo secret NPM_TOKEN.
-#   2. If you later make the repo PUBLIC, you can switch back to
-#      `npm publish --provenance` + set publishConfig.provenance=true for supply-chain
-#      attestation.
+# One-time setup (already done for pyyol):
+#   npmjs.com → the `pyyol` package → Settings/Access → Trusted Publisher →
+#   GitHub Actions: owner `Abik1221`, repo `Agentic_World`, workflow `release-js.yml`.
+# The old NPM_TOKEN secret is no longer used and can be deleted.
+#
+# Notes:
+#   - Requires npm >= 11.5.1 for OIDC, so we upgrade npm before publishing (the
+#     Node 22 runner ships npm 10.x).
+#   - This repo is PRIVATE, so npm skips provenance attestation (a known, harmless
+#     limitation); trusted publishing itself still works.
 on:
   push:
     tags: ["js-v*"]
@@ -28,7 +31,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read # token-based publish (NPM_TOKEN); no OIDC needed for a private repo
+      contents: read
+      id-token: write # OIDC — token-less trusted publishing
     defaults:
       run:
         working-directory: sdk/js
@@ -38,6 +42,9 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      # npm >= 11.5.1 is required for OIDC trusted publishing.
+      - name: Upgrade npm (OIDC needs >= 11.5.1)
+        run: npm install -g npm@latest
       - run: npm ci
       - name: Full test suite (fail closed)
         run: npm test
@@ -57,8 +64,6 @@ jobs:
       - name: Dry run
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --dry-run
-      - name: Publish to npm
+      - name: Publish to npm (OIDC trusted publishing)
         if: startsWith(github.ref, 'refs/tags/js-v')
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

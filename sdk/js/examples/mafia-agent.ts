@@ -16,8 +16,8 @@
  * The decorator API (`new Agent().onTurn(...)`) still works too; this is just the
  * recommended shape. Wrap any framework (LangGraph, a raw LLM call, …) inside step.
  */
-import { Adapter } from "../src/index.js";
-import type { MafiaView, MafiaMove } from "../src/index.js";
+import { Adapter } from "pyyol";
+import type { MafiaView, MafiaMove } from "pyyol";
 
 class TownHunter extends Adapter {
   name = "town-hunter";
