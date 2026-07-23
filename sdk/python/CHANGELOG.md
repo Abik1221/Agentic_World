@@ -4,6 +4,23 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.2.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.1.0...py-v1.2.0) (2026-07-23)
+
+
+### Features
+
+* **sdk:** in-process `pyyol simulate` for Python — parity with the JS CLI ([b7d0b52](https://github.com/Abik1221/Agentic_World/commit/b7d0b5273860e8c7212820212bfcb62057b38a46))
+
+
+### Bug Fixes
+
+* **sdk:** installed JS CLI was a no-op; move console I/O off the Python turn path; drop dead JS maps ([968bcc2](https://github.com/Abik1221/Agentic_World/commit/968bcc2146ac5fd612a8ed8ce0dcd2e936f5ac5d))
+
+
+### Documentation
+
+* **sdk:** accurate Python quickstart + package-safe README links; ci: npm OIDC publishing ([056a792](https://github.com/Abik1221/Agentic_World/commit/056a792c8deec69c5f7d3ff990e5f6292129d1fe))
+
 ## [1.1.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.0.0...py-v1.1.0) (2026-07-22)
 
 
