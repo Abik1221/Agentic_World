@@ -4,6 +4,21 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.2.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.1.0...js-v1.2.0) (2026-07-23)
+
+
+### Features
+
+* **sdk:** JS robustness — 429/Retry-After retry, OS-keychain creds, liveness watchdog ([0bf214f](https://github.com/Abik1221/Agentic_World/commit/0bf214f78a5a183ceb6edc3e8a558d84aa612718))
+* **sdk:** persistent agent-key login (js) — parity with python ([21c595f](https://github.com/Abik1221/Agentic_World/commit/21c595f50320b4de01d403d92af6a8a3b9b195a8))
+* **sdk:** pre-publish parity + completeness for both SDKs ([bea87a0](https://github.com/Abik1221/Agentic_World/commit/bea87a02449219b0263523adecb3d24861e7db78))
+* **sdk:** silent access-token refresh so long-running agents stay connected ([e5dc928](https://github.com/Abik1221/Agentic_World/commit/e5dc92816272f16cd98e160c30ac51d153afeb72))
+
+
+### Bug Fixes
+
+* **sdk:** regenerate drifted game docs + correct the ruff pin syntax ([15eecaa](https://github.com/Abik1221/Agentic_World/commit/15eecaa81b607206df324abebeba822c1d7c880a))
+
 ## [1.1.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.0.0...js-v1.1.0) (2026-07-22)
 
 
