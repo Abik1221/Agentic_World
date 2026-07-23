@@ -296,6 +296,33 @@ def cmd_simulate(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # No --url → run the match IN-PROCESS against the agent from pyyol.toml (parity
+    # with the JS CLI). Fast, offline, no endpoint — the quickest way to smoke-test
+    # a decision loop. --url keeps the legacy "drive a hosted HTTP endpoint" mode.
+    if not args.url:
+        from .simulator import SimulationError, simulate_goofspiel
+
+        cfg = _load_config_or_die()
+        if cfg is None:
+            return 2
+        try:
+            agent = _load_agent_from_config(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"{BAD} could not load your agent: {e}", file=sys.stderr)
+            return 2
+        try:
+            r = simulate_goofspiel(agent, hand_size=args.hand, seed=args.seed)
+        except SimulationError as e:
+            print(f"{BAD} simulate failed: {e}", file=sys.stderr)
+            return 1
+        s = r.get("scores", {})
+        print(
+            f"simulate goofspiel ({args.hand} rounds, seed {args.seed}): "
+            f"winner={r.get('winner')} scores {s}"
+        )
+        return 0
+
     url, secret = args.url, args.secret or ""
     hand = args.hand
     prizes = list(range(1, hand + 1))
@@ -1862,12 +1889,15 @@ def build_parser() -> argparse.ArgumentParser:
     pv.set_defaults(func=cmd_validate)
 
     ps = sub.add_parser(
-        "simulate", help="[advanced] drive a full local match against a hosted endpoint"
+        "simulate",
+        help="run a full local Goofspiel match in-process (no network); "
+        "or with --url, drive a hosted endpoint",
     )
-    ps.add_argument("--url", required=True)
+    ps.add_argument("--url", default="", help="hosted endpoint to drive; omit for in-process")
     ps.add_argument("--secret", default="")
     ps.add_argument("--game", choices=["goofspiel"], default="goofspiel")
     ps.add_argument("--hand", type=int, default=13)
+    ps.add_argument("--seed", type=int, default=1)
     ps.set_defaults(func=cmd_simulate)
 
     prun = sub.add_parser(
