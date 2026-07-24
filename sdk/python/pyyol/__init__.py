@@ -36,6 +36,10 @@ __all__ = [
     "ConnectorError",
     "Tracer",
     "current_span",
+    "current_usage",
+    "instrument",
+    "uninstrument",
+    "record_response",
     # Typed game models — re-exported here so `from pyyol import GoofspielView`
     # works (parity with the JS SDK's `export * from "./models"`).
     "GoofspielView",
@@ -64,6 +68,10 @@ _LAZY = {
     "ConnectorError": "runtime",
     "Tracer": "telemetry",
     "current_span": "telemetry",
+    "current_usage": "telemetry",
+    "instrument": "instrument",
+    "uninstrument": "instrument",
+    "record_response": "instrument",
     # models is annotation-only + stdlib, so importing it stays cheap.
     "GoofspielView": "models",
     "GoofspielMove": "models",

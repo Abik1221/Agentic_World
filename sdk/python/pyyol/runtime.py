@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .console import Console
-from .telemetry import Tracer
+from .telemetry import Tracer, turn_usage
 
 log = logging.getLogger("pyyol")
 
@@ -381,16 +381,24 @@ class RuntimeConnector:
         self._turn_no += 1
         game = view.get("game", "")
         started = time.perf_counter()
-        # Bracket the developer's handler in a Lens span. Inside on_turn, the
-        # author can reach it via pyyol.current_span() to record model/tool calls.
+        # Bracket the developer's handler in a Lens span AND a turn-local usage
+        # accumulator. Inside on_turn the author can reach the span via
+        # pyyol.current_span(); if pyyol.instrument() is active, every LLM call is
+        # captured into the accumulator automatically. The accumulator is always on
+        # (independent of Lens) so usage rides the move to the arena regardless.
         with self._tracer.turn_span(
             match_id=view.get("match_id", ""),
             game=game,
             round_no=int(view.get("round", 0) or 0),
             agent_id=self.agent_id,
-        ):
+        ), turn_usage() as usage:
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
+        # Auto-attach captured model/token/cost to the move so the arena benchmark
+        # records real usage with no developer boilerplate. A dev-supplied `usage`
+        # (manual reporting) always wins — we never overwrite it.
+        if status == 200 and isinstance(move, dict) and not usage.empty and "usage" not in move:
+            move["usage"] = usage.to_move_usage()
         rid = frame.get("id", "")
         # Send the move FIRST, then log — a console flush / log-file write must never
         # sit on the move's latency path (the platform is waiting on this response).
