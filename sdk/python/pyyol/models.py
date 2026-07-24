@@ -224,8 +224,13 @@ class MonopolyMove:
 
 @dataclass
 class MafiaMove:
+    # target defaults to -1 ("no target"), NOT 0: seat 0 is a real player, so a
+    # forgotten target on a night action (kill/investigate/protect/profile) used to
+    # silently act on seat 0. With -1 the engine drops the untargeted action instead
+    # of misapplying it; set an explicit seat when the action needs one. Votes and
+    # discussion already treat target <= 0 as "no target" (an abstain / no accusation).
     action: str
-    target: int = 0
+    target: int = -1
     tone: str = ""
     text: str = ""
 

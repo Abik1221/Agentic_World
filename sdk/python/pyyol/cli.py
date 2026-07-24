@@ -32,6 +32,10 @@ OK = "✓"
 BAD = "✗"
 WARN = "•"
 
+# N-player games use the group matchmaking queue (/v1/group-queue); Goofspiel (1v1)
+# uses the 2-player queue (/v1/queue). Same enqueue request shape, different endpoint.
+GROUP_GAMES = frozenset({"mafia", "monopoly"})
+
 # Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
 # connection credential (mirrors backend platform.PrefixKey).
 _AGENT_KEY_PREFIX = "sk_arena_"
@@ -296,8 +300,9 @@ def _lifecycle_probes(game: str):
 def cmd_simulate(args: argparse.Namespace) -> int:
     if args.game != "goofspiel":
         print(
-            f"simulate currently supports goofspiel (got {args.game!r}); "
-            f"use `validate` for a single-turn check of any game.",
+            f"simulate runs a full in-process match for goofspiel only (got {args.game!r}). "
+            f"For {args.game}, iterate with `pyyol dev` — sandbox practice vs house agents, "
+            f"no stakes, no publish needed.",
             file=sys.stderr,
         )
         return 2
@@ -699,7 +704,10 @@ def cmd_queue(args: argparse.Namespace) -> int:
         )
         return 2
 
-    st, resp = _api_post(f"{base}/v1/queue", token, body)
+    # Goofspiel is 1v1 (2-player queue); Mafia/Monopoly are N-player and pool into a
+    # full table via the group queue. Same request shape, different endpoint.
+    queue_path = "/v1/group-queue" if game in GROUP_GAMES else "/v1/queue"
+    st, resp = _api_post(f"{base}{queue_path}", token, body)
     if st not in (200, 202):
         code = str(resp.get("code") or resp.get("error") or "")
         msg = resp.get("message") or ""
@@ -724,7 +732,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     )
     deadline = time.time() + args.wait
     while time.time() < deadline:
-        st, s = _api_get(f"{base}/v1/queue", token)
+        st, s = _api_get(f"{base}{queue_path}", token)
         if st == 200 and s.get("status") == "matched":
             mid = s.get("match_id") or ""
             print(f"{OK} matched → {mid}")

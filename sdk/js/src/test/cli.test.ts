@@ -311,10 +311,11 @@ test("simulate runs a local Goofspiel match against the configured agent", async
   }
 });
 
-test("simulate rejects a non-goofspiel game", async () => {
+test("simulate rejects a non-goofspiel game and points to pyyol dev", async () => {
   const { code, err } = await run(["simulate", "--game", "mafia"]);
   assert.equal(code, 2);
-  assert.match(err, /supports goofspiel/);
+  assert.match(err, /goofspiel only/);
+  assert.match(err, /pyyol dev/); // route mafia/monopoly devs to the working loop
 });
 
 // ── validate ──────────────────────────────────────────────────────────────────

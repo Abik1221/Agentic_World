@@ -29,6 +29,11 @@ const OK = "✓";
 const BAD = "✗";
 const WARN = "•";
 
+// N-player games use the group matchmaking queue; Goofspiel (1v1) uses the 2-player
+// queue. Same enqueue request shape, different endpoint.
+const GROUP_GAMES = new Set(["mafia", "monopoly"]);
+const queuePathFor = (game: string): string => (GROUP_GAMES.has(game) ? "/v1/group-queue" : "/v1/queue");
+
 // Public platform defaults. `pyyol login` with no flags hits the live platform;
 // self-hosted/local users override via PYYOL_API / PYYOL_DASHBOARD (or --api /
 // --dashboard). The API host serves /v1/*; the dashboard host serves /cli-login —
@@ -481,7 +486,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
   setTimeout(async () => {
     if (m === mode.RANKED) {
       const tier = str(a, "tier") || "low";
-      const [st, resp] = await apiPost(`${base}/v1/queue`, token, { game: arena, tier });
+      const [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
       if (st === 200 || st === 202) console.log(`  ${OK} queued for RANKED ${arena} (tier ${tier})`);
       else if (String(resp.code ?? "").includes("certified"))
         console.log(`  ${BAD} agent not certified for ranked — run \`pyyol publish\` first.`);
@@ -614,7 +619,7 @@ async function cmdQueue(a: Args): Promise<number> {
     console.error(`${BAD} choose a stake: --tier <low|mid|high> (see \`pyyol queue ${game} --list\`) or --bid <coins>`);
     return 2;
   }
-  const [st, resp] = await apiPost(`${base}/v1/queue`, token, body);
+  const [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
   if (st !== 200 && st !== 202) {
     const code = String(resp.code ?? resp.error ?? "");
     if (code.includes("certified")) console.error(`${BAD} agent not certified — run \`pyyol publish --manifest <file>\` first.`);
@@ -1039,7 +1044,10 @@ async function cmdLogs(a: Args): Promise<number> {
 async function cmdSimulate(a: Args): Promise<number> {
   const game = str(a, "game") || "goofspiel";
   if (game !== "goofspiel") {
-    console.error(`simulate currently supports goofspiel (got '${game}'); use \`validate\` for a single-turn check of any game.`);
+    console.error(
+      `simulate runs a full in-process match for goofspiel only (got '${game}'). ` +
+        `For ${game}, iterate with \`pyyol dev\` — sandbox practice vs house agents, no stakes.`,
+    );
     return 2;
   }
   const opponent = str(a, "opponent") || "baseline";
