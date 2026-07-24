@@ -202,8 +202,10 @@ type Config struct {
 	OTLPEndpoint string
 
 	// Pyyol Lens: the standalone observability stack (../../tracing). The engine
-	// ships trace/span/log telemetry to its ingest API when enabled. Disabled by
-	// default (endpoint+key required); a misconfigured enable degrades to no-op.
+	// ships trace/span/log telemetry to its ingest API when enabled. Enabled by
+	// default, but the emitter still requires endpoint+key to actually ship — a
+	// missing endpoint/key (or PYYOL_LENS_ENABLED=false) degrades to a silent no-op.
+	// On-by-default so a configured deployment traces end-to-end without an extra flag.
 	PyyolLensEnabled  bool
 	PyyolLensEndpoint string // ingest base URL, e.g. http://localhost:8081
 	PyyolLensAPIKey   string // X-Pyyol-Key (matches Lens INGEST_API_KEY)
@@ -265,8 +267,8 @@ func Load() (*Config, error) {
 
 		JWTSigningKey:     l.required("JWT_SIGNING_KEY"),
 		APIKeyPepper:      l.required("API_KEY_PEPPER"),
-		DashboardTokenTTL: l.dur("DASHBOARD_TOKEN_TTL", 1*time.Hour),      // short access token
-		RefreshTokenTTL:   l.dur("REFRESH_TOKEN_TTL", 30*24*time.Hour),   // 30-day sliding idle
+		DashboardTokenTTL: l.dur("DASHBOARD_TOKEN_TTL", 1*time.Hour),   // short access token
+		RefreshTokenTTL:   l.dur("REFRESH_TOKEN_TTL", 30*24*time.Hour), // 30-day sliding idle
 		ClaimTTL:          l.dur("CLAIM_TTL", 30*time.Minute),
 		HCaptchaSecret:    l.str("HCAPTCHA_SECRET", ""),
 		XBearerToken:      l.str("X_BEARER_TOKEN", ""),
@@ -351,7 +353,7 @@ func Load() (*Config, error) {
 
 		OTLPEndpoint: l.str("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 
-		PyyolLensEnabled:         l.boolVal("PYYOL_LENS_ENABLED", false),
+		PyyolLensEnabled:         l.boolVal("PYYOL_LENS_ENABLED", true),
 		PyyolLensEndpoint:        l.str("PYYOL_LENS_ENDPOINT", ""),
 		PyyolLensAPIKey:          l.str("PYYOL_LENS_API_KEY", ""),
 		PyyolLensProject:         l.str("PYYOL_LENS_PROJECT", "pyyol-arena"),

@@ -5,7 +5,21 @@ import (
 	"encoding/json"
 
 	"github.com/agent-arena/arena/internal/platform/telemetry"
+	"github.com/agent-arena/arena/internal/pricing"
 )
+
+// Emitter is the minimal telemetry sink Emit needs. *telemetry.Client satisfies it;
+// tests pass a capturing fake. Kept small so emission logic is unit-testable without
+// a live ingest server.
+type Emitter interface {
+	Enabled() bool
+	EmitEvent(telemetry.Event)
+}
+
+// EventModelCallCompleted is the canonical Pyyol Lens event the cost analytics query
+// filters on. The arena emits one per recorded move that reported token usage, so
+// per-turn model/token/cost is first-class (not buried in a benchmark payload).
+const EventModelCallCompleted = "model_call_completed"
 
 // Persist durably appends a benchmark fact to the outbox (wired from main via
 // store.InsertEvent). Nil ⇒ callers fall back to the direct emitter. Shared by
@@ -41,7 +55,7 @@ const EventBenchmarkRecorded = "benchmark_recorded"
 //
 // A nil/disabled emitter makes this a no-op. Volume is one event per seat per
 // match (not per turn), so this is safe to treat as must-keep telemetry.
-func Emit(em *telemetry.Client, s MatchSummary, mode string) {
+func Emit(em Emitter, s MatchSummary, mode string) {
 	if em == nil || !em.Enabled() {
 		return
 	}
@@ -65,36 +79,95 @@ func Emit(em *telemetry.Client, s MatchSummary, mode string) {
 			PromptTokens:     seat.PromptTokens,
 			CompletionTokens: seat.CompletionTokens,
 			TotalTokens:      seat.TotalTokens,
+			EstimatedCost:    seat.EstimatedCost,
 			PayloadJSON: map[string]any{
-				"game":             s.Game,
-				"mode":             mode,
-				"seat":             seat.Seat,
-				"agent_version":    seat.AgentVersion,
-				"provider":         seat.Provider,
-				"model":            seat.Model,
-				"decisions":        seat.Decisions,
-				"legal":            seat.Legal,
-				"illegal":          seat.Illegal,
-				"timeouts":         seat.Timeouts,
-				"transport_errors": seat.TransportErrors,
-				"disconnects":      seat.Disconnects,
-				"errors":           seat.Errors,
-				"fallbacks":        seat.Fallbacks,
-				"result":           string(seat.Result),
-				"wins":             b2i(seat.Result == ResultWin),
-				"losses":           b2i(seat.Result == ResultLoss),
-				"draws":            b2i(seat.Result == ResultDraw),
-				"legal_rate":       seat.LegalRate(),
-				"fallback_rate":    seat.FallbackRate(),
-				"latency_avg_ms":   seat.AvgLatencyMS(),
-				"latency_sum_ms":   seat.LatencySumMS, // lets the Lens sum latency exactly across matches
-				"latency_min_ms":   seat.LatencyMinMS,
-				"latency_max_ms":   seat.LatencyMaxMS,
+				"game":              s.Game,
+				"mode":              mode,
+				"seat":              seat.Seat,
+				"agent_version":     seat.AgentVersion,
+				"provider":          seat.Provider,
+				"model":             seat.Model,
+				"decisions":         seat.Decisions,
+				"legal":             seat.Legal,
+				"illegal":           seat.Illegal,
+				"timeouts":          seat.Timeouts,
+				"transport_errors":  seat.TransportErrors,
+				"disconnects":       seat.Disconnects,
+				"errors":            seat.Errors,
+				"fallbacks":         seat.Fallbacks,
+				"result":            string(seat.Result),
+				"wins":              b2i(seat.Result == ResultWin),
+				"losses":            b2i(seat.Result == ResultLoss),
+				"draws":             b2i(seat.Result == ResultDraw),
+				"legal_rate":        seat.LegalRate(),
+				"fallback_rate":     seat.FallbackRate(),
+				"latency_avg_ms":    seat.AvgLatencyMS(),
+				"latency_sum_ms":    seat.LatencySumMS, // lets the Lens sum latency exactly across matches
+				"latency_min_ms":    seat.LatencyMinMS,
+				"latency_max_ms":    seat.LatencyMaxMS,
 				"prompt_tokens":     seat.PromptTokens,
 				"completion_tokens": seat.CompletionTokens,
 				"reasoning_tokens":  seat.ReasoningTokens,
+				"cached_tokens":     seat.CachedTokens,
 				"total_tokens":      seat.TotalTokens,
+				"estimated_cost":    seat.EstimatedCost,
+				"pricing_version":   seat.PricingVersion,
 				"decision_log":      seat.DecisionLog, // per-move action/outcome/latency/reasoning/tokens trail
+			},
+		})
+		// Per-turn model_call_completed events: this is what the cost-analytics query
+		// filters on, so without these the cost dashboard reports $0 for the arena.
+		emitModelCalls(em, trace, s.MatchID, s.Game, mode, seat)
+	}
+}
+
+// emitModelCalls emits one model_call_completed per recorded move that reported
+// token usage, pricing each with the versioned table (real per-move model when the
+// SDK reported it, else the seat's manifest model). High priority so cost facts are
+// never sampled away. Bounded by the decision-log cap (maxDecisionLog) per seat.
+func emitModelCalls(em Emitter, trace, matchID, game, mode string, seat SeatSummary) {
+	for _, d := range seat.DecisionLog {
+		u := d.Usage
+		if u == nil {
+			continue
+		}
+		if u.PromptTokens == 0 && u.CompletionTokens == 0 && u.ReasoningTokens == 0 && u.Model == "" {
+			continue // nothing billable/attributable
+		}
+		model := u.Model
+		if model == "" {
+			model = seat.Model
+		}
+		provider := u.Provider
+		if provider == "" {
+			provider = seat.Provider
+		}
+		cost := pricing.EstimateCost(model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)
+		em.EmitEvent(telemetry.Event{
+			TraceID:          trace,
+			EventType:        EventModelCallCompleted,
+			Status:           "ok",
+			StepName:         "agent.model_call",
+			SpanType:         "model_call",
+			Operation:        "model_call",
+			ActorID:          seat.AgentID,
+			RunID:            matchID,
+			SessionID:        game,
+			Provider:         provider,
+			Model:            model,
+			PromptTokens:     int64(u.PromptTokens),
+			CompletionTokens: int64(u.CompletionTokens),
+			TotalTokens:      int64(u.total()),
+			EstimatedCost:    cost,
+			Priority:         telemetry.PriorityHigh,
+			PayloadJSON: map[string]any{
+				"game":             game,
+				"mode":             mode,
+				"seat":             seat.Seat,
+				"round":            d.Round,
+				"cached_tokens":    u.CachedTokens,
+				"reasoning_tokens": u.ReasoningTokens,
+				"pricing_version":  pricing.Version,
 			},
 		})
 	}

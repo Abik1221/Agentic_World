@@ -85,16 +85,30 @@ Mirror Phase 1 in `sdk/js`.
       integration/e2e through the runtime. Full JS suite 77 passing; prod build clean.
 - [ ] Deferred: add JS `wallet`/`queue` CLI commands (parity gap; not telemetry).
 
-### Phase 3 — Arena always-records, all games, end-to-end
+### Phase 3 — Arena always-records, all games, end-to-end  ← DONE (core)
 
-- Turn emission (`PYYOL_LENS_ENABLED`) **on by default** in the arena.
-- Arena emits proper `model_call_completed` events (fix the $0 cost dashboard).
-- Capture usage on **fallback/error turns** too (currently dropped).
-- Per-turn `model`/`provider` decoded from the move (today only manifest-declared).
-- Shared, versioned price table on the Go side (kill the stale heuristic) +
-  `pricing_version` stamped on every cost.
-- e2e: drive one match per game in sandbox → assert model+tokens+cost land in Lens
-  per turn, attributable to agent × match × turn.
+- [x] Turn emission on by default: `PYYOL_LENS_ENABLED` defaults `true`
+      (`config.go`) — still gated by endpoint+key, so unconfigured = silent no-op.
+- [x] Shared, versioned Go price table `internal/pricing` (mirrors the SDK) +
+      `pricing.Version`; kills the stale heuristic, distinct Opus/Sonnet/Haiku.
+- [x] Cost computed server-side: `SeatSummary.EstimatedCost` accumulated per move in
+      `benchmark.Record` (uncapped), `pricing_version` stamped; surfaced on
+      `benchmark_recorded`.
+- [x] Arena emits real `model_call_completed` events (per move with usage) — the
+      event the cost-analytics query filters on, so the **$0 dashboard is fixed**.
+      High-priority (never sampled away). Works for ALL games (shared benchmark path).
+- [x] Per-turn REAL `model`/`provider`/`cached_tokens` decoded from the move
+      (`TokenUsage` extended); flows through Goofspiel/Mafia/Monopoly unchanged since
+      all decode `*benchmark.TokenUsage`. Falls back to the manifest model.
+- [x] Tests: `internal/pricing/pricing_test.go` + `internal/benchmark/emit_test.go`
+      (capturing-emitter integration): asserts per-turn model_call events, per-move
+      cost, seat cost, pricing_version, correlation. `go build ./...` + affected
+      tests green; gofmt/vet clean.
+- [ ] Deferred: full match-drive e2e per game (needs a Postgres+socket harness) —
+      covered at the emission layer for now via the shared path.
+- [ ] Inherent limit: genuine no-response turns (timeout/transport/disconnect) carry
+      no usage — the agent sent nothing to measure. The Pyyol Gateway (Phase 4) is
+      the real fix; illegal-move turns that DID return a move already flow usage through.
 
 ### Phase 4 — Pyyol LLM Gateway (Tier 2, verified)
 

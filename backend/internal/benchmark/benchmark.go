@@ -11,7 +11,11 @@
 // measures them), so they are the trustworthy core of the benchmark.
 package benchmark
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/agent-arena/arena/internal/pricing"
+)
 
 // Outcome classifies one decision the engine asked an agent to make.
 type Outcome string
@@ -59,12 +63,19 @@ type Decision struct {
 }
 
 // TokenUsage is the optional per-move LLM economics an agent may report with its
-// move. When present it powers token/cost analytics; absent it costs nothing.
+// move. When present it powers token/cost analytics; absent it costs nothing. The
+// SDK's auto-instrumentation fills these from the provider's own response, so Model
+// here is the REAL per-move model (not just the manifest-declared one).
 type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
 	TotalTokens      int `json:"total_tokens,omitempty"`
+	// Model/Provider observed for THIS move (SDK-reported from the actual call).
+	// Empty falls back to the seat's manifest-declared model.
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // total returns the reported total, or the sum of the parts if total is unset.
@@ -113,7 +124,13 @@ type SeatSummary struct {
 	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
 	CompletionTokens int64 `json:"completion_tokens,omitempty"`
 	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
+	CachedTokens     int64 `json:"cached_tokens,omitempty"`
 	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	// EstimatedCost is the summed USD cost across moves that reported usage, priced
+	// per-move by the versioned pricing table (real per-move model when reported,
+	// else the manifest model). PricingVersion records which table produced it.
+	EstimatedCost  float64 `json:"estimated_cost,omitempty"`
+	PricingVersion string  `json:"pricing_version,omitempty"`
 	// Full per-move trail (capped) — action, outcome, latency, reasoning, and
 	// token usage for every decision, so observability can see WHY an agent
 	// moved and at what cost, not just aggregate rates.
@@ -214,7 +231,18 @@ func (r *Recorder) Record(d Decision) {
 		s.PromptTokens += int64(d.Usage.PromptTokens)
 		s.CompletionTokens += int64(d.Usage.CompletionTokens)
 		s.ReasoningTokens += int64(d.Usage.ReasoningTokens)
+		s.CachedTokens += int64(d.Usage.CachedTokens)
 		s.TotalTokens += int64(d.Usage.total())
+		// Price this move now (uncapped, unlike DecisionLog): prefer the real
+		// per-move model, else the seat's manifest model.
+		model := d.Usage.Model
+		if model == "" {
+			model = s.Model
+		}
+		s.EstimatedCost += pricing.EstimateCost(
+			model, d.Usage.PromptTokens, d.Usage.CompletionTokens, d.Usage.CachedTokens, d.Usage.ReasoningTokens,
+		)
+		s.PricingVersion = pricing.Version
 	}
 	if len(s.DecisionLog) < maxDecisionLog {
 		s.DecisionLog = append(s.DecisionLog, DecisionDetail{
