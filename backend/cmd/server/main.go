@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -365,6 +367,7 @@ func run() error {
 	// Badges (reputation) are awarded off the event bus, idempotently.
 	badgeSvc := badges.New(store.NewBadgesRepo(st.DB), log)
 	eventBus.On(events.TypeAgentCertified, badgeSvc.OnAgentCertified)
+	eventBus.On(events.TypeAgentGatewayVerified, badgeSvc.OnAgentGatewayVerified)
 	eventBus.On(events.TypeSeasonRolled, badgeSvc.OnSeasonRolled)
 	eventBus.On(events.TypeMatchFinished, badgeSvc.OnMatchFinished)
 	// Developer (P-Index) badges: rank thresholds + consistency off pindex.updated;
@@ -927,7 +930,21 @@ func run() error {
 	if cfg.LLMGatewayEnabled {
 		// Verified tier: observe ranked agents' real model/token/cost by proxying
 		// their LLM calls (/gw/*). Off by default; agent-key auth via idSvc.
-		mounts = append(mounts, mountLLMGateway(idSvc, lens, log))
+		// On the first observed call per agent, emit agent.gateway_verified → awards
+		// the "Verified" badge (dual-badge model). Deduped in-process to one event
+		// per agent per instance; the badge award is idempotent anyway.
+		var gwSeen sync.Map
+		gwVerified := func(ctx context.Context, agentID string) {
+			if _, seen := gwSeen.LoadOrStore(agentID, struct{}{}); seen {
+				return
+			}
+			payload, _ := json.Marshal(map[string]string{"agent_id": agentID})
+			if _, err := store.InsertEvent(context.Background(), st.DB, events.TypeAgentGatewayVerified, payload); err != nil {
+				gwSeen.Delete(agentID) // let a later call retry
+				log.Warn("gateway: could not emit agent.gateway_verified", "agent", agentID, "err", err)
+			}
+		}
+		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, log))
 		log.Info("Pyyol LLM Gateway mounted at /gw/*")
 	}
 	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)

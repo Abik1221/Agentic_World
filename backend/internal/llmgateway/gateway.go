@@ -55,13 +55,20 @@ type upstream struct {
 
 // Proxy is the gateway HTTP handler. Mount it under a base path; it routes by the
 // first path segment: /openai/... → OpenAI, /anthropic/... → Anthropic.
+// VerifiedHook is called (best-effort, off the response's critical path) the first
+// time a request from an agent is observed. The wiring layer uses it to award the
+// "Verified" badge (dual-badge model). Must be fast/non-blocking or spawn its own
+// goroutine — it runs inline after the response is written.
+type VerifiedHook func(ctx context.Context, agentID string)
+
 type Proxy struct {
-	em        Emitter
-	client    *http.Client
-	auth      Authenticator
-	log       *slog.Logger
-	now       func() time.Time
-	upstreams map[string]upstream
+	em         Emitter
+	client     *http.Client
+	auth       Authenticator
+	log        *slog.Logger
+	now        func() time.Time
+	upstreams  map[string]upstream
+	onVerified VerifiedHook
 }
 
 // Option configures a Proxy.
@@ -80,6 +87,10 @@ func WithHTTPClient(c *http.Client) Option { return func(p *Proxy) { p.client = 
 
 // WithClock overrides the clock (tests).
 func WithClock(now func() time.Time) Option { return func(p *Proxy) { p.now = now } }
+
+// WithVerifiedHook sets the callback fired when a verified call is observed (used to
+// award the "Verified" badge).
+func WithVerifiedHook(h VerifiedHook) Option { return func(p *Proxy) { p.onVerified = h } }
 
 func defaultAuth(_ context.Context, key string) (string, bool) {
 	if key == "" {
@@ -202,11 +213,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // observe extracts real usage from the upstream response, prices it, and emits a
 // server-verified model_call_completed event attributed to the agent + match.
 func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latencyMS int64, body []byte) {
-	if p.em == nil || !p.em.Enabled() {
-		return
-	}
 	u, ok := extractUsage(body)
 	if !ok {
+		return
+	}
+	// The agent produced a real, gateway-observed LLM call → it qualifies for the
+	// "Verified" badge. Fire regardless of whether Lens is enabled.
+	if p.onVerified != nil && agentID != "" {
+		p.onVerified(context.Background(), agentID)
+	}
+	if p.em == nil || !p.em.Enabled() {
 		return
 	}
 	cost := pricing.EstimateCost(u.Model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)

@@ -138,8 +138,16 @@ proxy so model/tokens/cost are server-observed, not self-declared.
       `enable_gateway(agentKey, url)` fires on ranked when the connection token is an
       agent key. Dev routes with one line: `pyyol.route(client)`. Suites green
       (Py 103, JS 86); ruff/prod-build clean.
-- [ ] 4d. Re-point "Verified": ranked requires gateway-routed calls (not just the
-      endpoint-health probe); blue/grey badge. ⚠️ changes trust semantics — confirm first.
+- [x] 4d. Dual-badge model (chosen over strict re-point): endpoint-probe certification
+      still gates ranked entry; a SEPARATE "Verified" badge is awarded when an agent's
+      LLM traffic is observed through the gateway — a bonus signal, no new friction.
+      Backend: `agent.gateway_verified` event + `GatewayVerified` badge + handler
+      (`badges.OnAgentGatewayVerified`); gateway `WithVerifiedHook` fires on the first
+      observed call per agent (Lens-independent); main dedups in-process + emits the
+      event; badge surfaces on the agent profile. Tests (gateway hook, badge handler)
+      green; build/fmt/vet clean.
+- [ ] 4d-ui. Frontend cosmetic: map the `gateway_verified` code to a blue "Verified"
+      chip in the agent-profile badge renderer (separate client repo).
 
 ### Phase 5 — Surfacing: real Trace Inspector + cost-to-win + P-Index dimension
 

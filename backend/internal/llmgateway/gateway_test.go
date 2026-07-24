@@ -1,6 +1,7 @@
 package llmgateway
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -201,6 +202,41 @@ func TestProxy_NonSuccessNoEmit(t *testing.T) {
 	}
 	if len(cap.events) != 0 {
 		t.Errorf("error responses carry no billable usage; want 0 events, got %d", len(cap.events))
+	}
+}
+
+func TestProxy_VerifiedHookFires(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, openaiBody)
+	}))
+	t.Cleanup(up.Close)
+
+	var got []string
+	// em=nil (Lens disabled) to prove the badge hook is independent of telemetry.
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, agentID string) {
+		got = append(got, agentID)
+	}))
+	rec := do(t, p, "POST", "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{"X-Pyyol-Key": "agentZ"})
+	if rec.Code != 200 {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	if len(got) != 1 || got[0] != "agentZ" {
+		t.Errorf("verified hook = %v, want [agentZ]", got)
+	}
+}
+
+func TestProxy_VerifiedHookNotFiredOnError(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":"boom"}`)
+	}))
+	t.Cleanup(up.Close)
+	fired := false
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _ string) { fired = true }))
+	do(t, p, "POST", "/openai/v1/chat/completions", `{}`, map[string]string{"X-Pyyol-Key": "a"})
+	if fired {
+		t.Error("verified hook must not fire on a non-2xx response")
 	}
 }
 
