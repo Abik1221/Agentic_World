@@ -16,7 +16,7 @@
  */
 import type { Agent } from "./server.js";
 import { SDK_VERSION } from "./server.js";
-import { Tracer } from "./telemetry.js";
+import { Tracer, runTurnUsage } from "./telemetry.js";
 
 // Frame types — byte-identical to the Go gateway (internal/agentgw/frame.go).
 const HELLO = "hello", REGISTERED = "registered", PONG = "pong";
@@ -373,17 +373,35 @@ export class RuntimeConnector {
         break;
       case TURN: {
         const view = frame.payload ?? {};
-        // Bracket the developer's handler in a Lens span; inside decideTurn the
-        // author can reach it via pyyol.currentSpan() to record model/tool calls.
-        const { status, body } = await this.tracer.runTurn(
-          {
-            matchId: (view.match_id as string) ?? "",
-            game: (view.game as string) ?? "",
-            round: Number(view.round ?? 0) || 0,
-            agentId: this.opts.agentId,
-          },
-          () => this.agent.decideTurn(view),
+        // Bracket the developer's handler in a Lens span AND a turn-local usage
+        // accumulator. Inside decideTurn the author can reach the span via
+        // pyyol.currentSpan(); if instrument() is active, every LLM call is captured
+        // automatically. The accumulator is always on (independent of Lens) so usage
+        // rides the move to the arena regardless.
+        const { result, usage } = await runTurnUsage(() =>
+          this.tracer.runTurn(
+            {
+              matchId: (view.match_id as string) ?? "",
+              game: (view.game as string) ?? "",
+              round: Number(view.round ?? 0) || 0,
+              agentId: this.opts.agentId,
+            },
+            () => this.agent.decideTurn(view),
+          ),
         );
+        const { status, body } = result;
+        // Auto-attach captured model/token/cost to the move so the arena benchmark
+        // records real usage with no developer boilerplate. A dev-supplied `usage`
+        // always wins — we never overwrite it.
+        if (
+          status === 200 &&
+          body != null &&
+          typeof body === "object" &&
+          !usage.empty &&
+          !("usage" in (body as Record<string, unknown>))
+        ) {
+          (body as Record<string, unknown>).usage = usage.toMoveUsage();
+        }
         if (status === 200) {
           send({ t: RESPONSE, id: frame.id ?? "", payload: body });
           this.feed("turn", summarizeMove(frame.payload?.game ?? "", body));

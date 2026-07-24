@@ -48,6 +48,7 @@ ranked traces render identically.
 ## Phased delivery (one thing at a time)
 
 ### Phase 1 — SDK auto-capture (Tier 1 core)  ← DONE (Python)
+
 Make the SDK capture real model + tokens + cost with no dev effort and attach it to
 every move, for all games, sandbox and ranked. Independent of Lens being enabled
 (usage rides the move to the arena regardless).
@@ -68,11 +69,24 @@ every move, for all games, sandbox and ranked. Independent of Lens being enabled
 - All 93 Python SDK tests green; ruff clean; `import pyyol` stays cheap (no eager
   provider import).
 
-### Phase 2 — JS SDK parity
-Mirror Phase 1 in `sdk/js` (pricing, accumulator, `instrument()`, auto-attach) +
-vitest unit/integration tests. Add JS `wallet`/`queue` commands (parity gap).
+### Phase 2 — JS SDK parity  ← DONE (capture); CLI parity deferred
+
+Mirror Phase 1 in `sdk/js`.
+
+- [x] `pricing.ts` — versioned table + `estimateCost()` (parity with Python).
+- [x] `telemetry.ts` — `UsageAccumulator`, `runTurnUsage()`, `currentUsage()` via a
+      second `AsyncLocalStorage` (always-on).
+- [x] `instrument.ts` — `instrument()`/`uninstrument()`, `extractUsage()`,
+      `recordResponse()`, `patchPrototype()`; wraps OpenAI (chat + Responses) and
+      Anthropic messages; guarded + idempotent.
+- [x] `runtime.ts` — turn runs inside `runTurnUsage`; usage auto-attached to the
+      move (dev-supplied wins); exports wired in `index.ts`.
+- [x] Tests (`src/test/pricing.test.ts`, `src/test/instrument.test.ts`): unit +
+      integration/e2e through the runtime. Full JS suite 77 passing; prod build clean.
+- [ ] Deferred: add JS `wallet`/`queue` CLI commands (parity gap; not telemetry).
 
 ### Phase 3 — Arena always-records, all games, end-to-end
+
 - Turn emission (`PYYOL_LENS_ENABLED`) **on by default** in the arena.
 - Arena emits proper `model_call_completed` events (fix the $0 cost dashboard).
 - Capture usage on **fallback/error turns** too (currently dropped).
@@ -83,10 +97,12 @@ vitest unit/integration tests. Add JS `wallet`/`queue` commands (parity gap).
   per turn, attributable to agent × match × turn.
 
 ### Phase 4 — Pyyol LLM Gateway (Tier 2, verified)
+
 LiteLLM-based proxy at `gateway.pyyol.com`; SDK auto-swaps `base_url` in ranked;
 "Verified" re-pointed from endpoint-probe to gateway-routed; blue/grey badges.
 
 ### Phase 5 — Surfacing: real Trace Inspector + cost-to-win + P-Index dimension
+
 Replace scripted reasoning panels with a live replay Trace Inspector reading real
 `decision_log`; cost-to-win leaderboard; verified-only P-Index cost/intelligence
 dimension.
