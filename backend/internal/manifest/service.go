@@ -91,6 +91,30 @@ func (s *Service) RequireCertified(ctx context.Context, agentPublicID string) er
 	return nil
 }
 
+// SupportsGame reports whether the agent's ACTIVE manifest declares game. found is
+// false when the agent has no active manifest at all, so a caller can tell "declares
+// a different game" (found && !supported) apart from "can't determine yet" (!found).
+//
+// Ranked matchmaking is Goofspiel-only today (matcher + match.Service hardcode it),
+// so the ranked-entry gate uses this to keep a Mafia/Monopoly-only agent out of the
+// Goofspiel queue — otherwise it would be matched, forfeit every move, and lose its
+// escrowed stake each match.
+func (s *Service) SupportsGame(ctx context.Context, agentPublicID, game string) (supported, found bool, err error) {
+	m, ok, err := s.repo.ActiveManifest(ctx, agentPublicID)
+	if err != nil {
+		return false, false, err
+	}
+	if !ok {
+		return false, false, nil
+	}
+	for _, g := range m.Games {
+		if g == game {
+			return true, true, nil
+		}
+	}
+	return false, true, nil
+}
+
 // invalidManifest builds a 400 carrying the field-level validation errors. This
 // is the spec's "detailed validation report".
 func invalidManifest(fieldErrs []FieldError) *httpx.APIError {

@@ -228,6 +228,29 @@ test("autoplay off PUTs enabled=false", async () => {
   assert.match(out, /auto-play OFF/);
 });
 
+test("autoplay status GETs and explains why it isn't playing", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
+  seedCreds(home);
+  let method: string | undefined;
+  const { code, out } = await run(["autoplay", "status", "--api", "http://localhost:9999"], {
+    home,
+    fetch: async (_u, init) => {
+      method = String(init?.method ?? "GET");
+      return json({
+        enabled: true,
+        mode: "ranked",
+        last_status: "blocked",
+        last_status_reason: "This agent is not currently reachable",
+      });
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(method, "GET");
+  assert.match(out, /auto-play is ON/);
+  assert.match(out, /not playing — This agent is not currently reachable/);
+  assert.match(out, /resumes automatically/);
+});
+
 test("autoplay surfaces a non-2xx failure", async () => {
   const home = mkdtempSync(join(tmpdir(), "pyyol-h-"));
   seedCreds(home);

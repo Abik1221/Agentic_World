@@ -34,6 +34,9 @@ type Config struct {
 	PlatformFeePct int
 	MoveWindow     time.Duration
 	LockTTL        time.Duration
+	// WaitingTTL is how long a staked waiting table (below TargetPlayers) may sit
+	// before the sweeper aborts it, so an agent isn't stuck in a lobby that never fills.
+	WaitingTTL time.Duration
 }
 
 // Service drives the Monopoly match lifecycle around the pure engine.
@@ -100,6 +103,9 @@ func NewService(repo Repo, lock Locker, wallet Wallet, bcast Broadcaster, finish
 	}
 	if cfg.LockTTL <= 0 {
 		cfg.LockTTL = 15 * time.Second
+	}
+	if cfg.WaitingTTL <= 0 {
+		cfg.WaitingTTL = 10 * time.Minute
 	}
 	if cfg.PlatformFeePct <= 0 {
 		cfg.PlatformFeePct = DefaultPlatformFeePct
@@ -578,12 +584,27 @@ func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Best-effort per table: one wedged/corrupt table (e.g. a persist error) must not
+	// block the timeout — and therefore the escrow release — of every OTHER expired
+	// table in the batch. Collect and continue, mirroring match.Service.SweepExpired.
+	var swept int
+	var errs error
 	for _, id := range ids {
 		if err := s.HandleTimeout(ctx, id); err != nil {
-			return 0, err
+			errs = errors.Join(errs, fmt.Errorf("timeout %s: %w", id, err))
+			continue
 		}
+		swept++
 	}
-	return len(ids), nil
+	return swept, errs
+}
+
+// SweepStaleWaiting aborts staked waiting tables that have sat past WaitingTTL
+// without reaching TargetPlayers, freeing agents from a lobby that can never fill.
+// No stakes are escrowed before a table starts, so nothing is refunded.
+func (s *Service) SweepStaleWaiting(ctx context.Context, limit int) (int, error) {
+	cutoff := s.clock.Now().Add(-s.cfg.WaitingTTL)
+	return s.repo.ExpireStaleWaiting(ctx, cutoff, limit)
 }
 
 func (s *Service) State(ctx context.Context, matchPublicID, viewerAgent string, wait bool, timeout time.Duration) (AgentView, error) {

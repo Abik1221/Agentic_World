@@ -379,6 +379,20 @@ func (r *MafiaRepo) CancelWaiting(ctx context.Context, matchPublicID, creatorAge
 	return nil
 }
 
+func (r *MafiaRepo) ExpireStaleWaiting(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches SET status='aborted', updated_at=now()
+		 WHERE id IN (
+		   SELECT id FROM matches
+		   WHERE game='mafia' AND status='waiting' AND created_at <= $1
+		   ORDER BY created_at ASC LIMIT $2
+		 )`, cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (r *MafiaRepo) tx(ctx context.Context, fn func(pgx.Tx) error) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {

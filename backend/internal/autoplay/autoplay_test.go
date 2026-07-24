@@ -7,13 +7,20 @@ import (
 	"time"
 )
 
-type fakeRepo struct{ settings []Setting }
+type fakeRepo struct {
+	settings []Setting
+	statuses []string // "agent|status|reason" per SetStatus call (transition log)
+}
 
 func (f *fakeRepo) ListEnabled(context.Context) ([]Setting, error) { return f.settings, nil }
 func (f *fakeRepo) Get(context.Context, string) (Setting, bool, error) {
 	return Setting{}, false, nil
 }
 func (f *fakeRepo) Set(context.Context, Setting) error { return nil }
+func (f *fakeRepo) SetStatus(_ context.Context, agent, status, reason string) error {
+	f.statuses = append(f.statuses, agent+"|"+status+"|"+reason)
+	return nil
+}
 
 type fakeQueue struct {
 	queued    map[string]bool

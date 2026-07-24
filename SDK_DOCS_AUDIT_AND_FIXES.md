@@ -51,7 +51,12 @@ the frontend docs UI.
       Backend fix from this: section nav-order bug (committed here, ef83515).
 - [ ] D1-more: author the remaining pages (protocol/local-runtime, manifest, wallet,
       P-Index, per-game deep dives) into the same content dir.
-- [ ] D1-admin: admin CRUD to edit/override a page version without redeploy.
+- [x] D1-admin: super-admin CRUD `/v1/admin/docs*` (list-full, create/clone version,
+      upsert page, delete page), gated by `auth.RequirePlatformOrAdmin`. Edits go to a
+      new version so the git baseline is never clobbered; public `/v1/docs` serves the
+      newest version → edit/publish without redeploy. Unit + real-PG integration tests
+      green. (main.go wiring is 2 lines, uncommitted — shares the file with a parallel
+      session's autoplay WIP; rides along when that commits.)
 
 ### D2 — Fix the SDK docs/examples in-repo  ← IN PROGRESS
 - [x] Real LLM example (Py+JS) using `instrument()`+`route()`: `examples/llm_agent.py`,
@@ -76,11 +81,23 @@ the frontend docs UI.
       (separate frontend repo) + CI drift-gate it; wire the LLM example into
       `pyyol init` (SDK code — D3/later pass).
 
-### D3 — SDK code fixes (the "SDK later" pass the user will push)
-- [ ] Stop swallowing handler errors (surface in `dev`, Py+JS).
-- [ ] Make gateway-no-op loud; fix `turn=` attribution (per-game turn key).
-- [ ] Type the JS API (`Adapter<View,Move>`); async `step` in Python; unify view schema.
-- [ ] JS `wallet`/`queue`; `simulate` for all 3 games; footgun move defaults.
+### D3 — SDK code fixes  ← IN PROGRESS
+- [x] Stop swallowing handler errors — surfaced in `dev` (Py+JS). (commit fd9566c)
+- [x] Fix `turn=` attribution: round ?? day ?? monotonic counter (Py+JS). (fd9566c)
+- [x] Async `step` in Python (await awaitable move). (commit 362bc01)
+- [x] Typed JS `Adapter<View,Move>` (defaults to unknown; non-breaking). (362bc01)
+- [~] Loud gateway no-op — DONE in code but UNCOMMITTED (cli.py/cli.ts contaminated
+      by a parallel session's autoplay CLI WIP; rides along when the CLI is committed).
+- [ ] BLOCKED on the same CLI contamination: JS `wallet`/`queue` commands,
+      `simulate` for all 3 games (both touch cli.ts). Do after the parallel CLI work
+      is committed.
+- [ ] Deferred (MINOR/risky): footgun move defaults (`MafiaMove.target=0`) — changing
+      the default is a behavior change; leave until intentional.
+
+⚠️ Repo hazard: a parallel session left `cmd/server/main.go`, `sdk/python/pyyol/cli.py`,
+and `sdk/js/src/cli.ts` with uncommitted autoplay WIP + a DUPLICATE migration `0053`
+(`0053_autoplay_status` vs `0053_agent_match_benchmark_tokens`) that breaks `migrate`.
+That must be renumbered + committed before the CLI-bound D3 items can land cleanly.
 
 ## Notes
 - No Postgres integration-test harness in-repo — new store SQL is compile/vet-checked,

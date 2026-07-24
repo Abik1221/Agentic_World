@@ -21,6 +21,10 @@ type Config struct {
 	PhaseWindow    time.Duration
 	LockTTL        time.Duration
 	RosterSize     int
+	// WaitingTTL is how long a waiting table (not yet full) may sit before the
+	// sweeper aborts it. A Mafia table needs a full 12 distinct-owner roster to
+	// start, so an unfillable lobby is the likely default, not an edge case.
+	WaitingTTL time.Duration
 }
 
 // Service drives the Mafia match lifecycle.
@@ -60,6 +64,9 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 	}
 	if cfg.LockTTL <= 0 {
 		cfg.LockTTL = 15 * time.Second
+	}
+	if cfg.WaitingTTL <= 0 {
+		cfg.WaitingTTL = 10 * time.Minute
 	}
 	if cfg.EntryFee <= 0 {
 		cfg.EntryFee = DefaultEntryFee
@@ -265,16 +272,38 @@ func mafiaCanonAction(phase string, act mf.Action) string {
 // the canonical (match, day, seat, action) message; it is REQUIRED when the agent
 // has a registered signing key and the move is not platformDriven (push-play over
 // the authenticated socket/endpoint), mirroring Goofspiel.
+// Act applies one action for the calling agent.
+//
+// Concurrency model (mirrors Goofspiel + Monopoly): the Redis lock is a FAST PATH
+// that avoids wasted retries when held. Correctness comes from optimistic
+// concurrency — persist's UNIQUE(match_id, seq) event-log constraint rejects a
+// racing writer (ErrConcurrentUpdate) and we re-read + retry. So a Redis outage
+// degrades to a few extra retries, never a stuck/lost/double-applied move.
+// (Previously Mafia hard-failed on any lock error and had no retry — the one game
+// out of the three that couldn't survive a Redis blip on the request path.)
 func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action, expectedDay int, expectedPhase string, signature string, platformDriven bool) (AgentView, error) {
-	release, ok, err := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
-	if err != nil {
-		return AgentView{}, err
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
 	}
-	if !ok {
-		return AgentView{}, ErrBusy
-	}
-	defer release()
+	// (lerr != nil — Redis unreachable: proceed lockless, relying on the OCC retry.)
 
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		view, err := s.tryAct(ctx, agentPublicID, matchPublicID, act, expectedDay, expectedPhase, signature, platformDriven)
+		if errors.Is(err, ErrConcurrentUpdate) {
+			continue // another writer advanced first; re-read and retry
+		}
+		return view, err
+	}
+	return AgentView{}, ErrBusy // retries exhausted under heavy contention
+}
+
+// tryAct is one optimistic-concurrency attempt: read the snapshot, validate, apply,
+// persist. A racing writer surfaces as ErrConcurrentUpdate for Act's retry loop.
+func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, act mf.Action, expectedDay int, expectedPhase string, signature string, platformDriven bool) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, ErrNotFound
@@ -470,12 +499,28 @@ func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Best-effort per table: one wedged/corrupt table (e.g. a persist error) must not
+	// block the timeout — and therefore the escrow release — of every OTHER expired
+	// table in the batch. Collect and continue, mirroring match.Service.SweepExpired.
+	var swept int
+	var errs error
 	for _, id := range ids {
 		if err := s.HandleTimeout(ctx, id); err != nil {
-			return 0, err
+			errs = errors.Join(errs, fmt.Errorf("timeout %s: %w", id, err))
+			continue
 		}
+		swept++
 	}
-	return len(ids), nil
+	return swept, errs
+}
+
+// SweepStaleWaiting aborts waiting tables that have sat past WaitingTTL without
+// filling their roster, so an agent that joined a lobby that can never gather 12
+// distinct-owner players isn't stuck forever. No stakes are escrowed before a table
+// starts, so nothing is refunded — the table is simply aborted and the agents freed.
+func (s *Service) SweepStaleWaiting(ctx context.Context, limit int) (int, error) {
+	cutoff := s.clock.Now().Add(-s.cfg.WaitingTTL)
+	return s.repo.ExpireStaleWaiting(ctx, cutoff, limit)
 }
 
 // Notifier wakes long-polling State callers when the match changes. Satisfied by

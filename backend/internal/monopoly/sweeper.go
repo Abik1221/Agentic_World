@@ -36,6 +36,13 @@ func (sw *Sweeper) Run(ctx context.Context) {
 			} else if n > 0 {
 				sw.log.Debug("monopoly sweeper processed", "matches", n)
 			}
+			// Also abort staked waiting tables that never reached TargetPlayers, so an
+			// agent isn't stuck in a lobby that can't fill.
+			if w, werr := sw.svc.SweepStaleWaiting(ctx, 64); werr != nil {
+				sw.log.Warn("monopoly sweeper (stale waiting)", "error", werr)
+			} else if w > 0 {
+				sw.log.Debug("monopoly sweeper aborted stale waiting tables", "tables", w)
+			}
 		}
 	}
 }

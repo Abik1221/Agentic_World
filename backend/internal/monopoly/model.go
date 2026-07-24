@@ -156,6 +156,11 @@ type Repo interface {
 	Start(ctx context.Context, matchPublicID string, state mono.State, deadline time.Time, events []mono.Event) error
 	// CancelWaiting aborts a waiting table (creator-only; no-op if already started).
 	CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error
+	// ExpireStaleWaiting aborts up to limit waiting tables created at/before cutoff
+	// (tables that never reached TargetPlayers), returning how many were aborted. No
+	// stakes are escrowed until a table starts, so nothing is refunded — this just
+	// frees agents stuck in a lobby that can never fill. System-driven (no creator).
+	ExpireStaleWaiting(ctx context.Context, cutoff time.Time, limit int) (int, error)
 	Get(ctx context.Context, matchPublicID string) (Match, error)
 	Advance(ctx context.Context, matchPublicID string, state mono.State, deadline *time.Time, events []mono.Event) error
 	Finish(ctx context.Context, matchPublicID string, state mono.State, winnerSeat int, replayHash string, agents []Player, events []mono.Event) error

@@ -30,6 +30,7 @@ from . import __version__
 
 OK = "✓"
 BAD = "✗"
+WARN = "•"
 
 # Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
 # connection credential (mirrors backend platform.PrefixKey).
@@ -1044,6 +1045,60 @@ def _autoplay_set(
         return 0, {"error": _net_err(e)}
 
 
+def _autoplay_get(api: str, token: str) -> tuple:
+    """GET the agent's auto-play setting + last observed status. Returns (status, body)."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        api.rstrip("/") + "/v1/agent/autoplay",
+        method="GET",
+        headers={"Authorization": "Bearer " + token},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        return e.code, (json.loads(raw) if raw else {})
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return 0, {"error": _net_err(e)}
+
+
+# How each reconciler status reads to a developer, and its marker.
+_AUTOPLAY_STATUS_LABEL = {
+    "playing": (OK, "playing"),
+    "searching": (OK, "searching for an opponent"),
+    "paused": (WARN, "paused"),
+    "blocked": (BAD, "not playing"),
+}
+
+
+def _print_autoplay_status(body: dict) -> None:
+    """Render `pyyol autoplay status` — is it on, and (crucially) WHY it is or isn't
+    playing, so a quiet auto-play agent is never a mystery."""
+    if not body.get("enabled"):
+        print(f"{WARN} auto-play is OFF (turn it on with `pyyol autoplay on`)")
+        return
+    mode = body.get("mode", "sandbox")
+    print(f"{OK} auto-play is ON — mode={mode}")
+    status = body.get("last_status", "")
+    reason = body.get("last_status_reason", "")
+    if not status:
+        print("  status: starting up — no activity recorded yet (check back in a moment)")
+        return
+    marker, label = _AUTOPLAY_STATUS_LABEL.get(status, (WARN, status))
+    line = f"  {marker} {label}"
+    if reason:
+        line += f" — {reason}"
+    print(line)
+    if at := body.get("last_status_at"):
+        print(f"  as of {at}")
+    if status == "blocked":
+        print("  fix the reason above (e.g. connect your agent with `pyyol run`), and it resumes automatically.")
+
+
 def _autoplay_opts(args, cfg) -> tuple:
     """Resolve (mode, games) from flags → pyyol.toml → defaults."""
     mode = (
@@ -1128,10 +1183,18 @@ def cmd_autoplay(args: argparse.Namespace) -> int:
     if not (api and token):
         print(f"{BAD} run `pyyol login` first", file=sys.stderr)
         return 2
+    _warn_insecure_transport(api, bool(token))
+    # `pyyol autoplay status` READS the current state + why it is/isn't playing.
+    if args.state == "status":
+        st, resp = _autoplay_get(api, token)
+        if st and 200 <= st < 300:
+            _print_autoplay_status(resp)
+            return 0
+        print(f"{BAD} failed (status {st}): {resp}", file=sys.stderr)
+        return 1
     on = args.state == "on"
     cfg = config.load()
     mode, games = _autoplay_opts(args, cfg)
-    _warn_insecure_transport(api, bool(token))
     st, resp = _autoplay_set(api, token, enabled=on, mode=mode, bid=args.bid, games=games)
     if st and 200 <= st < 300:
         detail = f" — mode={mode}, games={games or 'default'}" if on else ""
@@ -1382,11 +1445,19 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     # key. With this on, `pyyol.route(client)` sends the agent's LLM calls through the
     # gateway so model/token/cost are server-observed (unfakeable). A dashboard-JWT
     # session can't authenticate to the gateway, so routing stays off there.
-    if m == mode.RANKED and _using_key and token:
-        from . import instrument as _instrument
+    if m == mode.RANKED:
+        if _using_key and token:
+            from . import instrument as _instrument
 
-        _instrument.enable_gateway(token, DEFAULT_GATEWAY)
-        print(f"{OK} verified gateway routing on ({DEFAULT_GATEWAY}) — call pyyol.route(client)")
+            _instrument.enable_gateway(token, DEFAULT_GATEWAY)
+            print(f"{OK} verified gateway routing on ({DEFAULT_GATEWAY}) — call pyyol.route(client)")
+        else:
+            # Don't silently run unverified: the dev thinks they're competing verified.
+            print(
+                f"{BAD} verified gateway routing OFF — no agent key in this session "
+                "(a dashboard-JWT login can't authenticate to the gateway). Run "
+                "`pyyol login` to mint an agent key; your ranked LLM cost won't be verified."
+            )
 
     # Persist the agent id back into pyyol.toml so future runs are zero-config.
     if agent_id and not cfg.agent_id:
@@ -1961,7 +2032,7 @@ def build_parser() -> argparse.ArgumentParser:
     pap = sub.add_parser(
         "autoplay", help="toggle auto-play without holding a connection (for hosted endpoints)"
     )
-    pap.add_argument("state", choices=["on", "off"])
+    pap.add_argument("state", choices=["on", "off", "status"])
     _add_api(pap)
     pap.add_argument("--token", default="")
     pap.add_argument(

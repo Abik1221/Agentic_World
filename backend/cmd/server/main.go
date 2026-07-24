@@ -31,6 +31,7 @@ import (
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
+	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
 	"github.com/agent-arena/arena/internal/docs"
 	"github.com/agent-arena/arena/internal/events"
@@ -738,7 +739,7 @@ func run() error {
 	// with a specific error, instead of getting a misleading 202 and squatting a
 	// `waiting` slot forever for a pairing that CheckEligible would always reject —
 	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
-	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg})
+	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel)})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	// Reject an offline agent at enqueue so it never gets matched and forfeit-bleeds its
 	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
@@ -750,6 +751,10 @@ func run() error {
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
+	// Fail fast at enable time when an owner points ranked auto-play at an agent that
+	// doesn't declare the (Goofspiel-only) ranked game — instead of silently never
+	// playing. Other games use their lobbies / sandbox auto-play.
+	autoplayHandler.SetRankedGate(autoplayRankedGate{cert: manifestSvc, game: string(devplatform.GameGoofspiel)})
 
 	// Payments — fiat (card) top-ups via Stripe. This is OPTIONAL: Pyyol's on-ramp
 	// is a real USDC deposit (see the Solana deposit rail), so a card gateway is a
@@ -907,6 +912,7 @@ func run() error {
 		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
 	}
 	docsHandler := docs.NewHandler(docsRepo)
+	docsAdminHandler := docs.NewAdminHandler(docsRepo, authn, cfg.AdminUserIDs)
 
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{
@@ -932,6 +938,7 @@ func run() error {
 		devProfileHandler.Register,
 		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
 		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
+		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,
@@ -1085,13 +1092,61 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 type rankedEntryGate struct {
 	cert *manifest.Service
 	susp *platformcfg.Provider // may be nil (suspension list unavailable)
+	game string                // the only game the ranked queue matchmakes; "" ⇒ skip the game check
 }
 
 func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID string) error {
 	if g.susp != nil && g.susp.Get().IsSuspended(agentPublicID) {
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
 	}
-	return g.cert.RequireCertified(ctx, agentPublicID)
+	if err := g.cert.RequireCertified(ctx, agentPublicID); err != nil {
+		return err
+	}
+	// Ranked matchmaking runs one game (Goofspiel). Reject an agent whose manifest
+	// doesn't declare it, so a Mafia/Monopoly-only agent can't be enqueued into the
+	// Goofspiel queue and forfeit-bleed its stake. Certified ⇒ an active manifest
+	// exists, so !supported here means it genuinely lacks the game.
+	if g.game != "" {
+		supported, _, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			return errRankedGameUnsupported(g.game)
+		}
+	}
+	return nil
+}
+
+// errRankedGameUnsupported explains that ranked matchmaking is single-game today and
+// points the developer at the paths that DO work for other games.
+func errRankedGameUnsupported(game string) error {
+	return httpx.NewError(http.StatusConflict, "ranked_game_unsupported",
+		fmt.Sprintf("Ranked matchmaking currently runs %s only, and this agent's manifest does not declare %s. Mafia and Monopoly play through their game lobbies; use sandbox auto-play to practice them.", game, game))
+}
+
+// autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
+// ranked auto-play — today, that it declares the single ranked game. It checks only
+// the permanent game-support property (not the transient certified/reachable state,
+// which the enqueue gate enforces per match), and stays quiet when the agent has no
+// manifest yet (can't tell → don't block preconfiguration; enqueue still enforces).
+type autoplayRankedGate struct {
+	cert *manifest.Service
+	game string
+}
+
+func (g autoplayRankedGate) CheckRankedGame(ctx context.Context, agentPublicID string) error {
+	if g.game == "" {
+		return nil
+	}
+	supported, found, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
+	if err != nil {
+		return err
+	}
+	if found && !supported {
+		return errRankedGameUnsupported(g.game)
+	}
+	return nil
 }
 
 // rankedLivenessGate is the matchmaking.Liveness gate: an agent may enter the ranked

@@ -175,6 +175,20 @@ func (r *MonopolyRepo) CancelWaiting(ctx context.Context, matchPublicID, creator
 	return nil
 }
 
+func (r *MonopolyRepo) ExpireStaleWaiting(ctx context.Context, cutoff time.Time, limit int) (int, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches SET status='aborted', updated_at=now()
+		 WHERE id IN (
+		   SELECT id FROM matches
+		   WHERE game='monopoly' AND status='waiting' AND created_at <= $1
+		   ORDER BY created_at ASC LIMIT $2
+		 )`, cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.Match, error) {
 	var m monopoly.Match
 	var stateBytes []byte

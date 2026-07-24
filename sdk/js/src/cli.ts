@@ -27,6 +27,7 @@ import { SDK_VERSION } from "./version.js";
 
 const OK = "✓";
 const BAD = "✗";
+const WARN = "•";
 
 // Public platform defaults. `pyyol login` with no flags hits the live platform;
 // self-hosted/local users override via PYYOL_API / PYYOL_DASHBOARD (or --api /
@@ -436,6 +437,13 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     if (usingAgentKey && token) {
       enableGateway(token, DEFAULT_GATEWAY);
       console.log(`  ${OK} verified gateway routing on (${DEFAULT_GATEWAY}) — call pyyol.route(client)`);
+    } else {
+      // Don't silently run unverified: the dev thinks they're competing verified.
+      console.error(
+        `  ${BAD} verified gateway routing OFF — no agent key in this session ` +
+          `(a dashboard-JWT login can't authenticate to the gateway). Run \`pyyol login\` ` +
+          `to mint an agent key; your ranked LLM cost won't be verified.`,
+      );
     }
   }
   if (agentId && !cfg.agent_id) config.setAgentId(agentId);
@@ -840,10 +848,44 @@ async function autoplaySet(
   return apiRequest("PUT", `${api.replace(/\/$/, "")}/v1/agent/autoplay`, token, { enabled, mode: m, bid, games });
 }
 
+/** GET the agent's auto-play setting + last observed status (mirrors Python
+ *  `_autoplay_get`). */
+async function autoplayGet(api: string, token: string): Promise<[number, any]> {
+  return apiGet(`${api.replace(/\/$/, "")}/v1/agent/autoplay`, token);
+}
+
+const AUTOPLAY_STATUS_LABEL: Record<string, [string, string]> = {
+  playing: [OK, "playing"],
+  searching: [OK, "searching for an opponent"],
+  paused: [WARN, "paused"],
+  blocked: [BAD, "not playing"],
+};
+
+/** Render `pyyol autoplay status` — is it on, and WHY it is or isn't playing, so a
+ *  quiet auto-play agent is never a mystery. */
+function printAutoplayStatus(body: any): void {
+  if (!body?.enabled) {
+    console.log(`${WARN} auto-play is OFF (turn it on with \`pyyol autoplay on\`)`);
+    return;
+  }
+  console.log(`${OK} auto-play is ON — mode=${body.mode || "sandbox"}`);
+  const status: string = body.last_status || "";
+  const reason: string = body.last_status_reason || "";
+  if (!status) {
+    console.log("  status: starting up — no activity recorded yet (check back in a moment)");
+    return;
+  }
+  const [marker, label] = AUTOPLAY_STATUS_LABEL[status] ?? [WARN, status];
+  console.log(`  ${marker} ${label}${reason ? ` — ${reason}` : ""}`);
+  if (body.last_status_at) console.log(`  as of ${body.last_status_at}`);
+  if (status === "blocked")
+    console.log("  fix the reason above (e.g. connect your agent with `pyyol run`), and it resumes automatically.");
+}
+
 async function cmdAutoplay(a: Args): Promise<number> {
   const state = a.positionals[0];
-  if (state !== "on" && state !== "off") {
-    console.error(`${BAD} usage: pyyol autoplay on|off`);
+  if (state !== "on" && state !== "off" && state !== "status") {
+    console.error(`${BAD} usage: pyyol autoplay on|off|status`);
     return 2;
   }
   const c = creds.load();
@@ -855,6 +897,16 @@ async function cmdAutoplay(a: Args): Promise<number> {
     return 2;
   }
   if (str(a, "token")) warnArgvSecret();
+  // `pyyol autoplay status` READS the current state + why it is/isn't playing.
+  if (state === "status") {
+    const [st, resp] = await autoplayGet(api, token);
+    if (st >= 200 && st < 300) {
+      printAutoplayStatus(resp);
+      return 0;
+    }
+    console.error(`${BAD} failed (status ${st}): ${JSON.stringify(resp)}`);
+    return 1;
+  }
   const on = state === "on";
   const [m, games] = autoplayOpts(a, config.load());
   const [st, resp] = await autoplaySet(api, token, on, m, num(a, "bid", 0), games);

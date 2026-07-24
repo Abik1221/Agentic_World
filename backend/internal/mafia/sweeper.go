@@ -34,6 +34,13 @@ func (sw *Sweeper) Run(ctx context.Context) {
 			} else if n > 0 {
 				sw.log.Debug("mafia sweeper processed", "matches", n)
 			}
+			// Also abort waiting tables that never filled their roster, so agents
+			// aren't stuck in a lobby that can't gather 12 distinct-owner players.
+			if w, werr := sw.svc.SweepStaleWaiting(ctx, 64); werr != nil {
+				sw.log.Warn("mafia sweeper (stale waiting)", "error", werr)
+			} else if w > 0 {
+				sw.log.Debug("mafia sweeper aborted stale waiting tables", "tables", w)
+			}
 		}
 	}
 }
