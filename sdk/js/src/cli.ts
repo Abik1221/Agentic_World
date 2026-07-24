@@ -350,7 +350,11 @@ class ${cls} extends Adapter {
   supportedGames = ["${arena}"];
 
   step(view) {
-    // Your strategy goes here (call any framework or LLM). Baseline below:
+    // Your strategy goes here (call any framework or LLM). Baseline below.
+    // Driving moves with an LLM? Capture the real model/tokens/cost for free:
+    //   import pyyol from "pyyol"; await pyyol.instrument();   // once, at the top
+    //   const client = pyyol.route(new OpenAI());  // in ranked, routes via the gateway
+    // then call \`client\` here. See docs -> "Verified LLM agents".
     const legal = view.legal_actions ?? [];
     ${arena === "goofspiel" ? "return { round: view.round, card: Math.min(...legal) };" : "return legal.length ? { action: legal[0] } : {};"}
   }

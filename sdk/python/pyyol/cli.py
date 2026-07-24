@@ -1226,6 +1226,11 @@ class {cls}(Adapter):
 
     def step(self, view: GoofspielView) -> GoofspielMove:
         # Your strategy goes here. Baseline: spend the smallest legal card.
+        #
+        # Driving moves with an LLM? Capture the real model/tokens/cost for free:
+        #   import pyyol; pyyol.instrument()   # once at the top of this file
+        #   client = pyyol.route(OpenAI())     # in ranked, routes via the gateway (verified)
+        # then call `client` here. See docs -> "Verified LLM agents".
         return GoofspielMove(card=min(view.legal_actions), round=view.round)
 
     def shutdown(self, result):
@@ -1255,6 +1260,9 @@ class {cls}(Adapter):
 
     def step(self, view):
         # `view.legal_actions` lists what you may do this turn. Baseline: take the first.
+        # Driving moves with an LLM? `import pyyol; pyyol.instrument()` once + in ranked
+        # `client = pyyol.route(client)` captures the real model/tokens/cost (verified).
+        # See docs -> "Verified LLM agents".
         legal = getattr(view, "legal_actions", None) or []
         return {{"action": legal[0]}} if legal else {{}}
 

@@ -77,27 +77,31 @@ the frontend docs UI.
 - [x] README command lists completed (JS: added the 8 missing verbs + wallet/queue
       Python-only note; Python: added ranked `queue`/`wallet`/`publish --manifest` +
       full-list pointer). Renamed `onavion`→`pyyol` in both CHANGELOGs.
-- [ ] Remaining (out of this repo's scope): reconcile `Pyyol_client/public/llms.txt`
-      (separate frontend repo) + CI drift-gate it; wire the LLM example into
-      `pyyol init` (SDK code — D3/later pass).
+- [x] Reconciled `Pyyol_client/public/llms.txt` (gitignored frontend repo — commit
+      there): rewritten to match the SDK docs — accurate quickstart, `sk_arena_` auth,
+      entry-fee money model, Verified tier, real hosts, + pointers to the
+      machine-readable corpus (`/docs/llms-full.txt`). CI drift-gate lives in the
+      frontend repo's CI (out of this repo).
+- [ ] Remaining (deferred / out of scope): wire the LLM example into `pyyol init`
+      (SDK code); full multi-game `simulate` (engine port); footgun move defaults.
 
 ### D3 — SDK code fixes  ← IN PROGRESS
 - [x] Stop swallowing handler errors — surfaced in `dev` (Py+JS). (commit fd9566c)
 - [x] Fix `turn=` attribution: round ?? day ?? monotonic counter (Py+JS). (fd9566c)
 - [x] Async `step` in Python (await awaitable move). (commit 362bc01)
 - [x] Typed JS `Adapter<View,Move>` (defaults to unknown; non-breaking). (362bc01)
-- [~] Loud gateway no-op — DONE in code but UNCOMMITTED (cli.py/cli.ts contaminated
-      by a parallel session's autoplay CLI WIP; rides along when the CLI is committed).
-- [ ] BLOCKED on the same CLI contamination: JS `wallet`/`queue` commands,
-      `simulate` for all 3 games (both touch cli.ts). Do after the parallel CLI work
-      is committed.
+- [x] Loud gateway no-op warning (cli.py/cli.ts ranked path). (landed in db9090e)
+- [x] JS `wallet` + `queue` commands (parity with Python). (commit 03ec4d8)
+- [~] `simulate` for all 3 games: docs already honestly say "Goofspiel only today"
+      (fixed in D2). FULL support needs porting the Mafia/Monopoly engines into the
+      SDK simulator — a large future item, not a quick fix.
 - [ ] Deferred (MINOR/risky): footgun move defaults (`MafiaMove.target=0`) — changing
       the default is a behavior change; leave until intentional.
 
-⚠️ Repo hazard: a parallel session left `cmd/server/main.go`, `sdk/python/pyyol/cli.py`,
-and `sdk/js/src/cli.ts` with uncommitted autoplay WIP + a DUPLICATE migration `0053`
-(`0053_autoplay_status` vs `0053_agent_match_benchmark_tokens`) that breaks `migrate`.
-That must be renumbered + committed before the CLI-bound D3 items can land cleanly.
+✅ Repo hazard RESOLVED (commit db9090e): landed the parallel session's games-e2e
+remediation + renumbered the duplicate migration `0053_autoplay_status` → `0059`
+(migrate now applies cleanly through 0059 on a fresh Postgres; `go build`/`go test`/vet
+all green).
 
 ## Notes
 - No Postgres integration-test harness in-repo — new store SQL is compile/vet-checked,
