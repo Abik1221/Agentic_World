@@ -13,7 +13,10 @@ type DocsRepo struct{ db *pgxpool.Pool }
 
 func NewDocsRepo(db *pgxpool.Pool) *DocsRepo { return &DocsRepo{db: db} }
 
-var _ docs.Store = (*DocsRepo)(nil)
+var (
+	_ docs.Store      = (*DocsRepo)(nil)
+	_ docs.AdminStore = (*DocsRepo)(nil)
+)
 
 // Seed upserts every page at a version. Idempotent — safe to run on every startup;
 // re-seeding a version overwrites its pages with the current authored content, so the
@@ -38,6 +41,65 @@ func (r *DocsRepo) Seed(ctx context.Context, version string, pages []docs.Page) 
 		}
 	}
 	return nil
+}
+
+// UpsertPage inserts or updates a single page in a version (admin edit).
+func (r *DocsRepo) UpsertPage(ctx context.Context, version string, p docs.Page) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO docs_pages (version, slug, title, section, game, category, ord, body_md, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+		 ON CONFLICT (version, slug) DO UPDATE SET
+		   title=EXCLUDED.title, section=EXCLUDED.section, game=EXCLUDED.game,
+		   category=EXCLUDED.category, ord=EXCLUDED.ord, body_md=EXCLUDED.body_md, updated_at=now()`,
+		version, p.Slug, p.Title, p.Section, p.Game, p.Category, p.Order, p.Body)
+	return err
+}
+
+// DeletePage removes a page from a version; deleted=false when it didn't exist.
+func (r *DocsRepo) DeletePage(ctx context.Context, version, slug string) (bool, error) {
+	tag, err := r.db.Exec(ctx, `DELETE FROM docs_pages WHERE version=$1 AND slug=$2`, version, slug)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// CloneVersion copies every page from one version into another (admin: fork the
+// current docs into a new editable version). Returns the number of pages copied.
+// Overwrites same-slug rows already in `to` (so it's safe to re-run).
+func (r *DocsRepo) CloneVersion(ctx context.Context, from, to string) (int, error) {
+	tag, err := r.db.Exec(ctx,
+		`INSERT INTO docs_pages (version, slug, title, section, game, category, ord, body_md, updated_at)
+		 SELECT $2, slug, title, section, game, category, ord, body_md, now()
+		   FROM docs_pages WHERE version = $1
+		 ON CONFLICT (version, slug) DO UPDATE SET
+		   title=EXCLUDED.title, section=EXCLUDED.section, game=EXCLUDED.game,
+		   category=EXCLUDED.category, ord=EXCLUDED.ord, body_md=EXCLUDED.body_md, updated_at=now()`,
+		from, to)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ListFull returns the full pages (WITH bodies) for a version, for admin editing.
+func (r *DocsRepo) ListFull(ctx context.Context, version string) ([]docs.Page, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT slug, title, section, game, category, ord, body_md
+		   FROM docs_pages WHERE version = $1 ORDER BY ord, slug`, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []docs.Page
+	for rows.Next() {
+		var p docs.Page
+		if err := rows.Scan(&p.Slug, &p.Title, &p.Section, &p.Game, &p.Category, &p.Order, &p.Body); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // ListPages returns page METADATA (no body) for a version, ordered for the nav.

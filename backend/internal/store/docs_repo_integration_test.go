@@ -73,4 +73,34 @@ func TestDocsRepoIntegration(t *testing.T) {
 	if err != nil || latest != docs.DocsVersion || len(versions) == 0 {
 		t.Fatalf("Versions: versions=%v latest=%q err=%v", versions, latest, err)
 	}
+
+	// --- admin write path (CRUD without redeploy) ---
+	const editVer = "9999-01-01-test" // isolated version, never clobbered by the seed
+	// Clone the seeded baseline into a new editable version.
+	n, err := repo.CloneVersion(ctx, docs.DocsVersion, editVer)
+	if err != nil || n != len(pages) {
+		t.Fatalf("CloneVersion: n=%d want %d err=%v", n, len(pages), err)
+	}
+	// Upsert a brand-new page into it.
+	if err := repo.UpsertPage(ctx, editVer, docs.Page{
+		Slug: "concepts/edited", Title: "Edited", Section: "Concepts", Order: 9, Body: "# edited\n",
+	}); err != nil {
+		t.Fatalf("UpsertPage: %v", err)
+	}
+	full, err := repo.ListFull(ctx, editVer)
+	if err != nil || len(full) != len(pages)+1 {
+		t.Fatalf("ListFull after upsert: got %d want %d err=%v", len(full), len(pages)+1, err)
+	}
+	// Delete it again.
+	deleted, err := repo.DeletePage(ctx, editVer, "concepts/edited")
+	if err != nil || !deleted {
+		t.Fatalf("DeletePage: deleted=%v err=%v", deleted, err)
+	}
+	if again, _ := repo.DeletePage(ctx, editVer, "concepts/edited"); again {
+		t.Error("second delete should report deleted=false")
+	}
+	// The edit version is now selectable as latest (date-string sorts after baseline).
+	if _, latest2, _ := repo.Versions(ctx); latest2 != editVer {
+		t.Errorf("latest after edit = %q, want %q", latest2, editVer)
+	}
 }
