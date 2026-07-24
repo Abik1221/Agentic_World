@@ -78,8 +78,13 @@ func Emit(em Emitter, s MatchSummary, mode string) {
 			// aggregation picks them up (0/omitted when no move reported usage).
 			PromptTokens:     seat.PromptTokens,
 			CompletionTokens: seat.CompletionTokens,
+			CachedTokens:     seat.CachedTokens,
+			ReasoningTokens:  seat.ReasoningTokens,
 			TotalTokens:      seat.TotalTokens,
 			EstimatedCost:    seat.EstimatedCost,
+			PricingVersion:   seat.PricingVersion,
+			Currency:         telemetry.CurrencyUSD,
+			MeterSource:      telemetry.MeterSourceSDK, // seat aggregate of agent-reported usage
 			PayloadJSON: map[string]any{
 				"game":              s.Game,
 				"mode":              mode,
@@ -157,17 +162,19 @@ func emitModelCalls(em Emitter, trace, matchID, game, mode string, seat SeatSumm
 			Model:            model,
 			PromptTokens:     int64(u.PromptTokens),
 			CompletionTokens: int64(u.CompletionTokens),
+			CachedTokens:     int64(u.CachedTokens),
+			ReasoningTokens:  int64(u.ReasoningTokens),
 			TotalTokens:      int64(u.total()),
 			EstimatedCost:    cost,
+			PricingVersion:   pricing.Version,
+			Currency:         telemetry.CurrencyUSD,
+			MeterSource:      telemetry.MeterSourceSDK, // agent self-reported (sandbox tier)
 			Priority:         telemetry.PriorityHigh,
 			PayloadJSON: map[string]any{
-				"game":             game,
-				"mode":             mode,
-				"seat":             seat.Seat,
-				"round":            d.Round,
-				"cached_tokens":    u.CachedTokens,
-				"reasoning_tokens": u.ReasoningTokens,
-				"pricing_version":  pricing.Version,
+				"game":  game,
+				"mode":  mode,
+				"seat":  seat.Seat,
+				"round": d.Round,
 			},
 		})
 	}

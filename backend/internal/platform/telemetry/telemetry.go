@@ -43,6 +43,16 @@ const (
 	PriorityHigh
 )
 
+// Meter sources — the provenance of a model-call's token/cost numbers, recorded
+// structurally on Event.MeterSource so the backend can compute verified-only economics.
+const (
+	MeterSourceSDK     = "sdk"     // agent self-reported (sandbox / unverified tier)
+	MeterSourceGateway = "gateway" // server-observed via the Pyyol Gateway (verified tier)
+)
+
+// CurrencyUSD is the cost currency the pricing table produces.
+const CurrencyUSD = "USD"
+
 // Event is one telemetry fact on the wire. Field names match the Pyyol Lens
 // ingest JSON; zero-value fields are defaulted server-side, so callers set only
 // what they know. This struct is intentionally a SUBSET of the full Pyyol Lens
@@ -78,8 +88,17 @@ type Event struct {
 
 	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
 	CompletionTokens int64   `json:"completion_tokens,omitempty"`
+	CachedTokens     int64   `json:"cached_tokens,omitempty"`
+	ReasoningTokens  int64   `json:"reasoning_tokens,omitempty"`
 	TotalTokens      int64   `json:"total_tokens,omitempty"`
 	EstimatedCost    float64 `json:"estimated_cost,omitempty"`
+	// Currency/PricingVersion make a cost reproducible; MeterSource records provenance
+	// — "gateway" (server-observed, unfakeable) vs "sdk" (agent self-reported) — so the
+	// backend can compute verified-only economics straight from structural columns.
+	// These map 1:1 onto the Pyyol Lens schema columns of the same json name.
+	Currency       string `json:"currency,omitempty"`
+	PricingVersion string `json:"pricing_version,omitempty"`
+	MeterSource    string `json:"meter_source,omitempty"`
 
 	ErrorType    string         `json:"error_type,omitempty"`
 	ErrorMessage string         `json:"error_message,omitempty"`

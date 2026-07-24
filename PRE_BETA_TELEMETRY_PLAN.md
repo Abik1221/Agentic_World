@@ -149,17 +149,23 @@ proxy so model/tokens/cost are server-observed, not self-declared.
 - [ ] 4d-ui. Frontend cosmetic: map the `gateway_verified` code to a blue "Verified"
       chip in the agent-profile badge renderer (separate client repo).
 
-### Phase 5 — Surfacing: real Trace Inspector + cost-to-win + P-Index dimension
+### Phase 5 — Structural trace data + surfacing  ← IN PROGRESS
 
-Replace scripted reasoning panels with a live replay Trace Inspector reading real
-`decision_log`; cost-to-win leaderboard; verified-only P-Index cost/intelligence
-dimension.
+Guiding principle: everything lands in Pyyol Lens as FIRST-CLASS, queryable columns
+(not JSON blobs), so the backend can compute anything (cost-to-win, P-Index cost
+dimension, dashboards) straight from the trace store.
 
-### Phase 5 — Surfacing: real Trace Inspector + cost-to-win + P-Index dimension
-
-Replace scripted reasoning panels with a live replay Trace Inspector reading real
-`decision_log`; cost-to-win leaderboard; verified-only P-Index cost/intelligence
-dimension.
+- [x] 5a. Structural economics on every emitted event. Arena `telemetry.Event`
+      gains `cached_tokens`, `reasoning_tokens`, `pricing_version`, `currency`, and
+      `meter_source` — mapping 1:1 onto the Lens ClickHouse columns that already
+      exist. `meter_source` = `gateway` (server-observed, unfakeable) vs `sdk`
+      (self-reported) is the STRUCTURAL verified signal. Set on `benchmark_recorded`,
+      per-turn `model_call_completed`, and gateway calls. Tests green; build/fmt/vet clean.
+- [ ] 5b. Cost-to-win backend query/aggregation over the trace store (verified-only
+      via `meter_source='gateway'`), exposed as an API + surfaced on the model board.
+- [ ] 5c. Verified-only P-Index cost/efficiency dimension (uses gateway data only).
+- [ ] 5d. Real Trace Inspector UI — replace the scripted reasoning panels with a live
+      replay reading the real `decision_log` (per-turn action/rationale/model/tokens/cost).
 
 ---
 

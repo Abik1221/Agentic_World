@@ -222,8 +222,11 @@ func TestEmit_ModelCallEventsWithCost(t *testing.T) {
 	if bench[0].EstimatedCost <= 0 {
 		t.Errorf("benchmark estimated_cost = %v, want > 0", bench[0].EstimatedCost)
 	}
-	if pv, _ := bench[0].PayloadJSON["pricing_version"].(string); pv == "" {
-		t.Error("benchmark payload missing pricing_version")
+	if bench[0].PricingVersion == "" {
+		t.Error("benchmark event missing structural pricing_version")
+	}
+	if bench[0].MeterSource != "sdk" {
+		t.Errorf("benchmark meter_source = %q, want sdk", bench[0].MeterSource)
 	}
 
 	// One model_call_completed per decision with usage, priced per-move.
@@ -238,6 +241,9 @@ func TestEmit_ModelCallEventsWithCost(t *testing.T) {
 		}
 		if e.Priority != telemetry.PriorityHigh {
 			t.Errorf("model_call must be high-priority (never sampled), got %v", e.Priority)
+		}
+		if e.MeterSource != "sdk" || e.PricingVersion == "" || e.Currency != "USD" {
+			t.Errorf("structural economics missing: meter=%q pv=%q cur=%q", e.MeterSource, e.PricingVersion, e.Currency)
 		}
 		byModel[e.Model] = e
 	}

@@ -241,17 +241,19 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 		Model:            u.Model,
 		PromptTokens:     int64(u.PromptTokens),
 		CompletionTokens: int64(u.CompletionTokens),
+		CachedTokens:     int64(u.CachedTokens),
+		ReasoningTokens:  int64(u.ReasoningTokens),
 		TotalTokens:      int64(u.total()),
 		EstimatedCost:    cost,
-		LatencyMS:        latencyMS,
-		Priority:         telemetry.PriorityHigh,
+		PricingVersion:   pricing.Version,
+		Currency:         telemetry.CurrencyUSD,
+		// meter_source=gateway is the STRUCTURAL "verified" signal: server-observed,
+		// unfakeable. The backend filters verified economics on this column alone.
+		MeterSource: telemetry.MeterSourceGateway,
+		LatencyMS:   latencyMS,
+		Priority:    telemetry.PriorityHigh,
 		PayloadJSON: map[string]any{
-			"source":           "gateway", // vs SDK self-report
-			"verified":         true,      // server-observed, unfakeable
-			"turn":             reqHeader.Get("X-Pyyol-Turn"),
-			"cached_tokens":    u.CachedTokens,
-			"reasoning_tokens": u.ReasoningTokens,
-			"pricing_version":  pricing.Version,
+			"turn": reqHeader.Get("X-Pyyol-Turn"),
 		},
 	})
 }

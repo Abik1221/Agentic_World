@@ -112,11 +112,16 @@ func TestProxy_ForwardsAndObservesOpenAI(t *testing.T) {
 	if abs(e.EstimatedCost-wantCost) > 1e-9 {
 		t.Errorf("cost = %v, want %v", e.EstimatedCost, wantCost)
 	}
-	if v, _ := e.PayloadJSON["verified"].(bool); !v {
-		t.Error("gateway event must be marked verified")
+	// Provenance is structural (a column), not buried in payload_json: meter_source
+	// = gateway is the verified signal the backend filters on.
+	if e.MeterSource != "gateway" {
+		t.Errorf("meter_source = %q, want gateway (structural verified signal)", e.MeterSource)
 	}
-	if src, _ := e.PayloadJSON["source"].(string); src != "gateway" {
-		t.Errorf("source = %q, want gateway", src)
+	if e.CachedTokens != 200 || e.ReasoningTokens != 40 {
+		t.Errorf("cached/reasoning not structural: cached=%d reasoning=%d", e.CachedTokens, e.ReasoningTokens)
+	}
+	if e.PricingVersion == "" || e.Currency != "USD" {
+		t.Errorf("pricing_version/currency not set: %q/%q", e.PricingVersion, e.Currency)
 	}
 }
 
