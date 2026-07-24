@@ -110,10 +110,31 @@ Mirror Phase 1 in `sdk/js`.
       no usage — the agent sent nothing to measure. The Pyyol Gateway (Phase 4) is
       the real fix; illegal-move turns that DID return a move already flow usage through.
 
-### Phase 4 — Pyyol LLM Gateway (Tier 2, verified)
+### Phase 4 — Pyyol LLM Gateway (Tier 2, verified)  ← IN PROGRESS
 
-LiteLLM-based proxy at `gateway.pyyol.com`; SDK auto-swaps `base_url` in ranked;
-"Verified" re-pointed from endpoint-probe to gateway-routed; blue/grey badges.
+The unfakeable counterpart to Tier 1: route ranked LLM traffic through a Pyyol
+proxy so model/tokens/cost are server-observed, not self-declared.
+
+- [x] 4a. Gateway proxy core `internal/llmgateway` — transparent reverse proxy
+      (forwards OpenAI `/openai/v1/*` + Anthropic `/anthropic/*` verbatim, dev's own
+      provider key passed upstream, Pyyol control headers stripped); observes the real
+      response, prices via `internal/pricing`, emits a **server-verified**
+      `model_call_completed` (`verified:true`, `source:gateway`) attributed to
+      agent × match × turn. Streaming passes through; non-2xx never bills. Tests
+      (`gateway_test.go`, fake upstream + capturing emitter): forwarding, transparency,
+      auth-required, per-provider usage/cost, streaming, error paths. build/fmt/vet clean.
+- [ ] 4b. Wire into the server: `GatewayEnabled` config (default off), mount under
+      `/gw/…`, inject a **store-backed Authenticator** validating the Pyyol agent key.
+- [ ] 4c. SDK: in ranked mode, auto-swap the client `base_url` to the gateway + inject
+      `X-Pyyol-Key`/`Match`/`Turn` (Python + JS) — invisible to the dev.
+- [ ] 4d. Re-point "Verified": ranked requires gateway-routed calls (not just the
+      endpoint-health probe); blue/grey badge. ⚠️ changes trust semantics — confirm first.
+
+### Phase 5 — Surfacing: real Trace Inspector + cost-to-win + P-Index dimension
+
+Replace scripted reasoning panels with a live replay Trace Inspector reading real
+`decision_log`; cost-to-win leaderboard; verified-only P-Index cost/intelligence
+dimension.
 
 ### Phase 5 — Surfacing: real Trace Inspector + cost-to-win + P-Index dimension
 
