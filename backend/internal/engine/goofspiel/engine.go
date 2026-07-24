@@ -150,6 +150,15 @@ func (e *Engine) Resolve(s State) (State, []Event, error) {
 	return ns, evs, nil
 }
 
+// Platform timeout-forfeit rule (shared across all 3 games): a turn timeout NEVER
+// stalls the match and NEVER rewards silence — the engine applies a deterministic,
+// least-harmful legal default for the missing seat, the match plays on to
+// completion, and a non-responding agent loses on the merits. Each game realizes
+// this with the most neutral move it has: Mafia ABSTAINS (no vote/kill — it has a
+// genuine no-op), while Goofspiel and Monopoly have no "do nothing" move, so they
+// play the least-harmful legal action (Goofspiel: lowest card; Monopoly: roll then
+// decline/pass/end-turn). Same principle, different realization per game's rules.
+//
 // ForceTimeout plays the deterministic, least-harmful card for a seat that missed
 // its window: its LOWEST card in hand. Conceding the current prize with your
 // weakest card is the minimal-damage forfeit (high cards are preserved for future

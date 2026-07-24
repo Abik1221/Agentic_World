@@ -14,8 +14,11 @@ package autoplay
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/agent-arena/arena/internal/httpx"
 )
 
 // Mode selects which arena an available agent auto-plays in.
@@ -24,6 +27,15 @@ type Mode string
 const (
 	ModeSandbox Mode = "sandbox" // free practice vs house bots — no stakes
 	ModeRanked  Mode = "ranked"  // real matchmaking with escrowed stakes
+)
+
+// Status codes describe what the reconciler last did for an agent, so a developer
+// can see WHY auto-play is or isn't playing instead of it silently going quiet.
+const (
+	StatusPlaying   = "playing"   // in a match / queued / a sandbox game is running
+	StatusSearching = "searching" // ranked: enqueued, waiting for an opponent
+	StatusPaused    = "paused"    // a schedule or owner stop-condition is gating play (expected)
+	StatusBlocked   = "blocked"   // can't play right now (offline, unaffordable, uncertified, wrong game)
 )
 
 // Setting is a single agent's auto-play configuration (one row per agent). The
@@ -48,6 +60,13 @@ type Setting struct {
 	DailyTokenBudget int64 `json:"daily_token_budget,omitempty"` // stop when today's LLM token spend hits this
 	TakeProfitCoins  int64 `json:"take_profit_coins,omitempty"`  // stop for the day once net coins today ≥ +this
 	DailyLossStop    int64 `json:"daily_loss_stop,omitempty"`    // stop for the day once net coins today ≤ −this
+
+	// Last observed status (read-only; set by the reconciler, never by the client).
+	// Lets `pyyol autoplay status` / the dashboard explain why play is or isn't
+	// happening — the whole point of this being visible rather than silent.
+	LastStatus       string     `json:"last_status,omitempty"`
+	LastStatusReason string     `json:"last_status_reason,omitempty"`
+	LastStatusAt     *time.Time `json:"last_status_at,omitempty"`
 }
 
 // DailyStats is an agent's activity SO FAR TODAY (UTC), read each tick to evaluate
@@ -104,6 +123,10 @@ type Repo interface {
 	ListEnabled(ctx context.Context) ([]Setting, error)
 	Get(ctx context.Context, agentPublicID string) (Setting, bool, error)
 	Set(ctx context.Context, s Setting) error
+	// SetStatus records the reconciler's last observed status + reason for an agent
+	// (timestamped server-side). Separate from Set so a status update never disturbs
+	// the owner's configuration, and vice-versa.
+	SetStatus(ctx context.Context, agentPublicID, status, reason string) error
 }
 
 // RankedQueue is the slice of matchmaking this service needs. Enqueue reuses the
@@ -188,56 +211,99 @@ func (s *Service) Tick(ctx context.Context) {
 				st = got
 			}
 		}
-		if ok, reason := shouldPlay(set, st, s.now().UTC().Hour()); !ok {
-			s.log.Debug("autoplay: paused", "agent", set.AgentPublicID, "reason", reason)
-			continue
-		}
-		switch set.Mode {
-		case ModeRanked:
-			s.tickRanked(ctx, set)
-		case ModeSandbox:
-			s.tickSandbox(ctx, set)
-		default:
-			s.log.Warn("autoplay: unknown mode", "agent", set.AgentPublicID, "mode", set.Mode)
-		}
+		status, reason := s.evaluate(ctx, set, st)
+		s.recordStatus(ctx, set, status, reason)
 	}
 }
 
-func (s *Service) tickRanked(ctx context.Context, set Setting) {
+// evaluate decides what the agent's auto-play status is this tick (and why),
+// performing the actual enqueue/start as a side effect. Returning ("","") means
+// "nothing to record" (a dependency isn't wired, or a transient read blip we don't
+// want to overwrite a good status with).
+func (s *Service) evaluate(ctx context.Context, set Setting, st DailyStats) (status, reason string) {
+	// Schedule + owner stop-conditions gate BOTH modes — a "paused" state the owner
+	// chose (active-hours window, daily cap, take-profit, loss-stop), not a failure.
+	if ok, why := shouldPlay(set, st, s.now().UTC().Hour()); !ok {
+		s.log.Debug("autoplay: paused", "agent", set.AgentPublicID, "reason", why)
+		return StatusPaused, why
+	}
+	switch set.Mode {
+	case ModeRanked:
+		return s.tickRanked(ctx, set)
+	case ModeSandbox:
+		return s.tickSandbox(ctx, set)
+	default:
+		s.log.Warn("autoplay: unknown mode", "agent", set.AgentPublicID, "mode", set.Mode)
+		return StatusBlocked, "unknown mode: " + string(set.Mode)
+	}
+}
+
+func (s *Service) tickRanked(ctx context.Context, set Setting) (status, reason string) {
 	if s.ranked == nil {
-		return
+		return "", ""
 	}
 	queued, err := s.ranked.Queued(ctx, set.AgentPublicID)
 	if err != nil {
 		s.log.Warn("autoplay: queue status failed", "agent", set.AgentPublicID, "err", err)
-		return
+		return "", "" // transient — don't clobber the last good status
 	}
 	if queued {
-		return // already waiting or in a match — nothing to do this tick
+		return StatusPlaying, "in a ranked match or waiting in the queue"
 	}
-	// Enqueue's own gates enforce money safety; a rejection (broke / capped /
-	// cooling down) is expected and simply skipped until the next tick.
+	// Enqueue's own gates enforce money safety; a rejection (offline / broke / capped /
+	// wrong game / cooling down) is expected and simply skipped until the next tick —
+	// but now we surface WHY, so the developer isn't left guessing.
 	if err := s.ranked.Enqueue(ctx, set.AgentPublicID, set.OwnerPublicID, set.Bid); err != nil {
 		s.log.Debug("autoplay: ranked enqueue skipped", "agent", set.AgentPublicID, "err", err)
+		return StatusBlocked, reasonFromErr(err)
 	}
+	return StatusSearching, "entered the ranked queue"
 }
 
-func (s *Service) tickSandbox(ctx context.Context, set Setting) {
+func (s *Service) tickSandbox(ctx context.Context, set Setting) (status, reason string) {
 	if s.sandbox == nil {
-		return
+		return "", ""
 	}
 	n, err := s.sandbox.ActiveCount(ctx, set.AgentPublicID)
 	if err != nil {
 		s.log.Warn("autoplay: sandbox active count failed", "agent", set.AgentPublicID, "err", err)
-		return
+		return "", "" // transient — don't clobber the last good status
 	}
 	if n >= s.cfg.MaxSandboxConcurrent {
-		return // already at the practice-match ceiling for this agent
+		return StatusPlaying, "practice match running"
 	}
 	game := s.nextGame(set)
 	if err := s.sandbox.StartSandbox(ctx, game, set.AgentPublicID, set.OwnerPublicID); err != nil {
 		s.log.Debug("autoplay: sandbox start skipped", "agent", set.AgentPublicID, "game", game, "err", err)
+		return StatusBlocked, reasonFromErr(err)
 	}
+	return StatusPlaying, "started practice: " + game
+}
+
+// recordStatus persists the tick's status only when it CHANGED, so a steadily
+// playing (or steadily paused) agent incurs no write churn — only transitions hit
+// the DB. An empty status means "nothing to record" and is ignored.
+func (s *Service) recordStatus(ctx context.Context, set Setting, status, reason string) {
+	if status == "" {
+		return
+	}
+	if status == set.LastStatus && reason == set.LastStatusReason {
+		return
+	}
+	if err := s.repo.SetStatus(ctx, set.AgentPublicID, status, reason); err != nil {
+		s.log.Warn("autoplay: status write failed", "agent", set.AgentPublicID, "err", err)
+	}
+}
+
+// reasonFromErr turns a gate rejection into a developer-facing reason, preferring
+// the friendly message on an APIError (e.g. "This agent is not currently reachable…")
+// over the raw "code: message" form.
+func reasonFromErr(err error) string {
+	var apiErr *httpx.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Message
+	}
+	return err.Error()
 }
 
 // nextGame round-robins across a setting's games (or DefaultGame when unset).

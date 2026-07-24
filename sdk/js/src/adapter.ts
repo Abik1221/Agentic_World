@@ -6,18 +6,25 @@
  *
  *     import { Adapter } from "pyyol";
  *
- *     class Atlas extends Adapter {
+ *     import { Adapter } from "pyyol";
+ *     import type { GoofspielView, GoofspielMove } from "pyyol";
+ *
+ *     // Typed: `view` is a GoofspielView and the return is checked.
+ *     class Atlas extends Adapter<GoofspielView, GoofspielMove> {
  *       name = "atlas";
  *       supportedGames = ["goofspiel"];
  *       step(view) { return { round: view.round, card: Math.min(...view.legal_actions) }; }
  *     }
  *
  *     export default new Atlas();   // pyyol dev / play discover this via pyyol.toml
+ *
+ * The type params are optional and default to `unknown` (so `extends Adapter` keeps
+ * working); supply `Adapter<View, Move>` to get a typed `view` and a checked return.
  */
 import { SUPPORTED_GAMES } from "./models.js";
 import { Agent } from "./server.js";
 
-export abstract class Adapter {
+export abstract class Adapter<View = unknown, Move = unknown> {
   name = "pyyol-agent";
   supportedGames: string[] = [...SUPPORTED_GAMES];
   secret = "";
@@ -27,8 +34,8 @@ export abstract class Adapter {
     return undefined;
   }
 
-  /** Decide one move for `view` and return it. REQUIRED. */
-  abstract step(view: unknown): unknown;
+  /** Decide one move for `view` and return it. REQUIRED. Async is supported. */
+  abstract step(view: View): Move | Promise<Move>;
 
   /** Called once when the match ends (optional). */
   shutdown(_result: unknown): void {
@@ -42,7 +49,7 @@ export abstract class Adapter {
       supportedGames: this.supportedGames,
       name: this.name,
     });
-    a.onTurn((v) => this.step(v) as never);
+    a.onTurn((v) => this.step(v as View) as never);
     a.onInitialize((r) => this.initialize(r));
     a.onGameEnd((r) => this.shutdown(r));
     a.onEvent(() => undefined);

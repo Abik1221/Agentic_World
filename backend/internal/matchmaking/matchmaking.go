@@ -19,6 +19,13 @@ import (
 // ErrNotQueued is returned by Status/Cancel when the agent has no queue entry.
 var ErrNotQueued = httpx.NewError(http.StatusNotFound, "not_queued", "This agent is not in the matchmaking queue.")
 
+// ErrAgentOffline is returned by Enqueue when the reachability gate is wired and the
+// agent is neither holding a live connection nor exposing a verified, resolvable
+// endpoint — so a match would only forfeit-and-bleed its stake. Callers surface it as
+// "connect your agent first"; the auto-play reconciler simply skips and retries the
+// next tick, so the agent resumes automatically once it reconnects.
+var ErrAgentOffline = httpx.NewError(http.StatusConflict, "agent_offline", "This agent is not currently reachable (no live connection and no verified endpoint). Connect it (pyyol run) or fix its endpoint before entering ranked.")
+
 // Status values for a queue entry.
 const (
 	StatusWaiting = "waiting"
@@ -107,9 +114,11 @@ type Service struct {
 	log    *slog.Logger
 	m      *metrics
 	// elig gates ranked entry (certification); afford preflights stake
-	// affordability. Both optional (nil = skip), injected via their setters.
+	// affordability; live rejects an unreachable agent. All optional (nil = skip),
+	// injected via their setters.
 	elig   Eligibility
 	afford Affordability
+	live   Liveness
 }
 
 // Eligibility gates who may enter the ranked queue — e.g. the certification gate
@@ -128,11 +137,27 @@ type Affordability interface {
 	CheckJoin(ctx context.Context, agentPublicID string, bid int64) error
 }
 
+// Liveness rejects entry for an agent that isn't reachable RIGHT NOW — one that
+// holds neither a live connection nor a verified, resolvable hosted endpoint.
+// Without it, an offline-but-certified agent (crashed worker, dead endpoint) is
+// enqueued and matched, then forfeits every move via the sweeper's ForceTimeout and
+// loses its escrowed stake each match — silently, and repeatedly under auto-play.
+// Enforcing reachability here makes it fail fast (manual) or be skipped-and-retried
+// (auto-play) instead of bleeding coins. Satisfied by an adapter over the agent
+// gateway (live socket) + manifest resolver (verified endpoint). Injected via
+// SetLiveness so New stays unchanged; nil = skip (backward compatible).
+type Liveness interface {
+	RequireReachable(ctx context.Context, agentPublicID string) error
+}
+
 // SetEligibility installs the ranked-entry gate (call once during wiring).
 func (s *Service) SetEligibility(e Eligibility) { s.elig = e }
 
 // SetAffordability installs the stake-affordability preflight (call once during wiring).
 func (s *Service) SetAffordability(a Affordability) { s.afford = a }
+
+// SetLiveness installs the reachability gate (call once during wiring).
+func (s *Service) SetLiveness(l Liveness) { s.live = l }
 
 // clock is the minimal time port (matches platform.Clock structurally).
 type clock interface{ Now() time.Time }
@@ -163,6 +188,16 @@ func (s *Service) Enqueue(ctx context.Context, agentPublicID, ownerPublicID stri
 	// never escrow (the old "broke agent stuck waiting" foot-gun).
 	if s.afford != nil {
 		if err := s.afford.CheckJoin(ctx, agentPublicID, bid); err != nil {
+			return Entry{}, err
+		}
+	}
+	// Reachability gate: refuse to queue an agent that can't actually play right now
+	// (no live connection, no verified endpoint). Without this an offline agent gets
+	// matched and forfeits every move, bleeding its stake each match — the whole point
+	// of ranked auto-play going wrong. Fails fast for a manual caller; the auto-play
+	// reconciler swallows this and retries next tick, so the agent resumes on reconnect.
+	if s.live != nil {
+		if err := s.live.RequireReachable(ctx, agentPublicID); err != nil {
 			return Entry{}, err
 		}
 	}

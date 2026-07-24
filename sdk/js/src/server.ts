@@ -133,8 +133,15 @@ export class Agent {
     try {
       const move = await handler(parseView(data));
       return { status: 200, body: (move as Record<string, unknown>) ?? {} };
-    } catch {
-      return { status: 500, body: { error: "handler_error" } };
+    } catch (e) {
+      // Do NOT swallow: a crashing step() is the #1 "why doesn't my agent work"
+      // trap. Log the real error + stack (so `pyyol dev` shows it) and return the
+      // message so the runtime can surface it in the feed. The engine still applies
+      // its deterministic fallback for this turn, so the match isn't wedged.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`${game} step() threw: ${msg}`);
+      if (e instanceof Error && e.stack) console.error(e.stack);
+      return { status: 500, body: { error: "handler_error", message: msg } };
     }
   }
 

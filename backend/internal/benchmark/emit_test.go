@@ -168,3 +168,123 @@ func TestEmit_DisabledEmitterNoPanic(t *testing.T) {
 	Emit(em, MatchSummary{Game: "goofspiel", MatchID: "m", Seats: []SeatSummary{{Seat: 0}}}, "ranked")
 	Emit(nil, MatchSummary{}, "ranked")
 }
+
+// captureEmitter records emitted events synchronously (no ingest server / flush
+// timing), for asserting the cost + model_call_completed behavior deterministically.
+type captureEmitter struct{ events []telemetry.Event }
+
+func (c *captureEmitter) Enabled() bool               { return true }
+func (c *captureEmitter) EmitEvent(e telemetry.Event) { c.events = append(c.events, e) }
+func (c *captureEmitter) byType(t string) []telemetry.Event {
+	var out []telemetry.Event
+	for _, e := range c.events {
+		if e.EventType == t {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+const eps = 1e-9
+
+func TestRecord_AccumulatesCostFromUsage(t *testing.T) {
+	r := NewRecorder("goofspiel", "m1")
+	r.SetAgentMeta(0, "ag0", AgentMeta{Provider: "openai", Model: "gpt-4o"})
+	// No per-move model → priced with the seat's manifest model (gpt-4o).
+	r.Record(Decision{Seat: 0, AgentID: "ag0", Outcome: OutcomeOK, Round: 1,
+		Usage: &TokenUsage{PromptTokens: 1000, CompletionTokens: 500}})
+	s := r.Summary().Seats[0]
+	want := (1000*2.50 + 500*10.00) / 1_000_000
+	if abs(s.EstimatedCost-want) > eps {
+		t.Errorf("seat cost = %v, want %v", s.EstimatedCost, want)
+	}
+	if s.PricingVersion == "" {
+		t.Error("pricing_version must be stamped when usage is present")
+	}
+}
+
+func TestEmit_ModelCallEventsWithCost(t *testing.T) {
+	r := NewRecorder("goofspiel", "m7")
+	r.SetAgentMeta(0, "ag0", AgentMeta{Provider: "openai", Model: "gpt-4o"})
+	r.Record(Decision{Seat: 0, AgentID: "ag0", Outcome: OutcomeOK, Round: 1,
+		Usage: &TokenUsage{PromptTokens: 1000, CompletionTokens: 500}}) // seat model gpt-4o
+	r.Record(Decision{Seat: 0, AgentID: "ag0", Outcome: OutcomeOK, Round: 2,
+		Usage: &TokenUsage{PromptTokens: 100, CompletionTokens: 10, Model: "claude-sonnet-4-5", Provider: "anthropic"}})
+
+	cap := &captureEmitter{}
+	Emit(cap, r.Summary(), "ranked")
+
+	// benchmark_recorded carries seat cost + pricing_version.
+	bench := cap.byType(EventBenchmarkRecorded)
+	if len(bench) != 1 {
+		t.Fatalf("want 1 benchmark event, got %d", len(bench))
+	}
+	if bench[0].EstimatedCost <= 0 {
+		t.Errorf("benchmark estimated_cost = %v, want > 0", bench[0].EstimatedCost)
+	}
+	if bench[0].PricingVersion == "" {
+		t.Error("benchmark event missing structural pricing_version")
+	}
+	if bench[0].MeterSource != "sdk" {
+		t.Errorf("benchmark meter_source = %q, want sdk", bench[0].MeterSource)
+	}
+
+	// One model_call_completed per decision with usage, priced per-move.
+	calls := cap.byType(EventModelCallCompleted)
+	if len(calls) != 2 {
+		t.Fatalf("want 2 model_call_completed events, got %d", len(calls))
+	}
+	byModel := map[string]telemetry.Event{}
+	for _, e := range calls {
+		if e.TraceID != telemetry.MatchTraceID("m7") || e.RunID != "m7" || e.SessionID != "goofspiel" {
+			t.Errorf("model_call correlation wrong: %+v", e)
+		}
+		if e.Priority != telemetry.PriorityHigh {
+			t.Errorf("model_call must be high-priority (never sampled), got %v", e.Priority)
+		}
+		if e.MeterSource != "sdk" || e.PricingVersion == "" || e.Currency != "USD" {
+			t.Errorf("structural economics missing: meter=%q pv=%q cur=%q", e.MeterSource, e.PricingVersion, e.Currency)
+		}
+		byModel[e.Model] = e
+	}
+
+	gpt := byModel["gpt-4o"]
+	if wantGpt := (1000*2.50 + 500*10.00) / 1_000_000; abs(gpt.EstimatedCost-wantGpt) > eps {
+		t.Errorf("gpt-4o cost = %v, want %v", gpt.EstimatedCost, wantGpt)
+	}
+	if gpt.Provider != "openai" {
+		t.Errorf("gpt-4o provider = %q, want openai (from seat)", gpt.Provider)
+	}
+	claude := byModel["claude-sonnet-4-5"]
+	if wantClaude := (100*3.00 + 10*15.00) / 1_000_000; abs(claude.EstimatedCost-wantClaude) > eps {
+		t.Errorf("claude cost = %v, want %v", claude.EstimatedCost, wantClaude)
+	}
+	if claude.Provider != "anthropic" {
+		t.Errorf("claude provider = %q, want anthropic (per-move override)", claude.Provider)
+	}
+	if rd, _ := claude.PayloadJSON["round"].(int); rd != 2 {
+		t.Errorf("claude round = %v, want 2", claude.PayloadJSON["round"])
+	}
+}
+
+func TestEmit_NoModelCallWhenNoUsage(t *testing.T) {
+	r := NewRecorder("goofspiel", "m8")
+	r.SetAgentMeta(0, "ag0", AgentMeta{Model: "gpt-4o"})
+	r.Record(Decision{Seat: 0, AgentID: "ag0", Outcome: OutcomeOK, Round: 1}) // no usage
+	cap := &captureEmitter{}
+	Emit(cap, r.Summary(), "ranked")
+
+	if n := len(cap.byType(EventModelCallCompleted)); n != 0 {
+		t.Errorf("want 0 model_call events without usage, got %d", n)
+	}
+	if n := len(cap.byType(EventBenchmarkRecorded)); n != 1 {
+		t.Errorf("want 1 benchmark event, got %d", n)
+	}
+}
+
+func abs(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}

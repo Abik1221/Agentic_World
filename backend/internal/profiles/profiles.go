@@ -85,6 +85,37 @@ type Badge struct {
 	AwardedAt time.Time `json:"awarded_at"`
 }
 
+// Economics is the agent's lifetime LLM cost-efficiency, shown on the profile:
+// how many games it has played, how many it won, what it cost (overall + per game),
+// and the headline cost-to-win ratio. Costs are USD estimates from the versioned
+// pricing table (see internal/pricing); the same numbers are traced structurally to
+// Pyyol Lens, so this is a display projection, not a separate source of truth.
+type Economics struct {
+	Games         int        `json:"games"`
+	Wins          int        `json:"wins"`
+	TotalCostUSD  float64    `json:"total_cost_usd"`   // lifetime, all games
+	CostPerWinUSD float64    `json:"cost_per_win_usd"` // 0 when no wins yet
+	PerGame       []GameCost `json:"per_game,omitempty"`
+}
+
+// GameCost is the per-game breakdown of an agent's economics.
+type GameCost struct {
+	Game          string  `json:"game"`
+	Games         int     `json:"games"`
+	Wins          int     `json:"wins"`
+	TotalCostUSD  float64 `json:"total_cost_usd"`
+	CostPerWinUSD float64 `json:"cost_per_win_usd"`
+}
+
+// CostPerWin is the headline efficiency metric: USD spent per win. Zero wins yields
+// 0 (rather than +Inf) so the profile shows a clean "—" until the first win.
+func CostPerWin(totalCostUSD float64, wins int) float64 {
+	if wins <= 0 {
+		return 0
+	}
+	return totalCostUSD / float64(wins)
+}
+
 // StatsDoc is the agent-scoped /v1/agent/stats response.
 type StatsDoc struct {
 	Agent  string        `json:"agent"`
@@ -103,6 +134,7 @@ type Profile struct {
 	Manifest      *ManifestCard `json:"manifest,omitempty"`       // certification + declared capabilities
 	SeasonHistory []SeasonElo   `json:"season_history,omitempty"` // ELO progression across seasons
 	Badges        []Badge       `json:"badges,omitempty"`         // earned achievements (reputation)
+	Economics     *Economics    `json:"economics,omitempty"`      // lifetime cost-to-win + game count
 }
 
 // AgentStats returns the calling agent's own stats + recent matches.
@@ -159,7 +191,31 @@ func (s *Service) Profile(ctx context.Context, slug string) (Profile, error) {
 	}
 	p.Badges = badges
 
+	perGame, err := s.repo.Economics(ctx, a.PublicID)
+	if err != nil {
+		return Profile{}, err
+	}
+	p.Economics = foldEconomics(perGame)
+
 	return p, nil
+}
+
+// foldEconomics sums per-game rows into lifetime totals + cost-to-win, computing the
+// ratio per game and overall via the shared CostPerWin helper.
+func foldEconomics(perGame []GameCost) *Economics {
+	if len(perGame) == 0 {
+		return nil
+	}
+	e := &Economics{PerGame: make([]GameCost, 0, len(perGame))}
+	for _, g := range perGame {
+		g.CostPerWinUSD = CostPerWin(g.TotalCostUSD, g.Wins)
+		e.Games += g.Games
+		e.Wins += g.Wins
+		e.TotalCostUSD += g.TotalCostUSD
+		e.PerGame = append(e.PerGame, g)
+	}
+	e.CostPerWinUSD = CostPerWin(e.TotalCostUSD, e.Wins)
+	return e
 }
 
 func (s *Service) recent(ctx context.Context, agentPublicID string, season int) ([]RecentMatch, error) {

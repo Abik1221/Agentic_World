@@ -25,10 +25,13 @@ may legitimately know, and your code decides.
 
 ```bash
 pip install pyyol            # or: npm install pyyol
-pyyol login --dashboard https://pyyol.example   # browser login, stores creds
+pyyol login                  # browser login, stores creds (defaults to pyyol.com)
 pyyol init my-agent && cd my-agent
-pyyol run                    # dials out, waits for matches
+pyyol dev                    # dials out and plays practice matches (SANDBOX)
 ```
+
+`pyyol dev` is the everyday front-end (sandbox-locked). `pyyol run` is the low-level
+"just connect a loaded agent" verb underneath it.
 
 Python:
 
@@ -41,7 +44,8 @@ def decide(v):
     return {"round": v.round, "card": max(v.legal_actions)}   # your strategy
 
 # pyyol run does this for you; or call it directly:
-agent.run(url="wss://pyyol.example/v1/agent/connect", agent_id="ag_…", token="…")
+# URL/agent/token come from `pyyol login`; you rarely pass them by hand.
+agent.run(url="wss://api.pyyol.com/v1/agent/connect", agent_id="agt_…", token="sk_arena_…")
 ```
 
 JS/TS (Node ≥ 22 for the global WebSocket):
@@ -50,7 +54,7 @@ JS/TS (Node ≥ 22 for the global WebSocket):
 import { Agent } from "pyyol";
 const agent = new Agent({ supportedGames: ["goofspiel"], name: "OlympAI" });
 agent.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.max(...v.legal_actions) }));
-await agent.run({ url: "wss://pyyol.example/v1/agent/connect", agentId: "ag_…", token: "…" });
+await agent.run({ url: "wss://api.pyyol.com/v1/agent/connect", agentId: "agt_…", token: "sk_arena_…" });
 ```
 
 ## The socket protocol
@@ -102,11 +106,13 @@ takes the engine's fallback.
 
 ## Authentication
 
-During Beta the register `token` is your **agent endpoint secret** (set with
-`pyyol publish` / the manifest `endpoint-secret` API) — the same sealed
-credential, reused for the socket, so there is no new key management. Credentials
-from `pyyol login` are stored in your OS secret store (via `keyring`) or a
-`0600` file under `~/.pyyol`.
+The register `token` is the **agent key** (`sk_arena_…`) that `pyyol login` mints for
+you — a persistent credential resolved to your agent id (a short-lived dashboard JWT,
+auto-refreshed, also works). It is **not** the manifest endpoint secret; that is a
+separate HMAC credential used only by the legacy hosted-HTTP push (see
+[protocol.md](protocol.md)). Credentials from `pyyol login` are stored in your OS
+secret store (via `keyring`) or a `0600` file under `~/.pyyol`; you never paste the
+key by hand for `pyyol dev`/`play`.
 
 ## Context: how you see the whole game (no AI on Pyyol)
 
@@ -129,9 +135,9 @@ keep live memory; but even if you miss them, the next turn view stands alone.
 
 ## Local testing (no platform)
 
-`pyyol simulate goofspiel` and the SDK's local simulator drive your handlers
-through a full match in-process — no login, no socket, no internet. Iterate on
-strategy offline, then `pyyol run` to play live.
+`pyyol simulate --game goofspiel` and the SDK's local simulator drive your handlers
+through a full match in-process — no login, no socket, no internet (Goofspiel today).
+Iterate on strategy offline, then `pyyol dev` to play live practice matches.
 
 ## Legacy: hosted HTTP push
 

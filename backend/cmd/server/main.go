@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,7 +31,9 @@ import (
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
+	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
+	"github.com/agent-arena/arena/internal/docs"
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/health"
@@ -365,6 +369,7 @@ func run() error {
 	// Badges (reputation) are awarded off the event bus, idempotently.
 	badgeSvc := badges.New(store.NewBadgesRepo(st.DB), log)
 	eventBus.On(events.TypeAgentCertified, badgeSvc.OnAgentCertified)
+	eventBus.On(events.TypeAgentGatewayVerified, badgeSvc.OnAgentGatewayVerified)
 	eventBus.On(events.TypeSeasonRolled, badgeSvc.OnSeasonRolled)
 	eventBus.On(events.TypeMatchFinished, badgeSvc.OnMatchFinished)
 	// Developer (P-Index) badges: rank thresholds + consistency off pindex.updated;
@@ -502,8 +507,9 @@ func run() error {
 			if seat.AgentID == "" || seat.Decisions == 0 {
 				continue
 			}
-			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID,
-				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS, seat.TotalTokens); err != nil {
+			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID, ms.Game,
+				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS, seat.TotalTokens,
+				seat.EstimatedCost, string(seat.Result)); err != nil {
 				return err // let the outbox retry
 			}
 		}
@@ -733,8 +739,11 @@ func run() error {
 	// with a specific error, instead of getting a misleading 202 and squatting a
 	// `waiting` slot forever for a pairing that CheckEligible would always reject —
 	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
-	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg})
+	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel)})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
+	// Reject an offline agent at enqueue so it never gets matched and forfeit-bleeds its
+	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
+	matchmakingSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
@@ -742,6 +751,10 @@ func run() error {
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
+	// Fail fast at enable time when an owner points ranked auto-play at an agent that
+	// doesn't declare the (Goofspiel-only) ranked game — instead of silently never
+	// playing. Other games use their lobbies / sandbox auto-play.
+	autoplayHandler.SetRankedGate(autoplayRankedGate{cert: manifestSvc, game: string(devplatform.GameGoofspiel)})
 
 	// Payments — fiat (card) top-ups via Stripe. This is OPTIONAL: Pyyol's on-ramp
 	// is a real USDC deposit (see the Solana deposit rail), so a card gateway is a
@@ -887,6 +900,20 @@ func run() error {
 	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
 	mafiaSvc.SetNotifier(store.NewNotifier(st.Redis))
 
+	// Docs-as-data: seed the modular Markdown docs (internal/docs/content) into the
+	// docs_pages table at the current version so the frontend serves versioned,
+	// structured docs from /v1/docs. Best-effort — a seed failure must not stop boot.
+	docsRepo := store.NewDocsRepo(st.DB)
+	if pages, derr := docs.Load(); derr != nil {
+		log.Warn("docs: failed to load embedded content", "err", derr)
+	} else if serr := docsRepo.Seed(ctx, docs.DocsVersion, pages); serr != nil {
+		log.Warn("docs: failed to seed docs_pages", "version", docs.DocsVersion, "err", serr)
+	} else {
+		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
+	}
+	docsHandler := docs.NewHandler(docsRepo)
+	docsAdminHandler := docs.NewAdminHandler(docsRepo, authn, cfg.AdminUserIDs)
+
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{
 		healthH.Register,
@@ -910,6 +937,8 @@ func run() error {
 		profilesHandler.Register,
 		devProfileHandler.Register,
 		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
+		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
+		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,
@@ -923,6 +952,33 @@ func run() error {
 	}
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
+	}
+	if cfg.LLMGatewayEnabled {
+		// Verified tier: observe ranked agents' real model/token/cost by proxying
+		// their LLM calls (/gw/*). Off by default; agent-key auth via idSvc.
+		// On the first observed call per agent, emit agent.gateway_verified → awards
+		// the "Verified" badge (dual-badge model). Deduped in-process to one event
+		// per agent per instance; the badge award is idempotent anyway.
+		var gwSeen sync.Map
+		gwVerified := func(ctx context.Context, agentID, matchID string, costUSD float64) {
+			// Accumulate per-match verified cost on EVERY observed call (unfakeable
+			// input for the P-Index cost-efficiency dimension + verified economics).
+			if err := pindexRepo.RecordVerifiedCost(context.Background(), matchID, agentID, costUSD); err != nil {
+				log.Warn("gateway: could not record verified cost", "agent", agentID, "match", matchID, "err", err)
+			}
+			// Award the "Verified" badge ONCE per agent (dedup in-process; idempotent
+			// award makes at-least-once safe anyway).
+			if _, seen := gwSeen.LoadOrStore(agentID, struct{}{}); seen {
+				return
+			}
+			payload, _ := json.Marshal(map[string]string{"agent_id": agentID})
+			if _, err := store.InsertEvent(context.Background(), st.DB, events.TypeAgentGatewayVerified, payload); err != nil {
+				gwSeen.Delete(agentID) // let a later call retry
+				log.Warn("gateway: could not emit agent.gateway_verified", "agent", agentID, "err", err)
+			}
+		}
+		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, log))
+		log.Info("Pyyol LLM Gateway mounted at /gw/*")
 	}
 	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)
 	srv := httpx.NewServer(cfg, router, log)
@@ -1036,13 +1092,86 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 type rankedEntryGate struct {
 	cert *manifest.Service
 	susp *platformcfg.Provider // may be nil (suspension list unavailable)
+	game string                // the only game the ranked queue matchmakes; "" ⇒ skip the game check
 }
 
 func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID string) error {
 	if g.susp != nil && g.susp.Get().IsSuspended(agentPublicID) {
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
 	}
-	return g.cert.RequireCertified(ctx, agentPublicID)
+	if err := g.cert.RequireCertified(ctx, agentPublicID); err != nil {
+		return err
+	}
+	// Ranked matchmaking runs one game (Goofspiel). Reject an agent whose manifest
+	// doesn't declare it, so a Mafia/Monopoly-only agent can't be enqueued into the
+	// Goofspiel queue and forfeit-bleed its stake. Certified ⇒ an active manifest
+	// exists, so !supported here means it genuinely lacks the game.
+	if g.game != "" {
+		supported, _, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			return errRankedGameUnsupported(g.game)
+		}
+	}
+	return nil
+}
+
+// errRankedGameUnsupported explains that ranked matchmaking is single-game today and
+// points the developer at the paths that DO work for other games.
+func errRankedGameUnsupported(game string) error {
+	return httpx.NewError(http.StatusConflict, "ranked_game_unsupported",
+		fmt.Sprintf("Ranked matchmaking currently runs %s only, and this agent's manifest does not declare %s. Mafia and Monopoly play through their game lobbies; use sandbox auto-play to practice them.", game, game))
+}
+
+// autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
+// ranked auto-play — today, that it declares the single ranked game. It checks only
+// the permanent game-support property (not the transient certified/reachable state,
+// which the enqueue gate enforces per match), and stays quiet when the agent has no
+// manifest yet (can't tell → don't block preconfiguration; enqueue still enforces).
+type autoplayRankedGate struct {
+	cert *manifest.Service
+	game string
+}
+
+func (g autoplayRankedGate) CheckRankedGame(ctx context.Context, agentPublicID string) error {
+	if g.game == "" {
+		return nil
+	}
+	supported, found, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
+	if err != nil {
+		return err
+	}
+	if found && !supported {
+		return errRankedGameUnsupported(g.game)
+	}
+	return nil
+}
+
+// rankedLivenessGate is the matchmaking.Liveness gate: an agent may enter the ranked
+// queue only if it is reachable RIGHT NOW — either holding a live gateway socket or
+// exposing a verified, resolvable hosted endpoint. This is the SAME reachability test
+// match.driver.seatFor uses to decide whether a seat is drivable, applied at enqueue
+// so an offline agent never gets matched (and never forfeit-bleeds its stake). Under
+// auto-play a rejection is swallowed and retried, so the agent resumes on reconnect.
+type rankedLivenessGate struct {
+	gw       interface{ Connected(agentID string) bool }
+	resolver interface {
+		PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
+	}
+}
+
+func (g rankedLivenessGate) RequireReachable(ctx context.Context, agentPublicID string) error {
+	if g.gw != nil && g.gw.Connected(agentPublicID) {
+		return nil // live socket
+	}
+	if g.resolver != nil {
+		if _, ok, err := g.resolver.PlayTarget(ctx, agentPublicID); err == nil && ok {
+			return nil // verified, resolvable hosted endpoint
+		}
+	}
+	return matchmaking.ErrAgentOffline
 }
 
 // finishHook fans the match-finalize signal out to the engagement workers. Both

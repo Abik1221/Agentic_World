@@ -53,6 +53,23 @@ func (r *AutoplayRepo) Set(ctx context.Context, s autoplay.Setting) error {
 	return nil
 }
 
+// SetStatus records the reconciler's last observed status + reason for an agent,
+// timestamped server-side. Touches only the status columns, so it never disturbs
+// the owner's configuration (and Set never disturbs the status).
+func (r *AutoplayRepo) SetStatus(ctx context.Context, agentPublicID, status, reason string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE agent_autoplay SET last_status = $2, last_status_reason = $3, last_status_at = now()
+		   WHERE agent_id = (SELECT id FROM agents WHERE public_id = $1)`,
+		agentPublicID, status, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("autoplay: unknown agent")
+	}
+	return nil
+}
+
 // Get returns the agent's setting and whether a row exists.
 func (r *AutoplayRepo) Get(ctx context.Context, agentPublicID string) (autoplay.Setting, bool, error) {
 	var s autoplay.Setting
@@ -60,12 +77,14 @@ func (r *AutoplayRepo) Get(ctx context.Context, agentPublicID string) (autoplay.
 	err := r.db.QueryRow(ctx,
 		`SELECT a.public_id, ap.owner_public_id, ap.enabled, ap.mode, ap.bid, ap.games,
 		        ap.active_from_utc, ap.active_until_utc, ap.daily_match_cap,
-		        ap.daily_token_budget, ap.take_profit_coins, ap.daily_loss_stop
+		        ap.daily_token_budget, ap.take_profit_coins, ap.daily_loss_stop,
+		        ap.last_status, ap.last_status_reason, ap.last_status_at
 		   FROM agent_autoplay ap JOIN agents a ON a.id = ap.agent_id
 		  WHERE a.public_id = $1`, agentPublicID).
 		Scan(&s.AgentPublicID, &s.OwnerPublicID, &s.Enabled, &mode, &s.Bid, &s.Games,
 			&s.ActiveFromUTC, &s.ActiveUntilUTC, &s.DailyMatchCap,
-			&s.DailyTokenBudget, &s.TakeProfitCoins, &s.DailyLossStop)
+			&s.DailyTokenBudget, &s.TakeProfitCoins, &s.DailyLossStop,
+			&s.LastStatus, &s.LastStatusReason, &s.LastStatusAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return autoplay.Setting{}, false, nil
 	}
@@ -82,7 +101,8 @@ func (r *AutoplayRepo) ListEnabled(ctx context.Context) ([]autoplay.Setting, err
 	rows, err := r.db.Query(ctx,
 		`SELECT a.public_id, ap.owner_public_id, ap.enabled, ap.mode, ap.bid, ap.games,
 		        ap.active_from_utc, ap.active_until_utc, ap.daily_match_cap,
-		        ap.daily_token_budget, ap.take_profit_coins, ap.daily_loss_stop
+		        ap.daily_token_budget, ap.take_profit_coins, ap.daily_loss_stop,
+		        ap.last_status, ap.last_status_reason, ap.last_status_at
 		   FROM agent_autoplay ap JOIN agents a ON a.id = ap.agent_id
 		  WHERE ap.enabled`)
 	if err != nil {
@@ -95,7 +115,8 @@ func (r *AutoplayRepo) ListEnabled(ctx context.Context) ([]autoplay.Setting, err
 		var mode string
 		if err := rows.Scan(&s.AgentPublicID, &s.OwnerPublicID, &s.Enabled, &mode, &s.Bid, &s.Games,
 			&s.ActiveFromUTC, &s.ActiveUntilUTC, &s.DailyMatchCap,
-			&s.DailyTokenBudget, &s.TakeProfitCoins, &s.DailyLossStop); err != nil {
+			&s.DailyTokenBudget, &s.TakeProfitCoins, &s.DailyLossStop,
+			&s.LastStatus, &s.LastStatusReason, &s.LastStatusAt); err != nil {
 			return nil, err
 		}
 		s.Mode = autoplay.Mode(mode)

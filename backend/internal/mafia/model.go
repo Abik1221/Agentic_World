@@ -118,6 +118,11 @@ type Repo interface {
 	LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mf.Event, error)
 	LiveMatches(ctx context.Context) ([]LiveMatch, error)
 	CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error
+	// ExpireStaleWaiting aborts up to limit waiting tables created at/before cutoff
+	// (tables that never gathered a full roster), returning how many were aborted. No
+	// stakes are escrowed until a table starts, so nothing is refunded — this just
+	// frees agents stuck in a lobby that can never fill. System-driven (no creator).
+	ExpireStaleWaiting(ctx context.Context, cutoff time.Time, limit int) (int, error)
 
 	// AgentSigningKey returns the agent's registered Ed25519 public key (base64),
 	// or "" if unregistered (then moves are unsigned/trusted, like Goofspiel).

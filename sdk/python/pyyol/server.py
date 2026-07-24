@@ -29,6 +29,8 @@ others are its siblings):
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
@@ -178,9 +180,17 @@ class Agent:
         view = parse_view(data)
         try:
             move = handler(view)
-        except Exception:  # a crashing handler must not take the server down
+            # Support `async def step`: async LLM clients are first-class, so an
+            # awaitable move is run to completion here (the runtime/serve loops are
+            # synchronous, so there's no already-running loop to clash with).
+            if inspect.isawaitable(move):
+                move = asyncio.run(move)
+        except Exception as e:  # a crashing handler must not take the server down
+            # Log the full traceback AND return the message so the runtime can surface
+            # it in the `pyyol dev` feed — a silently-swallowed crash is the #1
+            # "why doesn't my agent work" trap. The engine still applies a fallback.
             log.exception("turn handler raised for game %r", game)
-            return 500, {"error": "handler_error"}
+            return 500, {"error": "handler_error", "message": str(e)}
         return 200, move_to_dict(move)
 
     # --- shared handler invocation (used by both the HTTP path and the socket

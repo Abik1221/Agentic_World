@@ -451,6 +451,15 @@ func (e *Engine) finish(s State, winner string, prefix []Event) (State, []Event,
 	return s, events, nil
 }
 
+// Platform timeout-forfeit rule (shared across all 3 games): a turn timeout NEVER
+// stalls the match and NEVER rewards silence — the engine applies a deterministic
+// default for the missing seat(s), the match plays on to completion, and a
+// non-responding agent loses on the merits. Mafia is the one game with a genuine
+// no-op, so its default is a pure ABSTAIN: a timed-out seat casts no vote and takes
+// no night action (defaultActionFor → ActAbstain), so force-timeout eliminates
+// nobody and the server never invents a vote/kill. (Goofspiel/Monopoly, having no
+// "do nothing" move, use the least-harmful legal action instead — same principle.)
+//
 // ForceTimeout deterministically fills the CURRENT phase's missing actions using
 // seed-derived default targets, lets the engine resolve that phase, and returns
 // the progressed state plus the events produced. Repeated calls drive a whole

@@ -13,9 +13,10 @@ import (
 
 // Agent badge codes.
 const (
-	Certified      = "certified"       // earned an endpoint-verified manifest
-	SeasonChampion = "season_champion" // finished #1 in a completed season
-	FirstWin       = "first_win"       // won a first competitive match
+	Certified       = "certified"        // earned an endpoint-verified manifest
+	GatewayVerified = "gateway_verified" // routed LLM traffic through the Pyyol Gateway (verified tier)
+	SeasonChampion  = "season_champion"  // finished #1 in a completed season
+	FirstWin        = "first_win"        // won a first competitive match
 )
 
 // Developer (P-Index) badge codes — awarded to the OWNER, not an agent.
@@ -33,18 +34,19 @@ const (
 
 // Labels maps codes to human display names (for clients that want them).
 var Labels = map[string]string{
-	Certified:      "Certified Agent",
-	SeasonChampion: "Season Champion",
-	FirstWin:       "First Win",
-	DevTop100:      "Top 100",
-	DevTop10:       "Top 10",
-	DevTop1Pct:     "Top 1%",
-	DevChampion:    "Champion",
-	DevConsistency: "Consistency Master",
-	DevUnderdog:    "Underdog Winner",
-	DevStreak10:    "10 Win Streak",
-	DevWins50:      "50 Wins",
-	DevWins100:     "100 Wins",
+	Certified:       "Certified Agent",
+	GatewayVerified: "Verified",
+	SeasonChampion:  "Season Champion",
+	FirstWin:        "First Win",
+	DevTop100:       "Top 100",
+	DevTop10:        "Top 10",
+	DevTop1Pct:      "Top 1%",
+	DevChampion:     "Champion",
+	DevConsistency:  "Consistency Master",
+	DevUnderdog:     "Underdog Winner",
+	DevStreak10:     "10 Win Streak",
+	DevWins50:       "50 Wins",
+	DevWins100:      "100 Wins",
 }
 
 // Thresholds for developer badges (kept here, alongside the codes).
@@ -87,6 +89,21 @@ func (s *Service) OnAgentCertified(ctx context.Context, e events.Event) error {
 		return nil
 	}
 	return s.award(ctx, p.AgentID, Certified)
+}
+
+// OnAgentGatewayVerified awards the "Verified" badge the first time an agent's LLM
+// traffic is observed through the Pyyol Gateway. Idempotent (award PK guards repeats).
+func (s *Service) OnAgentGatewayVerified(ctx context.Context, e events.Event) error {
+	var p struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return err
+	}
+	if p.AgentID == "" {
+		return nil
+	}
+	return s.award(ctx, p.AgentID, GatewayVerified)
 }
 
 // OnSeasonRolled awards the champion badge to the season's winner (if any).

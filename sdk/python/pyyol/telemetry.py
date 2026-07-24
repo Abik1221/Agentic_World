@@ -141,6 +141,115 @@ def current_span() -> Span:
     return _current.get() or _NOOP_SPAN
 
 
+# --- Turn-local usage accumulator ---------------------------------------------
+# The auto-instrumentation (pyyol.instrument) and any manual log_model_call feed
+# real model/token/cost here during a turn. runtime._handle_turn reads it after the
+# handler returns and attaches `usage` to the outgoing move — so token+cost data
+# reaches the arena benchmark EVEN WHEN Lens is disabled. This is intentionally
+# decoupled from the Tracer's enabled flag.
+
+_current_usage: "contextvars.ContextVar[Optional[UsageAccumulator]]" = contextvars.ContextVar(
+    "pyyol_current_usage", default=None
+)
+
+
+class UsageAccumulator:
+    """Sums token usage + cost across every model call within a single turn."""
+
+    def __init__(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.reasoning_tokens = 0
+        self.cached_tokens = 0
+        self.estimated_cost = 0.0
+        self.calls = 0
+        # Turn context (for gateway attribution); set by turn_usage().
+        self.match_id = ""
+        self.turn = 0
+        # Ordered, de-duplicated list of models/providers seen this turn. A single
+        # turn usually uses one model, but chains/retries may use several.
+        self.models: List[str] = []
+        self.providers: List[str] = []
+
+    def add(
+        self,
+        *,
+        model: str = "",
+        provider: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        cached_tokens: int = 0,
+        estimated_cost: float = 0.0,
+    ) -> None:
+        self.prompt_tokens += max(0, int(prompt_tokens or 0))
+        self.completion_tokens += max(0, int(completion_tokens or 0))
+        self.reasoning_tokens += max(0, int(reasoning_tokens or 0))
+        self.cached_tokens += max(0, int(cached_tokens or 0))
+        self.estimated_cost += max(0.0, float(estimated_cost or 0.0))
+        self.calls += 1
+        if model and model not in self.models:
+            self.models.append(model)
+        if provider and provider not in self.providers:
+            self.providers.append(provider)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def empty(self) -> bool:
+        return self.calls == 0
+
+    def to_move_usage(self) -> Dict[str, Any]:
+        """The `usage` block attached to a move — matches the arena's TokenUsage
+        decode (prompt/completion/reasoning/total), plus SDK-side model/provider/cost
+        the Lens pipeline understands."""
+        usage: Dict[str, Any] = {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+        }
+        if self.reasoning_tokens:
+            usage["reasoning_tokens"] = self.reasoning_tokens
+        if self.cached_tokens:
+            usage["cached_tokens"] = self.cached_tokens
+        if self.estimated_cost:
+            usage["estimated_cost"] = round(self.estimated_cost, 8)
+        if self.models:
+            usage["model"] = self.models[0] if len(self.models) == 1 else self.models
+        if self.providers:
+            usage["provider"] = self.providers[0] if len(self.providers) == 1 else self.providers
+        return usage
+
+
+def current_usage() -> Optional[UsageAccumulator]:
+    """The accumulator for the turn in progress, or None outside a turn. The
+    instrumentation calls this to record real usage; it no-ops when None."""
+    return _current_usage.get()
+
+
+class turn_usage:
+    """Context manager installing a fresh UsageAccumulator for the turn. Always
+    active (independent of the Tracer), so usage is captured even with Lens off.
+    match_id/turn are carried so gateway routing can attribute a call to the match."""
+
+    def __init__(self, match_id: str = "", turn: int = 0) -> None:
+        self._match_id = match_id
+        self._turn = turn
+
+    def __enter__(self) -> UsageAccumulator:
+        self._acc = UsageAccumulator()
+        self._acc.match_id = self._match_id
+        self._acc.turn = self._turn
+        self._token = _current_usage.set(self._acc)
+        return self._acc
+
+    def __exit__(self, *exc: Any) -> None:
+        _current_usage.reset(self._token)
+        return None
+
+
 class _TurnSpanCtx:
     """Context manager that brackets a turn span (started → completed/failed) and
     installs it as the current span for the duration."""

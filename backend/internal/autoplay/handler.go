@@ -1,6 +1,7 @@
 package autoplay
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/auth"
@@ -8,17 +9,30 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// RankedGate validates, at enable time, that an agent may turn on ranked auto-play —
+// today, that it declares the single ranked game (Goofspiel). Optional; nil ⇒ skip
+// (the matchmaking enqueue gate still enforces this per match, so money is safe
+// either way — this just gives the owner immediate feedback instead of silent
+// never-playing). Satisfied by an adapter over manifest.Service.
+type RankedGate interface {
+	CheckRankedGame(ctx context.Context, agentPublicID string) error
+}
+
 // Handler exposes an agent's auto-play settings: GET to read, PUT to set. The
 // agent (and its owner) are read from the token, never the body — a dev can only
 // configure their own agent's availability.
 type Handler struct {
-	repo  Repo
-	authn *auth.Authenticator
+	repo   Repo
+	authn  *auth.Authenticator
+	ranked RankedGate // optional enable-time ranked-eligibility check
 }
 
 func NewHandler(repo Repo, authn *auth.Authenticator) *Handler {
 	return &Handler{repo: repo, authn: authn}
 }
+
+// SetRankedGate installs the enable-time ranked-eligibility check (call once at wiring).
+func (h *Handler) SetRankedGate(g RankedGate) { h.ranked = g }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
@@ -64,6 +78,15 @@ func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 	mode := Mode(in.Mode)
 	if mode != ModeRanked && mode != ModeSandbox {
 		mode = ModeSandbox // default to the free, no-stakes arena
+	}
+	// Reject enabling ranked auto-play for an agent that can't play the ranked game
+	// (Goofspiel-only today) — fail fast with a clear message rather than accepting
+	// the setting and then never staking a match.
+	if in.Enabled && mode == ModeRanked && h.ranked != nil {
+		if err := h.ranked.CheckRankedGame(r.Context(), p.AgentPublicID); err != nil {
+			httpx.Error(w, err)
+			return
+		}
 	}
 	clampHour := func(h int) int {
 		if h < 0 {

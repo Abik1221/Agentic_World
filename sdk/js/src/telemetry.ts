@@ -112,6 +112,106 @@ export function currentSpan(): Span {
   return storage.getStore() ?? NOOP_SPAN;
 }
 
+// --- Turn-local usage accumulator ---------------------------------------------
+// The auto-instrumentation (instrument()) and any manual logModelCall feed real
+// model/token/cost here during a turn. The runtime reads it after the handler
+// returns and attaches `usage` to the outgoing move — so token+cost data reaches
+// the arena benchmark EVEN WHEN Lens is disabled. Deliberately decoupled from the
+// Tracer's enabled flag.
+
+export interface MoveUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  reasoning_tokens?: number;
+  cached_tokens?: number;
+  estimated_cost?: number;
+  model?: string | string[];
+  provider?: string | string[];
+}
+
+export interface UsageAdd {
+  model?: string;
+  provider?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  reasoningTokens?: number;
+  cachedTokens?: number;
+  estimatedCost?: number;
+}
+
+/** Sums token usage + cost across every model call within a single turn. */
+export class UsageAccumulator {
+  promptTokens = 0;
+  completionTokens = 0;
+  reasoningTokens = 0;
+  cachedTokens = 0;
+  estimatedCost = 0;
+  calls = 0;
+  readonly models: string[] = [];
+  readonly providers: string[] = [];
+  // Turn context (for gateway attribution); set by runTurnUsage().
+  matchId = "";
+  turn = 0;
+
+  add(u: UsageAdd): void {
+    this.promptTokens += Math.max(0, Math.trunc(u.promptTokens ?? 0));
+    this.completionTokens += Math.max(0, Math.trunc(u.completionTokens ?? 0));
+    this.reasoningTokens += Math.max(0, Math.trunc(u.reasoningTokens ?? 0));
+    this.cachedTokens += Math.max(0, Math.trunc(u.cachedTokens ?? 0));
+    this.estimatedCost += Math.max(0, u.estimatedCost ?? 0);
+    this.calls += 1;
+    if (u.model && !this.models.includes(u.model)) this.models.push(u.model);
+    if (u.provider && !this.providers.includes(u.provider)) this.providers.push(u.provider);
+  }
+
+  get totalTokens(): number {
+    return this.promptTokens + this.completionTokens;
+  }
+
+  get empty(): boolean {
+    return this.calls === 0;
+  }
+
+  /** The `usage` block attached to a move — matches the arena's TokenUsage decode
+   *  (prompt/completion/reasoning/total) plus SDK-side model/provider/cost. */
+  toMoveUsage(): MoveUsage {
+    const usage: MoveUsage = {
+      prompt_tokens: this.promptTokens,
+      completion_tokens: this.completionTokens,
+      total_tokens: this.totalTokens,
+    };
+    if (this.reasoningTokens) usage.reasoning_tokens = this.reasoningTokens;
+    if (this.cachedTokens) usage.cached_tokens = this.cachedTokens;
+    if (this.estimatedCost) usage.estimated_cost = Math.round(this.estimatedCost * 1e8) / 1e8;
+    if (this.models.length) usage.model = this.models.length === 1 ? this.models[0] : this.models;
+    if (this.providers.length) usage.provider = this.providers.length === 1 ? this.providers[0] : this.providers;
+    return usage;
+  }
+}
+
+const usageStorage = new AsyncLocalStorage<UsageAccumulator>();
+
+/** The accumulator for the turn in progress, or undefined outside one. The
+ *  instrumentation calls this to record real usage; it no-ops when undefined. */
+export function currentUsage(): UsageAccumulator | undefined {
+  return usageStorage.getStore();
+}
+
+/** Run `fn` with a fresh usage accumulator installed as current (always active,
+ *  independent of the Tracer), returning both fn's result and the accumulator.
+ *  ctx.matchId/turn are carried so gateway routing can attribute a call to the match. */
+export async function runTurnUsage<T>(
+  fn: () => T | Promise<T>,
+  ctx: { matchId?: string; turn?: number } = {},
+): Promise<{ result: T; usage: UsageAccumulator }> {
+  const acc = new UsageAccumulator();
+  acc.matchId = ctx.matchId ?? "";
+  acc.turn = ctx.turn ?? 0;
+  const result = await usageStorage.run(acc, fn);
+  return { result, usage: acc };
+}
+
 export interface TracerOptions {
   endpoint?: string;
   apiKey?: string;

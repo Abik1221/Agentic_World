@@ -247,6 +247,15 @@ func (e *Engine) Step(s State, seat int, a Action, seed []byte) (State, []Event,
 	return ns, evs, nil
 }
 
+// Platform timeout-forfeit rule (shared across all 3 games): a turn timeout NEVER
+// stalls the match and NEVER rewards silence — the engine applies a deterministic
+// default for the missing seat, the match plays on to completion, and a
+// non-responding agent loses on the merits. Monopoly has no "do nothing" move (a
+// seat on turn must act), so the default is the least-harmful legal action for the
+// pending phase (roll / decline-to-buy / pass-auction / end-turn / reject-trade),
+// NOT a fabricated abstention. (Mafia, which has a genuine no-op, abstains instead —
+// same principle, different realization.)
+//
 // ForceTimeout submits a deterministic default action for whichever seat the
 // engine is waiting on, so a missed decision still advances the game and replays
 // identically. It is the impure shell's deadline handler.

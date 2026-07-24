@@ -22,8 +22,13 @@ import (
 // Event types are past-tense facts. Add new ones here as producers emit them.
 const (
 	TypeAgentCertified = "agent.certified"
-	TypeMatchStarted   = "match.started"
-	TypeMatchFinished  = "match.finished"
+	// TypeAgentGatewayVerified is emitted the first time an agent's LLM traffic is
+	// observed flowing through the Pyyol Gateway (verified tier). It awards the
+	// "Verified" badge — a bonus signal alongside endpoint-probe certification, not a
+	// ranked gate (dual-badge model).
+	TypeAgentGatewayVerified = "agent.gateway_verified"
+	TypeMatchStarted         = "match.started"
+	TypeMatchFinished        = "match.finished"
 	// TypeMatchBenchmark carries the per-match, per-seat decision-quality summary
 	// (legal/illegal/timeout/fallback counts + latency). Emitted durably via the
 	// outbox so benchmark data survives crashes and is delivered at-least-once; the

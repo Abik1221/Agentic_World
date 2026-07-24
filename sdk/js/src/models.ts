@@ -112,6 +112,10 @@ export interface MonopolyMove {
 }
 export interface MafiaMove {
   action: string;
+  /** Seat to act on. Seat 0 is a real player, so for a night action
+   *  (kill/investigate/protect/profile) set an explicit seat — omit it (or use -1)
+   *  ONLY to mean "no target" (the engine then drops the untargeted action rather
+   *  than acting on seat 0). Votes/discussion treat a missing/≤0 target as no target. */
   target?: number;
   tone?: string;
   text?: string;

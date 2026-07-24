@@ -69,6 +69,31 @@ func TestOnAgentCertified_Awards(t *testing.T) {
 	}
 }
 
+func TestOnAgentGatewayVerified_Awards(t *testing.T) {
+	repo := newFakeRepo()
+	s := New(repo, quiet())
+	if err := s.OnAgentGatewayVerified(context.Background(), evt(events.TypeAgentGatewayVerified, map[string]string{"agent_id": "ag_2"})); err != nil {
+		t.Fatal(err)
+	}
+	if repo.awarded["ag_2|gateway_verified"] != 1 {
+		t.Fatal("gateway_verified badge not awarded")
+	}
+	// Idempotent: redelivery does not re-award.
+	if err := s.OnAgentGatewayVerified(context.Background(), evt(events.TypeAgentGatewayVerified, map[string]string{"agent_id": "ag_2"})); err != nil {
+		t.Fatal(err)
+	}
+	if repo.awarded["ag_2|gateway_verified"] != 1 {
+		t.Fatal("redelivery re-awarded")
+	}
+	// Empty agent id → no award.
+	if err := s.OnAgentGatewayVerified(context.Background(), evt(events.TypeAgentGatewayVerified, map[string]string{"agent_id": ""})); err != nil {
+		t.Fatal(err)
+	}
+	if repo.awarded["|gateway_verified"] != 0 {
+		t.Fatal("empty agent id must not award")
+	}
+}
+
 func TestOnSeasonRolled_AwardsChampion(t *testing.T) {
 	repo := newFakeRepo()
 	s := New(repo, quiet())

@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from .console import Console
-from .telemetry import Tracer
+from .telemetry import Tracer, turn_usage
 
 log = logging.getLogger("pyyol")
 
@@ -380,17 +380,29 @@ class RuntimeConnector:
         view = frame.get("payload") or {}
         self._turn_no += 1
         game = view.get("game", "")
+        # Per-turn index for telemetry attribution. Goofspiel has `round`, Mafia has
+        # `day`; Monopoly has neither numeric field, so fall back to the monotonic
+        # per-match turn counter — otherwise X-Pyyol-Turn was always 0 for 2/3 games.
+        turn_no = int(view.get("round") or view.get("day") or 0) or self._turn_no
         started = time.perf_counter()
-        # Bracket the developer's handler in a Lens span. Inside on_turn, the
-        # author can reach it via pyyol.current_span() to record model/tool calls.
+        # Bracket the developer's handler in a Lens span AND a turn-local usage
+        # accumulator. Inside on_turn the author can reach the span via
+        # pyyol.current_span(); if pyyol.instrument() is active, every LLM call is
+        # captured into the accumulator automatically. The accumulator is always on
+        # (independent of Lens) so usage rides the move to the arena regardless.
         with self._tracer.turn_span(
             match_id=view.get("match_id", ""),
             game=game,
-            round_no=int(view.get("round", 0) or 0),
+            round_no=turn_no,
             agent_id=self.agent_id,
-        ):
+        ), turn_usage(match_id=view.get("match_id", ""), turn=turn_no) as usage:
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
+        # Auto-attach captured model/token/cost to the move so the arena benchmark
+        # records real usage with no developer boilerplate. A dev-supplied `usage`
+        # (manual reporting) always wins — we never overwrite it.
+        if status == 200 and isinstance(move, dict) and not usage.empty and "usage" not in move:
+            move["usage"] = usage.to_move_usage()
         rid = frame.get("id", "")
         # Send the move FIRST, then log — a console flush / log-file write must never
         # sit on the move's latency path (the platform is waiting on this response).
@@ -399,10 +411,13 @@ class RuntimeConnector:
             send({"t": RESPONSE, "id": rid, "payload": move})
             self._emit("decision", f"turn {self._turn_no}: {_summarize_move(game, move)}", ms=ms)
         else:
-            # Signal an error so the platform applies its deterministic fallback.
-            send({"t": RESPONSE, "id": rid, "error": move.get("error", "handler_error")})
+            # Signal an error so the platform applies its deterministic fallback, and
+            # surface the REAL handler error in the feed (not just "handler error").
+            err = move.get("error", "handler_error")
+            detail = move.get("message") or err
+            send({"t": RESPONSE, "id": rid, "error": err})
             self._emit(
-                "error", f"turn {self._turn_no}: handler error → fallback", level=logging.WARNING
+                "error", f"turn {self._turn_no}: {detail} → fallback", level=logging.WARNING
             )
 
     @staticmethod

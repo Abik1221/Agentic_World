@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { asAgent } from "./adapter.js";
 import * as config from "./config.js";
 import * as creds from "./credentials.js";
+import { enableGateway } from "./instrument.js";
 import { deriveConnectUrl, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
@@ -26,6 +27,12 @@ import { SDK_VERSION } from "./version.js";
 
 const OK = "✓";
 const BAD = "✗";
+const WARN = "•";
+
+// N-player games use the group matchmaking queue; Goofspiel (1v1) uses the 2-player
+// queue. Same enqueue request shape, different endpoint.
+const GROUP_GAMES = new Set(["mafia", "monopoly"]);
+const queuePathFor = (game: string): string => (GROUP_GAMES.has(game) ? "/v1/group-queue" : "/v1/queue");
 
 // Public platform defaults. `pyyol login` with no flags hits the live platform;
 // self-hosted/local users override via PYYOL_API / PYYOL_DASHBOARD (or --api /
@@ -34,6 +41,10 @@ const BAD = "✗";
 // to the API host.
 const DEFAULT_API_BASE = (process.env.PYYOL_API || "").replace(/\/$/, "") || "https://api.pyyol.com";
 const DEFAULT_DASHBOARD = (process.env.PYYOL_DASHBOARD || "").replace(/\/$/, "") || "https://pyyol.com";
+// Verified-tier LLM gateway base (Phase 4). Ranked mode enables gateway routing so
+// pyyol.route(client) sends the agent's LLM calls through it for server-observed
+// (unfakeable) model/token/cost. Override with $PYYOL_GATEWAY.
+const DEFAULT_GATEWAY = (process.env.PYYOL_GATEWAY || "").replace(/\/$/, "") || "https://gateway.pyyol.com";
 
 // Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
 // connection credential (mirrors backend platform.PrefixKey).
@@ -344,7 +355,11 @@ class ${cls} extends Adapter {
   supportedGames = ["${arena}"];
 
   step(view) {
-    // Your strategy goes here (call any framework or LLM). Baseline below:
+    // Your strategy goes here (call any framework or LLM). Baseline below.
+    // Driving moves with an LLM? Capture the real model/tokens/cost for free:
+    //   import pyyol from "pyyol"; await pyyol.instrument();   // once, at the top
+    //   const client = pyyol.route(new OpenAI());  // in ranked, routes via the gateway
+    // then call \`client\` here. See docs -> "Verified LLM agents".
     const legal = view.legal_actions ?? [];
     ${arena === "goofspiel" ? "return { round: view.round, card: Math.min(...legal) };" : "return legal.length ? { action: legal[0] } : {};"}
   }
@@ -425,6 +440,20 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
       console.log("aborted — staying safe. (Use --yes in CI to skip the prompt.)");
       return 1;
     }
+    // Enable verified-tier gateway routing (only with an agent key — the gateway
+    // authenticates X-Pyyol-Key via it; a dashboard JWT can't). Then pyyol.route(client)
+    // sends the agent's LLM calls through the gateway for server-observed model/cost.
+    if (usingAgentKey && token) {
+      enableGateway(token, DEFAULT_GATEWAY);
+      console.log(`  ${OK} verified gateway routing on (${DEFAULT_GATEWAY}) — call pyyol.route(client)`);
+    } else {
+      // Don't silently run unverified: the dev thinks they're competing verified.
+      console.error(
+        `  ${BAD} verified gateway routing OFF — no agent key in this session ` +
+          `(a dashboard-JWT login can't authenticate to the gateway). Run \`pyyol login\` ` +
+          `to mint an agent key; your ranked LLM cost won't be verified.`,
+      );
+    }
   }
   if (agentId && !cfg.agent_id) config.setAgentId(agentId);
 
@@ -457,7 +486,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
   setTimeout(async () => {
     if (m === mode.RANKED) {
       const tier = str(a, "tier") || "low";
-      const [st, resp] = await apiPost(`${base}/v1/queue`, token, { game: arena, tier });
+      const [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
       if (st === 200 || st === 202) console.log(`  ${OK} queued for RANKED ${arena} (tier ${tier})`);
       else if (String(resp.code ?? "").includes("certified"))
         console.log(`  ${BAD} agent not certified for ranked — run \`pyyol publish\` first.`);
@@ -506,6 +535,100 @@ async function cmdArenas(a: Args): Promise<number> {
         `${(ar.ranked ? "yes" : "no").padEnd(8)}${ar.status}`,
     );
   }
+  return 0;
+}
+
+/** `pyyol wallet` — show the owner's coin balance + per-agent wallets, so a dev can
+ *  see why ranked was refused ("not enough coins") without leaving the CLI. Parity
+ *  with the Python CLI. Owner-scoped, so it uses the dashboard access token. */
+async function cmdWallet(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  const token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (!token) {
+    console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
+    return 2;
+  }
+  const [st, w] = await apiGet(`${base}/v1/user/wallet`, token);
+  if (st !== 200) {
+    console.error(`${BAD} could not fetch wallet (${st}): ${JSON.stringify(w)}`);
+    return 1;
+  }
+  if (bool(a, "json")) {
+    console.log(JSON.stringify(w, null, 2));
+    return 0;
+  }
+  const cents = Number(w.coin_cents ?? 1) || 1;
+  const usd = (coins: number) => `$${((coins * cents) / 100).toFixed(2)}`;
+  const avail = Number(w.available_balance ?? 0);
+  console.log("Treasury");
+  console.log(`  Available   ${avail.toLocaleString()} coins  (${usd(avail)})`);
+  if (w.locked_balance) console.log(`  Locked      ${Number(w.locked_balance).toLocaleString()} coins (in active matches)`);
+  if (w.lifetime_earnings) console.log(`  Earned      ${Number(w.lifetime_earnings).toLocaleString()} coins (lifetime)`);
+  const agents = w.agents ?? [];
+  if (agents.length) {
+    console.log("\nAgent wallets");
+    for (const ag of agents) {
+      const bal = Number(ag.balance ?? 0).toLocaleString();
+      const wd = Number(ag.withdrawable ?? 0).toLocaleString();
+      console.log(`  ${String(ag.name ?? ag.agent ?? "?").padEnd(20)} ${bal.padStart(10)} coins   withdrawable ${wd}`);
+    }
+  }
+  return 0;
+}
+
+/** `pyyol queue <game> [--tier low|mid|high | --bid N] [--list]` — enter ranked
+ *  matchmaking at a stake tier (parity with the Python CLI). `--list` shows the
+ *  admin-configured tiers. The game is a POSITIONAL argument. */
+async function cmdQueue(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  if (!base) {
+    console.error(`${BAD} no API url — pass --api or run \`pyyol login\`.`);
+    return 2;
+  }
+  const game = a.positionals[0] ?? "";
+  if (!game) {
+    console.error(`${BAD} usage: pyyol queue <game> [--tier low|mid|high | --bid N] [--list]`);
+    return 2;
+  }
+  if (bool(a, "list")) {
+    const [st, resp] = await apiGet(`${base}/v1/games/${game}/stakes`);
+    if (st !== 200) {
+      console.error(`${BAD} could not fetch tiers (${st})`);
+      return 1;
+    }
+    const tiers = resp.tiers ?? [];
+    if (!tiers.length) {
+      console.log(`no stake tiers configured for ${game} — use --bid <coins>`);
+      return 0;
+    }
+    console.log(`${game} stake tiers:`);
+    for (const t of tiers) console.log(`  ${String(t.key ?? "").padEnd(8)} ${String(Number(t.coins ?? 0)).padStart(8)} coins  ${t.label ?? ""}`);
+    return 0;
+  }
+  const token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (!token) {
+    console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
+    return 2;
+  }
+  const body: Record<string, unknown> = { game };
+  if (str(a, "tier")) body.tier = str(a, "tier");
+  else if (num(a, "bid", 0) > 0) body.bid = num(a, "bid", 0);
+  else {
+    console.error(`${BAD} choose a stake: --tier <low|mid|high> (see \`pyyol queue ${game} --list\`) or --bid <coins>`);
+    return 2;
+  }
+  const [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
+  if (st !== 200 && st !== 202) {
+    const code = String(resp.code ?? resp.error ?? "");
+    if (code.includes("certified")) console.error(`${BAD} agent not certified — run \`pyyol publish --manifest <file>\` first.`);
+    else if (code.includes("balance") || code.includes("insufficient")) console.error(`${BAD} not enough coins — fund your wallet (see \`pyyol wallet\`).`);
+    else console.error(`${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
+    return 1;
+  }
+  console.log(`  ${OK} queued for ${game}${body.tier ? ` (tier ${body.tier})` : ""} — keep your agent connected; it plays when matched.`);
+  if (resp.match_id) console.log(`  ${OK} matched → ${resp.match_id}\n      watch it:  pyyol watch ${resp.match_id}`);
   return 0;
 }
 
@@ -828,10 +951,44 @@ async function autoplaySet(
   return apiRequest("PUT", `${api.replace(/\/$/, "")}/v1/agent/autoplay`, token, { enabled, mode: m, bid, games });
 }
 
+/** GET the agent's auto-play setting + last observed status (mirrors Python
+ *  `_autoplay_get`). */
+async function autoplayGet(api: string, token: string): Promise<[number, any]> {
+  return apiGet(`${api.replace(/\/$/, "")}/v1/agent/autoplay`, token);
+}
+
+const AUTOPLAY_STATUS_LABEL: Record<string, [string, string]> = {
+  playing: [OK, "playing"],
+  searching: [OK, "searching for an opponent"],
+  paused: [WARN, "paused"],
+  blocked: [BAD, "not playing"],
+};
+
+/** Render `pyyol autoplay status` — is it on, and WHY it is or isn't playing, so a
+ *  quiet auto-play agent is never a mystery. */
+function printAutoplayStatus(body: any): void {
+  if (!body?.enabled) {
+    console.log(`${WARN} auto-play is OFF (turn it on with \`pyyol autoplay on\`)`);
+    return;
+  }
+  console.log(`${OK} auto-play is ON — mode=${body.mode || "sandbox"}`);
+  const status: string = body.last_status || "";
+  const reason: string = body.last_status_reason || "";
+  if (!status) {
+    console.log("  status: starting up — no activity recorded yet (check back in a moment)");
+    return;
+  }
+  const [marker, label] = AUTOPLAY_STATUS_LABEL[status] ?? [WARN, status];
+  console.log(`  ${marker} ${label}${reason ? ` — ${reason}` : ""}`);
+  if (body.last_status_at) console.log(`  as of ${body.last_status_at}`);
+  if (status === "blocked")
+    console.log("  fix the reason above (e.g. connect your agent with `pyyol run`), and it resumes automatically.");
+}
+
 async function cmdAutoplay(a: Args): Promise<number> {
   const state = a.positionals[0];
-  if (state !== "on" && state !== "off") {
-    console.error(`${BAD} usage: pyyol autoplay on|off`);
+  if (state !== "on" && state !== "off" && state !== "status") {
+    console.error(`${BAD} usage: pyyol autoplay on|off|status`);
     return 2;
   }
   const c = creds.load();
@@ -843,6 +1000,16 @@ async function cmdAutoplay(a: Args): Promise<number> {
     return 2;
   }
   if (str(a, "token")) warnArgvSecret();
+  // `pyyol autoplay status` READS the current state + why it is/isn't playing.
+  if (state === "status") {
+    const [st, resp] = await autoplayGet(api, token);
+    if (st >= 200 && st < 300) {
+      printAutoplayStatus(resp);
+      return 0;
+    }
+    console.error(`${BAD} failed (status ${st}): ${JSON.stringify(resp)}`);
+    return 1;
+  }
   const on = state === "on";
   const [m, games] = autoplayOpts(a, config.load());
   const [st, resp] = await autoplaySet(api, token, on, m, num(a, "bid", 0), games);
@@ -877,7 +1044,10 @@ async function cmdLogs(a: Args): Promise<number> {
 async function cmdSimulate(a: Args): Promise<number> {
   const game = str(a, "game") || "goofspiel";
   if (game !== "goofspiel") {
-    console.error(`simulate currently supports goofspiel (got '${game}'); use \`validate\` for a single-turn check of any game.`);
+    console.error(
+      `simulate runs a full in-process match for goofspiel only (got '${game}'). ` +
+        `For ${game}, iterate with \`pyyol dev\` — sandbox practice vs house agents, no stakes.`,
+    );
     return 2;
   }
   const opponent = str(a, "opponent") || "baseline";
@@ -1279,7 +1449,9 @@ Commands:
   init <dir> [--arena goofspiel|mafia|monopoly] [--framework F] [--name N]
   dev [--matches N]                 local dev loop — SANDBOX, no stakes
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
-  publish                           (advanced) certify for ranked
+  publish --manifest <file>         certify your agent for ranked
+  queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
+  wallet [--json]                   your coin balance + per-agent wallets
   replay <match_id> [--game] [--json]
   profile [handle]
   leaderboard [--game G] [--developers] [--season N]
@@ -1320,6 +1492,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdLeaderboard(a);
     case "profile":
       return cmdProfile(a);
+    case "wallet":
+      return cmdWallet(a);
+    case "queue":
+      return cmdQueue(a);
     case "replay":
       return cmdReplay(a);
     case "status":
