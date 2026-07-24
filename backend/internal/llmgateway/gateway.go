@@ -55,11 +55,12 @@ type upstream struct {
 
 // Proxy is the gateway HTTP handler. Mount it under a base path; it routes by the
 // first path segment: /openai/... → OpenAI, /anthropic/... → Anthropic.
-// VerifiedHook is called (best-effort, off the response's critical path) the first
-// time a request from an agent is observed. The wiring layer uses it to award the
-// "Verified" badge (dual-badge model). Must be fast/non-blocking or spawn its own
-// goroutine — it runs inline after the response is written.
-type VerifiedHook func(ctx context.Context, agentID string)
+// VerifiedHook is called (best-effort, off the response's critical path) on every
+// observed verified call, with the agent, match (from X-Pyyol-Match; may be ""), and
+// the server-measured USD cost. The wiring layer uses it to (a) accumulate per-match
+// verified cost and (b) award the "Verified" badge once. Must be fast/non-blocking or
+// spawn its own goroutine — it runs inline after the response is written.
+type VerifiedHook func(ctx context.Context, agentID, matchID string, costUSD float64)
 
 type Proxy struct {
 	em         Emitter
@@ -217,16 +218,17 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 	if !ok {
 		return
 	}
-	// The agent produced a real, gateway-observed LLM call → it qualifies for the
-	// "Verified" badge. Fire regardless of whether Lens is enabled.
+	cost := pricing.EstimateCost(u.Model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)
+	match := reqHeader.Get("X-Pyyol-Match")
+	// The agent produced a real, gateway-observed LLM call: accumulate its verified
+	// cost (per match) and let the wiring award the "Verified" badge. Fires regardless
+	// of whether Lens is enabled.
 	if p.onVerified != nil && agentID != "" {
-		p.onVerified(context.Background(), agentID)
+		p.onVerified(context.Background(), agentID, match, cost)
 	}
 	if p.em == nil || !p.em.Enabled() {
 		return
 	}
-	cost := pricing.EstimateCost(u.Model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)
-	match := reqHeader.Get("X-Pyyol-Match")
 	trace := telemetry.MatchTraceID(match)
 	p.em.EmitEvent(telemetry.Event{
 		TraceID:          trace,

@@ -217,17 +217,24 @@ func TestProxy_VerifiedHookFires(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 
-	var got []string
-	// em=nil (Lens disabled) to prove the badge hook is independent of telemetry.
-	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, agentID string) {
-		got = append(got, agentID)
+	type obs struct {
+		agent, match string
+		cost         float64
+	}
+	var got []obs
+	// em=nil (Lens disabled) to prove the hook is independent of telemetry.
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, agentID, matchID string, cost float64) {
+		got = append(got, obs{agentID, matchID, cost})
 	}))
-	rec := do(t, p, "POST", "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{"X-Pyyol-Key": "agentZ"})
+	rec := do(t, p, "POST", "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{
+		"X-Pyyol-Key":   "agentZ",
+		"X-Pyyol-Match": "m99",
+	})
 	if rec.Code != 200 {
 		t.Fatalf("code = %d", rec.Code)
 	}
-	if len(got) != 1 || got[0] != "agentZ" {
-		t.Errorf("verified hook = %v, want [agentZ]", got)
+	if len(got) != 1 || got[0].agent != "agentZ" || got[0].match != "m99" || got[0].cost <= 0 {
+		t.Errorf("verified hook = %+v, want agent=agentZ match=m99 cost>0", got)
 	}
 }
 
@@ -238,7 +245,7 @@ func TestProxy_VerifiedHookNotFiredOnError(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 	fired := false
-	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _ string) { fired = true }))
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _, _ string, _ float64) { fired = true }))
 	do(t, p, "POST", "/openai/v1/chat/completions", `{}`, map[string]string{"X-Pyyol-Key": "a"})
 	if fired {
 		t.Error("verified hook must not fire on a non-2xx response")

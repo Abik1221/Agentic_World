@@ -169,7 +169,13 @@ dimension, dashboards) straight from the trace store.
       (headline + per game), aggregated by `ProfilesRepo.Economics` and folded by the
       pure, unit-tested `CostPerWin`/`foldEconomics`. Build/vet/gofmt + tests green.
       (Lens-side cost-to-win analytics query can reuse the structural columns later.)
-- [ ] 5c. Verified-only P-Index cost/efficiency dimension (uses gateway data only).
+- [x] 5c. Verified cost pipeline + cost-efficiency primitive. Gateway now records
+      per-(match,agent) GATEWAY-VERIFIED cost into Postgres (`0057_agent_match_verified_cost`
+      + `RecordVerifiedCost`; hook fires per call with match+cost, cost accrues every
+      call, badge still once). Pure `pindex.CostEfficiencyScore` (verified cost-per-win
+      → 0..scale, un-gameable — gateway data only) unit-tested. Build/vet/gofmt + tests green.
+      NOTE: wiring it into the composite P-Index (config version + reweight) is a
+      deliberate live-DB-validated toggle, mirroring the Intelligence rollout — not flipped here.
 - [ ] 5d. Real Trace Inspector UI — replace the scripted reasoning panels with a live
       replay reading the real `decision_log` (per-turn action/rationale/model/tokens/cost).
 

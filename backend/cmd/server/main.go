@@ -935,7 +935,14 @@ func run() error {
 		// the "Verified" badge (dual-badge model). Deduped in-process to one event
 		// per agent per instance; the badge award is idempotent anyway.
 		var gwSeen sync.Map
-		gwVerified := func(ctx context.Context, agentID string) {
+		gwVerified := func(ctx context.Context, agentID, matchID string, costUSD float64) {
+			// Accumulate per-match verified cost on EVERY observed call (unfakeable
+			// input for the P-Index cost-efficiency dimension + verified economics).
+			if err := pindexRepo.RecordVerifiedCost(context.Background(), matchID, agentID, costUSD); err != nil {
+				log.Warn("gateway: could not record verified cost", "agent", agentID, "match", matchID, "err", err)
+			}
+			// Award the "Verified" badge ONCE per agent (dedup in-process; idempotent
+			// award makes at-least-once safe anyway).
 			if _, seen := gwSeen.LoadOrStore(agentID, struct{}{}); seen {
 				return
 			}
