@@ -29,6 +29,8 @@ others are its siblings):
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
@@ -178,6 +180,11 @@ class Agent:
         view = parse_view(data)
         try:
             move = handler(view)
+            # Support `async def step`: async LLM clients are first-class, so an
+            # awaitable move is run to completion here (the runtime/serve loops are
+            # synchronous, so there's no already-running loop to clash with).
+            if inspect.isawaitable(move):
+                move = asyncio.run(move)
         except Exception as e:  # a crashing handler must not take the server down
             # Log the full traceback AND return the message so the runtime can surface
             # it in the `pyyol dev` feed — a silently-swallowed crash is the #1
