@@ -32,6 +32,7 @@ import (
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/devprofile"
+	"github.com/agent-arena/arena/internal/docs"
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/health"
@@ -739,6 +740,9 @@ func run() error {
 	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
 	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
+	// Reject an offline agent at enqueue so it never gets matched and forfeit-bleeds its
+	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
+	matchmakingSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
@@ -891,6 +895,19 @@ func run() error {
 	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
 	mafiaSvc.SetNotifier(store.NewNotifier(st.Redis))
 
+	// Docs-as-data: seed the modular Markdown docs (internal/docs/content) into the
+	// docs_pages table at the current version so the frontend serves versioned,
+	// structured docs from /v1/docs. Best-effort — a seed failure must not stop boot.
+	docsRepo := store.NewDocsRepo(st.DB)
+	if pages, derr := docs.Load(); derr != nil {
+		log.Warn("docs: failed to load embedded content", "err", derr)
+	} else if serr := docsRepo.Seed(ctx, docs.DocsVersion, pages); serr != nil {
+		log.Warn("docs: failed to seed docs_pages", "version", docs.DocsVersion, "err", serr)
+	} else {
+		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
+	}
+	docsHandler := docs.NewHandler(docsRepo)
+
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{
 		healthH.Register,
@@ -914,6 +931,7 @@ func run() error {
 		profilesHandler.Register,
 		devProfileHandler.Register,
 		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
+		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,
@@ -1074,6 +1092,31 @@ func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID str
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
 	}
 	return g.cert.RequireCertified(ctx, agentPublicID)
+}
+
+// rankedLivenessGate is the matchmaking.Liveness gate: an agent may enter the ranked
+// queue only if it is reachable RIGHT NOW — either holding a live gateway socket or
+// exposing a verified, resolvable hosted endpoint. This is the SAME reachability test
+// match.driver.seatFor uses to decide whether a seat is drivable, applied at enqueue
+// so an offline agent never gets matched (and never forfeit-bleeds its stake). Under
+// auto-play a rejection is swallowed and retried, so the agent resumes on reconnect.
+type rankedLivenessGate struct {
+	gw       interface{ Connected(agentID string) bool }
+	resolver interface {
+		PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
+	}
+}
+
+func (g rankedLivenessGate) RequireReachable(ctx context.Context, agentPublicID string) error {
+	if g.gw != nil && g.gw.Connected(agentPublicID) {
+		return nil // live socket
+	}
+	if g.resolver != nil {
+		if _, ok, err := g.resolver.PlayTarget(ctx, agentPublicID); err == nil && ok {
+			return nil // verified, resolvable hosted endpoint
+		}
+	}
+	return matchmaking.ErrAgentOffline
 }
 
 // finishHook fans the match-finalize signal out to the engagement workers. Both
