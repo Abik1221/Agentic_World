@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { asAgent } from "./adapter.js";
 import * as config from "./config.js";
 import * as creds from "./credentials.js";
+import { enableGateway } from "./instrument.js";
 import { deriveConnectUrl, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
@@ -34,6 +35,10 @@ const BAD = "✗";
 // to the API host.
 const DEFAULT_API_BASE = (process.env.PYYOL_API || "").replace(/\/$/, "") || "https://api.pyyol.com";
 const DEFAULT_DASHBOARD = (process.env.PYYOL_DASHBOARD || "").replace(/\/$/, "") || "https://pyyol.com";
+// Verified-tier LLM gateway base (Phase 4). Ranked mode enables gateway routing so
+// pyyol.route(client) sends the agent's LLM calls through it for server-observed
+// (unfakeable) model/token/cost. Override with $PYYOL_GATEWAY.
+const DEFAULT_GATEWAY = (process.env.PYYOL_GATEWAY || "").replace(/\/$/, "") || "https://gateway.pyyol.com";
 
 // Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
 // connection credential (mirrors backend platform.PrefixKey).
@@ -424,6 +429,13 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     if (!(await mode.confirmRanked(bool(a, "yes")))) {
       console.log("aborted — staying safe. (Use --yes in CI to skip the prompt.)");
       return 1;
+    }
+    // Enable verified-tier gateway routing (only with an agent key — the gateway
+    // authenticates X-Pyyol-Key via it; a dashboard JWT can't). Then pyyol.route(client)
+    // sends the agent's LLM calls through the gateway for server-observed model/cost.
+    if (usingAgentKey && token) {
+      enableGateway(token, DEFAULT_GATEWAY);
+      console.log(`  ${OK} verified gateway routing on (${DEFAULT_GATEWAY}) — call pyyol.route(client)`);
     }
   }
   if (agentId && !cfg.agent_id) config.setAgentId(agentId);

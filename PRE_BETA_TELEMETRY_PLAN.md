@@ -133,8 +133,11 @@ proxy so model/tokens/cost are server-observed, not self-declared.
       threaded through `turn_usage`/`runTurnUsage` from the runtime. Tests:
       `tests/test_gateway.py` (10) + `src/test/gateway.test.ts` (9); full suites green
       (Py 103, JS 86); ruff/prod-build clean.
-- [ ] 4c-wire. Auto-call `enable_gateway()` from the CLI ranked path (needs the
-      gateway URL derived from the platform host) so routing is fully hands-free.
+- [x] 4c-wire. CLI auto-enables gateway routing in ranked mode (Python + JS):
+      `DEFAULT_GATEWAY` (env `PYYOL_GATEWAY`, default `https://gateway.pyyol.com`);
+      `enable_gateway(agentKey, url)` fires on ranked when the connection token is an
+      agent key. Dev routes with one line: `pyyol.route(client)`. Suites green
+      (Py 103, JS 86); ruff/prod-build clean.
 - [ ] 4d. Re-point "Verified": ranked requires gateway-routed calls (not just the
       endpoint-health probe); blue/grey badge. ⚠️ changes trust semantics — confirm first.
 

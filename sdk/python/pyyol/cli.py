@@ -42,6 +42,10 @@ _AGENT_KEY_PREFIX = "sk_arena_"
 # — they are DIFFERENT hosts in the split-domain deployment.
 DEFAULT_API_BASE = os.environ.get("PYYOL_API", "").rstrip("/") or "https://api.pyyol.com"
 DEFAULT_DASHBOARD = os.environ.get("PYYOL_DASHBOARD", "").rstrip("/") or "https://pyyol.com"
+# Verified-tier LLM gateway base (Phase 4). In ranked mode the CLI enables gateway
+# routing so `pyyol.route(client)` sends the agent's LLM calls through it for
+# server-observed (unfakeable) model/token/cost. Override with $PYYOL_GATEWAY.
+DEFAULT_GATEWAY = os.environ.get("PYYOL_GATEWAY", "").rstrip("/") or "https://gateway.pyyol.com"
 
 
 # --- HTTP helper (signed, stdlib) ---------------------------------------------
@@ -1372,6 +1376,17 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         if not mode.confirm_ranked(assume_yes=getattr(args, "yes", False)):
             print("aborted — staying safe. (Use --yes in CI to skip the prompt.)")
             return 1
+
+    # Ranked → enable verified-tier gateway routing. Only when the connection token
+    # is an agent key (sk_arena_…): the gateway authenticates X-Pyyol-Key via that
+    # key. With this on, `pyyol.route(client)` sends the agent's LLM calls through the
+    # gateway so model/token/cost are server-observed (unfakeable). A dashboard-JWT
+    # session can't authenticate to the gateway, so routing stays off there.
+    if m == mode.RANKED and _using_key and token:
+        from . import instrument as _instrument
+
+        _instrument.enable_gateway(token, DEFAULT_GATEWAY)
+        print(f"{OK} verified gateway routing on ({DEFAULT_GATEWAY}) — call pyyol.route(client)")
 
     # Persist the agent id back into pyyol.toml so future runs are zero-config.
     if agent_id and not cfg.agent_id:
