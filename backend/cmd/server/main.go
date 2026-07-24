@@ -505,8 +505,9 @@ func run() error {
 			if seat.AgentID == "" || seat.Decisions == 0 {
 				continue
 			}
-			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID,
-				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS, seat.TotalTokens); err != nil {
+			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID, ms.Game,
+				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS, seat.TotalTokens,
+				seat.EstimatedCost, string(seat.Result)); err != nil {
 				return err // let the outbox retry
 			}
 		}

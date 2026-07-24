@@ -22,6 +22,10 @@ type Repo interface {
 	SeasonHistory(ctx context.Context, agentPublicID string) ([]SeasonElo, error)
 	// Badges returns the agent's earned achievements, oldest first.
 	Badges(ctx context.Context, agentPublicID string) ([]Badge, error)
+	// Economics returns the agent's lifetime per-game cost/wins rows (all games,
+	// all seasons). The service folds these into totals + cost-to-win. Empty slice
+	// when the agent has no benchmarked matches yet.
+	Economics(ctx context.Context, agentPublicID string) ([]GameCost, error)
 }
 
 // Agent is the public identity shown on a profile.

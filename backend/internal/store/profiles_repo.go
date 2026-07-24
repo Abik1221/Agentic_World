@@ -52,6 +52,36 @@ func (r *ProfilesRepo) Badges(ctx context.Context, agentPublicID string) ([]prof
 	return out, rows.Err()
 }
 
+// Economics returns the agent's lifetime per-game games/wins/cost from the
+// benchmark projection (all games, all seasons — "since it first started"). Ordered
+// by spend so the costliest game is first. The service folds these into totals.
+func (r *ProfilesRepo) Economics(ctx context.Context, agentPublicID string) ([]profiles.GameCost, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT COALESCE(NULLIF(amb.game, ''), 'unknown') AS game,
+		        COUNT(*)                                   AS games,
+		        COUNT(*) FILTER (WHERE amb.result = 'win') AS wins,
+		        COALESCE(SUM(amb.estimated_cost), 0)       AS total_cost
+		   FROM agent_match_benchmark amb
+		   JOIN agents a ON a.id = amb.agent_id
+		  WHERE a.public_id = $1
+		  GROUP BY 1
+		  ORDER BY total_cost DESC`,
+		agentPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []profiles.GameCost
+	for rows.Next() {
+		var g profiles.GameCost
+		if err := rows.Scan(&g.Game, &g.Games, &g.Wins, &g.TotalCostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 // SeasonHistory returns the agent's per-season standings, newest season first.
 func (r *ProfilesRepo) SeasonHistory(ctx context.Context, agentPublicID string) ([]profiles.SeasonElo, error) {
 	// Aggregate across arenas: an agent now has one rating row PER GAME per season, so

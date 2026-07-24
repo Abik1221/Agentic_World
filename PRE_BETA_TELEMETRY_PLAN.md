@@ -161,8 +161,14 @@ dimension, dashboards) straight from the trace store.
       exist. `meter_source` = `gateway` (server-observed, unfakeable) vs `sdk`
       (self-reported) is the STRUCTURAL verified signal. Set on `benchmark_recorded`,
       per-turn `model_call_completed`, and gateway calls. Tests green; build/fmt/vet clean.
-- [ ] 5b. Cost-to-win backend query/aggregation over the trace store (verified-only
-      via `meter_source='gateway'`), exposed as an API + surfaced on the model board.
+- [x] 5b. Cost-to-win + lifetime cost on the profile. Promoted `result` to a
+      structural column (`0056_agent_match_benchmark_cost`: adds `game`,
+      `estimated_cost`, `result`), fed from the same `match.benchmark` fact
+      (`RecordMatchBenchmark`). New `profiles.Economics` on the profile: lifetime
+      `games`, `wins`, `total_cost_usd` (overall + per-game), and `cost_per_win_usd`
+      (headline + per game), aggregated by `ProfilesRepo.Economics` and folded by the
+      pure, unit-tested `CostPerWin`/`foldEconomics`. Build/vet/gofmt + tests green.
+      (Lens-side cost-to-win analytics query can reuse the structural columns later.)
 - [ ] 5c. Verified-only P-Index cost/efficiency dimension (uses gateway data only).
 - [ ] 5d. Real Trace Inspector UI — replace the scripted reasoning panels with a live
       replay reading the real `decision_log` (per-turn action/rationale/model/tokens/cost).

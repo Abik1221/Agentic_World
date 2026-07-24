@@ -129,14 +129,15 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 // RecordMatchBenchmark upserts one seat's per-match decision-quality counts (the
 // P-Index Intelligence projection over match.benchmark). A no-op when the agent's
 // public id is unknown (INSERT…SELECT yields no row) so it never errors on a bot.
-func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, matchID, agentPublicID string, decisions, legal, fallbacks int, latencySumMS, tokens int64) error {
+func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, matchID, agentPublicID, game string, decisions, legal, fallbacks int, latencySumMS, tokens int64, estimatedCost float64, result string) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO agent_match_benchmark (match_id, agent_id, decisions, legal, fallbacks, latency_sum_ms, tokens, updated_at)
-		 SELECT $1, a.id, $3, $4, $5, $6, $7, now() FROM agents a WHERE a.public_id = $2
+		`INSERT INTO agent_match_benchmark (match_id, agent_id, game, decisions, legal, fallbacks, latency_sum_ms, tokens, estimated_cost, result, updated_at)
+		 SELECT $1, a.id, $3, $4, $5, $6, $7, $8, $9, $10, now() FROM agents a WHERE a.public_id = $2
 		 ON CONFLICT (match_id, agent_id) DO UPDATE SET
-		   decisions = EXCLUDED.decisions, legal = EXCLUDED.legal, fallbacks = EXCLUDED.fallbacks,
-		   latency_sum_ms = EXCLUDED.latency_sum_ms, tokens = EXCLUDED.tokens, updated_at = now()`,
-		matchID, agentPublicID, decisions, legal, fallbacks, latencySumMS, tokens)
+		   game = EXCLUDED.game, decisions = EXCLUDED.decisions, legal = EXCLUDED.legal, fallbacks = EXCLUDED.fallbacks,
+		   latency_sum_ms = EXCLUDED.latency_sum_ms, tokens = EXCLUDED.tokens,
+		   estimated_cost = EXCLUDED.estimated_cost, result = EXCLUDED.result, updated_at = now()`,
+		matchID, agentPublicID, game, decisions, legal, fallbacks, latencySumMS, tokens, estimatedCost, result)
 	return err
 }
 
