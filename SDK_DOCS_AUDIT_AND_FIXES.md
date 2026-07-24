@@ -64,9 +64,12 @@ the frontend docs UI.
       `simulate --game`.
 - [x] Both READMEs (Python + JS): added a "Verified LLM agents" section (the flagship
       that was absent) with the two-line `instrument()`/`route()` snippet + example link.
-- [ ] Remaining: README command-list completeness + `onavion` CHANGELOG; reconcile
-      `Pyyol_client/public/llms.txt` (separate frontend repo) + CI drift-gate it;
-      wire the LLM example into `pyyol init` (SDK code — D3/later pass).
+- [x] README command lists completed (JS: added the 8 missing verbs + wallet/queue
+      Python-only note; Python: added ranked `queue`/`wallet`/`publish --manifest` +
+      full-list pointer). Renamed `onavion`→`pyyol` in both CHANGELOGs.
+- [ ] Remaining (out of this repo's scope): reconcile `Pyyol_client/public/llms.txt`
+      (separate frontend repo) + CI drift-gate it; wire the LLM example into
+      `pyyol init` (SDK code — D3/later pass).
 
 ### D3 — SDK code fixes (the "SDK later" pass the user will push)
 - [ ] Stop swallowing handler errors (surface in `dev`, Py+JS).
