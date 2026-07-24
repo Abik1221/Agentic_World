@@ -59,9 +59,12 @@ the frontend docs UI.
 - [x] `gen_llms.py`: host `docs.pyyol.com` → `pyyol.com/docs`; added `quickstart.md`
       + new `verified-telemetry.md` to the corpus; regenerated `llms.txt`/`llms-full.txt`
       + bundled rules. New `sdk/docs/verified-telemetry.md` authored.
-- [ ] Remaining: `local-runtime.md` auth section (endpoint-secret → `sk_arena_` key) +
-      `pyyol.example` hosts + `pyyol run`→`dev/play`; full `python/js README.md`
-      refresh (command lists, telemetry section, `onavion` CHANGELOG); reconcile
+- [x] `local-runtime.md`: fixed auth (endpoint-secret → `sk_arena_` login key),
+      `pyyol.example` → real hosts (`api.pyyol.com`), `pyyol run`→`pyyol dev` primary,
+      `simulate --game`.
+- [x] Both READMEs (Python + JS): added a "Verified LLM agents" section (the flagship
+      that was absent) with the two-line `instrument()`/`route()` snippet + example link.
+- [ ] Remaining: README command-list completeness + `onavion` CHANGELOG; reconcile
       `Pyyol_client/public/llms.txt` (separate frontend repo) + CI drift-gate it;
       wire the LLM example into `pyyol init` (SDK code — D3/later pass).
 
