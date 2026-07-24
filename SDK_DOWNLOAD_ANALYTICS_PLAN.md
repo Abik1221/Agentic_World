@@ -35,14 +35,21 @@ So we combine two sources:
 - main.go wiring (mount + `launch("sdk-download-poller", …)`) is in the working tree
   but UNCOMMITTED — main.go currently holds a parallel session's WIP; rides along.
 
-### G2 — SDK first-run ping  ← next
-- Python + JS SDK: on first run, POST `/v1/telemetry/install` {sdk, version} once
-  (dedup via a local marker), opt-out via `PYYOL_NO_TELEMETRY` / `DO_NOT_TRACK`.
-  Fire-and-forget, never blocks or errors the CLI.
+### G2 — SDK first-run ping  ← DONE
+- Python (`pyyol/install_ping.py`) + JS (`install-ping.ts`): on first run of a version,
+  POST `/v1/telemetry/install` {sdk, version} once (marker file dedup), opt-out via
+  `PYYOL_NO_TELEMETRY` / `DO_NOT_TRACK`, fire-and-forget (never blocks/errors). Wired
+  into both CLI `main()`s. Tests green (Py 109, JS 97); suites disable it (conftest +
+  JS run() harness). Committed 7ecb3e2.
 
-### G3 — Admin UI page (separate Super_Admin repo)
-- Line chart (day/week/month toggle) of downloads + install pings; paginated
-  per-country table; summary tiles. Consumes the G1 admin APIs.
+### G3 — Admin UI page (separate Super_Admin repo — commit there)  ← DONE
+- server: `internal/arena` gained SDKDownload{Summary,Timeseries,Countries} (Platform
+  token) + a new `modules/sdkdownloads` relaying `/analytics/sdk/*` (RequirePermission
+  "analytics.view"), mounted in `server/modules.go`. `go build ./...` clean.
+- frontend: `pages/SDKDownloads.tsx` — summary tiles + recharts line chart
+  (day/week/month toggle) + paginated per-country table; registered in `App.tsx` (nav +
+  route). `vite build` clean.
+- Both live in the gitignored `Super_Admin` repo → commit there (not this repo).
 
 ## Notes
 - Data is DAILY at best (no real-time from registries); the install-ping half is the
