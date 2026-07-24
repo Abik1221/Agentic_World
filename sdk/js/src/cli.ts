@@ -529,6 +529,100 @@ async function cmdArenas(a: Args): Promise<number> {
   return 0;
 }
 
+/** `pyyol wallet` — show the owner's coin balance + per-agent wallets, so a dev can
+ *  see why ranked was refused ("not enough coins") without leaving the CLI. Parity
+ *  with the Python CLI. Owner-scoped, so it uses the dashboard access token. */
+async function cmdWallet(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  const token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (!token) {
+    console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
+    return 2;
+  }
+  const [st, w] = await apiGet(`${base}/v1/user/wallet`, token);
+  if (st !== 200) {
+    console.error(`${BAD} could not fetch wallet (${st}): ${JSON.stringify(w)}`);
+    return 1;
+  }
+  if (bool(a, "json")) {
+    console.log(JSON.stringify(w, null, 2));
+    return 0;
+  }
+  const cents = Number(w.coin_cents ?? 1) || 1;
+  const usd = (coins: number) => `$${((coins * cents) / 100).toFixed(2)}`;
+  const avail = Number(w.available_balance ?? 0);
+  console.log("Treasury");
+  console.log(`  Available   ${avail.toLocaleString()} coins  (${usd(avail)})`);
+  if (w.locked_balance) console.log(`  Locked      ${Number(w.locked_balance).toLocaleString()} coins (in active matches)`);
+  if (w.lifetime_earnings) console.log(`  Earned      ${Number(w.lifetime_earnings).toLocaleString()} coins (lifetime)`);
+  const agents = w.agents ?? [];
+  if (agents.length) {
+    console.log("\nAgent wallets");
+    for (const ag of agents) {
+      const bal = Number(ag.balance ?? 0).toLocaleString();
+      const wd = Number(ag.withdrawable ?? 0).toLocaleString();
+      console.log(`  ${String(ag.name ?? ag.agent ?? "?").padEnd(20)} ${bal.padStart(10)} coins   withdrawable ${wd}`);
+    }
+  }
+  return 0;
+}
+
+/** `pyyol queue <game> [--tier low|mid|high | --bid N] [--list]` — enter ranked
+ *  matchmaking at a stake tier (parity with the Python CLI). `--list` shows the
+ *  admin-configured tiers. The game is a POSITIONAL argument. */
+async function cmdQueue(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  if (!base) {
+    console.error(`${BAD} no API url — pass --api or run \`pyyol login\`.`);
+    return 2;
+  }
+  const game = a.positionals[0] ?? "";
+  if (!game) {
+    console.error(`${BAD} usage: pyyol queue <game> [--tier low|mid|high | --bid N] [--list]`);
+    return 2;
+  }
+  if (bool(a, "list")) {
+    const [st, resp] = await apiGet(`${base}/v1/games/${game}/stakes`);
+    if (st !== 200) {
+      console.error(`${BAD} could not fetch tiers (${st})`);
+      return 1;
+    }
+    const tiers = resp.tiers ?? [];
+    if (!tiers.length) {
+      console.log(`no stake tiers configured for ${game} — use --bid <coins>`);
+      return 0;
+    }
+    console.log(`${game} stake tiers:`);
+    for (const t of tiers) console.log(`  ${String(t.key ?? "").padEnd(8)} ${String(Number(t.coins ?? 0)).padStart(8)} coins  ${t.label ?? ""}`);
+    return 0;
+  }
+  const token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (!token) {
+    console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
+    return 2;
+  }
+  const body: Record<string, unknown> = { game };
+  if (str(a, "tier")) body.tier = str(a, "tier");
+  else if (num(a, "bid", 0) > 0) body.bid = num(a, "bid", 0);
+  else {
+    console.error(`${BAD} choose a stake: --tier <low|mid|high> (see \`pyyol queue ${game} --list\`) or --bid <coins>`);
+    return 2;
+  }
+  const [st, resp] = await apiPost(`${base}/v1/queue`, token, body);
+  if (st !== 200 && st !== 202) {
+    const code = String(resp.code ?? resp.error ?? "");
+    if (code.includes("certified")) console.error(`${BAD} agent not certified — run \`pyyol publish --manifest <file>\` first.`);
+    else if (code.includes("balance") || code.includes("insufficient")) console.error(`${BAD} not enough coins — fund your wallet (see \`pyyol wallet\`).`);
+    else console.error(`${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
+    return 1;
+  }
+  console.log(`  ${OK} queued for ${game}${body.tier ? ` (tier ${body.tier})` : ""} — keep your agent connected; it plays when matched.`);
+  if (resp.match_id) console.log(`  ${OK} matched → ${resp.match_id}\n      watch it:  pyyol watch ${resp.match_id}`);
+  return 0;
+}
+
 async function cmdLeaderboard(a: Args): Promise<number> {
   const base = httpBase(a, creds.load());
   if (!base) {
@@ -1343,7 +1437,9 @@ Commands:
   init <dir> [--arena goofspiel|mafia|monopoly] [--framework F] [--name N]
   dev [--matches N]                 local dev loop — SANDBOX, no stakes
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
-  publish                           (advanced) certify for ranked
+  publish --manifest <file>         certify your agent for ranked
+  queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
+  wallet [--json]                   your coin balance + per-agent wallets
   replay <match_id> [--game] [--json]
   profile [handle]
   leaderboard [--game G] [--developers] [--season N]
@@ -1384,6 +1480,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdLeaderboard(a);
     case "profile":
       return cmdProfile(a);
+    case "wallet":
+      return cmdWallet(a);
+    case "queue":
+      return cmdQueue(a);
     case "replay":
       return cmdReplay(a);
     case "status":

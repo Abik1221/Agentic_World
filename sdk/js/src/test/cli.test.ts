@@ -369,3 +369,65 @@ test("validate signs handshake/turn when a secret is given", async () => {
   assert.ok(signed.includes("/turn"));
   assert.ok(!signed.includes("/health"));
 });
+
+// ── wallet / queue (parity with the Python CLI) ───────────────────────────────
+
+test("wallet prints the treasury balance + per-agent wallets", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-wallet-"));
+  seedCreds(home);
+  const wallet = {
+    coin_cents: 1,
+    available_balance: 1500,
+    locked_balance: 200,
+    agents: [{ name: "atlas", balance: 900, withdrawable: 300 }],
+  };
+  const { code, out } = await run(["wallet"], { home, fetch: (async () => json(wallet)) as unknown as typeof fetch });
+  assert.equal(code, 0);
+  assert.match(out, /Available\s+1,500 coins/);
+  assert.match(out, /atlas/);
+  assert.match(out, /withdrawable 300/);
+});
+
+test("wallet without login is a usage error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-wallet2-"));
+  mkdirSync(home, { recursive: true }); // no credentials.json
+  const { code, err } = await run(["wallet"], { home });
+  assert.equal(code, 2);
+  assert.match(err, /not logged in/);
+});
+
+test("queue --list shows the stake tiers (positional game)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-queue-"));
+  seedCreds(home);
+  const tiers = { tiers: [{ key: "low", coins: 100, label: "Low" }, { key: "mid", coins: 500, label: "Mid" }] };
+  const { code, out } = await run(["queue", "goofspiel", "--list"], {
+    home,
+    fetch: (async () => json(tiers)) as unknown as typeof fetch,
+  });
+  assert.equal(code, 0);
+  assert.match(out, /goofspiel stake tiers/);
+  assert.match(out, /low\s+100 coins/);
+});
+
+test("queue without a game is a usage error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-queue2-"));
+  seedCreds(home);
+  const { code, err } = await run(["queue"], { home });
+  assert.equal(code, 2);
+  assert.match(err, /usage: pyyol queue <game>/);
+});
+
+test("queue posts the tier and reports the match", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-queue3-"));
+  seedCreds(home);
+  let posted: any = null;
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
+    posted = JSON.parse(String(init?.body ?? "{}"));
+    return json({ match_id: "mt_9f3" }, 202);
+  }) as unknown as typeof fetch;
+  const { code, out } = await run(["queue", "goofspiel", "--tier", "mid"], { home, fetch: fetchImpl });
+  assert.equal(code, 0);
+  assert.deepEqual(posted, { game: "goofspiel", tier: "mid" });
+  assert.match(out, /queued for goofspiel \(tier mid\)/);
+  assert.match(out, /mt_9f3/);
+});
