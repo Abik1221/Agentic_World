@@ -40,6 +40,75 @@ from .telemetry import current_span, current_usage
 # (class, method_name, original_callable) for uninstrument().
 _PATCHED: List[Tuple[Any, str, Any]] = []
 
+# --- Verified-tier gateway routing (Phase 4c) ---------------------------------
+# When routing is enabled, the instrument wrapper injects the Pyyol identity headers
+# (X-Pyyol-Key/Match/Turn) into every LLM call so the Pyyol Gateway can attribute the
+# server-observed usage to the right agent/match/turn. route() points a client's
+# base_url at the gateway. Together they make ranked LLM traffic flow through the
+# gateway with a single opt-in line, and the gateway measures the REAL model/cost.
+
+_gateway: Dict[str, str] = {}  # {"key": agent_key, "base": gateway_base_url}
+
+
+def enable_gateway(agent_key: str, base_url: str) -> None:
+    """Enable gateway routing: subsequent instrumented calls carry the Pyyol identity
+    headers. Called by the runtime in ranked mode; safe to call directly in tests."""
+    _gateway["key"] = agent_key or ""
+    _gateway["base"] = (base_url or "").rstrip("/")
+
+
+def disable_gateway() -> None:
+    _gateway.clear()
+
+
+# Per-provider path on the gateway (see internal/llmgateway routing).
+_PROVIDER_PATH = {"openai": "/gw/openai/v1", "anthropic": "/gw/anthropic"}
+
+
+def gateway_base_url(provider: str) -> str:
+    """The gateway base_url a `provider` client should point at, or "" if routing is
+    off / the provider is unknown."""
+    base = _gateway.get("base", "")
+    path = _PROVIDER_PATH.get(provider, "")
+    return base + path if base and path else ""
+
+
+def gateway_headers() -> Dict[str, str]:
+    """The X-Pyyol-* identity headers for the current turn (empty if routing off)."""
+    if not _gateway.get("key"):
+        return {}
+    h = {"X-Pyyol-Key": _gateway["key"]}
+    acc = current_usage()
+    if acc is not None:
+        if getattr(acc, "match_id", ""):
+            h["X-Pyyol-Match"] = acc.match_id
+        h["X-Pyyol-Turn"] = str(getattr(acc, "turn", 0))
+    return h
+
+
+def route(client: Any, provider: Optional[str] = None) -> Any:
+    """Point a provider client at the Pyyol Gateway (sets its base_url). Explicit,
+    robust opt-in — operates on the instance the developer hands us, so it doesn't
+    depend on provider-internal layout. Returns the same client for chaining. A no-op
+    when routing is disabled or the provider can't be determined."""
+    prov = provider or _detect_provider(client)
+    url = gateway_base_url(prov) if prov else ""
+    if url:
+        try:
+            client.base_url = url
+        except Exception:  # noqa: BLE001
+            pass
+    return client
+
+
+def _detect_provider(client: Any) -> str:
+    mod = type(client).__module__.lower()
+    if "openai" in mod:
+        return "openai"
+    if "anthropic" in mod:
+        return "anthropic"
+    return ""
+
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
@@ -139,6 +208,20 @@ def record_response(resp: Any, *, provider: str = "", latency_ms: int = 0) -> Op
     return info
 
 
+def _inject_gateway_headers(kwargs: Dict[str, Any]) -> None:
+    """Merge the Pyyol identity headers into the call's extra_headers (both OpenAI and
+    Anthropic accept extra_headers). Dev-supplied headers win. No-op when routing off."""
+    headers = gateway_headers()
+    if not headers:
+        return
+    try:
+        existing = kwargs.get("extra_headers") or {}
+        merged = {**headers, **dict(existing)}  # dev-supplied overrides
+        kwargs["extra_headers"] = merged
+    except Exception:  # noqa: BLE001 - never break the dev's call
+        pass
+
+
 def _safe_record(resp: Any, provider: str, start: float) -> None:
     try:
         record_response(resp, provider=provider, latency_ms=int((time.perf_counter() - start) * 1000))
@@ -164,6 +247,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
 
         @functools.wraps(orig)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            _inject_gateway_headers(kwargs)
             start = time.perf_counter()
             resp = await orig(*args, **kwargs)
             _safe_record(resp, provider, start)
@@ -173,6 +257,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
 
         @functools.wraps(orig)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            _inject_gateway_headers(kwargs)
             start = time.perf_counter()
             resp = orig(*args, **kwargs)
             _safe_record(resp, provider, start)

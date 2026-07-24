@@ -31,6 +31,7 @@ export { gameRules } from "./rules.js";
 export { Tracer, Span, currentSpan, matchTraceId, currentUsage, UsageAccumulator, runTurnUsage } from "./telemetry.js";
 export type { TracerOptions, ModelCall, MoveUsage, UsageAdd } from "./telemetry.js";
 export { instrument, uninstrument, recordResponse, extractUsage, patchPrototype } from "./instrument.js";
+export { route, enableGateway, disableGateway, gatewayBaseUrl, gatewayHeaders } from "./instrument.js";
 export type { ExtractedUsage } from "./instrument.js";
 export { estimateCost, rateFor, isKnown, canonical, PRICING_VERSION } from "./pricing.js";
 export type { Rate, CostArgs } from "./pricing.js";

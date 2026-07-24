@@ -123,10 +123,18 @@ proxy so model/tokens/cost are server-observed, not self-declared.
       agent × match × turn. Streaming passes through; non-2xx never bills. Tests
       (`gateway_test.go`, fake upstream + capturing emitter): forwarding, transparency,
       auth-required, per-provider usage/cost, streaming, error paths. build/fmt/vet clean.
-- [ ] 4b. Wire into the server: `GatewayEnabled` config (default off), mount under
-      `/gw/…`, inject a **store-backed Authenticator** validating the Pyyol agent key.
-- [ ] 4c. SDK: in ranked mode, auto-swap the client `base_url` to the gateway + inject
-      `X-Pyyol-Key`/`Match`/`Turn` (Python + JS) — invisible to the dev.
+- [x] 4b. Wired into the server: `PYYOL_LLM_GATEWAY_ENABLED` config (default off),
+      mounted at `/gw/*` (`cmd/server/llmgateway.go`), store-backed Authenticator
+      validating the Pyyol agent key via `idSvc.ResolveAgentKey` (ScopeAgent). Full
+      `go build ./...` + tests green.
+- [x] 4c. SDK gateway routing (Python + JS): `enable_gateway()`/`route(client)` +
+      per-turn `X-Pyyol-Key`/`Match`/`Turn` header injection into instrumented calls
+      (Python `extra_headers`, JS request-options `headers`); turn context (match/turn)
+      threaded through `turn_usage`/`runTurnUsage` from the runtime. Tests:
+      `tests/test_gateway.py` (10) + `src/test/gateway.test.ts` (9); full suites green
+      (Py 103, JS 86); ruff/prod-build clean.
+- [ ] 4c-wire. Auto-call `enable_gateway()` from the CLI ranked path (needs the
+      gateway URL derived from the platform host) so routing is fully hands-free.
 - [ ] 4d. Re-point "Verified": ranked requires gateway-routed calls (not just the
       endpoint-health probe); blue/grey badge. ⚠️ changes trust semantics — confirm first.
 

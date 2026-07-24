@@ -25,6 +25,87 @@ type Any = any;
 // [prototype, method, original] for uninstrument().
 const PATCHED: Array<[Any, string, Any]> = [];
 
+// --- Verified-tier gateway routing (Phase 4c) ---------------------------------
+// When routing is enabled, the wrapper injects the Pyyol identity headers
+// (X-Pyyol-Key/Match/Turn) into each LLM call's request options so the Pyyol Gateway
+// can attribute the server-observed usage; route() points a client's baseURL at the
+// gateway. Together, ranked LLM traffic flows through the gateway with one opt-in line.
+
+const gateway: { key: string; base: string } = { key: "", base: "" };
+
+/** Enable gateway routing (called by the runtime in ranked mode; safe in tests). */
+export function enableGateway(agentKey: string, baseUrl: string): void {
+  gateway.key = agentKey ?? "";
+  gateway.base = (baseUrl ?? "").replace(/\/+$/, "");
+}
+
+export function disableGateway(): void {
+  gateway.key = "";
+  gateway.base = "";
+}
+
+const PROVIDER_PATH: Record<string, string> = { openai: "/gw/openai/v1", anthropic: "/gw/anthropic" };
+
+/** The baseURL a provider client should point at, or "" if routing is off/unknown. */
+export function gatewayBaseUrl(provider: string): string {
+  const path = PROVIDER_PATH[provider];
+  return gateway.base && path ? gateway.base + path : "";
+}
+
+/** The X-Pyyol-* identity headers for the current turn (empty if routing off). */
+export function gatewayHeaders(): Record<string, string> {
+  if (!gateway.key) return {};
+  const h: Record<string, string> = { "X-Pyyol-Key": gateway.key };
+  const acc = currentUsage();
+  if (acc) {
+    if (acc.matchId) h["X-Pyyol-Match"] = acc.matchId;
+    h["X-Pyyol-Turn"] = String(acc.turn ?? 0);
+  }
+  return h;
+}
+
+function detectProvider(client: Any): string {
+  const name = (client?.constructor?.name ?? "").toLowerCase();
+  if (name.includes("openai")) return "openai";
+  if (name.includes("anthropic")) return "anthropic";
+  // duck-type fallback
+  if (client?.chat?.completions) return "openai";
+  if (client?.messages) return "anthropic";
+  return "";
+}
+
+/** Point a provider client at the Pyyol Gateway (sets its baseURL). Explicit, robust
+ *  opt-in that operates on the given instance. Returns the client. No-op when routing
+ *  is off or the provider can't be determined. */
+export function route<T>(client: T, provider?: string): T {
+  const prov = provider ?? detectProvider(client);
+  const url = prov ? gatewayBaseUrl(prov) : "";
+  if (url) {
+    try {
+      (client as Any).baseURL = url;
+    } catch {
+      // ignore — never break the caller
+    }
+  }
+  return client;
+}
+
+// injectGatewayHeaders merges the Pyyol identity headers into an LLM call's request
+// options. JS SDKs take per-request headers via a SECOND options arg
+// (create(body, { headers })), so we ensure args[1].headers carries them. Dev-supplied
+// headers win. No-op when routing is off.
+function injectGatewayHeaders(args: Any[]): void {
+  const headers = gatewayHeaders();
+  if (!Object.keys(headers).length) return;
+  try {
+    const opts = (args[1] && typeof args[1] === "object" ? args[1] : {}) as Record<string, Any>;
+    opts.headers = { ...headers, ...(opts.headers ?? {}) }; // dev-supplied overrides
+    args[1] = opts;
+  } catch {
+    // never break the dev's call
+  }
+}
+
 function get(obj: Any, name: string, dflt?: Any): Any {
   if (obj == null) return dflt;
   const v = obj[name];
@@ -118,6 +199,7 @@ export function patchPrototype(proto: Any, method: string, provider: string): bo
   const orig = proto[method];
   if (typeof orig !== "function" || orig._pyyolInstrumented) return false;
   const wrapped = async function (this: Any, ...args: Any[]): Promise<Any> {
+    injectGatewayHeaders(args);
     const start = Date.now();
     const resp = await orig.apply(this, args);
     try {

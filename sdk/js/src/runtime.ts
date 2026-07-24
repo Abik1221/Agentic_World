@@ -378,16 +378,18 @@ export class RuntimeConnector {
         // pyyol.currentSpan(); if instrument() is active, every LLM call is captured
         // automatically. The accumulator is always on (independent of Lens) so usage
         // rides the move to the arena regardless.
-        const { result, usage } = await runTurnUsage(() =>
-          this.tracer.runTurn(
-            {
-              matchId: (view.match_id as string) ?? "",
-              game: (view.game as string) ?? "",
-              round: Number(view.round ?? 0) || 0,
-              agentId: this.opts.agentId,
-            },
-            () => this.agent.decideTurn(view),
-          ),
+        const { result, usage } = await runTurnUsage(
+          () =>
+            this.tracer.runTurn(
+              {
+                matchId: (view.match_id as string) ?? "",
+                game: (view.game as string) ?? "",
+                round: Number(view.round ?? 0) || 0,
+                agentId: this.opts.agentId,
+              },
+              () => this.agent.decideTurn(view),
+            ),
+          { matchId: (view.match_id as string) ?? "", turn: Number(view.round ?? 0) || 0 },
         );
         const { status, body } = result;
         // Auto-attach captured model/token/cost to the move so the arena benchmark

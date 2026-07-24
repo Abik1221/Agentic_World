@@ -391,7 +391,7 @@ class RuntimeConnector:
             game=game,
             round_no=int(view.get("round", 0) or 0),
             agent_id=self.agent_id,
-        ), turn_usage() as usage:
+        ), turn_usage(match_id=view.get("match_id", ""), turn=int(view.get("round", 0) or 0)) as usage:
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
         # Auto-attach captured model/token/cost to the move so the arena benchmark

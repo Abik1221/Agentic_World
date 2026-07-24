@@ -150,6 +150,9 @@ export class UsageAccumulator {
   calls = 0;
   readonly models: string[] = [];
   readonly providers: string[] = [];
+  // Turn context (for gateway attribution); set by runTurnUsage().
+  matchId = "";
+  turn = 0;
 
   add(u: UsageAdd): void {
     this.promptTokens += Math.max(0, Math.trunc(u.promptTokens ?? 0));
@@ -196,9 +199,15 @@ export function currentUsage(): UsageAccumulator | undefined {
 }
 
 /** Run `fn` with a fresh usage accumulator installed as current (always active,
- *  independent of the Tracer), returning both fn's result and the accumulator. */
-export async function runTurnUsage<T>(fn: () => T | Promise<T>): Promise<{ result: T; usage: UsageAccumulator }> {
+ *  independent of the Tracer), returning both fn's result and the accumulator.
+ *  ctx.matchId/turn are carried so gateway routing can attribute a call to the match. */
+export async function runTurnUsage<T>(
+  fn: () => T | Promise<T>,
+  ctx: { matchId?: string; turn?: number } = {},
+): Promise<{ result: T; usage: UsageAccumulator }> {
   const acc = new UsageAccumulator();
+  acc.matchId = ctx.matchId ?? "";
+  acc.turn = ctx.turn ?? 0;
   const result = await usageStorage.run(acc, fn);
   return { result, usage: acc };
 }

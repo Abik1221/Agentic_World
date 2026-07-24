@@ -924,6 +924,12 @@ func run() error {
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
 	}
+	if cfg.LLMGatewayEnabled {
+		// Verified tier: observe ranked agents' real model/token/cost by proxying
+		// their LLM calls (/gw/*). Off by default; agent-key auth via idSvc.
+		mounts = append(mounts, mountLLMGateway(idSvc, lens, log))
+		log.Info("Pyyol LLM Gateway mounted at /gw/*")
+	}
 	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)
 	srv := httpx.NewServer(cfg, router, log)
 

@@ -217,6 +217,12 @@ type Config struct {
 	// Default 1.0 (keep all); lower under high match volume.
 	PyyolLensTraceSampleRate float64
 
+	// LLMGatewayEnabled mounts the Pyyol LLM Gateway (/gw/*): a transparent reverse
+	// proxy that observes ranked agents' real model/token/cost by forwarding their
+	// LLM calls to the provider. Off by default — turn on where the verified tier is
+	// live. The developer's own provider key is forwarded upstream untouched.
+	LLMGatewayEnabled bool
+
 	// Platform bus (cross-service Redis channel with the Super Admin). Ed25519
 	// keys authenticate messages: the engine signs the events it publishes with
 	// its private key and verifies config against the Admin's public key. Empty
@@ -354,6 +360,7 @@ func Load() (*Config, error) {
 		OTLPEndpoint: l.str("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 
 		PyyolLensEnabled:         l.boolVal("PYYOL_LENS_ENABLED", true),
+		LLMGatewayEnabled:        l.boolVal("PYYOL_LLM_GATEWAY_ENABLED", false),
 		PyyolLensEndpoint:        l.str("PYYOL_LENS_ENDPOINT", ""),
 		PyyolLensAPIKey:          l.str("PYYOL_LENS_API_KEY", ""),
 		PyyolLensProject:         l.str("PYYOL_LENS_PROJECT", "pyyol-arena"),

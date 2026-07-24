@@ -20,6 +20,7 @@
 package llmgateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -40,8 +41,8 @@ type Emitter interface {
 
 // Authenticator resolves a Pyyol agent key to an agent id. ok=false ⇒ 401. The
 // default rejects empty keys and treats a non-empty key as the agent id; production
-// injects a store-backed validator via WithAuthenticator.
-type Authenticator func(key string) (agentID string, ok bool)
+// injects a store-backed validator (idSvc.ResolveAgentKey) via WithAuthenticator.
+type Authenticator func(ctx context.Context, key string) (agentID string, ok bool)
 
 // EventModelCallCompleted mirrors the benchmark package's canonical event so gateway
 // and SDK/arena costs land in one cost-analytics surface.
@@ -80,7 +81,7 @@ func WithHTTPClient(c *http.Client) Option { return func(p *Proxy) { p.client = 
 // WithClock overrides the clock (tests).
 func WithClock(now func() time.Time) Option { return func(p *Proxy) { p.now = now } }
 
-func defaultAuth(key string) (string, bool) {
+func defaultAuth(_ context.Context, key string) (string, bool) {
 	if key == "" {
 		return "", false
 	}
@@ -119,7 +120,7 @@ var hopByHop = map[string]bool{
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. Identify the Pyyol agent (does NOT consume the provider key — that stays in
 	//    Authorization and is forwarded upstream untouched).
-	agentID, ok := p.auth(r.Header.Get("X-Pyyol-Key"))
+	agentID, ok := p.auth(r.Context(), r.Header.Get("X-Pyyol-Key"))
 	if !ok {
 		http.Error(w, `{"error":"pyyol_unauthorized: missing or invalid X-Pyyol-Key"}`, http.StatusUnauthorized)
 		return

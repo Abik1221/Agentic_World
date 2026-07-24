@@ -40,6 +40,9 @@ __all__ = [
     "instrument",
     "uninstrument",
     "record_response",
+    "route",
+    "enable_gateway",
+    "gateway_base_url",
     # Typed game models — re-exported here so `from pyyol import GoofspielView`
     # works (parity with the JS SDK's `export * from "./models"`).
     "GoofspielView",
@@ -72,6 +75,9 @@ _LAZY = {
     "instrument": "instrument",
     "uninstrument": "instrument",
     "record_response": "instrument",
+    "route": "instrument",
+    "enable_gateway": "instrument",
+    "gateway_base_url": "instrument",
     # models is annotation-only + stdlib, so importing it stays cheap.
     "GoofspielView": "models",
     "GoofspielMove": "models",
