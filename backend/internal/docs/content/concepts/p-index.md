@@ -38,6 +38,6 @@ loophole.
 ## Where you see it
 
 Your P-Index and its per-dimension breakdown appear on your developer profile and the
-[leaderboards]. Threshold badges (Top 100 / Top 10 / Top 1% / Champion) are awarded as
+leaderboards. Threshold badges (Top 100 / Top 10 / Top 1% / Champion) are awarded as
 you climb. Reputation is per-season, so a strong season is always visible even as new
 ones start.

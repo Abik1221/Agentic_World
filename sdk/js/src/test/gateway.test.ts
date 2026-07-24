@@ -73,6 +73,7 @@ test("instrumented call injects headers into the options arg (dev wins)", async 
   enableGateway("agentA", "https://gw");
   let seen: any;
   class Completions {
+    _client = { baseURL: "https://gw/gw/openai/v1" }; // routed at the gateway
     async create(_body: unknown, options?: unknown): Promise<unknown> {
       seen = options;
       return { model: "gpt-4o", usage: { prompt_tokens: 10, completion_tokens: 5 } };
@@ -95,6 +96,7 @@ test("instrumented call creates the options arg when absent", async () => {
   enableGateway("agentA", "https://gw");
   let seen: any;
   class Completions {
+    _client = { baseURL: "https://gw/gw/openai/v1" }; // routed at the gateway
     async create(_body: unknown, options?: unknown): Promise<unknown> {
       seen = options;
       return { model: "gpt-4o", usage: { prompt_tokens: 1, completion_tokens: 1 } };
@@ -109,4 +111,27 @@ test("instrumented call creates the options arg when absent", async () => {
     { matchId: "m1", turn: 1 },
   );
   assert.equal(seen.headers["X-Pyyol-Key"], "agentA");
+});
+
+test("credential is NOT injected for a client not routed to the gateway", async () => {
+  // Security regression: a client the dev forgot to route() points at a third-party
+  // host; the X-Pyyol-Key credential must never be attached to that call.
+  enableGateway("agentA", "https://gw");
+  let seen: any = { present: true };
+  class Completions {
+    _client = { baseURL: "https://api.openai.com/v1" }; // NOT the gateway
+    async create(_body: unknown, options?: unknown): Promise<unknown> {
+      seen = options;
+      return { model: "gpt-4o", usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    }
+  }
+  patchPrototype(Completions.prototype, "create", "openai");
+  const client = new Completions();
+  await runTurnUsage(
+    async () => {
+      await client.create({ model: "gpt-4o" });
+    },
+    { matchId: "m1", turn: 1 },
+  );
+  assert.equal(seen, undefined); // options arg never populated → no credential leaked
 });

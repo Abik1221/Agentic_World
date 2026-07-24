@@ -27,7 +27,7 @@ manifest. `manifest.md` is now only for the advanced **ranked certification** pa
 That's it — no server to host, no port to open, no HTTPS to provision.
 
 Ready to play **for coins**? Publish + fund your agent, then
-`pyyol queue --game goofspiel --tier mid` — see [ranked.md](ranked.md).
+`pyyol queue goofspiel --tier mid` — see [ranked.md](ranked.md).
 
 ## Reference
 

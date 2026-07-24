@@ -90,11 +90,32 @@ export function route<T>(client: T, provider?: string): T {
   return client;
 }
 
+/** Best-effort read of the baseURL the provider client will actually call. The patched
+ *  method is bound to a resource whose `_client` holds the configured baseURL. */
+function clientBaseUrl(resource: Any): string {
+  try {
+    const base = resource?._client?.baseURL;
+    return base ? String(base).replace(/\/+$/, "") : "";
+  } catch {
+    return "";
+  }
+}
+
+/** True only when this call's client is pointed at the Pyyol Gateway. Guards header
+ *  injection so the X-Pyyol-Key credential is NEVER sent to a third-party provider
+ *  (e.g. a client the dev forgot to route()) — only to the gateway that issued it. */
+function targetsGateway(resource: Any): boolean {
+  if (!gateway.base) return false;
+  const base = clientBaseUrl(resource);
+  return !!base && base.startsWith(gateway.base);
+}
+
 // injectGatewayHeaders merges the Pyyol identity headers into an LLM call's request
 // options. JS SDKs take per-request headers via a SECOND options arg
 // (create(body, { headers })), so we ensure args[1].headers carries them. Dev-supplied
-// headers win. No-op when routing is off.
-function injectGatewayHeaders(args: Any[]): void {
+// headers win. No-op when routing is off OR when the call does not target the gateway.
+function injectGatewayHeaders(resource: Any, args: Any[]): void {
+  if (!targetsGateway(resource)) return;
   const headers = gatewayHeaders();
   if (!Object.keys(headers).length) return;
   try {
@@ -199,7 +220,7 @@ export function patchPrototype(proto: Any, method: string, provider: string): bo
   const orig = proto[method];
   if (typeof orig !== "function" || orig._pyyolInstrumented) return false;
   const wrapped = async function (this: Any, ...args: Any[]): Promise<Any> {
-    injectGatewayHeaders(args);
+    injectGatewayHeaders(this, args);
     const start = Date.now();
     const resp = await orig.apply(this, args);
     try {

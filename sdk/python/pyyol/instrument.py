@@ -208,9 +208,37 @@ def record_response(resp: Any, *, provider: str = "", latency_ms: int = 0) -> Op
     return info
 
 
-def _inject_gateway_headers(kwargs: Dict[str, Any]) -> None:
+def _client_base_url(resource: Any) -> str:
+    """Best-effort read of the base_url the provider client will actually call. The
+    patched method is bound to a resource (e.g. Completions) whose ``_client`` holds the
+    configured base_url. Returns "" if it can't be determined."""
+    try:
+        client = getattr(resource, "_client", None)
+        base = getattr(client, "base_url", None)
+        return str(base).rstrip("/") if base else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _targets_gateway(resource: Any) -> bool:
+    """True only when this call's client is pointed at the Pyyol Gateway. Guards the
+    identity-header injection so the X-Pyyol-Key credential is NEVER sent to a
+    third-party provider (e.g. a client the dev forgot to route()) — only to the
+    gateway that issued it."""
+    gw = _gateway.get("base", "")
+    if not gw:
+        return False
+    base = _client_base_url(resource)
+    return bool(base) and base.startswith(gw)
+
+
+def _inject_gateway_headers(resource: Any, kwargs: Dict[str, Any]) -> None:
     """Merge the Pyyol identity headers into the call's extra_headers (both OpenAI and
-    Anthropic accept extra_headers). Dev-supplied headers win. No-op when routing off."""
+    Anthropic accept extra_headers). Dev-supplied headers win. No-op when routing off OR
+    when the call does not target the gateway — the credential never leaves for a
+    third-party host."""
+    if not _targets_gateway(resource):
+        return
     headers = gateway_headers()
     if not headers:
         return
@@ -247,7 +275,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
 
         @functools.wraps(orig)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            _inject_gateway_headers(kwargs)
+            _inject_gateway_headers(args[0] if args else None, kwargs)
             start = time.perf_counter()
             resp = await orig(*args, **kwargs)
             _safe_record(resp, provider, start)
@@ -257,7 +285,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
 
         @functools.wraps(orig)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            _inject_gateway_headers(kwargs)
+            _inject_gateway_headers(args[0] if args else None, kwargs)
             start = time.perf_counter()
             resp = orig(*args, **kwargs)
             _safe_record(resp, provider, start)
