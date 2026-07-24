@@ -92,11 +92,16 @@ the frontend docs UI.
 - [x] Typed JS `Adapter<View,Move>` (defaults to unknown; non-breaking). (362bc01)
 - [x] Loud gateway no-op warning (cli.py/cli.ts ranked path). (landed in db9090e)
 - [x] JS `wallet` + `queue` commands (parity with Python). (commit 03ec4d8)
-- [~] `simulate` for all 3 games: docs already honestly say "Goofspiel only today"
-      (fixed in D2). FULL support needs porting the Mafia/Monopoly engines into the
-      SDK simulator — a large future item, not a quick fix.
-- [ ] Deferred (MINOR/risky): footgun move defaults (`MafiaMove.target=0`) — changing
-      the default is a behavior change; leave until intentional.
+- [x] Footgun move default fixed (commit d9d5065): `MafiaMove.target` default -1
+      ("no target") not 0, so a forgotten night-action target is dropped, not applied
+      to seat 0 (verified vs engine.go; no arena change). JS type documented.
+- [x] `simulate` UX (commit d9d5065): mafia/monopoly now route to `pyyol dev` (the
+      real all-games practice loop). Full in-process simulate stays Goofspiel-only BY
+      DESIGN — porting the Mafia/Monopoly engines into the SDK would duplicate complex
+      server-side engines into two languages (drift/maintenance); declined as poor
+      engineering. Docs already honest (D2).
+
+All audit findings are now addressed. build/test/vet/migrate green across the board.
 
 ✅ Repo hazard RESOLVED (commit db9090e): landed the parallel session's games-e2e
 remediation + renumbered the duplicate migration `0053_autoplay_status` → `0059`
