@@ -48,12 +48,22 @@ the frontend docs UI.
       P-Index, per-game deep dives) into the same content dir.
 - [ ] D1-admin: admin CRUD to edit/override a page version without redeploy.
 
-### D2 — Fix the SDK docs/examples in-repo (the markdown + examples devs also read)
-- [ ] Add a real LLM example (Py+JS) using `instrument()`+`route()`; wire into `pyyol init`.
-- [ ] De-stale `sdk/docs/*.md` + both READMEs (commands, auth, hosts); delete the
-      "not yet available" roadmap; purge "plain HTTP / no WebSocket".
-- [ ] Reconcile the two `llms.txt` (one canonical, CI drift-gated); fix `gen_llms.py`
-      host + add `quickstart.md`.
+### D2 — Fix the SDK docs/examples in-repo  ← IN PROGRESS
+- [x] Real LLM example (Py+JS) using `instrument()`+`route()`: `examples/llm_agent.py`,
+      `examples/llm-agent.ts`.
+- [x] De-stale the dangerous docs: `quickstart.md` (deleted the "not yet available"
+      telemetry lie → real "Verified LLM agents" section; fixed `publish --manifest`,
+      PAT→`sk_arena_`, login providers); `simulation.md` (fixed "no WebSocket/plain
+      HTTP" FAQ → real outbound-WS + in-process-simulate + legacy-HTTP); `ranked.md`
+      (`queue <game>` positional, `publish --manifest`, Python-only note).
+- [x] `gen_llms.py`: host `docs.pyyol.com` → `pyyol.com/docs`; added `quickstart.md`
+      + new `verified-telemetry.md` to the corpus; regenerated `llms.txt`/`llms-full.txt`
+      + bundled rules. New `sdk/docs/verified-telemetry.md` authored.
+- [ ] Remaining: `local-runtime.md` auth section (endpoint-secret → `sk_arena_` key) +
+      `pyyol.example` hosts + `pyyol run`→`dev/play`; full `python/js README.md`
+      refresh (command lists, telemetry section, `onavion` CHANGELOG); reconcile
+      `Pyyol_client/public/llms.txt` (separate frontend repo) + CI drift-gate it;
+      wire the LLM example into `pyyol init` (SDK code — D3/later pass).
 
 ### D3 — SDK code fixes (the "SDK later" pass the user will push)
 - [ ] Stop swallowing handler errors (surface in `dev`, Py+JS).

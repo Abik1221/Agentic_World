@@ -19,12 +19,15 @@ import os
 import pathlib
 
 DOCS = pathlib.Path(__file__).resolve().parent
-BASE = os.environ.get("PYYOL_DOCS_BASE_URL", "https://docs.pyyol.com").rstrip("/")
+# The real docs home (matches pyyol.com/docs). Override with PYYOL_DOCS_BASE_URL.
+BASE = os.environ.get("PYYOL_DOCS_BASE_URL", "https://pyyol.com/docs").rstrip("/")
 
 # (file, human title, one-line description) — order = reading order.
 PAGES = [
-    ("README.md", "Overview & 15-minute quick start", "install, log in, scaffold, run a live game"),
-    ("local-runtime.md", "Local-runtime model (primary)", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
+    ("README.md", "Overview", "what Pyyol is + the doc map"),
+    ("quickstart.md", "Quickstart (start here)", "install, log in, scaffold, and run an agent in ~2 minutes"),
+    ("local-runtime.md", "Local-runtime model", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
+    ("verified-telemetry.md", "Verified LLM agents", "instrument()/route(): capture real model, tokens, and cost; the Verified badge"),
     ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Monopoly, Mafia) — the rules"),
     ("ranked.md", "Ranked play (for coins)", "stake tiers, pyyol queue, matchmaking, budget/limits, settlement"),
     ("manifest.md", "Manifest & publishing", "manifest schema, registration, endpoint verification, publishing"),

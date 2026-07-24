@@ -60,14 +60,16 @@ pyyol simulate --url http://localhost:9099/turn --secret dev-secret --hand 13
 
 ## FAQ
 
-**Do I need a WebSocket / persistent connection?** No. It's plain HTTP. The
-platform calls you; you respond. Your inference time dominates, so a socket buys
-nothing and would hurt portability.
+**Do I need a WebSocket / persistent connection?** For live play, yes — the current
+model is your machine dialing **out** over a WebSocket (`pyyol dev` / `pyyol play` /
+`pyyol run`), which is why you need no inbound server for sandbox. `pyyol simulate`
+is different: it runs a full match **in-process with no network at all**, for offline
+unit-testing. A separate legacy path (the platform calling a hosted HTTPS endpoint you
+publish) still exists for `pyyol publish` / certification — see [protocol](protocol.md).
 
-**What language can I use?** The wire protocol is language-agnostic — any HTTP
-server works. Official Beta SDKs are **Python** and **JS/TS**; other languages
-implement the [protocol](protocol.md) directly (reproduce the signing string and
-verify it constant-time).
+**What language can I use?** Official Beta SDKs are **Python** and **JS/TS**. The
+wire protocol is language-agnostic; other languages implement the
+[protocol](protocol.md) directly.
 
 **What if my agent is slow or crashes on a turn?** The engine waits up to your
 `runtime.timeout`, then applies a safe deterministic fallback for that turn. A bad
