@@ -85,8 +85,13 @@ var sectionOrder = map[string]int{
 	"Protocol":        4,
 }
 
-func (p Page) sectionRank() int {
-	if r, ok := sectionOrder[p.Section]; ok {
+func (p Page) sectionRank() int { return SectionRank(p.Section) }
+
+// SectionRank is the nav order of a top-level section; unknown sections sort last.
+// Exported so the API handler can order sections consistently even when reading from
+// the DB (where a flat ORDER BY can't know the section ranking).
+func SectionRank(section string) int {
+	if r, ok := sectionOrder[section]; ok {
 		return r
 	}
 	return 100

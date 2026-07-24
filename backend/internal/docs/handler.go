@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"net/http"
+	"sort"
 
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
@@ -60,7 +61,9 @@ func (h *Handler) tree(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "docs_unavailable"})
 		return
 	}
-	// Group into sections, preserving the query's order (already sorted by ord).
+	// Group into sections. Pages arrive ordered by (ord, slug) — correct WITHIN a
+	// section — but the DB can't know the section nav ranking, so sort the sections
+	// themselves by docs.SectionRank afterward (Getting Started → SDK → Games → …).
 	var sections []navSection
 	idx := map[string]int{}
 	for _, p := range pages {
@@ -74,6 +77,9 @@ func (h *Handler) tree(w http.ResponseWriter, r *http.Request) {
 			Slug: p.Slug, Title: p.Title, Game: p.Game, Category: p.Category, Order: p.Order,
 		})
 	}
+	sort.SliceStable(sections, func(a, b int) bool {
+		return SectionRank(sections[a].Section) < SectionRank(sections[b].Section)
+	})
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	httpx.JSON(w, http.StatusOK, map[string]any{"version": version, "sections": sections})
 }
