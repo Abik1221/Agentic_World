@@ -155,6 +155,7 @@ export class RuntimeConnector {
   private nudged = false; // print the "upgrade available" notice at most once
   private registered = false; // true once this session's register succeeded
   private refreshAttempts = 0; // per-connection guard against a refresh loop
+  private turnNo = 0; // monotonic per-connection turn counter (telemetry attribution fallback)
   // Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
   // Correlated to the match trace so the agent's model/tool calls render with
   // the platform's authoritative gateway spans.
@@ -373,6 +374,11 @@ export class RuntimeConnector {
         break;
       case TURN: {
         const view = frame.payload ?? {};
+        this.turnNo++;
+        // Per-turn index for telemetry attribution. Goofspiel has `round`, Mafia has
+        // `day`; Monopoly has neither, so fall back to the monotonic per-match turn
+        // counter — otherwise X-Pyyol-Turn was always 0 for 2/3 games.
+        const turnNo = Number(view.round ?? view.day ?? 0) || this.turnNo;
         // Bracket the developer's handler in a Lens span AND a turn-local usage
         // accumulator. Inside decideTurn the author can reach the span via
         // pyyol.currentSpan(); if instrument() is active, every LLM call is captured
@@ -384,12 +390,12 @@ export class RuntimeConnector {
               {
                 matchId: (view.match_id as string) ?? "",
                 game: (view.game as string) ?? "",
-                round: Number(view.round ?? 0) || 0,
+                round: turnNo,
                 agentId: this.opts.agentId,
               },
               () => this.agent.decideTurn(view),
             ),
-          { matchId: (view.match_id as string) ?? "", turn: Number(view.round ?? 0) || 0 },
+          { matchId: (view.match_id as string) ?? "", turn: turnNo },
         );
         const { status, body } = result;
         // Auto-attach captured model/token/cost to the move so the arena benchmark
@@ -408,7 +414,12 @@ export class RuntimeConnector {
           send({ t: RESPONSE, id: frame.id ?? "", payload: body });
           this.feed("turn", summarizeMove(frame.payload?.game ?? "", body));
         } else {
-          send({ t: RESPONSE, id: frame.id ?? "", error: (body as any)?.error ?? "handler_error" });
+          const err = (body as any)?.error ?? "handler_error";
+          const detail = (body as any)?.message || err;
+          // Surface the REAL handler error in the feed (not just "handler_error"), so
+          // a crashing step() is visible in `pyyol dev`.
+          send({ t: RESPONSE, id: frame.id ?? "", error: err });
+          this.feed("error", `turn ${this.turnNo}: ${detail} → fallback`);
         }
         break;
       }

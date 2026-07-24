@@ -380,6 +380,10 @@ class RuntimeConnector:
         view = frame.get("payload") or {}
         self._turn_no += 1
         game = view.get("game", "")
+        # Per-turn index for telemetry attribution. Goofspiel has `round`, Mafia has
+        # `day`; Monopoly has neither numeric field, so fall back to the monotonic
+        # per-match turn counter — otherwise X-Pyyol-Turn was always 0 for 2/3 games.
+        turn_no = int(view.get("round") or view.get("day") or 0) or self._turn_no
         started = time.perf_counter()
         # Bracket the developer's handler in a Lens span AND a turn-local usage
         # accumulator. Inside on_turn the author can reach the span via
@@ -389,9 +393,9 @@ class RuntimeConnector:
         with self._tracer.turn_span(
             match_id=view.get("match_id", ""),
             game=game,
-            round_no=int(view.get("round", 0) or 0),
+            round_no=turn_no,
             agent_id=self.agent_id,
-        ), turn_usage(match_id=view.get("match_id", ""), turn=int(view.get("round", 0) or 0)) as usage:
+        ), turn_usage(match_id=view.get("match_id", ""), turn=turn_no) as usage:
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
         # Auto-attach captured model/token/cost to the move so the arena benchmark
@@ -407,10 +411,13 @@ class RuntimeConnector:
             send({"t": RESPONSE, "id": rid, "payload": move})
             self._emit("decision", f"turn {self._turn_no}: {_summarize_move(game, move)}", ms=ms)
         else:
-            # Signal an error so the platform applies its deterministic fallback.
-            send({"t": RESPONSE, "id": rid, "error": move.get("error", "handler_error")})
+            # Signal an error so the platform applies its deterministic fallback, and
+            # surface the REAL handler error in the feed (not just "handler error").
+            err = move.get("error", "handler_error")
+            detail = move.get("message") or err
+            send({"t": RESPONSE, "id": rid, "error": err})
             self._emit(
-                "error", f"turn {self._turn_no}: handler error → fallback", level=logging.WARNING
+                "error", f"turn {self._turn_no}: {detail} → fallback", level=logging.WARNING
             )
 
     @staticmethod

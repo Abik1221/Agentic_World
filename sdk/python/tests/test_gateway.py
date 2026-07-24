@@ -135,3 +135,76 @@ def test_instrumented_call_injects_headers(monkeypatch):
     finally:
         for n in names:
             sys.modules.pop(n, None)
+
+
+class _FakeWS:
+    def __init__(self, incoming):
+        import json
+        import queue as _q
+
+        self._in = _q.Queue()
+        for f in incoming:
+            self._in.put(json.dumps(f))
+        self.sent = []
+
+    def send(self, msg):
+        import json
+
+        self.sent.append(json.loads(msg))
+
+    def recv(self, *_a, **_k):
+        import queue as _q
+
+        try:
+            return self._in.get_nowait()
+        except _q.Empty:
+            raise ConnectionError("closed")
+
+    def close(self):
+        pass
+
+
+def test_turn_attribution_uses_day_for_mafia(monkeypatch):
+    """Regression: X-Pyyol-Turn was always 0 for Mafia/Monopoly (no `round`). It must
+    use `day` (Mafia) so per-turn telemetry attribution isn't collapsed."""
+    import sys
+
+    from pyyol import Agent
+    from pyyol.runtime import RuntimeConnector
+
+    recorder: dict = {}
+    Completions, names = _fake_openai_module(recorder)
+    try:
+        instrument(["openai"])
+        enable_gateway("agentM", "https://gw")
+        client = Completions()
+
+        agent = Agent(supported_games=["mafia"], name="t")
+
+        @agent.on_turn("mafia")
+        def decide(v):
+            client.create(model="gpt-4o", messages=[])
+            return {"action": "vote", "target": 1}
+
+        ws = _FakeWS(
+            [
+                {"t": "hello", "version": "1.0"},
+                {"t": "registered", "agent_id": "ag"},
+                {"t": "turn", "id": "r1", "payload": {"game": "mafia", "match_id": "m1", "day": 3, "your_seat": 0, "legal": ["vote"]}},
+            ]
+        )
+        conn = RuntimeConnector(
+            agent, url="ws://x", agent_id="agentM", token="s", games=["mafia"],
+            heartbeat_interval=100, _connect=lambda *a, **k: ws,
+        )
+        try:
+            conn._session()
+        except ConnectionError:
+            pass
+
+        eh = recorder["kwargs"]["extra_headers"]
+        assert eh["X-Pyyol-Turn"] == "3"  # the Mafia `day`, not 0
+        assert eh["X-Pyyol-Match"] == "m1"
+    finally:
+        for n in names:
+            sys.modules.pop(n, None)

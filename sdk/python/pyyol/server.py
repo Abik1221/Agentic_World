@@ -178,9 +178,12 @@ class Agent:
         view = parse_view(data)
         try:
             move = handler(view)
-        except Exception:  # a crashing handler must not take the server down
+        except Exception as e:  # a crashing handler must not take the server down
+            # Log the full traceback AND return the message so the runtime can surface
+            # it in the `pyyol dev` feed — a silently-swallowed crash is the #1
+            # "why doesn't my agent work" trap. The engine still applies a fallback.
             log.exception("turn handler raised for game %r", game)
-            return 500, {"error": "handler_error"}
+            return 500, {"error": "handler_error", "message": str(e)}
         return 200, move_to_dict(move)
 
     # --- shared handler invocation (used by both the HTTP path and the socket
