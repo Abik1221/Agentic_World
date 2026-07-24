@@ -42,8 +42,13 @@ the frontend docs UI.
 - [x] Public API `internal/docs/handler.go`: `GET /v1/docs` (nav tree), `/v1/docs/*`
       (page, nested slug), `/v1/docs/versions`. Tests: parser + handler green;
       build/vet/gofmt clean.
-- [ ] D1-ui: frontend docs UI (separate `Pyyol_client` repo) — render the tree +
-      Markdown, with a version selector; link "Docs" in nav.
+- [x] D1-ui: frontend docs UI (in `Pyyol_client`, the gitignored frontend repo —
+      commit there): `lib/arena-docs.ts` (server-side client for `/v1/docs`),
+      `components/docs/DocsExplorer.tsx` (sectioned sidebar + version selector +
+      Markdown, deep-linkable via `?p=&v=`), `app/docs/page.tsx` rewired to it. Nav
+      already links `/docs`. Verified END-TO-END against a real arena handler + repo +
+      Postgres (screenshots): nav order, version, Markdown, nested-slug pages all render.
+      Backend fix from this: section nav-order bug (committed here, ef83515).
 - [ ] D1-more: author the remaining pages (protocol/local-runtime, manifest, wallet,
       P-Index, per-game deep dives) into the same content dir.
 - [ ] D1-admin: admin CRUD to edit/override a page version without redeploy.

@@ -82,7 +82,8 @@ var sectionOrder = map[string]int{
 	"SDK":             1,
 	"Games":           2,
 	"Ranked":          3,
-	"Protocol":        4,
+	"Concepts":        4,
+	"Protocol":        5,
 }
 
 func (p Page) sectionRank() int { return SectionRank(p.Section) }
