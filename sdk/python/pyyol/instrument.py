@@ -169,7 +169,9 @@ def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def record_response(resp: Any, *, provider: str = "", latency_ms: int = 0) -> Optional[Dict[str, Any]]:
+def record_response(
+    resp: Any, *, provider: str = "", latency_ms: int = 0
+) -> Optional[Dict[str, Any]]:
     """Record usage from a provider response: compute cost, add to the turn
     accumulator, and emit a Lens ``model_call`` span. Returns the extracted usage (or
     None). Also the public manual hook for clients this module doesn't auto-wrap.
@@ -252,7 +254,9 @@ def _inject_gateway_headers(resource: Any, kwargs: Dict[str, Any]) -> None:
 
 def _safe_record(resp: Any, provider: str, start: float) -> None:
     try:
-        record_response(resp, provider=provider, latency_ms=int((time.perf_counter() - start) * 1000))
+        record_response(
+            resp, provider=provider, latency_ms=int((time.perf_counter() - start) * 1000)
+        )
     except Exception:  # noqa: BLE001 - instrumentation must never break the dev's call
         pass
 

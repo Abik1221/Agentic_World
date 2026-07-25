@@ -390,12 +390,15 @@ class RuntimeConnector:
         # pyyol.current_span(); if pyyol.instrument() is active, every LLM call is
         # captured into the accumulator automatically. The accumulator is always on
         # (independent of Lens) so usage rides the move to the arena regardless.
-        with self._tracer.turn_span(
-            match_id=view.get("match_id", ""),
-            game=game,
-            round_no=turn_no,
-            agent_id=self.agent_id,
-        ), turn_usage(match_id=view.get("match_id", ""), turn=turn_no) as usage:
+        with (
+            self._tracer.turn_span(
+                match_id=view.get("match_id", ""),
+                game=game,
+                round_no=turn_no,
+                agent_id=self.agent_id,
+            ),
+            turn_usage(match_id=view.get("match_id", ""), turn=turn_no) as usage,
+        ):
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
         # Auto-attach captured model/token/cost to the move so the arena benchmark
@@ -416,9 +419,7 @@ class RuntimeConnector:
             err = move.get("error", "handler_error")
             detail = move.get("message") or err
             send({"t": RESPONSE, "id": rid, "error": err})
-            self._emit(
-                "error", f"turn {self._turn_no}: {detail} → fallback", level=logging.WARNING
-            )
+            self._emit("error", f"turn {self._turn_no}: {detail} → fallback", level=logging.WARNING)
 
     @staticmethod
     def _event_dict(frame: Dict[str, Any]) -> Dict[str, Any]:

@@ -44,10 +44,12 @@ func (f *fakeStore) Countries(_ context.Context, limit, offset int) ([]CountryCo
 func (f *fakeStore) Summary(_ context.Context) (Summary, error) { return f.summary, nil }
 
 func TestNormalizeCountry(t *testing.T) {
-	cases := map[string]string{"us": "US", "GB": "GB", "  de ": "DE", "": "XX", "USA": "XX", "1A": "XX", "u1": "XX"}
-	for in, want := range cases {
-		if got := NormalizeCountry(in); got != want {
-			t.Errorf("NormalizeCountry(%q) = %q, want %q", in, got, want)
+	cases := []struct{ in, want string }{
+		{"us", "US"}, {"GB", "GB"}, {"  de ", "DE"}, {"", "XX"}, {"USA", "XX"}, {"1A", "XX"}, {"u1", "XX"},
+	}
+	for _, c := range cases {
+		if got := NormalizeCountry(c.in); got != c.want {
+			t.Errorf("NormalizeCountry(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

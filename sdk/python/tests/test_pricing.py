@@ -54,14 +54,18 @@ def test_cost_math_input_output_split():
 
 def test_cached_tokens_billed_at_cached_rate_as_subset_of_prompt():
     # 1000 prompt tokens, 400 of them cached. gpt-4o cached rate is $1.25/1M.
-    cost = pricing.estimate_cost("gpt-4o", prompt_tokens=1000, completion_tokens=0, cached_tokens=400)
+    cost = pricing.estimate_cost(
+        "gpt-4o", prompt_tokens=1000, completion_tokens=0, cached_tokens=400
+    )
     expected = (600 * 2.50 + 400 * 1.25) / 1_000_000
     assert cost == pytest.approx(expected)
 
 
 def test_cached_tokens_clamped_to_prompt():
     # Cached can't exceed prompt; extra is ignored rather than double-counted.
-    cost = pricing.estimate_cost("gpt-4o", prompt_tokens=100, completion_tokens=0, cached_tokens=500)
+    cost = pricing.estimate_cost(
+        "gpt-4o", prompt_tokens=100, completion_tokens=0, cached_tokens=500
+    )
     expected = (100 * 1.25) / 1_000_000
     assert cost == pytest.approx(expected)
 

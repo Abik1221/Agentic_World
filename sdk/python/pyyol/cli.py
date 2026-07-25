@@ -1104,7 +1104,9 @@ def _print_autoplay_status(body: dict) -> None:
     if at := body.get("last_status_at"):
         print(f"  as of {at}")
     if status == "blocked":
-        print("  fix the reason above (e.g. connect your agent with `pyyol run`), and it resumes automatically.")
+        print(
+            "  fix the reason above (e.g. connect your agent with `pyyol run`), and it resumes automatically."
+        )
 
 
 def _autoplay_opts(args, cfg) -> tuple:
@@ -1466,7 +1468,9 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
             from . import instrument as _instrument
 
             _instrument.enable_gateway(token, DEFAULT_GATEWAY)
-            print(f"{OK} verified gateway routing on ({DEFAULT_GATEWAY}) — call pyyol.route(client)")
+            print(
+                f"{OK} verified gateway routing on ({DEFAULT_GATEWAY}) — call pyyol.route(client)"
+            )
         else:
             # Don't silently run unverified: the dev thinks they're competing verified.
             print(

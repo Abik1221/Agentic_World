@@ -35,7 +35,7 @@ import json
 import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Coroutine, Dict, Optional, Tuple, cast
 
 from . import __version__
 from .models import (
@@ -184,7 +184,8 @@ class Agent:
             # awaitable move is run to completion here (the runtime/serve loops are
             # synchronous, so there's no already-running loop to clash with).
             if inspect.isawaitable(move):
-                move = asyncio.run(move)
+                # isawaitable narrows to Awaitable; asyncio.run wants a Coroutine.
+                move = asyncio.run(cast("Coroutine[Any, Any, Any]", move))
         except Exception as e:  # a crashing handler must not take the server down
             # Log the full traceback AND return the message so the runtime can surface
             # it in the `pyyol dev` feed — a silently-swallowed crash is the #1

@@ -20,7 +20,7 @@ func newFakeAdmin() *fakeAdminStore {
 }
 
 func (f *fakeAdminStore) ListPages(_ context.Context, v string) ([]Page, error) {
-	return f.ListFull(nil, v)
+	return f.ListFull(context.TODO(), v)
 }
 func (f *fakeAdminStore) GetPage(_ context.Context, v, slug string) (Page, bool, error) {
 	p, ok := f.pages[v][slug]

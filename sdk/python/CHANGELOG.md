@@ -4,6 +4,33 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.3.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.2.0...py-v1.3.0) (2026-07-25)
+
+
+### Features
+
+* **gateway:** Phase 4b+4c — wire LLM Gateway into server + SDK routing ([56a5c85](https://github.com/Abik1221/Agentic_World/commit/56a5c85d850ca9d889a58af3d520e9a3fe978af9))
+* **sdk:** G2 — anonymous once-per-version install ping (Python + JS) ([7ecb3e2](https://github.com/Abik1221/Agentic_World/commit/7ecb3e20d38f7e839dbd86c18bf6320dacd428a2))
+* **sdk:** Phase 1 — automatic LLM usage capture (Python) ([960cbcf](https://github.com/Abik1221/Agentic_World/commit/960cbcfc8f6de8c71b722148bff582efbbd42e52))
+* **sdk:** Phase 4c-wire — CLI auto-enables gateway routing in ranked ([e1dc4a7](https://github.com/Abik1221/Agentic_World/commit/e1dc4a7d4e1b827f231d5f7807b0bd38d12d8a8a))
+
+
+### Bug Fixes
+
+* **sdk-py:** green the release CI — mypy Coroutine cast + ruff format ([54e4bcb](https://github.com/Abik1221/Agentic_World/commit/54e4bcbbc2e2a74fe4ecee80ceb2b2f9ed55a079))
+* **sdk,docs:** pre-beta hardening — close gateway-credential leak, docs blockers, API parity ([9ce107b](https://github.com/Abik1221/Agentic_World/commit/9ce107b005cfd70488a14f0de32c397cb05e4222))
+* **sdk:** D3 — async step (Python) + typed generic Adapter (JS) ([362bc01](https://github.com/Abik1221/Agentic_World/commit/362bc01f60b0b96536c99c2715eb4bba1ce380ef))
+* **sdk:** D3 — MafiaMove no-target sentinel + honest simulate UX ([d9d5065](https://github.com/Abik1221/Agentic_World/commit/d9d506501e860d6176aa272405bd552856c8415e))
+* **sdk:** D3 — surface handler errors + fix per-turn telemetry attribution ([fd9566c](https://github.com/Abik1221/Agentic_World/commit/fd9566c6046cfde5ba6642adad18451ee81a6780))
+
+
+### Documentation
+
+* **sdk:** D2 — fix stale/wrong SDK docs + add real LLM examples ([7432451](https://github.com/Abik1221/Agentic_World/commit/7432451ece3a73df047404b687a2a7504812d274))
+* **sdk:** D2 cont. — fix local-runtime auth/hosts + add telemetry to READMEs ([9525a87](https://github.com/Abik1221/Agentic_World/commit/9525a870b661e398da78d66775544d57e879bb7a))
+* **sdk:** D2 polish — complete README command lists + onavion→pyyol changelog ([296b610](https://github.com/Abik1221/Agentic_World/commit/296b610ffee9d11dff9699f0cbfe0a3b743b6971))
+* **sdk:** scaffold telemetry pointer in `pyyol init` + reconcile client llms.txt ([eb82514](https://github.com/Abik1221/Agentic_World/commit/eb8251453347fede2d4da7db055000a96c92cb11))
+
 ## [1.2.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.1.0...py-v1.2.0) (2026-07-23)
 
 
