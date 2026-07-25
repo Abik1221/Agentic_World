@@ -164,7 +164,7 @@ func (r *LedgerRepo) UserBalance(ctx context.Context, userPublicID string) (int6
 	return bal, err
 }
 
-func (r *LedgerRepo) History(ctx context.Context, agentPublicID string, limit int) ([]ledger.Line, error) {
+func (r *LedgerRepo) History(ctx context.Context, agentPublicID string, limit, offset int) ([]ledger.Line, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT t.public_id, t.kind, e.amount, t.created_at
 		 FROM ledger_entries e
@@ -173,7 +173,7 @@ func (r *LedgerRepo) History(ctx context.Context, agentPublicID string, limit in
 		 JOIN agents  a ON a.id = w.agent_id
 		 WHERE a.public_id = $1
 		 ORDER BY e.id DESC
-		 LIMIT $2`, agentPublicID, limit)
+		 LIMIT $2 OFFSET $3`, agentPublicID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func (r *LedgerRepo) History(ctx context.Context, agentPublicID string, limit in
 	return out, rows.Err()
 }
 
-func (r *LedgerRepo) UserHistory(ctx context.Context, userPublicID string, limit int) ([]ledger.Line, error) {
+func (r *LedgerRepo) UserHistory(ctx context.Context, userPublicID string, limit, offset int) ([]ledger.Line, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT t.public_id, t.kind, e.amount, t.created_at
 		 FROM ledger_entries e
@@ -198,7 +198,7 @@ func (r *LedgerRepo) UserHistory(ctx context.Context, userPublicID string, limit
 		 JOIN users  u ON u.id = w.user_id
 		 WHERE u.public_id = $1
 		 ORDER BY e.id DESC
-		 LIMIT $2`, userPublicID, limit)
+		 LIMIT $2 OFFSET $3`, userPublicID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

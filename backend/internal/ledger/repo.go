@@ -22,11 +22,13 @@ type Repo interface {
 	// UserBalance returns an owner's treasury wallet balance.
 	UserBalance(ctx context.Context, userPublicID string) (int64, error)
 
-	// History returns an agent's ledger lines, newest first, capped at limit.
-	History(ctx context.Context, agentPublicID string, limit int) ([]Line, error)
+	// History returns an agent's ledger lines, newest first, capped at limit, skipping
+	// offset rows (keyset-free cursor for transaction paging).
+	History(ctx context.Context, agentPublicID string, limit, offset int) ([]Line, error)
 
-	// UserHistory returns an owner's treasury ledger lines, newest first.
-	UserHistory(ctx context.Context, userPublicID string, limit int) ([]Line, error)
+	// UserHistory returns an owner's treasury ledger lines, newest first, capped at
+	// limit, skipping offset rows.
+	UserHistory(ctx context.Context, userPublicID string, limit, offset int) ([]Line, error)
 
 	// Reconcile returns every wallet whose cached balance != Σ of its entries.
 	// An empty slice means the books balance.

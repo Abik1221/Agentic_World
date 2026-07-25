@@ -27,8 +27,8 @@ func (f *fakeRepo) Apply(_ context.Context, in ledger.ApplyInput) (ledger.ApplyR
 }
 func (f *fakeRepo) Balance(context.Context, string) (int64, error)            { return 0, nil }
 func (f *fakeRepo) UserBalance(context.Context, string) (int64, error)        { return 0, nil }
-func (f *fakeRepo) History(context.Context, string, int) ([]ledger.Line, error)     { return nil, nil }
-func (f *fakeRepo) UserHistory(context.Context, string, int) ([]ledger.Line, error) { return nil, nil }
+func (f *fakeRepo) History(context.Context, string, int, int) ([]ledger.Line, error)     { return nil, nil }
+func (f *fakeRepo) UserHistory(context.Context, string, int, int) ([]ledger.Line, error) { return nil, nil }
 func (f *fakeRepo) Reconcile(context.Context) ([]ledger.Drift, error)         { return nil, nil }
 
 func newSvc(repo ledger.Repo) *ledger.Service {

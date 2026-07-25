@@ -26,10 +26,10 @@ func (f *fakeLedger) Post(_ context.Context, t ledger.Txn) (ledger.ApplyResult, 
 }
 func (f *fakeLedger) Balance(context.Context, string) (int64, error)     { return f.balance, nil }
 func (f *fakeLedger) UserBalance(context.Context, string) (int64, error) { return f.balance, nil }
-func (f *fakeLedger) History(context.Context, string, int) ([]ledger.Line, error) {
+func (f *fakeLedger) History(context.Context, string, int, int) ([]ledger.Line, error) {
 	return nil, nil
 }
-func (f *fakeLedger) UserHistory(context.Context, string, int) ([]ledger.Line, error) {
+func (f *fakeLedger) UserHistory(context.Context, string, int, int) ([]ledger.Line, error) {
 	return nil, nil
 }
 

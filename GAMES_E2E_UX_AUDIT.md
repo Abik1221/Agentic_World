@@ -155,9 +155,26 @@ their game lobbies; use sandbox auto-play to practice them."
 
 Tests: `TestSupportsGame` (manifest), `TestEnqueueRejectsIneligibleAgent` (matchmaking).
 
-**Still open (future feature, NOT this pass):** actual N-player *ranked* matchmaking
-for mafia/monopoly (a table-builder pooling distinct-owner staked agents). Until then
-staked mafia/monopoly runs through the manual lobbies.
+**Update — N-player ranked matchmaking now BUILT:** the "future feature" below is
+done. New [`internal/groupmatch`](backend/internal/groupmatch) package is the
+N-player sibling of the 2-player matcher: it pools distinct-owner staked agents per
+`(game, bid)`, widens the rating band over wait time, atomically claims the whole
+group before creating a table, and drives each game's existing `CreateTable`+`Join`
+(so all escrow / limits / anti-collusion carry over — no reimplemented money path).
+A partial fill self-heals via the waiting-lobby TTL sweeper. Persisted in a new
+`group_queue` table (migration `0060`); agent-facing at `POST /v1/group-queue`;
+`pyyol ranked mafia|monopoly` (Python + JS CLIs) route here automatically. Mafia
+targets 12 seats, Monopoly its `MinPlayers`. Unit tests cover full-group formation,
+distinct-owner, band-widening, claim-before-create, release-on-failure, and the
+12-seat Mafia roster.
+>
+> **Auto-play integration — DONE:** the reconciler's ranked path now routes by game —
+> Mafia/Monopoly → the group queue, Goofspiel → the 2-player queue — using the
+> Setting's existing `Games[0]` as the ranked game (empty → Goofspiel; the CLI already
+> fills it from `--games`/`pyyol.toml`). The enable-time gate was generalized from
+> "Goofspiel-only" to "the agent must declare whatever game it will ranked-play." So
+> hands-free ranked auto-play now works for **all three games**. New tests cover
+> group-vs-2-player routing and already-queued skip.
 
 ---
 

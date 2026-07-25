@@ -18,8 +18,8 @@ type ledgerPort interface {
 	Post(ctx context.Context, t ledger.Txn) (ledger.ApplyResult, error)
 	Balance(ctx context.Context, agentPublicID string) (int64, error)
 	UserBalance(ctx context.Context, userPublicID string) (int64, error)
-	History(ctx context.Context, agentPublicID string, limit int) ([]ledger.Line, error)
-	UserHistory(ctx context.Context, userPublicID string, limit int) ([]ledger.Line, error)
+	History(ctx context.Context, agentPublicID string, limit, offset int) ([]ledger.Line, error)
+	UserHistory(ctx context.Context, userPublicID string, limit, offset int) ([]ledger.Line, error)
 }
 
 // Repo supplies the read-side facts the wallet/limit logic needs. All queries

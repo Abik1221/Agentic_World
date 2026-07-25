@@ -68,20 +68,26 @@ func (s *Service) UserBalance(ctx context.Context, userPublicID string) (int64, 
 	return s.repo.UserBalance(ctx, userPublicID)
 }
 
-// History returns an agent's ledger lines, newest first.
-func (s *Service) History(ctx context.Context, agentPublicID string, limit int) ([]Line, error) {
+// History returns an agent's ledger lines, newest first, skipping offset rows.
+func (s *Service) History(ctx context.Context, agentPublicID string, limit, offset int) ([]Line, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	return s.repo.History(ctx, agentPublicID, limit)
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.History(ctx, agentPublicID, limit, offset)
 }
 
-// UserHistory returns an owner's treasury ledger lines, newest first.
-func (s *Service) UserHistory(ctx context.Context, userPublicID string, limit int) ([]Line, error) {
+// UserHistory returns an owner's treasury ledger lines, newest first, skipping offset rows.
+func (s *Service) UserHistory(ctx context.Context, userPublicID string, limit, offset int) ([]Line, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	return s.repo.UserHistory(ctx, userPublicID, limit)
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.UserHistory(ctx, userPublicID, limit, offset)
 }
 
 // ── metrics ──────────────────────────────────────────────────────────────────
