@@ -8,9 +8,16 @@ import (
 
 // monopoly.go mirrors mafia.go for Monopoly: agent-vs-agent, entry-fee pooling.
 // Every seated agent stakes the entry fee into escrow at match start; the winning
-// seat takes the reward pool and the platform takes its rake at finish. Unlike
-// mafia this path does NOT route through the anti-fraud hold gate yet — settlement
-// is direct + idempotent; a held-review/replay parity pass is a follow-up.
+// seat takes the reward pool and the platform takes its rake at finish. Like mafia,
+// settlement routes through the anti-fraud hold gate: a flagged match retains escrow
+// and persists its computed split for a later admin release (SettleHeld), so a
+// colluded/flagged staked Monopoly table can never auto-pay out.
+
+// heldMonopolyGrossKey is a sentinel entry stashed in a held monopoly settlement's
+// payouts map to carry the pool `gross` across a hold→release. It is NOT an agent id
+// (agent public ids are "agt_…"), so SettleHeld can both detect a Monopoly hold and
+// recover the gross without a schema/interface change. Stripped before payout.
+const heldMonopolyGrossKey = "__pyyol_monopoly_gross__"
 
 // StakeMonopolyTable escrows every seated agent's entry fee in one atomic txn.
 // Idempotency key stake:{match}. Implements monopoly.Wallet.StakeTable via adapter.
@@ -40,14 +47,36 @@ func (s *Service) StakeMonopolyTable(ctx context.Context, matchPublicID string, 
 	return nil
 }
 
-// SettleMonopolyTable pays the winning seat its reward pool plus the platform rake
-// from escrow. `gross` is the full staked pool (agents × entryFee); any floor-division
-// remainder after payouts + fee stays with platform revenue so escrow always zeroes
-// out. Idempotent via the shared settle:{match} key.
+// SettleMonopolyTable settles a finished Monopoly table UNLESS the anti-fraud gate
+// holds it, mirroring Mafia. On a hold the pool stays in escrow and the computed split
+// (with the gross) is persisted for a later admin release (SettleHeld). `gross` is the
+// full staked pool (agents × entryFee).
 func (s *Service) SettleMonopolyTable(ctx context.Context, matchPublicID string, gross, platformFee int64, payouts map[string]int64) error {
 	if gross <= 0 {
 		return nil // practice table — nothing to move
 	}
+	allowed, err := s.gate.Allow(ctx, matchPublicID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		// Held for review: persist the split + gross so SettleHeld replays it exactly.
+		s.m.heldPayouts.Inc()
+		held := make(map[string]int64, len(payouts)+1)
+		for ag, amt := range payouts {
+			held[ag] = amt
+		}
+		held[heldMonopolyGrossKey] = gross
+		return s.repo.SaveHeldSettlement(ctx, matchPublicID, platformFee, held)
+	}
+	return s.settleMonopoly(ctx, matchPublicID, gross, platformFee, payouts)
+}
+
+// settleMonopoly posts the escrow→winner(+rake) split for a Monopoly table. Any
+// floor-division remainder after payouts + fee stays with platform revenue so escrow
+// always zeroes out. Idempotent via the shared disburse:{match} key. Gate-free core,
+// used by SettleMonopolyTable (unheld) and SettleHeld (admin release).
+func (s *Service) settleMonopoly(ctx context.Context, matchPublicID string, gross, platformFee int64, payouts map[string]int64) error {
 	postings := []ledger.Posting{{Wallet: ledger.SystemWallet(ledger.SysEscrow), Amount: -gross}}
 	if platformFee > 0 {
 		postings = append(postings, ledger.Posting{Wallet: ledger.SystemWallet(ledger.SysPlatformRevenue), Amount: platformFee})

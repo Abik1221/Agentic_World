@@ -312,11 +312,11 @@ type denyGate struct{}
 
 func (denyGate) Allow(context.Context, string) (bool, error) { return false, nil }
 
-// TestMoneyFlowE2E_MonopolyBypassesFraudGate proves the gap flagged in review: when the
-// anti-fraud gate HOLDS a match, Mafia correctly retains escrow for admin review, but
-// Monopoly settles anyway — colluders on a staked Monopoly table can cash out with no
-// hold ever applied.
-func TestMoneyFlowE2E_MonopolyBypassesFraudGate(t *testing.T) {
+// TestMoneyFlowE2E_MonopolyRespectsFraudGate verifies the fix: under a deny-all gate,
+// BOTH Mafia and Monopoly now HOLD escrow (winner unpaid, pending review) instead of
+// auto-paying, and a cleared hold releases the exact split via SettleHeld. This closes
+// the earlier gap where staked Monopoly settled straight through a flag.
+func TestMoneyFlowE2E_MonopolyRespectsFraudGate(t *testing.T) {
 	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set PYYOL_TEST_DATABASE_URL")
@@ -365,24 +365,35 @@ func TestMoneyFlowE2E_MonopolyBypassesFraudGate(t *testing.T) {
 	}
 	t.Logf("✅ Mafia respects the gate: escrow retained, winner unpaid (held for review)")
 
-	// ── Monopoly under the SAME DENY gate: settles anyway (the gap) ──
-	monoID := fmt.Sprintf("m_mono_bypass_%d", time.Now().UnixNano())
+	// ── Monopoly under the SAME DENY gate: now HOLDS (gap fixed) ──
+	monoID := fmt.Sprintf("m_mono_hold_%d", time.Now().UnixNano())
 	esc1 := sysBalance(t, pool, ledger.SysEscrow)
 	if err := walletSvc.StakeMonopolyTable(ctx, monoID, trio, fee); err != nil {
 		t.Fatalf("mono stake: %v", err)
 	}
 	wBefore2, _ := ledgerSvc.Balance(ctx, winner)
-	if err := walletSvc.SettleMonopolyTable(ctx, monoID, gross, 90, map[string]int64{winner: gross - 90}); err != nil {
+	monoPayouts := map[string]int64{winner: gross - 90}
+	if err := walletSvc.SettleMonopolyTable(ctx, monoID, gross, 90, monoPayouts); err != nil {
 		t.Fatalf("mono settle: %v", err)
 	}
-	escNet := sysBalance(t, pool, ledger.SysEscrow) - esc1
-	wAfter2, _ := ledgerSvc.Balance(ctx, winner)
-	if escNet == gross {
-		t.Fatalf("expected Monopoly to BYPASS the gate and drain escrow; it held instead (gap fixed?)")
+	if got := sysBalance(t, pool, ledger.SysEscrow) - esc1; got != gross {
+		t.Fatalf("MONOPOLY should now HOLD escrow under a deny gate: escrow delta %d want %d", got, gross)
 	}
-	t.Logf("⚠️  FINDING (fraud gap): Monopoly settled under a DENY gate — winner paid %d (balance %d->%d), "+
-		"escrow drained (net %d). A flagged/colluded staked Monopoly table cashes out with NO hold. "+
-		"Fix: route SettleMonopolyTable through gate.Allow like Mafia, or keep Monopoly staking OFF at launch.",
-		gross-90, wBefore2, wAfter2, escNet)
-	assertNoDrift(t, ledgerSvc, log, "monopoly bypass")
+	if wAfter2, _ := ledgerSvc.Balance(ctx, winner); wAfter2 != wBefore2 {
+		t.Fatalf("MONOPOLY winner must NOT be paid while held: %d -> %d", wBefore2, wAfter2)
+	}
+	t.Logf("✅ FIXED: Monopoly now respects the fraud gate — escrow retained, winner unpaid (held for review)")
+
+	// ── Admin release (gate cleared): SettleHeld pays the held Monopoly split exactly ──
+	if err := walletSvc.SettleHeld(ctx, monoID); err != nil {
+		t.Fatalf("mono SettleHeld: %v", err)
+	}
+	if got := sysBalance(t, pool, ledger.SysEscrow) - esc1; got != 0 {
+		t.Fatalf("escrow not drained after held release: net %d", got)
+	}
+	if wAfter, _ := ledgerSvc.Balance(ctx, winner); wAfter != wBefore2+(gross-90) {
+		t.Fatalf("held-release payout wrong: %d want %d", wAfter, wBefore2+(gross-90))
+	}
+	assertNoDrift(t, ledgerSvc, log, "monopoly held release")
+	t.Logf("✅ held Monopoly released cleanly via SettleHeld (winner +%d, books balanced)", gross-90)
 }
