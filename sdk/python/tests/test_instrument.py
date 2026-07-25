@@ -91,7 +91,9 @@ def test_extract_responses_api():
 
 
 def test_extract_dict_response():
-    info = extract_usage({"model": "gpt-4o", "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+    info = extract_usage(
+        {"model": "gpt-4o", "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    )
     assert info["prompt_tokens"] == 10 and info["completion_tokens"] == 5
 
 
@@ -210,7 +212,10 @@ def test_instrument_absent_module_returns_false(monkeypatch):
         raise ImportError(name)
 
     monkeypatch.setattr(instr.importlib, "import_module", _boom)
-    assert instr._patch_method("openai.resources.chat.completions", "Completions", "create", "openai") is False
+    assert (
+        instr._patch_method("openai.resources.chat.completions", "Completions", "create", "openai")
+        is False
+    )
 
 
 # --- end-to-end: auto-attach usage to the move through the runtime -------------
@@ -255,8 +260,13 @@ def _run_turn(agent):
         ]
     )
     conn = RuntimeConnector(
-        agent, url="ws://x", agent_id="ag", token="s", games=["goofspiel"],
-        heartbeat_interval=100, _connect=lambda *a, **k: ws,
+        agent,
+        url="ws://x",
+        agent_id="ag",
+        token="s",
+        games=["goofspiel"],
+        heartbeat_interval=100,
+        _connect=lambda *a, **k: ws,
     )
     try:
         conn._session()
@@ -298,7 +308,11 @@ def test_runtime_respects_dev_supplied_usage(fake_openai):
     def decide(v):
         client.create(model="gpt-4o", messages=[])
         # Dev reports their own usage explicitly — must NOT be overwritten.
-        return {"round": v.round, "card": 3, "usage": {"prompt_tokens": 42, "completion_tokens": 0, "total_tokens": 42}}
+        return {
+            "round": v.round,
+            "card": 3,
+            "usage": {"prompt_tokens": 42, "completion_tokens": 0, "total_tokens": 42},
+        }
 
     resp = _run_turn(agent)
     assert resp["payload"]["usage"]["prompt_tokens"] == 42

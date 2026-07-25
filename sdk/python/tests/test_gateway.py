@@ -121,7 +121,12 @@ def _fake_openai_module(recorder):
     import sys
     import types
 
-    names = ["openai", "openai.resources", "openai.resources.chat", "openai.resources.chat.completions"]
+    names = [
+        "openai",
+        "openai.resources",
+        "openai.resources.chat",
+        "openai.resources.chat.completions",
+    ]
     for n in names:
         sys.modules[n] = types.ModuleType(n)
 
@@ -213,12 +218,27 @@ def test_turn_attribution_uses_day_for_mafia(monkeypatch):
             [
                 {"t": "hello", "version": "1.0"},
                 {"t": "registered", "agent_id": "ag"},
-                {"t": "turn", "id": "r1", "payload": {"game": "mafia", "match_id": "m1", "day": 3, "your_seat": 0, "legal": ["vote"]}},
+                {
+                    "t": "turn",
+                    "id": "r1",
+                    "payload": {
+                        "game": "mafia",
+                        "match_id": "m1",
+                        "day": 3,
+                        "your_seat": 0,
+                        "legal": ["vote"],
+                    },
+                },
             ]
         )
         conn = RuntimeConnector(
-            agent, url="ws://x", agent_id="agentM", token="s", games=["mafia"],
-            heartbeat_interval=100, _connect=lambda *a, **k: ws,
+            agent,
+            url="ws://x",
+            agent_id="agentM",
+            token="s",
+            games=["mafia"],
+            heartbeat_interval=100,
+            _connect=lambda *a, **k: ws,
         )
         try:
             conn._session()

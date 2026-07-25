@@ -148,8 +148,6 @@ def estimate_cost(
     full_input = max(0, prompt_tokens - cached)
     cached_rate = rate.cached_input if rate.cached_input is not None else rate.input
     cost = (
-        full_input * rate.input
-        + cached * cached_rate
-        + max(0, completion_tokens) * rate.output
+        full_input * rate.input + cached * cached_rate + max(0, completion_tokens) * rate.output
     ) / 1_000_000.0
     return round(cost, 8)
