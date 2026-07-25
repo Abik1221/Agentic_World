@@ -2097,6 +2097,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    # Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
+    # PYYOL_NO_TELEMETRY / DO_NOT_TRACK). Never blocks or affects the command.
+    from . import install_ping
+
+    install_ping.maybe_ping(getattr(args, "api", "") or DEFAULT_API_BASE, __version__)
     return args.func(args)
 
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/agent-arena/arena/internal/ledger"
 )
 
 // CheckJoin enforces the seven server-enforced spending limits, in order. Any
@@ -181,16 +183,13 @@ func (s *Service) View(ctx context.Context, agentPublicID string) (View, error) 
 }
 
 // History returns the agent's ledger-backed transaction history.
-func (s *Service) History(ctx context.Context, agentPublicID string, limit int) ([]HistoryLine, error) {
-	lines, err := s.ledger.History(ctx, agentPublicID, limit)
+func (s *Service) History(ctx context.Context, agentPublicID string, limit, offset int) ([]HistoryLine, int, error) {
+	lim := effLimit(limit)
+	lines, err := s.ledger.History(ctx, agentPublicID, lim, maxInt(offset, 0))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	out := make([]HistoryLine, len(lines))
-	for i, l := range lines {
-		out[i] = HistoryLine{TxnID: l.TxnPublicID, Kind: l.Kind, Amount: l.Amount, CreatedAt: l.CreatedAt}
-	}
-	return out, nil
+	return toHistoryLines(lines, offset, lim)
 }
 
 // HistoryLine is the wire shape for one history row (decoupled from ledger.Line).
@@ -199,6 +198,29 @@ type HistoryLine struct {
 	Kind      string    `json:"kind"`
 	Amount    int64     `json:"amount"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// effLimit mirrors ledger.Service's clamp so the wallet layer computes next_cursor
+// against the SAME page size the query actually used.
+func effLimit(limit int) int {
+	if limit <= 0 || limit > 200 {
+		return 50
+	}
+	return limit
+}
+
+// toHistoryLines maps ledger lines to the wire shape and derives the offset cursor:
+// nextCursor is >0 when a full page came back (there may be more), else 0.
+func toHistoryLines(lines []ledger.Line, offset, lim int) ([]HistoryLine, int, error) {
+	out := make([]HistoryLine, len(lines))
+	for i, l := range lines {
+		out[i] = HistoryLine{TxnID: l.TxnPublicID, Kind: l.Kind, Amount: l.Amount, CreatedAt: l.CreatedAt}
+	}
+	next := 0
+	if len(lines) == lim {
+		next = maxInt(offset, 0) + lim
+	}
+	return out, next, nil
 }
 
 // OwnerOf exposes the agent→owner lookup for read authorization in the handler.

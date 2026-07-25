@@ -80,7 +80,8 @@ func (h *Handler) pindex(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) matches(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	rows, found, err := h.svc.Matches(r.Context(), chi.URLParam(r, "handle"), limit)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+	rows, next, found, err := h.svc.Matches(r.Context(), chi.URLParam(r, "handle"), limit, offset)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -90,7 +91,11 @@ func (h *Handler) matches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=15")
-	httpx.JSON(w, http.StatusOK, map[string]any{"matches": rows})
+	resp := map[string]any{"matches": rows}
+	if next > 0 {
+		resp["next_cursor"] = next // pass back as ?cursor= for the next page
+	}
+	httpx.JSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) setUsername(w http.ResponseWriter, r *http.Request) {

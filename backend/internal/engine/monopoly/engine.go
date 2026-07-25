@@ -20,20 +20,20 @@ var (
 
 // Action kinds — the verbs an agent submits via Step.
 const (
-	ActRoll        = "roll"          // PhaseRoll: roll the dice
-	ActBuy         = "buy"           // PhaseAcquire: buy the landed property at list price
-	ActDecline     = "decline"       // PhaseAcquire: decline (opens an auction if enabled)
-	ActBid         = "bid"           // PhaseAuction: raise the high bid (Action.Amount)
-	ActPass        = "pass"          // PhaseAuction: drop out of the auction
-	ActBuild       = "build"         // PhaseManage/Debt: build a house/hotel (Action.Property)
-	ActSellHouse   = "sell_house"    // PhaseManage/Debt: sell a house/hotel back to the bank
-	ActMortgage    = "mortgage"      // PhaseManage/Debt: mortgage a property
-	ActUnmortgage  = "unmortgage"    // PhaseManage: lift a mortgage (+10% interest)
-	ActPayJail     = "pay_jail"      // PhaseJail: pay $50 then roll
-	ActUseJailCard = "use_jail_card" // PhaseJail: spend a get-out-of-jail-free card then roll
-	ActRollJail    = "roll_jail"     // PhaseJail: try to roll doubles to escape
-	ActEndTurn     = "end_turn"      // PhaseManage: finish the turn (re-roll if doubles)
-	ActBankrupt    = "bankrupt"      // PhaseDebt: give up; liquidate to the creditor
+	ActRoll         = "roll"          // PhaseRoll: roll the dice
+	ActBuy          = "buy"           // PhaseAcquire: buy the landed property at list price
+	ActDecline      = "decline"       // PhaseAcquire: decline (opens an auction if enabled)
+	ActBid          = "bid"           // PhaseAuction: raise the high bid (Action.Amount)
+	ActPass         = "pass"          // PhaseAuction: drop out of the auction
+	ActBuild        = "build"         // PhaseManage/Debt: build a house/hotel (Action.Property)
+	ActSellHouse    = "sell_house"    // PhaseManage/Debt: sell a house/hotel back to the bank
+	ActMortgage     = "mortgage"      // PhaseManage/Debt: mortgage a property
+	ActUnmortgage   = "unmortgage"    // PhaseManage: lift a mortgage (+10% interest)
+	ActPayJail      = "pay_jail"      // PhaseJail: pay $50 then roll
+	ActUseJailCard  = "use_jail_card" // PhaseJail: spend a get-out-of-jail-free card then roll
+	ActRollJail     = "roll_jail"     // PhaseJail: try to roll doubles to escape
+	ActEndTurn      = "end_turn"      // PhaseManage: finish the turn (re-roll if doubles)
+	ActBankrupt     = "bankrupt"      // PhaseDebt: give up; liquidate to the creditor
 	ActProposeTrade = "propose_trade" // PhaseManage: offer a trade (Action.Trade) to another seat
 	ActAcceptTrade  = "accept_trade"  // PhaseTradeResponse: the target accepts
 	ActRejectTrade  = "reject_trade"  // PhaseTradeResponse: the target declines
@@ -104,11 +104,24 @@ func New(cfg Config) *Engine {
 func (e *Engine) Config() Config { return e.cfg }
 
 // Init builds the opening state, shuffles the card decks from the seed, and emits
-// match_created (with the commit) + the first turn_started.
+// match_created (with the commit) + the first turn_started. Every seat opens on the
+// configured starting cash (tournament tables).
 func (e *Engine) Init(seed []byte) (State, []Event) {
+	return e.InitWithStacks(seed, nil)
+}
+
+// InitWithStacks is Init with a PER-SEAT opening stack — used by cash-game tables where
+// each seat's chips come from its own buy-in. startingCash[i] sets seat i's opening
+// cash; a missing, zero, or negative entry (or a nil slice) falls back to
+// cfg.StartingCash. Deck shuffle and opening events are identical to Init.
+func (e *Engine) InitWithStacks(seed []byte, startingCash []int) (State, []Event) {
 	players := make([]Player, e.cfg.Players)
 	for i := range players {
-		players[i] = Player{Seat: i, Cash: e.cfg.StartingCash, Position: IdxGo}
+		cash := e.cfg.StartingCash
+		if i < len(startingCash) && startingCash[i] > 0 {
+			cash = startingCash[i]
+		}
+		players[i] = Player{Seat: i, Cash: cash, Position: IdxGo}
 	}
 	holdings := make([]Holding, BoardSize)
 	for i := range holdings {
@@ -316,7 +329,7 @@ func (e *Engine) doRoll(ns *State, seed []byte) []Event {
 	}
 	if doubles && ns.Players[seat].Doubles >= 3 {
 		evs = e.goToJail(ns, evs, seat, "three_doubles")
-		return e.endTurn(ns, evs, seed)
+		return e.endTurn(ns, evs)
 	}
 
 	evs = e.moveBySteps(ns, evs, seat, d1+d2)
@@ -421,18 +434,26 @@ func (e *Engine) stepAcquire(ns *State, a Action) ([]Event, error) {
 			ns.Phase = PhaseManage
 			return nil, nil
 		}
-		return e.startAuction(ns, pos), nil
+		return e.startAuction(ns, pos, false), nil
 	default:
 		return nil, ErrIllegalAction
 	}
 }
 
-func (e *Engine) startAuction(ns *State, pos int) []Event {
+// startAuction opens bidding on `pos` among the non-bankrupt seats. estate marks a
+// bankrupt-to-bank estate auction (see closeAuction). The first bidder is the seat
+// AFTER ns.Current for an estate auction (the debtor — ns.Current — is bankrupt and
+// can't bid), else ns.Current (the seat that declined to buy).
+func (e *Engine) startAuction(ns *State, pos int, estate bool) []Event {
 	in := make([]bool, len(ns.Players))
 	for i := range ns.Players {
 		in[i] = !ns.Players[i].Bankrupt
 	}
-	ns.Auction = &AuctionState{Property: pos, HighBid: 0, HighBidder: Bank, InAuction: in, Current: ns.Current}
+	first := ns.Current
+	if estate {
+		first = ns.nextActiveSeat(ns.Current)
+	}
+	ns.Auction = &AuctionState{Property: pos, HighBid: 0, HighBidder: Bank, InAuction: in, Current: first, Estate: estate}
 	ns.Phase = PhaseAuction
 	return []Event{e.emit(ns, EvAuctionStarted, AuctionStartedPayload{Property: pos})}
 }
@@ -491,7 +512,22 @@ func (e *Engine) closeAuction(ns *State, evs *[]Event) {
 	} else {
 		*evs = append(*evs, e.emit(ns, EvAuctionUnsold, AuctionResultPayload{Seat: Bank, Property: au.Property, Amount: 0}))
 	}
+	estate := au.Estate
 	ns.Auction = nil
+
+	// More of a bankrupt estate still to auction → start the next property.
+	if len(ns.EstateQueue) > 0 {
+		next := ns.EstateQueue[0]
+		ns.EstateQueue = ns.EstateQueue[1:]
+		*evs = append(*evs, e.startAuction(ns, next, true)...)
+		return
+	}
+	// Estate fully auctioned → the bankrupt debtor's turn is over; advance play.
+	if estate {
+		*evs = e.endTurn(ns, *evs)
+		return
+	}
+	// Ordinary decline-auction → the seat that landed resumes managing its turn.
 	ns.Phase = PhaseManage
 }
 
@@ -513,7 +549,7 @@ func (e *Engine) stepResolveDebt(ns *State, a Action, seed []byte) ([]Event, err
 		}
 		return e.afterRaise(ns, evs, seed), nil
 	case ActBankrupt:
-		return e.declareBankrupt(ns, seed), nil
+		return e.declareBankrupt(ns), nil
 	default:
 		return nil, ErrIllegalAction
 	}
@@ -541,7 +577,7 @@ func (e *Engine) stepManage(ns *State, a Action, seed []byte) ([]Event, error) {
 	case ActProposeTrade:
 		return e.proposeTrade(ns, a.Trade)
 	case ActEndTurn:
-		return e.endTurn(ns, nil, seed), nil
+		return e.endTurn(ns, nil), nil
 	default:
 		return nil, ErrIllegalAction
 	}
@@ -562,7 +598,7 @@ func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
 	t.WantProps = append([]int(nil), tr.WantProps...)
 	ns.PendingTrade = &t
 	ns.Phase = PhaseTradeResponse
-	ns.TradeCounters = 0        // fresh negotiation
+	ns.TradeCounters = 0         // fresh negotiation
 	ns.TradeReturn = PhaseManage // proposed from the owner's manage phase
 	return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
 }
@@ -640,11 +676,11 @@ func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
 			e.resumeAfterTrade(ns)
 			return nil, err
 		}
-		e.executeTrade(ns, *t)
+		interest := e.executeTrade(ns, *t) // may bill mortgage-transfer interest (lower seq)
 		executed := tradePayload(*t)
 		ns.PendingTrade = nil
 		e.resumeAfterTrade(ns) // control returns to the window or the turn owner
-		return []Event{e.emit(ns, EvTradeExecuted, executed)}, nil
+		return append(interest, e.emit(ns, EvTradeExecuted, executed)), nil
 	case ActCounterTrade:
 		// The responder (current PendingTrade.Target) makes a return offer to the
 		// original proposer. Roles swap: the counter becomes the new pending offer
@@ -657,8 +693,8 @@ func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
 			return nil, ErrIllegalAction
 		}
 		c := *a.Trade
-		c.Proposer = t.Target  // the seat countering (the previous responder)
-		c.Target = t.Proposer  // back to whoever last offered
+		c.Proposer = t.Target // the seat countering (the previous responder)
+		c.Target = t.Proposer // back to whoever last offered
 		if err := e.validateTrade(ns, c); err != nil {
 			return nil, err
 		}
@@ -777,8 +813,9 @@ func (e *Engine) resumeAfterTrade(ns *State) {
 }
 
 // executeTrade swaps the agreed properties and nets the cash. Mortgaged properties
-// carry their mortgage to the new owner (standard rule; no immediate interest).
-func (e *Engine) executeTrade(ns *State, t Trade) {
+// carry their mortgage to the new owner, who owes the bank 10% interest for assuming
+// it (official rule). Returns the interest cash-change events, if any.
+func (e *Engine) executeTrade(ns *State, t Trade) []Event {
 	for _, idx := range t.GiveProps {
 		ns.Holdings[idx].Owner = t.Target
 	}
@@ -790,6 +827,42 @@ func (e *Engine) executeTrade(ns *State, t Trade) {
 	// Get-out-of-jail-free cards change hands too.
 	ns.Players[t.Proposer].JailCards += t.WantCards - t.GiveCards
 	ns.Players[t.Target].JailCards += t.GiveCards - t.WantCards
+	// Mortgage-transfer interest: the RECEIVER of each mortgaged property pays 10%.
+	var evs []Event
+	for _, idx := range t.GiveProps { // received by Target
+		evs = append(evs, e.chargeTransferInterest(ns, t.Target, idx)...)
+	}
+	for _, idx := range t.WantProps { // received by Proposer
+		evs = append(evs, e.chargeTransferInterest(ns, t.Proposer, idx)...)
+	}
+	return evs
+}
+
+// mortgageInterest is the 10% bank interest due when a mortgaged property changes
+// hands, rounded up to match the unmortgage cost (doUnmortgage / unmortgageCost).
+func mortgageInterest(pos int) int {
+	base := space(pos).MortgageValue()
+	return (base + 9) / 10
+}
+
+// chargeTransferInterest bills `seat` the mortgage-transfer interest for assuming the
+// (mortgaged) property at pos — the official rule on any transfer, trade or bankruptcy
+// estate. Deducted from cash, floored at available cash so the interest alone can never
+// push a receiver negative; emits a cash-change event only when something is charged.
+// No-op for an unmortgaged property.
+func (e *Engine) chargeTransferInterest(ns *State, seat, pos int) []Event {
+	if !ns.Holdings[pos].Mortgaged {
+		return nil
+	}
+	due := mortgageInterest(pos)
+	if due > ns.Players[seat].Cash {
+		due = ns.Players[seat].Cash
+	}
+	if due <= 0 {
+		return nil
+	}
+	ns.Players[seat].Cash -= due
+	return []Event{e.emit(ns, EvCashChanged, CashChangedPayload{Seat: seat, Delta: -due, Balance: ns.Players[seat].Cash, Reason: "mortgage_interest"})}
 }
 
 func tradePayload(t Trade) TradePayload {
@@ -1084,14 +1157,16 @@ func (e *Engine) settleDebt(ns *State, evs []Event, seed []byte) []Event {
 }
 
 // declareBankrupt liquidates the debtor: buildings are sold to the bank for half
-// value, then all cash + properties + jail cards transfer to the creditor (or, if
-// the creditor is the bank, properties return to the bank unimproved). The seat is
-// eliminated and the turn ends; the game ends if only one player remains.
-func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
+// value, then all cash + properties + jail cards transfer to the creditor. If the
+// creditor is the BANK, the debtor's properties are auctioned to the surviving players
+// (official rule) before the turn ends, rather than silently returning to the bank. The
+// seat is eliminated; the game ends if only one player remains.
+func (e *Engine) declareBankrupt(ns *State) []Event {
 	d := ns.Debt
 	debtor := d.Debtor
 	creditor := d.Creditor
 	var evs []Event
+	var estate []int // debtor's properties to auction when the creditor is the bank
 
 	// 1. Sell all buildings back to the bank for half value.
 	for idx := 0; idx < BoardSize; idx++ {
@@ -1122,18 +1197,23 @@ func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
 		evs = append(evs, e.emit(ns, EvCashChanged, CashChangedPayload{Seat: creditor, Delta: cash, Balance: ns.Players[creditor].Cash, Reason: "bankruptcy_estate"}))
 	}
 
-	// 3. Transfer properties.
+	// 3. Transfer properties. To a player-creditor: mortgages carry over and the
+	// creditor owes the bank 10% interest for assuming each mortgaged property
+	// (official rule). To the bank: the property returns unimproved and is queued for
+	// auction to the survivors (in ascending board order, deterministically).
 	for idx := 0; idx < BoardSize; idx++ {
 		h := ns.Holdings[idx]
 		if h.Owner != debtor {
 			continue
 		}
 		if creditor != Bank {
-			h.Owner = creditor // mortgages carry to the new owner (no interest, by simplification)
+			h.Owner = creditor
+			ns.Holdings[idx] = h
+			evs = append(evs, e.chargeTransferInterest(ns, creditor, idx)...)
 		} else {
-			h = Holding{Owner: Bank}
+			ns.Holdings[idx] = Holding{Owner: Bank}
+			estate = append(estate, idx)
 		}
-		ns.Holdings[idx] = h
 	}
 
 	// 4. Jail cards and elimination.
@@ -1157,7 +1237,13 @@ func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
 	if ns.activeCount() <= 1 {
 		return e.finish(ns, evs)
 	}
-	return e.endTurn(ns, evs, seed)
+	// Bank-creditor estate → auction it to the survivors, then end the turn once the
+	// queue drains (closeAuction handles the sequencing + the final endTurn).
+	if creditor == Bank && len(estate) > 0 {
+		ns.EstateQueue = estate[1:]
+		return append(evs, e.startAuction(ns, estate[0], true)...)
+	}
+	return e.endTurn(ns, evs)
 }
 
 // ── Build / sell / mortgage ────────────────────────────────────────────────
@@ -1294,7 +1380,7 @@ func (e *Engine) doUnmortgage(ns *State, pos int) ([]Event, error) {
 
 // endTurn closes the current turn: it re-rolls for the same player on doubles,
 // otherwise advances to the next solvent player. The turn cap ends the game.
-func (e *Engine) endTurn(ns *State, evs []Event, seed []byte) []Event {
+func (e *Engine) endTurn(ns *State, evs []Event) []Event {
 	cur := ns.Current
 	evs = append(evs, e.emit(ns, EvTurnEnded, TurnEndedPayload{Seat: cur}))
 

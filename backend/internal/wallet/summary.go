@@ -102,14 +102,11 @@ func (s *Service) UserSummary(ctx context.Context, userPublicID string) (UserSum
 }
 
 // UserHistory returns treasury ledger lines for the owner.
-func (s *Service) UserHistory(ctx context.Context, userPublicID string, limit int) ([]HistoryLine, error) {
-	lines, err := s.ledger.UserHistory(ctx, userPublicID, limit)
+func (s *Service) UserHistory(ctx context.Context, userPublicID string, limit, offset int) ([]HistoryLine, int, error) {
+	lim := effLimit(limit)
+	lines, err := s.ledger.UserHistory(ctx, userPublicID, lim, maxInt(offset, 0))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	out := make([]HistoryLine, len(lines))
-	for i, l := range lines {
-		out[i] = HistoryLine{TxnID: l.TxnPublicID, Kind: l.Kind, Amount: l.Amount, CreatedAt: l.CreatedAt}
-	}
-	return out, nil
+	return toHistoryLines(lines, offset, lim)
 }

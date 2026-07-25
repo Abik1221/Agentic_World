@@ -124,7 +124,7 @@ func (r *DevProfileRepo) Agents(ctx context.Context, userPublicID string, season
 	return out, rows.Err()
 }
 
-func (r *DevProfileRepo) RecentMatches(ctx context.Context, userPublicID string, limit int) ([]devprofile.MatchRow, error) {
+func (r *DevProfileRepo) RecentMatches(ctx context.Context, userPublicID string, limit, offset int) ([]devprofile.MatchRow, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT m.public_id, m.game, ag.public_id,
 		        mrc.rating_before, mrc.rating_after, mrc.rating_delta, mrc.rank_in_match, m.finished_at
@@ -133,7 +133,7 @@ func (r *DevProfileRepo) RecentMatches(ctx context.Context, userPublicID string,
 		 JOIN matches m  ON m.id = mrc.match_id
 		 WHERE ag.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND ag.kind <> 'house'
 		 ORDER BY mrc.created_at DESC
-		 LIMIT $2`, userPublicID, limit)
+		 LIMIT $2 OFFSET $3`, userPublicID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +146,59 @@ func (r *DevProfileRepo) RecentMatches(ctx context.Context, userPublicID string,
 			return nil, err
 		}
 		m.ReplayURL = fmt.Sprintf("/v1/%s/%s/replay", m.Game, m.Match)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// TokenEfficiency sums LLM tokens the developer's non-house agents burned across all
+// benchmarked matches, plus how many of those matches were wins (agent_match_benchmark
+// carries per-match tokens + result). Zero when no benchmark facts exist yet.
+func (r *DevProfileRepo) TokenEfficiency(ctx context.Context, userPublicID string) (int64, int, error) {
+	var tokens int64
+	var wins int
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(b.tokens),0)::bigint,
+		        COUNT(*) FILTER (WHERE b.result = 'win')::int
+		 FROM agent_match_benchmark b
+		 JOIN agents a ON a.id = b.agent_id
+		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind <> 'house'`,
+		userPublicID).Scan(&tokens, &wins)
+	if err != nil {
+		return 0, 0, err
+	}
+	return tokens, wins, nil
+}
+
+// TopModels returns the developer's most-used declared LLM models, ranked by how many
+// of their (non-house) agents declare each — mirrors the global ModelBenchmark join
+// but scoped to one owner.
+func (r *DevProfileRepo) TopModels(ctx context.Context, userPublicID string, limit int) ([]devprofile.ModelUsage, error) {
+	rows, err := r.db.Query(ctx,
+		`WITH mdl AS (
+		   SELECT DISTINCT ON (agent_public_id) agent_public_id, model_provider AS provider, model_name AS model
+		   FROM agent_manifests
+		   WHERE status <> 'rejected'
+		     AND COALESCE(model_provider,'') <> '' AND COALESCE(model_name,'') <> ''
+		   ORDER BY agent_public_id, created_at DESC
+		 )
+		 SELECT mdl.provider, mdl.model, COUNT(*)::int AS agents
+		 FROM mdl
+		 JOIN agents a ON a.public_id = mdl.agent_public_id
+		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind <> 'house'
+		 GROUP BY mdl.provider, mdl.model
+		 ORDER BY agents DESC, mdl.model
+		 LIMIT $2`, userPublicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []devprofile.ModelUsage
+	for rows.Next() {
+		var m devprofile.ModelUsage
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Agents); err != nil {
+			return nil, err
+		}
 		out = append(out, m)
 	}
 	return out, rows.Err()

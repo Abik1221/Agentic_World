@@ -38,6 +38,19 @@ type DeveloperProfile struct {
 	// TotalEarningsUSD is the developer's lifetime net winnings (coins earned across
 	// all of their agents and seasons) converted to US dollars via the coin peg.
 	TotalEarningsUSD float64 `json:"total_earnings_usd"`
+	// Structural economics: how many LLM tokens the developer's agents burned and how
+	// efficiently they convert to wins (tokens per win), plus the models they lean on.
+	TotalTokens  int64        `json:"total_tokens,omitempty"`
+	TokensPerWin int64        `json:"tokens_per_win,omitempty"` // TotalTokens / wins (0 if no wins)
+	TopModels    []ModelUsage `json:"top_models,omitempty"`
+}
+
+// ModelUsage is one LLM model a developer runs, with how many of their agents declare
+// it — powers the "most-used models" strip on the profile.
+type ModelUsage struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Agents   int    `json:"agents"`
 }
 
 // Service assembles developer profiles from the repo + the P-Index service.
@@ -83,7 +96,7 @@ func (s *Service) Profile(ctx context.Context, handle string) (DeveloperProfile,
 	if p.Agents, err = s.repo.Agents(ctx, id.UserPublicID, season); err != nil {
 		return DeveloperProfile{}, true, err
 	}
-	if p.RecentMatches, err = s.repo.RecentMatches(ctx, id.UserPublicID, 10); err != nil {
+	if p.RecentMatches, err = s.repo.RecentMatches(ctx, id.UserPublicID, 10, 0); err != nil {
 		return DeveloperProfile{}, true, err
 	}
 	if p.Achievements, err = s.repo.Badges(ctx, id.UserPublicID); err != nil {
@@ -102,6 +115,19 @@ func (s *Service) Profile(ctx context.Context, handle string) (DeveloperProfile,
 		cents = 1
 	}
 	p.TotalEarningsUSD = math.Round(float64(coins*cents)) / 100 // coins*cents = whole cents
+
+	// Token economics + most-used models (best-effort: benchmark facts may be absent
+	// early, so a zero/empty result is fine — never fail the profile over it).
+	if tokens, wins, terr := s.repo.TokenEfficiency(ctx, id.UserPublicID); terr == nil {
+		p.TotalTokens = tokens
+		if wins > 0 {
+			p.TokensPerWin = tokens / int64(wins)
+		}
+	}
+	if models, merr := s.repo.TopModels(ctx, id.UserPublicID, 5); merr == nil {
+		p.TopModels = models
+	}
+
 	if snap, ok, err := s.pindex.Get(ctx, id.UserPublicID, season); err != nil {
 		return DeveloperProfile{}, true, err
 	} else if ok {
@@ -136,24 +162,38 @@ func (s *Service) PIndex(ctx context.Context, handle string) (PIndexView, bool, 
 }
 
 // Matches returns the developer's match history (rating before/after/delta + replay).
-func (s *Service) Matches(ctx context.Context, handle string, limit int) ([]MatchRow, bool, error) {
+// Matches returns a page of a developer's match history, newest first. offset is the
+// opaque cursor (0 for the first page); nextCursor is >0 when a further page likely
+// exists (a full page came back), else 0. Bounded so a caller can't request an
+// unbounded scan.
+func (s *Service) Matches(ctx context.Context, handle string, limit, offset int) (rows []MatchRow, nextCursor int, found bool, err error) {
 	id, found, err := s.repo.ResolveHandle(ctx, handle)
 	if err != nil || !found {
-		return nil, found, err
+		return nil, 0, found, err
 	}
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
-	rows, err := s.repo.RecentMatches(ctx, id.UserPublicID, limit)
-	return rows, true, err
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err = s.repo.RecentMatches(ctx, id.UserPublicID, limit, offset)
+	if err != nil {
+		return nil, 0, true, err
+	}
+	if len(rows) == limit {
+		nextCursor = offset + limit // a full page ⇒ there may be more
+	}
+	return rows, nextCursor, true, nil
 }
 
 // LeaderboardPage is a page of the developer leaderboard.
 type LeaderboardPage struct {
-	Season  int         `json:"season"`
-	Segment string      `json:"segment"`
-	Window  string      `json:"window"`
-	Entries []LeaderRow `json:"entries"`
+	Season     int         `json:"season"`
+	Segment    string      `json:"segment"`
+	Window     string      `json:"window"`
+	Entries    []LeaderRow `json:"entries"`
+	NextCursor int         `json:"next_cursor,omitempty"` // >0 ⇒ pass as ?cursor= for the next page; absent ⇒ last page
 }
 
 // Leaderboard ranks developers by P-Index. window ∈ {all, weekly, monthly}; segment
@@ -188,7 +228,11 @@ func (s *Service) Leaderboard(ctx context.Context, window, segment string, seaso
 	for i := range rows {
 		rows[i].Rank = offset + i + 1
 	}
-	return LeaderboardPage{Season: season, Segment: segment, Window: window, Entries: rows}, nil
+	next := 0
+	if len(rows) == limit {
+		next = offset + limit // a full page ⇒ there may be more
+	}
+	return LeaderboardPage{Season: season, Segment: segment, Window: window, Entries: rows, NextCursor: next}, nil
 }
 
 // SetUsername claims/updates the caller's public @handle (validated + unique).

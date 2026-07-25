@@ -260,21 +260,16 @@ func (r *WalletRepo) PendingWithdrawalCoins(ctx context.Context, agentPublicID s
 	return pending, err
 }
 
+// WithdrawableCoins is the wallet-summary (UI) view of what an agent can cash out. It
+// MUST match payout.Repo.Withdrawable (store/payout_repo.go): the current wallet balance
+// (full balance withdrawable anytime — deposited coins included). No committed
+// subtraction: a withdrawal Request escrows the coins before the row exists, so the
+// balance already excludes in-flight/paid withdrawals.
 func (r *WalletRepo) WithdrawableCoins(ctx context.Context, agentPublicID string) (int64, error) {
 	var avail int64
 	err := r.db.QueryRow(ctx,
-		`WITH winnings AS (
-		   SELECT COALESCE(SUM(mp.coins_delta), 0) AS net
-		   FROM match_players mp JOIN matches m ON m.id = mp.match_id
-		   JOIN agents a ON a.id = mp.agent_id WHERE a.public_id = $1 AND m.status = 'finished'
-		 ), committed AS (
-		   SELECT COALESCE(SUM(w.coins), 0) AS c
-		   FROM withdrawals w JOIN agents a ON a.id = w.agent_id
-		   WHERE a.public_id = $1 AND w.status IN ('requested','approved','paid')
-		 ), bal AS (
-		   SELECT COALESCE(wl.balance, 0) AS b FROM wallets wl JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1
-		 )
-		 SELECT GREATEST(0, LEAST((SELECT net FROM winnings) - (SELECT c FROM committed), (SELECT b FROM bal)))`,
+		`SELECT COALESCE((SELECT wl.balance FROM wallets wl
+		   JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1), 0)`,
 		agentPublicID).Scan(&avail)
 	return avail, err
 }

@@ -9,13 +9,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// RankedGate validates, at enable time, that an agent may turn on ranked auto-play —
-// today, that it declares the single ranked game (Goofspiel). Optional; nil ⇒ skip
-// (the matchmaking enqueue gate still enforces this per match, so money is safe
+// RankedGate validates, at enable time, that an agent may turn on ranked auto-play
+// for the game it would play — that its manifest declares that game. Optional; nil ⇒
+// skip (the queue's own enqueue gate still enforces this per match, so money is safe
 // either way — this just gives the owner immediate feedback instead of silent
 // never-playing). Satisfied by an adapter over manifest.Service.
 type RankedGate interface {
-	CheckRankedGame(ctx context.Context, agentPublicID string) error
+	CheckRankedGame(ctx context.Context, agentPublicID, game string) error
 }
 
 // Handler exposes an agent's auto-play settings: GET to read, PUT to set. The
@@ -83,7 +83,7 @@ func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 	// (Goofspiel-only today) — fail fast with a clear message rather than accepting
 	// the setting and then never staking a match.
 	if in.Enabled && mode == ModeRanked && h.ranked != nil {
-		if err := h.ranked.CheckRankedGame(r.Context(), p.AgentPublicID); err != nil {
+		if err := h.ranked.CheckRankedGame(r.Context(), p.AgentPublicID, rankedGameOf(in.Games)); err != nil {
 			httpx.Error(w, err)
 			return
 		}

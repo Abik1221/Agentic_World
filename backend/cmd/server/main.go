@@ -34,8 +34,10 @@ import (
 	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
 	"github.com/agent-arena/arena/internal/docs"
+	mafiaengine "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
+	"github.com/agent-arena/arena/internal/groupmatch"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
@@ -57,6 +59,7 @@ import (
 	"github.com/agent-arena/arena/internal/profiles"
 	"github.com/agent-arena/arena/internal/rating"
 	"github.com/agent-arena/arena/internal/sandbox"
+	"github.com/agent-arena/arena/internal/sdkstats"
 	"github.com/agent-arena/arena/internal/secretbox"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/solanadeposit"
@@ -747,6 +750,27 @@ func run() error {
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 
+	// Group matchmaking: the N-player sibling of the 2-player queue above. Gives Mafia
+	// (12) and Monopoly (a configured seat count) the same skill-banded staked play by
+	// pooling distinct-owner agents into a full table (reusing each game's CreateTable+
+	// Join, so all escrow/limits/anti-collusion carry over). Goofspiel stays on the
+	// 2-player queue; each queue rejects the other's games. Gates are the SAME adapters
+	// (certification+suspension, affordability, reachability) — no per-game gate here,
+	// since the group queue guards its own games via ErrGameNotGrouped.
+	groupSvc := groupmatch.New(
+		store.NewGroupQueueRepo(st.DB),
+		map[string]groupmatch.TableCreator{
+			string(devplatform.GameMafia):    mafiaTableCreator{svc: mafiaSvc},
+			string(devplatform.GameMonopoly): monopolyTableCreator{svc: monopolySvc, seats: monopoly.MinPlayers},
+		},
+		ratingSvc, clock, groupmatch.Config{}, log, metrics.Registry(),
+	)
+	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg}) // certified + not suspended (game guarded by the queue)
+	groupSvc.SetAffordability(walletSvc)
+	groupSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
+	groupHandler := groupmatch.NewHandler(groupSvc, authn)
+	groupHandler.SetStakeResolver(gameStakesSvc)
+
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
@@ -754,7 +778,7 @@ func run() error {
 	// Fail fast at enable time when an owner points ranked auto-play at an agent that
 	// doesn't declare the (Goofspiel-only) ranked game — instead of silently never
 	// playing. Other games use their lobbies / sandbox auto-play.
-	autoplayHandler.SetRankedGate(autoplayRankedGate{cert: manifestSvc, game: string(devplatform.GameGoofspiel)})
+	autoplayHandler.SetRankedGate(autoplayRankedGate{cert: manifestSvc})
 
 	// Payments — fiat (card) top-ups via Stripe. This is OPTIONAL: Pyyol's on-ramp
 	// is a real USDC deposit (see the Solana deposit rail), so a card gateway is a
@@ -845,6 +869,7 @@ func run() error {
 	// Stripe↔ledger reconciliation job (all safe to run on every instance).
 	launch("match-sweeper", match.NewSweeper(matchSvc, log, time.Second).Run)
 	launch("matchmaker", matchmakingSvc.NewMatcher().Run)
+	launch("group-matchmaker", groupSvc.NewMatcher().Run)
 	if cfg.AutoplayEnabled {
 		autoplaySvc := autoplay.New(
 			autoplayRepo,
@@ -859,6 +884,7 @@ func run() error {
 		// Feed the stop-conditions today's matches/tokens (benchmark aggregate) +
 		// losses (wallet); schedule works without it.
 		autoplaySvc.SetStats(autoplayStats{pindex: pindexRepo, wallet: walletSvc, now: clock.Now})
+		autoplaySvc.SetGroupQueue(groupQueueAdapter{svc: groupSvc}) // ranked Mafia/Monopoly → N-player group queue
 		launch("autoplay", autoplay.NewTicker(autoplaySvc, cfg.AutoplayInterval).Run)
 	}
 	launch("ledger-reconciler", ledgerSvc.NewReconciler(log, cfg.ReconcileInterval).Run)
@@ -884,7 +910,7 @@ func run() error {
 					log.Warn("demo agent certify failed", "agent", a.PublicID, "error", err)
 				}
 			}
-			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run)
+			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).Run)
 			// Mafia push-play needs a full roster: seat the developer's agent (via
 			// their endpoint) and fill the other seats with these demo bots.
 			botSeats := make([]mafia.BotAgent, 0, len(agents))
@@ -914,6 +940,13 @@ func run() error {
 	docsHandler := docs.NewHandler(docsRepo)
 	docsAdminHandler := docs.NewAdminHandler(docsRepo, authn, cfg.AdminUserIDs)
 
+	// SDK download analytics (admin): public install-ping ingest + admin reads, plus a
+	// daily poller pulling npm + PyPI download totals. Registry data is daily and 404s
+	// until the packages are published — the poller handles both gracefully.
+	sdkStatsRepo := store.NewSDKStatsRepo(st.DB)
+	sdkStatsHandler := sdkstats.NewHandler(sdkstats.New(sdkStatsRepo), authn, cfg.AdminUserIDs)
+	launch("sdk-download-poller", sdkstats.NewPoller(sdkStatsRepo, log, "pyyol", 12*time.Hour).Run)
+
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{
 		healthH.Register,
@@ -925,6 +958,7 @@ func run() error {
 		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd()),
 		matchHandler.Register,
 		matchmakingHandler.Register,
+		groupHandler.Register,
 		autoplayHandler.Register,
 		sandboxHandler.Register,
 		walletHandler.Register,
@@ -939,6 +973,7 @@ func run() error {
 		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
 		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
 		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)
+		sdkStatsHandler.Register,    // public install-ping ingest + admin SDK download analytics
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,
@@ -1125,28 +1160,91 @@ func errRankedGameUnsupported(game string) error {
 		fmt.Sprintf("Ranked matchmaking currently runs %s only, and this agent's manifest does not declare %s. Mafia and Monopoly play through their game lobbies; use sandbox auto-play to practice them.", game, game))
 }
 
-// autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
-// ranked auto-play — today, that it declares the single ranked game. It checks only
-// the permanent game-support property (not the transient certified/reachable state,
-// which the enqueue gate enforces per match), and stays quiet when the agent has no
-// manifest yet (can't tell → don't block preconfiguration; enqueue still enforces).
-type autoplayRankedGate struct {
-	cert *manifest.Service
-	game string
+// mafiaTableCreator / monopolyTableCreator adapt each game's Service to
+// groupmatch.TableCreator. They deliberately reuse the existing CreateTable + Join
+// path (the Nth join auto-starts the table and escrows every seat), so the group
+// matcher inherits all of that path's money-safety and anti-collusion checks. A join
+// that fails mid-fill returns an error → the matcher releases the queue claim and the
+// partially-filled waiting table is reaped by the game's waiting-lobby TTL sweeper
+// (no stake escrowed until the table actually starts).
+type mafiaTableCreator struct{ svc *mafia.Service }
+
+func (mafiaTableCreator) SeatTarget() int { return mafiaengine.RosterSize } // fixed 12
+
+func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []groupmatch.Seat, bid int64) (string, error) {
+	id, err := c.svc.CreateTable(ctx, seats[0].AgentPublicID, seats[0].OwnerPublicID, bid)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range seats[1:] {
+		if _, err := c.svc.Join(ctx, s.AgentPublicID, s.OwnerPublicID, id); err != nil {
+			return "", err
+		}
+	}
+	return id, nil
 }
 
-func (g autoplayRankedGate) CheckRankedGame(ctx context.Context, agentPublicID string) error {
-	if g.game == "" {
+type monopolyTableCreator struct {
+	svc   *monopoly.Service
+	seats int
+}
+
+func (c monopolyTableCreator) SeatTarget() int { return c.seats }
+
+func (c monopolyTableCreator) CreateStartedTable(ctx context.Context, seats []groupmatch.Seat, bid int64) (string, error) {
+	id, err := c.svc.CreateTable(ctx, seats[0].AgentPublicID, seats[0].OwnerPublicID, bid, len(seats))
+	if err != nil {
+		return "", err
+	}
+	for _, s := range seats[1:] {
+		if _, err := c.svc.Join(ctx, s.AgentPublicID, s.OwnerPublicID, id); err != nil {
+			return "", err
+		}
+	}
+	return id, nil
+}
+
+// autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
+// ranked auto-play for the game it would play — that its manifest declares that game
+// (Goofspiel, Mafia, or Monopoly — all support ranked now). It checks only the
+// permanent game-support property (not the transient certified/reachable state, which
+// the enqueue gate enforces per match), and stays quiet when the agent has no manifest
+// yet (can't tell → don't block preconfiguration; the enqueue gate still enforces).
+type autoplayRankedGate struct {
+	cert *manifest.Service
+}
+
+func (g autoplayRankedGate) CheckRankedGame(ctx context.Context, agentPublicID, game string) error {
+	if game == "" {
 		return nil
 	}
-	supported, found, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
+	supported, found, err := g.cert.SupportsGame(ctx, agentPublicID, game)
 	if err != nil {
 		return err
 	}
 	if found && !supported {
-		return errRankedGameUnsupported(g.game)
+		return errRankedGameUnsupported(game)
 	}
 	return nil
+}
+
+// groupQueueAdapter lets the auto-play reconciler route Mafia/Monopoly agents into
+// the N-player ranked queue (mirrors rankedQueueAdapter for the 2-player queue).
+type groupQueueAdapter struct{ svc *groupmatch.Service }
+
+func (a groupQueueAdapter) Handles(game string) bool { return a.svc.Handles(game) }
+
+func (a groupQueueAdapter) Enqueue(ctx context.Context, agent, owner, game string, bid int64) error {
+	_, err := a.svc.Enqueue(ctx, agent, owner, game, bid)
+	return err
+}
+
+func (a groupQueueAdapter) Queued(ctx context.Context, agent string) (bool, error) {
+	e, err := a.svc.Status(ctx, agent)
+	if err != nil {
+		return false, nil // no live entry ⇒ not queued (top up on the next tick)
+	}
+	return e.Status == groupmatch.StatusWaiting || e.Status == groupmatch.StatusMatched, nil
 }
 
 // rankedLivenessGate is the matchmaking.Liveness gate: an agent may enter the ranked

@@ -59,12 +59,17 @@ func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	lines, err := h.svc.History(r.Context(), agentID, limit)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+	lines, next, err := h.svc.History(r.Context(), agentID, limit, offset)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"transactions": lines})
+	resp := map[string]any{"transactions": lines}
+	if next > 0 {
+		resp["next_cursor"] = next
+	}
+	httpx.JSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) userSummary(w http.ResponseWriter, r *http.Request) {
@@ -88,19 +93,24 @@ func (h *Handler) userHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	lines, err := h.svc.UserHistory(r.Context(), p.UserPublicID, limit)
+	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+	lines, next, err := h.svc.UserHistory(r.Context(), p.UserPublicID, limit, offset)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"transactions": lines})
+	resp := map[string]any{"transactions": lines}
+	if next > 0 {
+		resp["next_cursor"] = next
+	}
+	httpx.JSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) allocate(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		Agent  string `json:"agent"`
-		Amount int64  `json:"amount"`
+		Agent   string `json:"agent"`
+		Amount  int64  `json:"amount"`
 		IdemKey string `json:"idempotency_key"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {

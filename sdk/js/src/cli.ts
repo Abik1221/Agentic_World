@@ -13,6 +13,7 @@ import { asAgent } from "./adapter.js";
 import * as config from "./config.js";
 import * as creds from "./credentials.js";
 import { enableGateway } from "./instrument.js";
+import { maybeInstallPing } from "./install-ping.js";
 import { deriveConnectUrl, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
@@ -1471,6 +1472,9 @@ Commands:
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const command = argv[0];
   const a = parse(argv.slice(1));
+  // Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
+  // PYYOL_NO_TELEMETRY / DO_NOT_TRACK). Never blocks or affects the command.
+  maybeInstallPing(str(a, "api") || DEFAULT_API_BASE, SDK_VERSION);
   switch (command) {
     case "login":
       return cmdLogin(a);

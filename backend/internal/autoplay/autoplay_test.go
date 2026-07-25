@@ -23,9 +23,9 @@ func (f *fakeRepo) SetStatus(_ context.Context, agent, status, reason string) er
 }
 
 type fakeQueue struct {
-	queued    map[string]bool
-	enqueued  []string
-	enqErr    error
+	queued   map[string]bool
+	enqueued []string
+	enqErr   error
 }
 
 func (f *fakeQueue) Enqueue(_ context.Context, agent, _ string, _ int64) error {
@@ -36,6 +36,26 @@ func (f *fakeQueue) Enqueue(_ context.Context, agent, _ string, _ int64) error {
 	return nil
 }
 func (f *fakeQueue) Queued(_ context.Context, agent string) (bool, error) {
+	return f.queued[agent], nil
+}
+
+// fakeGroupQueue is the N-player ranked queue; handles only the games in `games`.
+type fakeGroupQueue struct {
+	games    map[string]bool
+	queued   map[string]bool
+	enqueued []string // "agent:game" per Enqueue
+	enqErr   error
+}
+
+func (f *fakeGroupQueue) Handles(game string) bool { return f.games[game] }
+func (f *fakeGroupQueue) Enqueue(_ context.Context, agent, _, game string, _ int64) error {
+	if f.enqErr != nil {
+		return f.enqErr
+	}
+	f.enqueued = append(f.enqueued, agent+":"+game)
+	return nil
+}
+func (f *fakeGroupQueue) Queued(_ context.Context, agent string) (bool, error) {
 	return f.queued[agent], nil
 }
 
@@ -137,8 +157,8 @@ func TestShouldPlay_StopConditions(t *testing.T) {
 
 func TestWithinActiveHours(t *testing.T) {
 	always := Setting{ActiveFromUTC: 0, ActiveUntilUTC: 0}
-	day := Setting{ActiveFromUTC: 9, ActiveUntilUTC: 17}    // 9am–5pm
-	night := Setting{ActiveFromUTC: 22, ActiveUntilUTC: 6}  // wraps midnight
+	day := Setting{ActiveFromUTC: 9, ActiveUntilUTC: 17}   // 9am–5pm
+	night := Setting{ActiveFromUTC: 22, ActiveUntilUTC: 6} // wraps midnight
 	checks := []struct {
 		s    Setting
 		hour int

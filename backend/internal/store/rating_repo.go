@@ -248,12 +248,22 @@ func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int,
 func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string, minGames int) ([]rating.ModelStat, error) {
 	rows, err := r.db.Query(ctx,
 		`WITH mdl AS (
-		   SELECT DISTINCT ON (agent_id) agent_id,
+		   SELECT DISTINCT ON (agent_public_id) agent_public_id,
 		          model_provider AS provider, model_name AS model
 		   FROM agent_manifests
 		   WHERE status <> 'rejected'
 		     AND COALESCE(model_provider,'') <> '' AND COALESCE(model_name,'') <> ''
-		   ORDER BY agent_id, created_at DESC
+		   ORDER BY agent_public_id, created_at DESC
+		 ),
+		 bench AS (
+		   SELECT agent_id,
+		          SUM(latency_sum_ms) AS lat_sum,
+		          SUM(decisions)      AS decisions,
+		          SUM(tokens)         AS tokens,
+		          SUM(estimated_cost) AS cost
+		   FROM agent_match_benchmark
+		   WHERE game = $2
+		   GROUP BY agent_id
 		 )
 		 SELECT mdl.provider, mdl.model,
 		        COUNT(*)::int                              AS agents,
@@ -261,10 +271,14 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 		        COALESCE(SUM(r.losses),0)::int             AS losses,
 		        COALESCE(SUM(r.ties),0)::int               AS ties,
 		        COALESCE(ROUND(AVG(r.elo)),0)::int         AS avg_elo,
-		        COALESCE(SUM(r.coins_earned),0)::bigint    AS coins_won
+		        COALESCE(SUM(r.coins_earned),0)::bigint    AS coins_won,
+		        COALESCE(ROUND(SUM(b.lat_sum) / NULLIF(SUM(b.decisions),0)),0)::int AS avg_latency_ms,
+		        COALESCE(SUM(b.cost),0)::double precision  AS est_cost_usd,
+		        COALESCE(SUM(b.tokens),0)::bigint          AS tokens
 		 FROM mdl
-		 JOIN agents  a ON a.id = mdl.agent_id AND a.kind <> 'house'
-		 JOIN ratings r ON r.agent_id = mdl.agent_id AND r.game = $2 AND r.season = $1
+		 JOIN agents  a ON a.public_id = mdl.agent_public_id AND a.kind <> 'house'
+		 JOIN ratings r ON r.agent_id = a.id AND r.game = $2 AND r.season = $1
+		 LEFT JOIN bench b ON b.agent_id = a.id
 		 GROUP BY mdl.provider, mdl.model
 		 HAVING (COALESCE(SUM(r.wins),0)+COALESCE(SUM(r.losses),0)+COALESCE(SUM(r.ties),0)) >= $3
 		 ORDER BY avg_elo DESC, coins_won DESC`, season, game, minGames)
@@ -275,7 +289,8 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 	var out []rating.ModelStat
 	for rows.Next() {
 		var s rating.ModelStat
-		if err := rows.Scan(&s.Provider, &s.Model, &s.Agents, &s.Wins, &s.Losses, &s.Ties, &s.AvgElo, &s.CoinsWon); err != nil {
+		if err := rows.Scan(&s.Provider, &s.Model, &s.Agents, &s.Wins, &s.Losses, &s.Ties, &s.AvgElo, &s.CoinsWon,
+			&s.AvgLatencyMs, &s.EstCostUSD, &s.Tokens); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

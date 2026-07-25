@@ -88,7 +88,13 @@ type Repo interface {
 	// (non-house) agents and every season — the basis for total USD earnings.
 	LifetimeCoinsEarned(ctx context.Context, userPublicID string) (int64, error)
 	Agents(ctx context.Context, userPublicID string, season int) ([]AgentCard, error)
-	RecentMatches(ctx context.Context, userPublicID string, limit int) ([]MatchRow, error)
+	RecentMatches(ctx context.Context, userPublicID string, limit, offset int) ([]MatchRow, error)
+	// TokenEfficiency returns the developer's lifetime LLM tokens burned across their
+	// (non-house) agents and how many of those benchmarked matches were wins, so the
+	// service can show tokens-per-win. Zero when no benchmark facts exist yet.
+	TokenEfficiency(ctx context.Context, userPublicID string) (tokens int64, wins int, err error)
+	// TopModels returns the developer's most-declared LLM models (by agent count).
+	TopModels(ctx context.Context, userPublicID string, limit int) ([]ModelUsage, error)
 	FollowCounts(ctx context.Context, userPublicID string) (followers, following int, err error)
 	Badges(ctx context.Context, userPublicID string) ([]Badge, error)
 	// Leaderboard ranks developers by P-Index for a season, filtered by segment

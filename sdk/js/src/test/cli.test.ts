@@ -21,6 +21,8 @@ async function run(
   const origFetch = globalThis.fetch;
   const origHome = process.env.PYYOL_HOME;
   const origApi = process.env.PYYOL_API;
+  const origTelemetry = process.env.PYYOL_NO_TELEMETRY;
+  process.env.PYYOL_NO_TELEMETRY = "1"; // no adoption ping during tests (no real network)
   const out: string[] = [];
   const err: string[] = [];
   console.log = (...a: unknown[]) => out.push(a.join(" "));
@@ -39,6 +41,8 @@ async function run(
     else process.env.PYYOL_HOME = origHome;
     if (origApi === undefined) delete process.env.PYYOL_API;
     else process.env.PYYOL_API = origApi;
+    if (origTelemetry === undefined) delete process.env.PYYOL_NO_TELEMETRY;
+    else process.env.PYYOL_NO_TELEMETRY = origTelemetry;
   }
 }
 

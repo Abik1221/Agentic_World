@@ -13,7 +13,7 @@ package monopoly
 // Version identifies the rule set. It is embedded in the match_created event and
 // stored on every match so a replay is reproduced with the exact same rules.
 // Bump on ANY behavioral change to the engine.
-const Version = "monopoly-1.1.0"
+const Version = "monopoly-1.2.0"
 
 // Bank is the sentinel "owner" for unowned property and the sentinel creditor for
 // payments that go to / come from the bank. Tie is the sentinel winner for a draw.
@@ -25,15 +25,15 @@ const (
 // Turn phases. The phase tells callers (and LegalActions) whose decision is
 // pending and which actions are valid right now.
 const (
-	PhaseRoll        = "roll"         // current player must roll (or act in jail)
-	PhaseJail        = "jail"         // current player is in jail and must choose
-	PhaseAcquire     = "acquire"      // current player landed on an unowned property
-	PhaseAuction     = "auction"      // an auction is open; AuctionState.Current bids
-	PhaseResolveDebt  = "resolve_debt"   // a player owes more than their cash; must raise funds or go bankrupt
-	PhaseManage       = "manage"         // post-move: build/mortgage/trade, then end turn (or re-roll on doubles)
+	PhaseRoll          = "roll"           // current player must roll (or act in jail)
+	PhaseJail          = "jail"           // current player is in jail and must choose
+	PhaseAcquire       = "acquire"        // current player landed on an unowned property
+	PhaseAuction       = "auction"        // an auction is open; AuctionState.Current bids
+	PhaseResolveDebt   = "resolve_debt"   // a player owes more than their cash; must raise funds or go bankrupt
+	PhaseManage        = "manage"         // post-move: build/mortgage/trade, then end turn (or re-roll on doubles)
 	PhaseTradeResponse = "trade_response" // a trade was proposed; the target must accept or reject
 	PhaseTrade         = "trade"          // open floor at the top of a turn: other players may propose a trade or skip
-	PhaseGameOver     = "game_over"
+	PhaseGameOver      = "game_over"
 )
 
 // Trade is a proposed player-to-player exchange of properties and cash. The
@@ -64,8 +64,8 @@ type Player struct {
 // Holding is the ownership state of one ownable board square. For non-ownable
 // squares Owner stays Bank and the rest is ignored.
 type Holding struct {
-	Owner     int  `json:"owner"`     // Bank(-1) or a seat
-	Houses    int  `json:"houses"`    // 0..5 (5 == hotel)
+	Owner     int  `json:"owner"`  // Bank(-1) or a seat
+	Houses    int  `json:"houses"` // 0..5 (5 == hotel)
 	Mortgaged bool `json:"mortgaged"`
 }
 
@@ -78,6 +78,9 @@ type AuctionState struct {
 	HighBidder int    `json:"high_bidder"` // Bank(-1) until the first bid
 	InAuction  []bool `json:"in_auction"`  // per-seat: still bidding?
 	Current    int    `json:"current"`     // seat whose bid/pass is awaited
+	// Estate marks an auction of a bankrupt-to-bank estate: when it (and the rest of
+	// EstateQueue) closes, the debtor's turn ends rather than returning to PhaseManage.
+	Estate bool `json:"estate,omitempty"`
 }
 
 // Debt records an unpaid obligation that exceeds the debtor's cash. While it is
@@ -113,7 +116,11 @@ type State struct {
 	Auction      *AuctionState `json:"auction,omitempty"`
 	Debt         *Debt         `json:"debt,omitempty"`
 	PendingTrade *Trade        `json:"pending_trade,omitempty"`
-	TradeCounters int          `json:"trade_counters,omitempty"` // counters so far in the open negotiation
+	// EstateQueue holds the remaining property squares to auction off after a player
+	// went bankrupt owing the BANK: the bank auctions the estate to the surviving
+	// players (official rule), one property at a time, before the debtor's turn ends.
+	EstateQueue   []int `json:"estate_queue,omitempty"`
+	TradeCounters int   `json:"trade_counters,omitempty"` // counters so far in the open negotiation
 	// Open trade window (PhaseTrade): the seats, in order, still owed a chance to
 	// propose a trade before the turn owner rolls. TradeReturn records where a
 	// negotiation should resume once it resolves ("trade" window or "manage").
@@ -157,6 +164,7 @@ func (s State) clone() State {
 		cp.PendingTrade = &tr
 	}
 	cp.TradeQueue = append([]int(nil), s.TradeQueue...)
+	cp.EstateQueue = append([]int(nil), s.EstateQueue...)
 	return cp
 }
 

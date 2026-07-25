@@ -139,6 +139,19 @@ type RankedQueue interface {
 	Queued(ctx context.Context, agentPublicID string) (bool, error)
 }
 
+// RankedGroupQueue is the N-player ranked queue (Mafia/Monopoly), the sibling of
+// RankedQueue. The reconciler routes an agent to whichever queue owns its ranked
+// game — Handles decides — so hands-free ranked play works for all three games, not
+// just Goofspiel. Optional (nil ⇒ group games simply aren't auto-enqueued).
+type RankedGroupQueue interface {
+	// Handles reports whether game uses the group queue (vs the 2-player one).
+	Handles(game string) bool
+	// Enqueue joins the group queue for a specific game (reuses its own gates).
+	Enqueue(ctx context.Context, agentPublicID, ownerPublicID, game string, bid int64) error
+	// Queued reports whether the agent already has a live group-queue entry.
+	Queued(ctx context.Context, agentPublicID string) (bool, error)
+}
+
 // SandboxStarter starts a single no-stakes practice match and reports how many
 // auto-play sandbox matches are already in flight for an agent (so we keep at
 // most MaxSandboxConcurrent running, rather than spawning one every tick).
@@ -165,6 +178,7 @@ func (c *Config) withDefaults() {
 type Service struct {
 	repo    Repo
 	ranked  RankedQueue
+	group   RankedGroupQueue // optional: N-player ranked queue (Mafia/Monopoly)
 	sandbox SandboxStarter
 	stats   StatsProvider    // optional: today's activity, for the stop-conditions
 	now     func() time.Time // injectable clock (schedule evaluation)
@@ -186,6 +200,22 @@ func New(repo Repo, ranked RankedQueue, sandbox SandboxStarter, cfg Config, log 
 // SetStats wires the daily-activity source that powers the coin/token/match
 // stop-conditions. Without it, only the active-hours schedule gates play.
 func (s *Service) SetStats(stats StatsProvider) { s.stats = stats }
+
+// SetGroupQueue wires the N-player ranked queue so Mafia/Monopoly agents can be
+// auto-enqueued for ranked play too (call once at wiring time).
+func (s *Service) SetGroupQueue(q RankedGroupQueue) { s.group = q }
+
+// rankedGameOf is the game an agent auto-plays in ranked mode: the first configured
+// game (the CLI populates Games from --games / the pyyol.toml arena), else the
+// default. Ranked is one game at a time, so only the first is used.
+func rankedGameOf(games []string) string {
+	if len(games) > 0 && games[0] != "" {
+		return games[0]
+	}
+	return DefaultGame
+}
+
+func rankedGame(set Setting) string { return rankedGameOf(set.Games) }
 
 // Tick reconciles every enabled agent once. It never returns an error: a failure
 // for one agent (guardrail trip, transient DB blip) is logged and the rest still
@@ -239,6 +269,12 @@ func (s *Service) evaluate(ctx context.Context, set Setting, st DailyStats) (sta
 }
 
 func (s *Service) tickRanked(ctx context.Context, set Setting) (status, reason string) {
+	game := rankedGame(set)
+	// N-player games (Mafia/Monopoly) go to the group queue; Goofspiel (1v1) to the
+	// 2-player queue. Each queue runs its own money-safety gates on enqueue.
+	if s.group != nil && s.group.Handles(game) {
+		return s.tickRankedGroup(ctx, set, game)
+	}
 	if s.ranked == nil {
 		return "", ""
 	}
@@ -258,6 +294,24 @@ func (s *Service) tickRanked(ctx context.Context, set Setting) (status, reason s
 		return StatusBlocked, reasonFromErr(err)
 	}
 	return StatusSearching, "entered the ranked queue"
+}
+
+// tickRankedGroup is the N-player ranked path (Mafia/Monopoly): keep the agent in the
+// group queue so it gets pooled into a full staked table.
+func (s *Service) tickRankedGroup(ctx context.Context, set Setting, game string) (status, reason string) {
+	queued, err := s.group.Queued(ctx, set.AgentPublicID)
+	if err != nil {
+		s.log.Warn("autoplay: group queue status failed", "agent", set.AgentPublicID, "err", err)
+		return "", ""
+	}
+	if queued {
+		return StatusPlaying, "in a " + game + " table or waiting for one to fill"
+	}
+	if err := s.group.Enqueue(ctx, set.AgentPublicID, set.OwnerPublicID, game, set.Bid); err != nil {
+		s.log.Debug("autoplay: group enqueue skipped", "agent", set.AgentPublicID, "game", game, "err", err)
+		return StatusBlocked, reasonFromErr(err)
+	}
+	return StatusSearching, "entered the " + game + " group queue"
 }
 
 func (s *Service) tickSandbox(ctx context.Context, set Setting) (status, reason string) {

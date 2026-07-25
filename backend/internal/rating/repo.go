@@ -54,6 +54,12 @@ type ModelStat struct {
 	AvgElo   int     `json:"avg_elo"`
 	CoinsWon int64   `json:"coins_won"`
 	WinRate  float64 `json:"win_rate"`
+	// Structural economics per model, aggregated from agent_match_benchmark across the
+	// model's agents (0 until benchmark facts exist). AvgLatencyMs is mean ms per
+	// decision — the "low latency" signal; EstCostUSD/Tokens are cumulative spend.
+	AvgLatencyMs int     `json:"avg_latency_ms"`
+	EstCostUSD   float64 `json:"est_cost_usd"`
+	Tokens       int64   `json:"tokens"`
 }
 
 // Standing is one agent's season position (for "your rank this season").

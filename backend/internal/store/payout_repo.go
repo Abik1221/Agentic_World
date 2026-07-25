@@ -20,29 +20,22 @@ func NewPayoutRepo(db *pgxpool.Pool) *PayoutRepo { return &PayoutRepo{db: db} }
 
 var _ payout.Repo = (*PayoutRepo)(nil)
 
-// Withdrawable = net match winnings − coins already committed to live withdrawals,
-// floored at 0 and capped at the current wallet balance. Deposited/bonus coins
-// (which never appear in match coins_delta) are therefore NOT withdrawable.
+// Withdrawable = the agent's current wallet balance. The FULL balance is withdrawable
+// anytime (deposited coins included, not just match winnings): the platform's margin is
+// the fee taken on every deposit AND every withdrawal, so a deposit→withdraw round-trip
+// costs ~10% (5% in + 5% out) — which, with the anti-fraud gate, KYC/verified-wallet
+// checks, velocity caps and the new-address cooldown, deters the buy→cash-out laundering
+// vector without locking deposits in play.
+//
+// No "committed withdrawals" subtraction: a withdrawal Request escrows the coins
+// (bank.Hold agent→escrow) BEFORE the row exists, so the balance already excludes every
+// in-flight and paid withdrawal. Subtracting them again would under-report. Concurrency
+// is handled by the per-owner advisory lock + the ledger's non-negative constraint.
 func (r *PayoutRepo) Withdrawable(ctx context.Context, agentPublicID string) (int64, error) {
 	var avail int64
 	err := r.db.QueryRow(ctx,
-		`WITH winnings AS (
-		   SELECT COALESCE(SUM(mp.coins_delta), 0) AS net
-		   FROM match_players mp
-		   JOIN matches m ON m.id = mp.match_id
-		   JOIN agents  a ON a.id = mp.agent_id
-		   WHERE a.public_id = $1 AND m.status = 'finished'
-		 ),
-		 committed AS (
-		   SELECT COALESCE(SUM(w.coins), 0) AS c
-		   FROM withdrawals w JOIN agents a ON a.id = w.agent_id
-		   WHERE a.public_id = $1 AND w.status IN ('requested','approved','processing','broadcasted','paid')
-		 ),
-		 bal AS (
-		   SELECT COALESCE(wl.balance, 0) AS b
-		   FROM wallets wl JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1
-		 )
-		 SELECT GREATEST(0, LEAST((SELECT net FROM winnings) - (SELECT c FROM committed), (SELECT b FROM bal)))`,
+		`SELECT COALESCE((SELECT wl.balance FROM wallets wl
+		   JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1), 0)`,
 		agentPublicID).Scan(&avail)
 	return avail, err
 }

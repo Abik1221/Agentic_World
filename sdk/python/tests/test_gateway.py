@@ -57,11 +57,21 @@ def test_gateway_headers_without_match():
     assert h == {"X-Pyyol-Key": "agentA"}
 
 
+# A resource whose client points at the gateway (injection allowed) vs. a third-party
+# host (injection MUST be suppressed — the credential can't leak to OpenAI/Anthropic).
+def _routed_resource(base="https://gw/gw/openai/v1"):
+    return SimpleNamespace(_client=SimpleNamespace(base_url=base))
+
+
+def _unrouted_resource(base="https://api.openai.com/v1"):
+    return SimpleNamespace(_client=SimpleNamespace(base_url=base))
+
+
 def test_inject_headers_merges_dev_wins():
     enable_gateway("agentA", "https://gw")
     with turn_usage(match_id="m1", turn=1):
         kwargs = {"extra_headers": {"X-Custom": "1", "X-Pyyol-Key": "dev-override"}}
-        instr._inject_gateway_headers(kwargs)
+        instr._inject_gateway_headers(_routed_resource(), kwargs)
     eh = kwargs["extra_headers"]
     assert eh["X-Custom"] == "1"
     assert eh["X-Pyyol-Match"] == "m1"
@@ -70,8 +80,18 @@ def test_inject_headers_merges_dev_wins():
 
 def test_inject_headers_noop_when_disabled():
     kwargs: dict = {}
-    instr._inject_gateway_headers(kwargs)
+    instr._inject_gateway_headers(_routed_resource(), kwargs)
     assert kwargs == {}
+
+
+def test_inject_headers_suppressed_for_third_party_host():
+    """Security regression: the X-Pyyol-Key credential must NEVER be attached to a call
+    whose client is not routed to the gateway (e.g. a client the dev forgot to route)."""
+    enable_gateway("agentA", "https://gw")
+    with turn_usage(match_id="m1", turn=1):
+        kwargs: dict = {}
+        instr._inject_gateway_headers(_unrouted_resource(), kwargs)
+    assert "extra_headers" not in kwargs  # no headers leaked to api.openai.com
 
 
 def test_route_sets_base_url_and_detects_provider():
@@ -106,6 +126,9 @@ def _fake_openai_module(recorder):
         sys.modules[n] = types.ModuleType(n)
 
     class Completions:
+        # a client routed at the gateway, so header injection is allowed
+        _client = SimpleNamespace(base_url="https://gw/gw/openai/v1")
+
         def create(self, *args, **kwargs):
             recorder["kwargs"] = kwargs
             return SimpleNamespace(

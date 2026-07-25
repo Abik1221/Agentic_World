@@ -137,6 +137,65 @@ func TestTick_WritesStatusOnlyOnChange(t *testing.T) {
 	}
 }
 
+// A ranked agent whose game is an N-player game (Mafia/Monopoly) is routed to the
+// GROUP queue, not the 2-player one — hands-free ranked play for those games.
+func TestTick_RankedRoutesGroupGameToGroupQueue(t *testing.T) {
+	repo := &fakeRepo{settings: []Setting{
+		{AgentPublicID: "maf", OwnerPublicID: "o", Enabled: true, Mode: ModeRanked, Bid: 100, Games: []string{"mafia"}},
+	}}
+	two := &fakeQueue{queued: map[string]bool{}}
+	group := &fakeGroupQueue{games: map[string]bool{"mafia": true, "monopoly": true}, queued: map[string]bool{}}
+	svc := New(repo, two, nil, Config{}, nil)
+	svc.SetGroupQueue(group)
+	svc.Tick(context.Background())
+
+	if len(group.enqueued) != 1 || group.enqueued[0] != "maf:mafia" {
+		t.Fatalf("mafia ranked should enqueue into the group queue, got %v", group.enqueued)
+	}
+	if len(two.enqueued) != 0 {
+		t.Fatalf("a group game must NOT hit the 2-player queue, got %v", two.enqueued)
+	}
+}
+
+// A ranked agent whose game is Goofspiel (or unset → default) stays on the 2-player
+// queue even when a group queue is wired.
+func TestTick_RankedRoutesGoofspielToTwoPlayerQueue(t *testing.T) {
+	repo := &fakeRepo{settings: []Setting{
+		{AgentPublicID: "goo", OwnerPublicID: "o", Enabled: true, Mode: ModeRanked, Bid: 100, Games: []string{"goofspiel"}},
+		{AgentPublicID: "def", OwnerPublicID: "o", Enabled: true, Mode: ModeRanked, Bid: 100}, // no games → default goofspiel
+	}}
+	two := &fakeQueue{queued: map[string]bool{}}
+	group := &fakeGroupQueue{games: map[string]bool{"mafia": true, "monopoly": true}, queued: map[string]bool{}}
+	svc := New(repo, two, nil, Config{}, nil)
+	svc.SetGroupQueue(group)
+	svc.Tick(context.Background())
+
+	if len(group.enqueued) != 0 {
+		t.Fatalf("goofspiel/default must NOT hit the group queue, got %v", group.enqueued)
+	}
+	if len(two.enqueued) != 2 {
+		t.Fatalf("goofspiel + default should both hit the 2-player queue, got %v", two.enqueued)
+	}
+}
+
+// A group-game agent already in a table/queue is left alone (no double-enqueue).
+func TestTick_RankedGroupSkipsWhenAlreadyQueued(t *testing.T) {
+	repo := &fakeRepo{settings: []Setting{
+		{AgentPublicID: "busy", OwnerPublicID: "o", Enabled: true, Mode: ModeRanked, Bid: 100, Games: []string{"monopoly"}},
+	}}
+	group := &fakeGroupQueue{games: map[string]bool{"monopoly": true}, queued: map[string]bool{"busy": true}}
+	svc := New(repo, &fakeQueue{queued: map[string]bool{}}, nil, Config{}, nil)
+	svc.SetGroupQueue(group)
+	svc.Tick(context.Background())
+
+	if len(group.enqueued) != 0 {
+		t.Fatalf("an agent already in the group queue must not be re-enqueued, got %v", group.enqueued)
+	}
+	if len(repo.statuses) != 1 || !strings.HasPrefix(repo.statuses[0], "busy|"+StatusPlaying+"|") {
+		t.Fatalf("expected a playing status for the queued group agent, got %v", repo.statuses)
+	}
+}
+
 // TestTick_LossStopHaltsBleedingAgent is the companion: the DailyLossStop backstop
 // DOES stop an agent that is losing (e.g. the offline agent forfeiting stakes) —
 // but only because the owner explicitly configured it. With the default (0) this
