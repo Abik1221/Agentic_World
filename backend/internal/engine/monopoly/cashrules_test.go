@@ -85,3 +85,62 @@ func TestChargeTransferInterest_FlooredAtAvailableCash(t *testing.T) {
 		t.Fatalf("expected a (partial) interest event, got %+v", evs)
 	}
 }
+
+// R5b: a player who goes bankrupt owing the BANK has their estate auctioned to the
+// surviving players, one property at a time, before their turn ends.
+
+func TestBankruptcyToBank_QueuesEstateAuction(t *testing.T) {
+	e, s := newGame(t, 3)
+	// Seat 0 owns Mediterranean (1) and Baltic (3); it owes the bank an unpayable debt.
+	s.Holdings[1] = Holding{Owner: 0}
+	s.Holdings[3] = Holding{Owner: 0}
+	s.Current = 0
+	s.Debt = &Debt{Debtor: 0, Creditor: Bank, Amount: 999999, Property: 12, Reason: "rent"}
+
+	e.declareBankrupt(&s)
+
+	if !s.Players[0].Bankrupt {
+		t.Fatal("debtor should be bankrupt")
+	}
+	if s.Phase != PhaseAuction || s.Auction == nil || !s.Auction.Estate {
+		t.Fatalf("expected an estate auction, got phase=%q auction=%+v", s.Phase, s.Auction)
+	}
+	if s.Auction.Property != 1 { // first in ascending board order
+		t.Fatalf("first estate property: got %d want 1", s.Auction.Property)
+	}
+	if len(s.EstateQueue) != 1 || s.EstateQueue[0] != 3 {
+		t.Fatalf("remaining estate queue: got %v want [3]", s.EstateQueue)
+	}
+	if s.Auction.Current != 1 { // the bankrupt debtor (seat 0) can't bid; next active seat
+		t.Fatalf("first bidder: got seat %d want 1", s.Auction.Current)
+	}
+}
+
+func TestBankruptcyToBank_EstateDrainsThenTurnEnds(t *testing.T) {
+	e, s := newGame(t, 3)
+	s.Holdings[1] = Holding{Owner: 0}
+	s.Holdings[3] = Holding{Owner: 0}
+	s.Current = 0
+	s.Debt = &Debt{Debtor: 0, Creditor: Bank, Amount: 999999, Property: 12, Reason: "rent"}
+	e.declareBankrupt(&s)
+
+	// Everyone passes on both estate properties; each auction closes unsold and the
+	// next starts, then the debtor's turn ends once the queue drains.
+	for i := 0; i < 12 && s.Phase == PhaseAuction; i++ {
+		if _, err := e.stepAuction(&s, Action{Kind: ActPass}); err != nil {
+			t.Fatalf("pass %d errored: %v", i, err)
+		}
+	}
+	if s.Phase == PhaseAuction {
+		t.Fatal("estate auctions never drained")
+	}
+	if len(s.EstateQueue) != 0 {
+		t.Fatalf("estate queue not drained: %v", s.EstateQueue)
+	}
+	if s.Holdings[1].Owner != Bank || s.Holdings[3].Owner != Bank {
+		t.Fatalf("unsold estate should stay with the bank: owners %d/%d", s.Holdings[1].Owner, s.Holdings[3].Owner)
+	}
+	if s.Current == 0 {
+		t.Fatal("turn should have advanced past the bankrupt debtor")
+	}
+}

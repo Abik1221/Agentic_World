@@ -329,7 +329,7 @@ func (e *Engine) doRoll(ns *State, seed []byte) []Event {
 	}
 	if doubles && ns.Players[seat].Doubles >= 3 {
 		evs = e.goToJail(ns, evs, seat, "three_doubles")
-		return e.endTurn(ns, evs, seed)
+		return e.endTurn(ns, evs)
 	}
 
 	evs = e.moveBySteps(ns, evs, seat, d1+d2)
@@ -434,18 +434,26 @@ func (e *Engine) stepAcquire(ns *State, a Action) ([]Event, error) {
 			ns.Phase = PhaseManage
 			return nil, nil
 		}
-		return e.startAuction(ns, pos), nil
+		return e.startAuction(ns, pos, false), nil
 	default:
 		return nil, ErrIllegalAction
 	}
 }
 
-func (e *Engine) startAuction(ns *State, pos int) []Event {
+// startAuction opens bidding on `pos` among the non-bankrupt seats. estate marks a
+// bankrupt-to-bank estate auction (see closeAuction). The first bidder is the seat
+// AFTER ns.Current for an estate auction (the debtor — ns.Current — is bankrupt and
+// can't bid), else ns.Current (the seat that declined to buy).
+func (e *Engine) startAuction(ns *State, pos int, estate bool) []Event {
 	in := make([]bool, len(ns.Players))
 	for i := range ns.Players {
 		in[i] = !ns.Players[i].Bankrupt
 	}
-	ns.Auction = &AuctionState{Property: pos, HighBid: 0, HighBidder: Bank, InAuction: in, Current: ns.Current}
+	first := ns.Current
+	if estate {
+		first = ns.nextActiveSeat(ns.Current)
+	}
+	ns.Auction = &AuctionState{Property: pos, HighBid: 0, HighBidder: Bank, InAuction: in, Current: first, Estate: estate}
 	ns.Phase = PhaseAuction
 	return []Event{e.emit(ns, EvAuctionStarted, AuctionStartedPayload{Property: pos})}
 }
@@ -504,7 +512,22 @@ func (e *Engine) closeAuction(ns *State, evs *[]Event) {
 	} else {
 		*evs = append(*evs, e.emit(ns, EvAuctionUnsold, AuctionResultPayload{Seat: Bank, Property: au.Property, Amount: 0}))
 	}
+	estate := au.Estate
 	ns.Auction = nil
+
+	// More of a bankrupt estate still to auction → start the next property.
+	if len(ns.EstateQueue) > 0 {
+		next := ns.EstateQueue[0]
+		ns.EstateQueue = ns.EstateQueue[1:]
+		*evs = append(*evs, e.startAuction(ns, next, true)...)
+		return
+	}
+	// Estate fully auctioned → the bankrupt debtor's turn is over; advance play.
+	if estate {
+		*evs = e.endTurn(ns, *evs)
+		return
+	}
+	// Ordinary decline-auction → the seat that landed resumes managing its turn.
 	ns.Phase = PhaseManage
 }
 
@@ -526,7 +549,7 @@ func (e *Engine) stepResolveDebt(ns *State, a Action, seed []byte) ([]Event, err
 		}
 		return e.afterRaise(ns, evs, seed), nil
 	case ActBankrupt:
-		return e.declareBankrupt(ns, seed), nil
+		return e.declareBankrupt(ns), nil
 	default:
 		return nil, ErrIllegalAction
 	}
@@ -554,7 +577,7 @@ func (e *Engine) stepManage(ns *State, a Action, seed []byte) ([]Event, error) {
 	case ActProposeTrade:
 		return e.proposeTrade(ns, a.Trade)
 	case ActEndTurn:
-		return e.endTurn(ns, nil, seed), nil
+		return e.endTurn(ns, nil), nil
 	default:
 		return nil, ErrIllegalAction
 	}
@@ -1134,14 +1157,16 @@ func (e *Engine) settleDebt(ns *State, evs []Event, seed []byte) []Event {
 }
 
 // declareBankrupt liquidates the debtor: buildings are sold to the bank for half
-// value, then all cash + properties + jail cards transfer to the creditor (or, if
-// the creditor is the bank, properties return to the bank unimproved). The seat is
-// eliminated and the turn ends; the game ends if only one player remains.
-func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
+// value, then all cash + properties + jail cards transfer to the creditor. If the
+// creditor is the BANK, the debtor's properties are auctioned to the surviving players
+// (official rule) before the turn ends, rather than silently returning to the bank. The
+// seat is eliminated; the game ends if only one player remains.
+func (e *Engine) declareBankrupt(ns *State) []Event {
 	d := ns.Debt
 	debtor := d.Debtor
 	creditor := d.Creditor
 	var evs []Event
+	var estate []int // debtor's properties to auction when the creditor is the bank
 
 	// 1. Sell all buildings back to the bank for half value.
 	for idx := 0; idx < BoardSize; idx++ {
@@ -1174,7 +1199,8 @@ func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
 
 	// 3. Transfer properties. To a player-creditor: mortgages carry over and the
 	// creditor owes the bank 10% interest for assuming each mortgaged property
-	// (official rule). To the bank: the property returns unimproved.
+	// (official rule). To the bank: the property returns unimproved and is queued for
+	// auction to the survivors (in ascending board order, deterministically).
 	for idx := 0; idx < BoardSize; idx++ {
 		h := ns.Holdings[idx]
 		if h.Owner != debtor {
@@ -1186,6 +1212,7 @@ func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
 			evs = append(evs, e.chargeTransferInterest(ns, creditor, idx)...)
 		} else {
 			ns.Holdings[idx] = Holding{Owner: Bank}
+			estate = append(estate, idx)
 		}
 	}
 
@@ -1210,7 +1237,13 @@ func (e *Engine) declareBankrupt(ns *State, seed []byte) []Event {
 	if ns.activeCount() <= 1 {
 		return e.finish(ns, evs)
 	}
-	return e.endTurn(ns, evs, seed)
+	// Bank-creditor estate → auction it to the survivors, then end the turn once the
+	// queue drains (closeAuction handles the sequencing + the final endTurn).
+	if creditor == Bank && len(estate) > 0 {
+		ns.EstateQueue = estate[1:]
+		return append(evs, e.startAuction(ns, estate[0], true)...)
+	}
+	return e.endTurn(ns, evs)
 }
 
 // ── Build / sell / mortgage ────────────────────────────────────────────────
@@ -1347,7 +1380,7 @@ func (e *Engine) doUnmortgage(ns *State, pos int) ([]Event, error) {
 
 // endTurn closes the current turn: it re-rolls for the same player on doubles,
 // otherwise advances to the next solvent player. The turn cap ends the game.
-func (e *Engine) endTurn(ns *State, evs []Event, seed []byte) []Event {
+func (e *Engine) endTurn(ns *State, evs []Event) []Event {
 	cur := ns.Current
 	evs = append(evs, e.emit(ns, EvTurnEnded, TurnEndedPayload{Seat: cur}))
 
