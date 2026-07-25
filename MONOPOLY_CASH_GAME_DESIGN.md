@@ -117,12 +117,14 @@ the ledger always balances.
 - **P4 — service lifecycle:** join/rebuy/leave endpoints, `Mode` flag + max-stack cap,
   stop-loss watcher, table-close bounds, auto-cash-out on close.
 - **P5 — anti-collusion:** trade fraud signals + lopsided-pair detection.
-- **R5 — engine rule fixes:** R5a (mortgage interest on transfer) ✅ done. **R5b
-  (bank-estate auction) deferred** — it needs a `PendingAuctions []int` queue in State so
-  a bankrupt-to-bank estate is auctioned property-by-property through the existing
-  auction phase before the turn ends; a phase-machine + replay change worth doing on its
-  own, not rushed. Assets are not lost today (they return to the bank, still buyable on a
-  future landing), so this is fidelity, not a money bug.
+- **R5 — engine rule fixes:** R5a (mortgage interest on transfer) ✅ done. R5b
+  (bank-estate auction) ✅ done — `State.EstateQueue` + `AuctionState.Estate`;
+  `declareBankrupt` auctions a bank creditor's estate property-by-property; `closeAuction`
+  drains the queue then ends the debtor's turn. Engine `Version` bumped to
+  `monopoly-1.2.0`. Full determinism + replay suites green.
+
+**With R5a + R5b done, the engine now implements all five official rules.** Remaining
+cash-game work is purely the money model (P3/P4/P5), which is why P3 is the gating item.
 
 Each phase ships with unit + (where it touches the DB) real-Postgres integration tests,
 mirroring the tournament path.
