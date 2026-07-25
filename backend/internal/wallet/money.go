@@ -180,12 +180,28 @@ func (s *Service) Topup(ctx context.Context, userPublicID string, coins int64, i
 }
 
 // CreditDeposit credits coins to the owner's treasury after a CONFIRMED on-chain
-// stablecoin deposit (Solana USDC). Same money movement as Topup (external
-// clearing → user treasury) but tagged source "solana" for a correct ledger
-// audit trail. Idempotent on idemKey (use "solana:<tx_signature>") so a
-// re-observed transfer is a no-op.
-func (s *Service) CreditDeposit(ctx context.Context, userPublicID string, coins int64, idemKey string) error {
-	return s.creditUser(ctx, userPublicID, coins, idemKey, "solana")
+// stablecoin deposit (Solana USDC), taking the platform deposit fee: external
+// clearing → user treasury (userCoins) + platform_revenue (feeCoins), one balanced
+// txn. Tagged source "solana" for the ledger audit trail. Idempotent on idemKey
+// (use "solana:<tx_signature>") so a re-observed transfer is a no-op.
+func (s *Service) CreditDeposit(ctx context.Context, userPublicID string, userCoins, feeCoins int64, idemKey string) error {
+	if userCoins <= 0 && feeCoins <= 0 {
+		return nil // nothing to credit (sub-coin deposit)
+	}
+	postings := []ledger.Posting{
+		{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: -(userCoins + feeCoins)},
+		{Wallet: ledger.UserWallet(userPublicID), Amount: userCoins},
+	}
+	if feeCoins > 0 {
+		postings = append(postings, ledger.Posting{Wallet: ledger.SystemWallet(ledger.SysPlatformRevenue), Amount: feeCoins})
+	}
+	_, err := s.ledger.Post(ctx, ledger.Txn{
+		Kind:     ledger.KindTopup,
+		Key:      idemKey,
+		Metadata: map[string]any{"user": userPublicID, "coins": userCoins, "fee": feeCoins, "source": "solana"},
+		Postings: postings,
+	})
+	return err
 }
 
 // creditUser applies incoming coins to the owner's treasury wallet.

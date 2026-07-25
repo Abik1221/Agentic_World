@@ -34,6 +34,12 @@ func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
 
 // New builds the deposit service, applying peg/decimal/TTL defaults.
 func New(repo Repo, chain Chain, crediter Crediter, clock platform.Clock, cfg Config, log *slog.Logger) *Service {
+	if cfg.DepositFeePct <= 0 {
+		cfg.DepositFeePct = 5 // platform takes 5% of every deposit (beta default)
+	}
+	if cfg.DepositFeePct > 100 {
+		cfg.DepositFeePct = 100
+	}
 	if cfg.CoinsPerUSDC <= 0 {
 		cfg.CoinsPerUSDC = 100 // 1 USDC = 100 coins (1 coin = 1¢)
 	}
@@ -267,11 +273,15 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 			continue
 		}
 		coins := s.coinsFor(received)
+		// Platform deposit fee: the user is credited (100−fee)% of the pegged coins,
+		// the platform keeps the rest. Floored so escrow accounting stays whole.
+		feeCoins := coins * int64(s.cfg.DepositFeePct) / 100
+		userCoins := coins - feeCoins
 
 		// Credit FIRST (idempotent on the ledger key), then record. A crash between
 		// the two is safe: the ledger key makes a re-credit a no-op, and the record
 		// insert is idempotent on the tx signature.
-		if err := s.crediter.CreditDeposit(ctx, sess.UserPublicID, coins, "solana:"+si.Signature); err != nil {
+		if err := s.crediter.CreditDeposit(ctx, sess.UserPublicID, userCoins, feeCoins, "solana:"+si.Signature); err != nil {
 			s.log.Error("deposit credit", "deposit", sess.PublicID, "sig", si.Signature, "error", err)
 			return false
 		}

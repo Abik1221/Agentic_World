@@ -82,7 +82,7 @@ type Chain interface {
 
 // Crediter credits a confirmed deposit to the owner's treasury (wallet.Service).
 type Crediter interface {
-	CreditDeposit(ctx context.Context, userPublicID string, coins int64, idemKey string) error
+	CreditDeposit(ctx context.Context, userPublicID string, userCoins, feeCoins int64, idemKey string) error
 }
 
 // Gate is the Super Admin deposit gate (satisfied by walletadmin.Service): it
@@ -106,4 +106,7 @@ type Config struct {
 	USDCDecimals   int           // token decimals (USDC = 6)
 	SessionTTL     time.Duration // how long a deposit session stays open
 	MinDepositBase int64         // minimum deposit in token base units
+	// DepositFeePct is the platform's cut on every deposit (default 5): the user is
+	// credited (100−fee)% of the pegged coins and the platform keeps the rest.
+	DepositFeePct int
 }

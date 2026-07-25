@@ -108,20 +108,22 @@ func (c *fakeChain) GetTransaction(_ context.Context, sig string) (*blockchain.T
 // fakeCrediter mirrors the ledger's idempotency: a repeated idemKey is a no-op.
 type fakeCrediter struct {
 	seen  map[string]bool
-	total map[string]int64 // user → coins actually credited
+	total map[string]int64 // user → coins actually credited (net of the deposit fee)
+	fees  map[string]int64 // user → platform deposit fee taken
 	calls int
 }
 
 func newFakeCrediter() *fakeCrediter {
-	return &fakeCrediter{seen: map[string]bool{}, total: map[string]int64{}}
+	return &fakeCrediter{seen: map[string]bool{}, total: map[string]int64{}, fees: map[string]int64{}}
 }
-func (c *fakeCrediter) CreditDeposit(_ context.Context, user string, coins int64, idemKey string) error {
+func (c *fakeCrediter) CreditDeposit(_ context.Context, user string, userCoins, feeCoins int64, idemKey string) error {
 	c.calls++
 	if c.seen[idemKey] {
 		return nil // idempotent replay
 	}
 	c.seen[idemKey] = true
-	c.total[user] += coins
+	c.total[user] += userCoins
+	c.fees[user] += feeCoins
 	return nil
 }
 
@@ -183,8 +185,11 @@ func TestPollCreditsFinalizedDeposit(t *testing.T) {
 	if got.Status != StatusCompleted || got.CoinsCredited != 500 {
 		t.Fatalf("session not completed correctly: %+v", got)
 	}
-	if cred.total["usr_a"] != 500 {
-		t.Fatalf("credited %d coins, want 500", cred.total["usr_a"])
+	if cred.total["usr_a"] != 475 {
+		t.Fatalf("credited %d coins net, want 475 (500 gross − 5%% deposit fee)", cred.total["usr_a"])
+	}
+	if cred.fees["usr_a"] != 25 {
+		t.Fatalf("platform deposit fee %d, want 25 (5%% of 500)", cred.fees["usr_a"])
 	}
 
 	// Idempotency: a second poll must not double-credit (session already completed,
@@ -194,8 +199,8 @@ func TestPollCreditsFinalizedDeposit(t *testing.T) {
 	if _, err := svc.Poll(context.Background()); err != nil {
 		t.Fatalf("second poll: %v", err)
 	}
-	if cred.total["usr_a"] != 500 {
-		t.Fatalf("double-credited: total = %d, want 500", cred.total["usr_a"])
+	if cred.total["usr_a"] != 475 {
+		t.Fatalf("double-credited: total = %d, want 475", cred.total["usr_a"])
 	}
 }
 
