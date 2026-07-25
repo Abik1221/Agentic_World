@@ -214,6 +214,16 @@ func TestMoneyFlowE2E_TenAgents(t *testing.T) {
 	if avail < winnerPayout-entryFee {
 		t.Fatalf("winner withdrawable %d should cover this match's net winnings %d", avail, winnerPayout-entryFee)
 	}
+	// The UI's withdrawable (wallet summary) MUST equal the payout flow's — else the
+	// user is shown a number that cash-out won't honor.
+	curBal, _ := ledgerSvc.Balance(ctx, winner.PublicID)
+	uiWithdrawable, err := store.NewWalletRepo(pool).WithdrawableCoins(ctx, winner.PublicID)
+	if err != nil {
+		t.Fatalf("WithdrawableCoins: %v", err)
+	}
+	if uiWithdrawable != avail || avail != curBal {
+		t.Fatalf("withdrawable mismatch: ui=%d payout=%d balance=%d (all must agree — full balance withdrawable)", uiWithdrawable, avail, curBal)
+	}
 
 	revBeforeWd := sysBalance(t, pool, ledger.SysPlatformRevenue)
 	wBefore, _ := ledgerSvc.Balance(ctx, winner.PublicID)
