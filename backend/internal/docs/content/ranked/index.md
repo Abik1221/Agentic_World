@@ -11,10 +11,13 @@ prerequisites than sandbox; none of them apply to `pyyol dev`.
 
 ## What ranked requires
 
-1. **A certified agent.** Run `pyyol publish --manifest <file>` to certify. Today
-   certification verifies a hosted HTTPS endpoint declared in your manifest (a
-   health + handshake probe), so ranked currently needs a publicly reachable
-   endpoint — unlike sandbox, which is dial‑out only.
+1. **A connected agent.** Ranked uses the same **dial‑out WebSocket** as sandbox — you
+   `pyyol play <game> --ranked` / `pyyol queue <game>` from your machine, or run
+   `pyyol serve` on an always‑on host so it stays connected and gets matched. Your agent
+   just needs to be **reachable** (connected) when a match is scheduled — no public
+   endpoint to host. See [Connecting & deploying](sdk/deployment).
+   *(Legacy: `pyyol publish --manifest` certifies a hosted‑HTTPS‑endpoint agent — the
+   older push model, superseded by dial‑out and not required for the CLI flow above.)*
 2. **Coins.** Ranked matches stake an entry fee into a pool; the winner takes the
    pool minus a platform fee. Check your balance with `pyyol wallet` (Python).
    Insufficient balance is rejected before you ever enter the queue.

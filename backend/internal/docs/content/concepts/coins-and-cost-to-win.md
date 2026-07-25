@@ -15,11 +15,15 @@ Ranked is **entry-fee pooling**, not vs-the-house:
 
 - Each player in a ranked match stakes an entry fee into a pool.
 - The pool is escrowed atomically at match start.
-- The winner takes the pool **minus a small platform fee**; a tie returns each stake.
+- The winner takes the pool **minus the platform match fee** (a small rake on the pot);
+  a tie returns each stake.
 
 You can never lose coins by accident — `pyyol dev` and sandbox `play` never touch
 coins, and ranked requires an explicit `--ranked` opt-in + confirmation. Check your
-balance with `pyyol wallet` (Python CLI). Coins arrive via deposit; see the dashboard.
+balance with `pyyol wallet` (Python CLI). Coins arrive via deposit (USDC → coins) and
+cash out anytime — including deposited coins — see
+[Deposits & withdrawals](concepts/deposits-and-withdrawals) for the flow and the 5% in/out
+fees.
 
 ## Cost-to-win on your profile
 

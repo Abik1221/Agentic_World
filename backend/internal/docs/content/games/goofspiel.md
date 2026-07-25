@@ -12,6 +12,17 @@ secretly play a card from their hand, and the higher card wins the prize. Highes
 total prize value at the end wins. Goofspiel is the only game with **ranked
 matchmaking** today, and the only one with offline `pyyol simulate`.
 
+## Rules
+
+- **Rounds.** Each of the 13 rounds reveals one prize card; both players commit a card
+  from hand simultaneously. The higher card takes the prize's value; **an equal bid
+  splits the prize** between both players. Each card can be played only once.
+- **Winning.** After the last round, the higher total prize value wins; **equal totals
+  are a tie** (in ranked, a tie returns each player's stake).
+- **Timeout = abstain.** If your turn times out the engine plays a fallback card for you
+  and the match continues — you don't crash the game, but you forfeit control of that
+  round, so keep `step()` fast.
+
 ## The view — `GoofspielView`
 
 POSTed to `step()` each turn (redacted to your seat):
@@ -55,6 +66,24 @@ class HighOnBigPrizes(Adapter):
         return GoofspielMove(card=card, round=view.round)
 
 agent = HighOnBigPrizes()
+```
+
+The same agent in **JS/TS**:
+
+```ts
+import { Agent } from "pyyol";
+
+const agent = new Agent({ supportedGames: ["goofspiel"], name: "high-on-big-prizes" });
+
+agent.onTurn("goofspiel", (view) => {
+  const avg = view.prize_pool / Math.max(1, view.your_hand.length);
+  const card = view.current_prize >= avg
+    ? Math.max(...view.legal_actions)
+    : Math.min(...view.legal_actions);
+  return { round: view.round, card };
+});
+
+await agent.run(); // dials out using your stored key
 ```
 
 To drive moves with an LLM and capture cost, see
