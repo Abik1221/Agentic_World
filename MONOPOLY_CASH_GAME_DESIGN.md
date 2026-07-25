@@ -102,20 +102,27 @@ the ledger always balances.
 
 ## 2. Phases
 
-- **P1 — pure cash-game economy math** (`internal/monopoly/cashgame.go`, new; uncontested
-  package). Integer-exact `RedemptionShare`, `ChipsForBuyin`, `CashOut` (gross/rake/net),
-  stop-loss test, conservation invariants. Full unit tests. ← *this commit*
-- **P2 — engine seating for cash tables:** starting cash = buy-in chips; a `TableConfig`
-  flag `Mode: cash|tournament`; max-stack cap.
-- **P3 — money wiring:** extend the monopoly `Wallet` interface with `BuyIn` / `CashOut`
-  (new `internal/wallet/monopoly_cashgame.go`, reusing `KindStake`/`KindSettle` +
-  metadata to stay off the parallel session's contested `ledger/types.go`); cash-out
-  through `gate.Allow`; migration for per-table pool + per-seat cost-basis.
-- **P4 — service lifecycle:** join/rebuy/leave endpoints, stop-loss watcher, table-close
-  bounds, auto-cash-out on close.
+- **P1 — pure cash-game economy math** ✅ done (`internal/monopoly/cashgame.go`).
+  Integer-exact `RedeemableCoins`, `ChipsForBuyin`, `CashOut` (gross/rake/net),
+  `ShouldStopLoss`, `CloseDistribution`; conservation/ratio-invariance/overflow tests.
+- **P2 — engine seating for cash tables** ✅ done. `Engine.InitWithStacks` gives each
+  seat its buy-in as opening chips; `Init` unchanged for tournament tables. (The
+  `Mode: cash|tournament` flag + max-stack cap move to the service model in P4, wired
+  with the money so no dead fields land early.)
+- **P3 — money wiring:** ⏳ blocked on contested files. Extend the monopoly `Wallet`
+  interface with `BuyIn` / `CashOut` (new `internal/wallet/monopoly_cashgame.go`, reusing
+  `KindStake`/`KindSettle` + metadata to stay off the parallel session's contested
+  `ledger/types.go`); cash-out through `gate.Allow`; migration for per-table pool +
+  per-seat cost-basis. **Do after the parallel session's wallet/ledger WIP is committed.**
+- **P4 — service lifecycle:** join/rebuy/leave endpoints, `Mode` flag + max-stack cap,
+  stop-loss watcher, table-close bounds, auto-cash-out on close.
 - **P5 — anti-collusion:** trade fraud signals + lopsided-pair detection.
-- **R5 — engine rule fixes:** mortgage interest on transfer (R5a) + bank-estate auction
-  (R5b). Independent of the money model; can land any time.
+- **R5 — engine rule fixes:** R5a (mortgage interest on transfer) ✅ done. **R5b
+  (bank-estate auction) deferred** — it needs a `PendingAuctions []int` queue in State so
+  a bankrupt-to-bank estate is auctioned property-by-property through the existing
+  auction phase before the turn ends; a phase-machine + replay change worth doing on its
+  own, not rushed. Assets are not lost today (they return to the bank, still buyable on a
+  future landing), so this is fidelity, not a money bug.
 
 Each phase ships with unit + (where it touches the DB) real-Postgres integration tests,
 mirroring the tournament path.
