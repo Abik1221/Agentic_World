@@ -324,7 +324,7 @@ func Load() (*Config, error) {
 		ClipCDNBase: l.str("CLIP_CDN_BASE", "https://cdn.local/clips"),
 
 		CoinCents:                int64(l.intVal("COIN_CENTS", 1)),
-		WithdrawSellFeePct:       l.intVal("WITHDRAW_SELL_FEE_PCT", 10),
+		WithdrawSellFeePct:       l.intVal("WITHDRAW_SELL_FEE_PCT", 5),
 		StripePayoutFeePct:       l.intVal("STRIPE_PAYOUT_FEE_PCT", 0),
 		StripePayoutFeeFlatCents: int64(l.intVal("STRIPE_PAYOUT_FEE_FLAT_CENTS", 25)),
 		WithdrawMinCoins:         int64(l.intVal("WITHDRAW_MIN_COINS", 500)),

@@ -203,7 +203,7 @@ func TestMoneyFlowE2E_TenAgents(t *testing.T) {
 	// ── Withdraw the winnings back to (Stripe) cash ───────────────────────────────
 	payoutSvc := payout.New(
 		store.NewPayoutRepo(pool), testBank{ledgerSvc}, payout.DevTransferrer{}, platform.NewClock(),
-		payout.Config{CoinCents: 1, SellFeePct: 10, MinCoins: 1, Clearing: time.Nanosecond, Chain: payout.ChainStripe},
+		payout.Config{CoinCents: 1, SellFeePct: 5, MinCoins: 1, Clearing: time.Nanosecond, Chain: payout.ChainStripe},
 		log, reg,
 	)
 
@@ -233,7 +233,7 @@ func TestMoneyFlowE2E_TenAgents(t *testing.T) {
 	if wAfter != wBefore-wd {
 		t.Fatalf("winner debited wrong: %d want %d", wAfter, wBefore-wd)
 	}
-	sellFee := wd * 10 / 100 // 100
+	sellFee := wd * 5 / 100 // 50 (5% platform withdrawal fee)
 	if got := sysBalance(t, pool, ledger.SysPlatformRevenue) - revBeforeWd; got != sellFee {
 		t.Fatalf("withdrawal sell fee not captured: +%d want +%d", got, sellFee)
 	}
