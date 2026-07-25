@@ -50,6 +50,27 @@ func TestExecuteTrade_NoInterestForUnmortgaged(t *testing.T) {
 	}
 }
 
+// P2: cash-game tables seat each player on their own buy-in stack.
+
+func TestInitWithStacks_PerSeatOpeningCash(t *testing.T) {
+	e := New(Config{Players: 3, StartingCash: 1500})
+	s, _ := e.InitWithStacks([]byte("seed-abc"), []int{500, 0, 900})
+	// seat 0 → its stack, seat 1 → fallback (0 entry), seat 2 → its stack.
+	if s.Players[0].Cash != 500 || s.Players[1].Cash != 1500 || s.Players[2].Cash != 900 {
+		t.Fatalf("per-seat cash wrong: %d/%d/%d", s.Players[0].Cash, s.Players[1].Cash, s.Players[2].Cash)
+	}
+}
+
+func TestInit_UnchangedUniformCash(t *testing.T) {
+	e := New(Config{Players: 4, StartingCash: 1500})
+	s, _ := e.Init([]byte("seed-xyz"))
+	for i := range s.Players {
+		if s.Players[i].Cash != 1500 {
+			t.Fatalf("Init seat %d cash %d want 1500 (tournament tables unchanged)", i, s.Players[i].Cash)
+		}
+	}
+}
+
 func TestChargeTransferInterest_FlooredAtAvailableCash(t *testing.T) {
 	e, s := newGame(t, 2)
 	s.Holdings[1] = Holding{Owner: 1, Mortgaged: true}

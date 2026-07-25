@@ -104,11 +104,24 @@ func New(cfg Config) *Engine {
 func (e *Engine) Config() Config { return e.cfg }
 
 // Init builds the opening state, shuffles the card decks from the seed, and emits
-// match_created (with the commit) + the first turn_started.
+// match_created (with the commit) + the first turn_started. Every seat opens on the
+// configured starting cash (tournament tables).
 func (e *Engine) Init(seed []byte) (State, []Event) {
+	return e.InitWithStacks(seed, nil)
+}
+
+// InitWithStacks is Init with a PER-SEAT opening stack — used by cash-game tables where
+// each seat's chips come from its own buy-in. startingCash[i] sets seat i's opening
+// cash; a missing, zero, or negative entry (or a nil slice) falls back to
+// cfg.StartingCash. Deck shuffle and opening events are identical to Init.
+func (e *Engine) InitWithStacks(seed []byte, startingCash []int) (State, []Event) {
 	players := make([]Player, e.cfg.Players)
 	for i := range players {
-		players[i] = Player{Seat: i, Cash: e.cfg.StartingCash, Position: IdxGo}
+		cash := e.cfg.StartingCash
+		if i < len(startingCash) && startingCash[i] > 0 {
+			cash = startingCash[i]
+		}
+		players[i] = Player{Seat: i, Cash: cash, Position: IdxGo}
 	}
 	holdings := make([]Holding, BoardSize)
 	for i := range holdings {
