@@ -1,8 +1,11 @@
 // Package payout implements cash-out: converting coins back to real money via a
-// request → admin-approve → Stripe-payout workflow. Only NET WINNINGS are
-// withdrawable (deposited/bonus coins are play-only), which removes the
-// buy→withdraw arbitrage and card-laundering vectors. Coins are HELD in escrow on
-// request and only burned on a confirmed payout, so reconciliation stays exact.
+// request → admin-approve → payout workflow. The user's FULL balance is withdrawable
+// anytime (deposited coins included, not just winnings); the platform's margin is the
+// fee taken on every deposit and every withdrawal, so a deposit→cash-out round-trip
+// costs ~10% — which, with the anti-fraud gate, KYC/verified-wallet checks, velocity
+// caps and the new-address cooldown, is what deters card-laundering (instead of locking
+// deposits in play). Coins are HELD in escrow on request and only burned on a confirmed
+// payout, so reconciliation stays exact.
 //
 // Economic model (1 coin = CoinCents): the platform takes a sell fee and the
 // Stripe payout fee is passed to the user — both deducted from the gross. The
@@ -16,8 +19,9 @@ import (
 
 // Repo is the cash-out persistence + read port.
 type Repo interface {
-	// Withdrawable is net play winnings still available (lifetime match P/L minus
-	// coins already committed to live withdrawals), capped at the current balance.
+	// Withdrawable is the coins the agent can cash out right now: current wallet
+	// balance minus coins already committed to live withdrawals (full balance,
+	// deposited coins included).
 	Withdrawable(ctx context.Context, agentPublicID string) (int64, error)
 	// AgentOwner returns the owning user's public id and Stripe Connect account id
 	// ("" if not KYC-onboarded). ErrNotFound if the agent does not exist.

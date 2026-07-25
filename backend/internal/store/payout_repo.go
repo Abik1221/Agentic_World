@@ -20,20 +20,17 @@ func NewPayoutRepo(db *pgxpool.Pool) *PayoutRepo { return &PayoutRepo{db: db} }
 
 var _ payout.Repo = (*PayoutRepo)(nil)
 
-// Withdrawable = net match winnings − coins already committed to live withdrawals,
-// floored at 0 and capped at the current wallet balance. Deposited/bonus coins
-// (which never appear in match coins_delta) are therefore NOT withdrawable.
+// Withdrawable = the agent's current wallet balance − coins already committed to live
+// withdrawals, floored at 0. The FULL balance is withdrawable anytime (deposited coins
+// included, not just match winnings): the platform's margin is the fee taken on every
+// deposit AND every withdrawal, and a deposit→withdraw round-trip therefore costs ~10%
+// (5% in + 5% out), which — together with the anti-fraud gate, KYC/verified-wallet
+// checks, per-window velocity caps and the new-address cooldown — is what deters the
+// buy→cash-out laundering vector (rather than locking deposits in play).
 func (r *PayoutRepo) Withdrawable(ctx context.Context, agentPublicID string) (int64, error) {
 	var avail int64
 	err := r.db.QueryRow(ctx,
-		`WITH winnings AS (
-		   SELECT COALESCE(SUM(mp.coins_delta), 0) AS net
-		   FROM match_players mp
-		   JOIN matches m ON m.id = mp.match_id
-		   JOIN agents  a ON a.id = mp.agent_id
-		   WHERE a.public_id = $1 AND m.status = 'finished'
-		 ),
-		 committed AS (
+		`WITH committed AS (
 		   SELECT COALESCE(SUM(w.coins), 0) AS c
 		   FROM withdrawals w JOIN agents a ON a.id = w.agent_id
 		   WHERE a.public_id = $1 AND w.status IN ('requested','approved','processing','broadcasted','paid')
@@ -42,7 +39,7 @@ func (r *PayoutRepo) Withdrawable(ctx context.Context, agentPublicID string) (in
 		   SELECT COALESCE(wl.balance, 0) AS b
 		   FROM wallets wl JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1
 		 )
-		 SELECT GREATEST(0, LEAST((SELECT net FROM winnings) - (SELECT c FROM committed), (SELECT b FROM bal)))`,
+		 SELECT GREATEST(0, (SELECT b FROM bal) - (SELECT c FROM committed))`,
 		agentPublicID).Scan(&avail)
 	return avail, err
 }

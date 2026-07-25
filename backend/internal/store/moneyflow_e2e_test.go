@@ -240,20 +240,32 @@ func TestMoneyFlowE2E_TenAgents(t *testing.T) {
 	assertNoDrift(t, ledgerSvc, log, "after withdraw")
 	t.Logf("✅ withdraw %d coins → %d cash out, %d sell fee to platform; books balanced", wd, wd-sellFee, sellFee)
 
-	// ── BLIND SPOT: a depositor/loser cannot withdraw — deposited coins are locked ─
+	// ── WITHDRAW ANYTIME: a depositor/loser can now cash out their whole balance ──
+	// (Policy: deposited coins are withdrawable; the 5% in + 5% out fees are the margin
+	// and the laundering deterrent, not a deposit lock.)
 	loser := agents[1]
 	lbal, _ := ledgerSvc.Balance(ctx, loser.PublicID)
-	lavail, _, _ := payoutSvc.Available(ctx, loser.OwnerPublicID, loser.PublicID, 1)
-	if lavail != 0 {
-		t.Fatalf("expected loser withdrawable 0, got %d", lavail)
+	lavail, _, err := payoutSvc.Available(ctx, loser.OwnerPublicID, loser.PublicID, lbal)
+	if err != nil {
+		t.Fatalf("loser Available: %v", err)
 	}
-	_, reqErr := payoutSvc.Request(ctx, loser.OwnerPublicID, loser.PublicID, 100)
-	if reqErr == nil {
-		t.Fatalf("loser withdrawal should have been refused (no net winnings)")
+	if lavail != lbal {
+		t.Fatalf("depositor should be able to withdraw their whole balance %d, got withdrawable %d", lbal, lavail)
 	}
-	t.Logf("⚠️  FINDING: loser holds %d coins but withdrawable=0 and Request refused (%v). "+
-		"Deposited coins are NOT withdrawable — 'withdraw anytime' is false for funds that were "+
-		"never won in a match. Must be surfaced in UX or it reads as a money trap.", lbal, reqErr)
+	lBefore, _ := ledgerSvc.Balance(ctx, loser.PublicID)
+	lw, reqErr := payoutSvc.Request(ctx, loser.OwnerPublicID, loser.PublicID, 100)
+	if reqErr != nil {
+		t.Fatalf("depositor withdrawal of 100 should succeed (withdraw anytime): %v", reqErr)
+	}
+	if err := payoutSvc.Approve(ctx, "", lw.PublicID); err != nil {
+		t.Fatalf("depositor Approve: %v", err)
+	}
+	if lAfter, _ := ledgerSvc.Balance(ctx, loser.PublicID); lAfter != lBefore-100 {
+		t.Fatalf("depositor debited wrong: %d want %d", lAfter, lBefore-100)
+	}
+	assertNoDrift(t, ledgerSvc, log, "depositor withdrawal")
+	t.Logf("✅ WITHDRAW ANYTIME: depositor/loser (balance %d, no match winnings) cashed out 100 "+
+		"coins → 95 out + 5 fee; books balanced. Deposited coins are withdrawable.", lbal)
 }
 
 // assertNoDrift runs the ledger reconciler and fails if any wallet's balance disagrees
