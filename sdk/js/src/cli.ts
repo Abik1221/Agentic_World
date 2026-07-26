@@ -255,6 +255,45 @@ async function loadAgentFromConfig(cfg: config.Config) {
 
 // ── commands ───────────────────────────────────────────────────────────────────
 
+async function loginAndSave(
+  api: string,
+  dashboard: string,
+  connect: string,
+  provider: string,
+): Promise<creds.Credentials> {
+  const c = await runLoginFlow({ dashboardUrl: dashboard, apiUrl: api, provider });
+  if (connect) c.connectUrl = connect;
+  if (!c.apiKey && c.agentId && c.accessToken) {
+    const [st, resp] = await apiPost(`${api}/v1/agent/keys`, c.accessToken, { agent_id: c.agentId });
+    if (st === 201 && resp.api_key) c.apiKey = resp.api_key;
+  }
+  creds.save(c);
+  return c;
+}
+
+// Return valid creds for a game/sandbox command, launching the browser login when this
+// DEVICE isn't logged in — so `pyyol dev`/`play`/`queue` just work after install.
+// Non-interactive (CI) → null with guidance so the caller errors cleanly.
+async function ensureLogin(a: Args): Promise<creds.Credentials | null> {
+  const c = creds.load();
+  if (c && (c.accessToken || c.apiKey)) return c;
+  const api = (str(a, "api") || DEFAULT_API_BASE).replace(/\/$/, "");
+  const dashboard = (str(a, "dashboard") || DEFAULT_DASHBOARD).replace(/\/$/, "");
+  if (!(process.stdin.isTTY && process.stdout.isTTY)) {
+    console.error(`${BAD} not logged in on this device. Run \`pyyol login\` (opens the browser) or set PYYOL_TOKEN, then retry.`);
+    return null;
+  }
+  console.log("you're not logged in on this device — opening the browser to sign in…");
+  try {
+    const got = await loginAndSave(api, dashboard, str(a, "connect") || "", str(a, "with") || "");
+    console.log(`${OK} logged in as ${got.agentId || "(no agent yet)"}. continuing…`);
+    return got;
+  } catch (e) {
+    console.error(`${BAD} login failed: ${e} — run \`pyyol login\` and retry.`);
+    return null;
+  }
+}
+
 async function cmdLogin(a: Args): Promise<number> {
   const token = str(a, "token");
   // API host serves /v1/*; dashboard host serves /cli-login — different in prod,
@@ -413,13 +452,10 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     console.error(`${BAD} no pyyol.toml here — run \`pyyol init <dir>\` first.`);
     return 2;
   }
-  const c = creds.load();
-  // The connection runs on the agent key OR the dashboard JWT — either proves a
-  // session. (The agent key is the persistent, no-expiry one.)
-  if (!c || !(c.accessToken || c.apiKey)) {
-    console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
-    return 2;
-  }
+  // Auto-login on this device if needed: a first-time user who installed the SDK and
+  // ran `pyyol dev`/`play` gets the browser sign-in, then plays — no separate step.
+  const c = await ensureLogin(a);
+  if (!c) return 2;
   const connectUrl = str(a, "url") || process.env.PYYOL_URL || c.connectUrl;
   const base = httpBase(a, c);
   // The agent id MUST be the one the token belongs to. The token comes from creds,
@@ -517,6 +553,43 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
   return 0;
 }
 
+async function cmdGames(a: Args): Promise<number> {
+  const base = httpBase(a, creds.load());
+  if (!base) {
+    console.error(`${BAD} no API url — pass --api or run \`pyyol login\`.`);
+    return 2;
+  }
+  const [st, resp] = await apiGet(`${base}/v1/games`);
+  if (st !== 200) {
+    console.error(`${BAD} could not fetch games (${st}): ${JSON.stringify(resp)}`);
+    return 1;
+  }
+  const games = resp.games ?? [];
+  if (!games.length) {
+    console.log("no games available.");
+    return 0;
+  }
+  console.log(`  ${"GAME".padEnd(11)}${"LIVE".padStart(6)}${"PLAYING".padStart(9)}${"WAITING".padStart(9)}   STATUS`);
+  console.log(`  ${"─".repeat(44)}`);
+  let totalLive = 0;
+  let totalWait = 0;
+  for (const g of games) {
+    const live = Number(g.live ?? 0);
+    const playing = Number(g.playing ?? 0);
+    const waiting = Number(g.waiting ?? 0);
+    totalLive += live;
+    totalWait += waiting;
+    const status = live > 0 ? `${OK} ${live} live` : waiting > 0 ? `${waiting} waiting — queue to start` : "quiet — be the first";
+    console.log(
+      `  ${String(g.game ?? "?").padEnd(11)}${String(live).padStart(6)}${String(playing).padStart(9)}${String(waiting).padStart(9)}   ${status}`,
+    );
+  }
+  console.log(`  ${"─".repeat(44)}`);
+  if (totalLive === 0 && totalWait === 0) console.log("  nothing running right now — `pyyol queue <game>` to open a table.");
+  else console.log(`  ${totalLive} live match(es), ${totalWait} agent(s) waiting. \`pyyol queue <game>\` to join.`);
+  return 0;
+}
+
 async function cmdArenas(a: Args): Promise<number> {
   const base = httpBase(a, creds.load());
   if (!base) {
@@ -608,10 +681,12 @@ async function cmdQueue(a: Args): Promise<number> {
     for (const t of tiers) console.log(`  ${String(t.key ?? "").padEnd(8)} ${String(Number(t.coins ?? 0)).padStart(8)} coins  ${t.label ?? ""}`);
     return 0;
   }
-  const token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  // Queuing needs a session — auto-launch login on this device if absent.
+  let token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
   if (!token) {
-    console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
-    return 2;
+    const got = await ensureLogin(a);
+    if (!got) return 2;
+    token = got.accessToken || got.apiKey || "";
   }
   const body: Record<string, unknown> = { game };
   if (str(a, "tier")) body.tier = str(a, "tier");
@@ -1457,6 +1532,7 @@ Commands:
   profile [handle]
   leaderboard [--game G] [--developers] [--season N]
   arenas
+  games                             live + waiting agents per game
   status [--agent A]                (advanced) is your agent connected?
   autoplay on|off [--ranked|--mode] [--bid N] [--games G,…]
   serve [--file F] [--var V] [--port P] [--host H]  enable auto-play + run the HTTP server
@@ -1492,6 +1568,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdPublish(a);
     case "arenas":
       return cmdArenas(a);
+    case "games":
+      return cmdGames(a);
     case "leaderboard":
       return cmdLeaderboard(a);
     case "profile":
