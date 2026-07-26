@@ -468,7 +468,9 @@ def _login_and_save(api: str, dashboard: str, connect: str = "", provider: str =
     if connect:
         creds.connect_url = connect
     if not creds.api_key and creds.agent_id and creds.access_token:
-        st, resp = _api_post(f"{api}/v1/agent/keys", creds.access_token, {"agent_id": creds.agent_id})
+        st, resp = _api_post(
+            f"{api}/v1/agent/keys", creds.access_token, {"agent_id": creds.agent_id}
+        )
         if st == 201 and resp.get("api_key"):
             creds.api_key = resp["api_key"]
     credentials.save(creds)
@@ -496,7 +498,9 @@ def _ensure_login(args: argparse.Namespace):
         return None
     print("you're not logged in on this device — opening the browser to sign in…")
     try:
-        creds = _login_and_save(api, dashboard, getattr(args, "connect", "") or "", getattr(args, "provider", "") or "")
+        creds = _login_and_save(
+            api, dashboard, getattr(args, "connect", "") or "", getattr(args, "provider", "") or ""
+        )
     except Exception as e:  # noqa: BLE001
         print(f"{BAD} login failed: {e} — run `pyyol login` and retry.", file=sys.stderr)
         return None
@@ -1700,7 +1704,9 @@ def cmd_games(args: argparse.Namespace) -> int:
     if total_live == 0 and total_wait == 0:
         print("  nothing running right now — `pyyol queue <game>` to open a table.")
     else:
-        print(f"  {total_live} live match(es), {total_wait} agent(s) waiting. `pyyol queue <game>` to join.")
+        print(
+            f"  {total_live} live match(es), {total_wait} agent(s) waiting. `pyyol queue <game>` to join."
+        )
     return 0
 
 
