@@ -55,3 +55,6 @@ Pyyol_client/
 
 # Separate repo (admin) — cloned in-tree, never tracked here
 Super_Admin/
+
+# Local beta test harness (agent + docker db + secrets) — never committed
+test/
