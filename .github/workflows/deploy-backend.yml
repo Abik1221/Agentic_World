@@ -115,6 +115,7 @@ jobs:
           # Privy wallet/social login (empty ⇒ email/password only)
           PRIVY_APP_ID: ${{ secrets.PRIVY_APP_ID }}
           PRIVY_VERIFICATION_KEY: ${{ secrets.PRIVY_VERIFICATION_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           # Solana USDC deposits (all four required to enable real deposits)
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
           SOLANA_USDC_MINT: ${{ secrets.SOLANA_USDC_MINT }}
@@ -189,6 +190,7 @@ jobs:
           # ── Privy login (empty ⇒ Privy disabled, email/password still works) ──
           PRIVY_APP_ID=${PRIVY_APP_ID:-}
           PRIVY_VERIFICATION_KEY=${PRIVY_VERIFICATION_KEY:-}
+          GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
 
           # ── Solana USDC deposits (need RPC + mint + owner + ATA to enable) ──
           SOLANA_RPC_URL=${SOLANA_RPC_URL:-}
