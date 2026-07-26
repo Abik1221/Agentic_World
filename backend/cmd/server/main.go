@@ -591,6 +591,24 @@ func run() error {
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
+
+	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
+	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
+	// bots (seeded by migration 0063), engine-driven in the drive loop — never LLM,
+	// never rated, never in the leaderboard/lobby. Only the autonomous demo-bot runner
+	// (below) stays gated on DEMO_BOTS.
+	mafiaHouseBots := make([]mafia.BotAgent, 0, mafiaengine.RosterSize-1)
+	for i := 1; i <= mafiaengine.RosterSize-1; i++ {
+		mafiaHouseBots = append(mafiaHouseBots, mafia.BotAgent{
+			PublicID:      fmt.Sprintf("ag_house_mafia_%02d", i),
+			OwnerPublicID: "usr_system",
+		})
+	}
+	mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, mafiaHouseBots, log)
+	mafiaSvc.SetWebhookEnqueuer(webhookQueue)
+	mafiaSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
+	mafiaSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
+
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake; escrowed + settled via MonopolyWallet
 	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
@@ -914,16 +932,8 @@ func run() error {
 				}
 			}
 			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).Run)
-			// Mafia push-play needs a full roster: seat the developer's agent (via
-			// their endpoint) and fill the other seats with these demo bots.
-			botSeats := make([]mafia.BotAgent, 0, len(agents))
-			for _, a := range agents {
-				botSeats = append(botSeats, mafia.BotAgent{PublicID: a.PublicID, OwnerPublicID: a.OwnerPublicID})
-			}
-			mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, botSeats, log)
-			mafiaSvc.SetWebhookEnqueuer(webhookQueue)
-			mafiaSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
-			mafiaSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
+			// NOTE: mafia push-play is now enabled unconditionally above with dedicated
+			// kind='house' filler bots, so it no longer depends on these demo agents.
 		}
 	}
 	// Long-poll wake-ups for GET /v1/mafia/{id}/state?wait=true (parity with Goofspiel).
