@@ -39,8 +39,9 @@ var catalog = []Opponent{
 		Blurb: "Wins prizes cheaply and concedes the rest — a genuinely tough opponent."},
 }
 
-// opponentFor returns the house opponent for a difficulty, defaulting to medium
-// for an empty/unknown level (so a typo still yields a sensible match).
+// opponentFor returns the house opponent for a difficulty, defaulting to the
+// STRONGEST (hard) for an empty/unknown level so the sandbox opponent is strong by
+// default (easy/medium remain selectable for gentler practice).
 func opponentFor(difficulty string) Opponent {
 	for _, o := range catalog {
 		if o.Difficulty == difficulty {
@@ -48,11 +49,11 @@ func opponentFor(difficulty string) Opponent {
 		}
 	}
 	for _, o := range catalog {
-		if o.Difficulty == bot.Medium {
+		if o.Difficulty == bot.Hard {
 			return o
 		}
 	}
-	return catalog[0]
+	return catalog[len(catalog)-1]
 }
 
 // StartResult is returned when a practice match is created.

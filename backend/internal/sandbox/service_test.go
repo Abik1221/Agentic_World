@@ -40,14 +40,16 @@ func TestStartPicksOpponentByDifficulty(t *testing.T) {
 	}
 }
 
-func TestStartDefaultsToMedium(t *testing.T) {
+func TestStartDefaultsToStrongest(t *testing.T) {
 	f := &fakeStarter{}
 	res, err := sandbox.New(f, true).Start(context.Background(), "ag_dev", "usr_dev", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if res.Opponent.Difficulty != bot.Medium || res.Opponent.Style != bot.Proportional {
-		t.Fatalf("empty difficulty should default to medium/proportional, got %+v", res.Opponent)
+	// Empty difficulty defaults to the STRONGEST house opponent (hard/balanced) so a
+	// sandbox match is a genuinely strong, pure-engine test by default.
+	if res.Opponent.Difficulty != bot.Hard || res.Opponent.Style != bot.Balanced {
+		t.Fatalf("empty difficulty should default to hard/balanced, got %+v", res.Opponent)
 	}
 }
 

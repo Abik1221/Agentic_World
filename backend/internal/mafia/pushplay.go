@@ -192,6 +192,10 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 
 	initialized := false
 	deliveredSeq := 0 // highest public-event Seq already pushed to /event
+	// Per-seat role-aware house bots (mafia avoid allies; detective votes/investigates
+	// on its proven private results). Cached per seat so each keeps its deterministic
+	// rng across the match. Pure engine — no AI/network.
+	houseBots := map[int]*mf.Bot{}
 	for {
 		if ctx.Err() != nil {
 			p.log.Warn("mafia pushplay: deadline exceeded", "match", matchID)
@@ -254,7 +258,17 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 					Round: v.Day, Action: act.Kind, Rationale: rationale, Usage: usage,
 				})
 			} else {
-				act = botDecide(v)
+				// Strong, role-aware engine bot. Falls back to the simple legal pick
+				// if it ever returns a kind not currently legal (never stalls a seat).
+				bot := houseBots[v.YourSeat]
+				if bot == nil {
+					bot = mf.NewBot("house", []byte(matchID+":"+id), v.YourSeat)
+					houseBots[v.YourSeat] = bot
+				}
+				act = bot.Decide(toEngineView(v))
+				if act.Kind == "" || !containsStr(v.Legal, act.Kind) {
+					act = botDecide(v)
+				}
 			}
 			if _, err := s.Act(ctx, id, matchID, act, 0, "", "", true); err == nil { // platform-driven: no stale-phase guard, no per-move signature
 				acted = true
@@ -339,6 +353,23 @@ func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, m
 
 // botDecide is a deterministic rule-based move for the current phase — the same
 // baseline the demo runner uses, kept in-package to avoid an import cycle.
+// toEngineView adapts the service's redacted AgentView into the engine bot's view.
+// Public/Private are already engine mf.Event values, so this is a field mapping;
+// Team is unused by the bot (it reasons from Role + Allies + its private results).
+func toEngineView(v AgentView) mf.AgentView {
+	return mf.AgentView{
+		Seat:    v.YourSeat,
+		Role:    v.YourRole,
+		Day:     v.Day,
+		Phase:   v.Phase,
+		Alive:   v.Alive,
+		Allies:  v.Allies,
+		Legal:   v.Legal,
+		Public:  v.Public,
+		Private: v.Private,
+	}
+}
+
 func botDecide(v AgentView) mf.Action {
 	kind := ""
 	if len(v.Legal) > 0 {

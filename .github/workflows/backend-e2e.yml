@@ -56,10 +56,10 @@ jobs:
       AUTH_REGISTER_LIMIT: "10000"
       AUTH_LOGIN_LIMIT: "10000"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25.x"
+          go-version: "stable"
           cache: true
           cache-dependency-path: backend/go.sum
       - name: Build server

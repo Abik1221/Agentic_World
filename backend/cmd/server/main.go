@@ -289,6 +289,7 @@ func run() error {
 	verifyRL := middleware.RateLimit(limiter, 12, time.Minute, userKey("manifest-verify"))
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
+	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
 	idHandler.SetKeysRateLimit(keysRL)
 	// Rotating refresh tokens: short-lived access JWT (above) + a long-lived,
 	// single-use refresh token with a sliding idle window, so active users stay
@@ -453,6 +454,8 @@ func run() error {
 	}
 	twofaSvc := twofa.New(store.NewTwoFARepo(st.DB), totpCipher, clock, "pyyol", cfg.APIKeyPepper)
 	twofaHandler := twofa.NewHandler(twofaSvc, authn)
+	// 2FA (when the user has enabled it) is required on the money-sensitive steps:
+	// verifying/changing the payout wallet AND cashing out. Both are step-up gated.
 	walletVerifyHandler.SetStepUp(twofaSvc)
 	idHandler.SetTwoFAStatus(twofaSvc.Enabled) // surface the 2FA preference in GET /v1/me
 

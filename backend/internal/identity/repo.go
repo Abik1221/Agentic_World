@@ -58,6 +58,12 @@ type Repo interface {
 	// belongs to an account. This is the email/password analogue of CompleteClaim.
 	CreateAccount(ctx context.Context, in CreateAccountInput) (Agent, User, error)
 
+	// UpsertGoogleAccount find-or-creates the account for a verified Google identity.
+	// Existing google_sub → returns that user + its agent (created=false). Else if a
+	// user with the (verified) email exists and is unlinked, links google_sub to it.
+	// Else creates a fresh user + agent + treasury wallet + first API key (created=true).
+	UpsertGoogleAccount(ctx context.Context, in GoogleUpsertInput) (GoogleUpsertResult, error)
+
 	// CredentialsByEmail returns the auth record for a password-enabled account,
 	// or ErrNotFound if the email is unknown or has no password set.
 	CredentialsByEmail(ctx context.Context, email string) (AuthRecord, error)

@@ -57,8 +57,13 @@ type Config struct {
 	// existing email/password + X-claim paths unaffected.
 	PrivyAppID           string // Privy application id (JWT audience)
 	PrivyVerificationKey string // PEM ECDSA P-256 public key from the Privy dashboard
-	HCaptchaSecret       string // optional; empty => dev pass-through captcha
-	XBearerToken         string // optional; empty => dev claim verifier (auto-verify)
+
+	// Google Identity Services login. The OAuth "Web application" client id; the
+	// backend verifies the GIS ID token's signature (Google JWKS) + aud against it.
+	// Empty => Google login disabled (POST /v1/auth/google returns 503). No secret.
+	GoogleClientID string
+	HCaptchaSecret string // optional; empty => dev pass-through captcha
+	XBearerToken   string // optional; empty => dev claim verifier (auto-verify)
 
 	// Solana USDC deposits (Beta wallet pipeline P2). Deposits are enabled only
 	// when the RPC URL + platform owner + platform ATA are all set (see
@@ -281,6 +286,7 @@ func Load() (*Config, error) {
 
 		PrivyAppID:           l.str("PRIVY_APP_ID", ""),
 		PrivyVerificationKey: l.str("PRIVY_VERIFICATION_KEY", ""),
+		GoogleClientID:       l.str("GOOGLE_CLIENT_ID", ""),
 
 		SolanaRPCURL:        l.str("SOLANA_RPC_URL", ""),
 		SolanaCommitment:    l.str("SOLANA_COMMITMENT", "finalized"),

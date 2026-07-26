@@ -14,7 +14,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v5
         with:
@@ -25,7 +25,7 @@ jobs:
       # Build both SDKs so the cross-language e2e tests (agentgw crosslang_test)
       # actually RUN instead of skipping — they drive the REAL Python + JS SDK
       # connectors against the Go gateway over WSS.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
       - name: Build JS SDK (for the cross-lang e2e)
@@ -55,7 +55,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
       - name: golangci-lint
@@ -68,7 +68,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
       - name: govulncheck

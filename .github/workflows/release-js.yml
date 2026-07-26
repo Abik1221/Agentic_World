@@ -31,10 +31,10 @@ jobs:
       run:
         working-directory: sdk/js
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "lts/*"
           registry-url: "https://registry.npmjs.org"
       - run: npm ci
       - name: Full test suite (fail closed)

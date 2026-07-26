@@ -18,7 +18,8 @@ import (
 type Handler struct {
 	svc          *Service
 	authn        *auth.Authenticator
-	privy        *auth.PrivyVerifier // nil ⇒ Privy login disabled (503)
+	privy        *auth.PrivyVerifier  // nil ⇒ Privy login disabled (503)
+	google       *auth.GoogleVerifier // nil/unconfigured ⇒ Google login disabled (503)
 	registerRL   func(http.Handler) http.Handler
 	loginRL      func(http.Handler) http.Handler
 	keysRL       func(http.Handler) http.Handler
@@ -78,6 +79,7 @@ func (h *Handler) Register(r chi.Router) {
 		// Privy token exchange: verify Privy's access token, find-or-create the
 		// owner, return a dashboard session. Rate-limited alongside login.
 		r.Post("/v1/auth/privy", h.privyLogin)
+		r.Post("/v1/auth/google", h.googleLogin)
 	})
 	// Magic-link verify consumes a single-use token (public; the token is the
 	// credential), so it is not IP-rate-limited.
@@ -210,6 +212,53 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		"agent_id":        res.AgentID,
 		"agent_name":      res.AgentName,
 	})
+}
+
+// SetGoogle wires the Google ID-token verifier (enables POST /v1/auth/google).
+func (h *Handler) SetGoogle(v *auth.GoogleVerifier) { h.google = v }
+
+// googleLogin verifies a Google Identity Services ID token (the `credential` from a
+// "Sign in with Google" button), find-or-creates the account, and returns a dashboard
+// session. `created` is true for a brand-new account so the client sends it to
+// onboarding; an existing user goes straight to the dashboard.
+func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
+	if h.google == nil || !h.google.Enabled() {
+		httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "google_unavailable",
+			"Google login is not configured here. Use email/password (POST /v1/auth/login)."))
+		return
+	}
+	var in struct {
+		Credential string `json:"credential"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.Credential == "" {
+		httpx.Error(w, errInvalid("credential is required"))
+		return
+	}
+	claims, err := h.google.Verify(r.Context(), in.Credential)
+	if err != nil {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "invalid_google_token", "Google sign-in verification failed."))
+		return
+	}
+	res, err := h.svc.SignUpOrLoginGoogle(r.Context(), claims.Sub, claims.Email, claims.Name)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	out := map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
+		"agent_id":        res.AgentID,
+		"agent_name":      res.AgentName,
+		"created":         res.Created,
+	}
+	if res.APIKey != "" {
+		out["api_key"] = res.APIKey // new account's first key, shown once
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
 
 // privyLogin exchanges a Privy access token for a dashboard session. The token is
