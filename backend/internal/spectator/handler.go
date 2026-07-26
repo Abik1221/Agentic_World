@@ -25,6 +25,21 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/match/{id}/watch", h.watch)
 	r.Get("/v1/matches/live", h.matchesLive)
 	r.Get("/v1/stats/live", h.statsLive)
+	r.Get("/v1/games", h.games)
+}
+
+// games lists every game with how many matches are live and how many agents are
+// waiting — the data behind `pyyol games`. Public, read-only.
+func (h *Handler) games(w http.ResponseWriter, r *http.Request) {
+	gs, err := h.live.GamesStatus(r.Context())
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if gs == nil {
+		gs = []GameStatus{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"games": gs})
 }
 
 // watch streams a match as Server-Sent Events. It first replays any history after

@@ -53,6 +53,99 @@ func (r *SpectatorRepo) LiveMatches(ctx context.Context) ([]spectator.LiveMatch,
 	return out, rows.Err()
 }
 
+// GamesStatus aggregates per-game live matches, agents playing, and agents waiting.
+// goofspiel + mafia share the `matches` table (game column); monopoly has its own
+// tables. Waiting = open lobbies (waiting matches / monopoly lobbies) + the ranked
+// group queue. Robust to empty tables — every game always appears (zeroes included).
+func (r *SpectatorRepo) GamesStatus(ctx context.Context) ([]spectator.GameStatus, error) {
+	order := []string{"goofspiel", "mafia", "monopoly"}
+	st := map[string]*spectator.GameStatus{}
+	for _, g := range order {
+		st[g] = &spectator.GameStatus{Game: g}
+	}
+
+	// live matches + agents playing (goofspiel/mafia, unified matches table)
+	rows, err := r.db.Query(ctx,
+		`SELECT m.game, COUNT(DISTINCT m.id), COUNT(mp.agent_id)
+		 FROM matches m LEFT JOIN match_players mp ON mp.match_id = m.id
+		 WHERE m.status = 'active' AND m.game IN ('goofspiel','mafia')
+		 GROUP BY m.game`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var g string
+		var live, playing int64
+		if err := rows.Scan(&g, &live, &playing); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if s := st[g]; s != nil {
+			s.Live, s.Playing = live, playing
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// waiting: open lobbies (waiting matches, goofspiel/mafia)
+	if err := r.scanGameCount(ctx,
+		`SELECT game, COUNT(*) FROM matches WHERE status='waiting' AND game IN ('goofspiel','mafia') GROUP BY game`,
+		func(g string, n int64) {
+			if s := st[g]; s != nil {
+				s.Waiting += n
+			}
+		}); err != nil {
+		return nil, err
+	}
+	// waiting: ranked group queue (mafia/monopoly)
+	if err := r.scanGameCount(ctx,
+		`SELECT game, COUNT(*) FROM group_queue WHERE status='waiting' GROUP BY game`,
+		func(g string, n int64) {
+			if s := st[g]; s != nil {
+				s.Waiting += n
+			}
+		}); err != nil {
+		return nil, err
+	}
+
+	// monopoly: live + playing + waiting lobbies (own tables)
+	mono := st["monopoly"]
+	_ = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM monopoly_matches WHERE status='live'`).Scan(&mono.Live)
+	_ = r.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM monopoly_team_agents ta
+		   JOIN monopoly_teams t ON t.id = ta.team_id
+		   JOIN monopoly_matches mm ON mm.id = t.match_id
+		 WHERE mm.status='live'`).Scan(&mono.Playing)
+	var monoLobby int64
+	_ = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM monopoly_matches WHERE status='lobby'`).Scan(&monoLobby)
+	mono.Waiting += monoLobby
+
+	out := make([]spectator.GameStatus, 0, len(order))
+	for _, g := range order {
+		out = append(out, *st[g])
+	}
+	return out, nil
+}
+
+func (r *SpectatorRepo) scanGameCount(ctx context.Context, q string, add func(string, int64)) error {
+	rows, err := r.db.Query(ctx, q)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var g string
+		var n int64
+		if err := rows.Scan(&g, &n); err != nil {
+			return err
+		}
+		add(g, n)
+	}
+	return rows.Err()
+}
+
 func (r *SpectatorRepo) LiveStats(ctx context.Context) (spectator.LiveStats, error) {
 	var s spectator.LiveStats
 	err := r.db.QueryRow(ctx,

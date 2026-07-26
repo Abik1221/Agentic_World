@@ -19,6 +19,15 @@ type EventLog interface {
 type Repo interface {
 	LiveMatches(ctx context.Context) ([]LiveMatch, error)
 	LiveStats(ctx context.Context) (LiveStats, error)
+	GamesStatus(ctx context.Context) ([]GameStatus, error)
+}
+
+// GameStatus is one game's live/waiting activity for the `pyyol games` discovery view.
+type GameStatus struct {
+	Game    string `json:"game"`
+	Live    int64  `json:"live"`    // matches currently in progress
+	Playing int64  `json:"playing"` // agents in those live matches
+	Waiting int64  `json:"waiting"` // agents queued / in open lobbies waiting for an opponent
 }
 
 // LiveMatch is one row of the live arena feed.
@@ -75,6 +84,11 @@ func (l *Live) Matches(ctx context.Context) ([]LiveMatch, error) {
 	}
 	l.matches, l.matchesExp, l.matchesOK = v, now.Add(l.matchTTL), true
 	return v, nil
+}
+
+// GamesStatus returns per-game live/waiting activity (cached on the matches TTL).
+func (l *Live) GamesStatus(ctx context.Context) ([]GameStatus, error) {
+	return l.repo.GamesStatus(ctx)
 }
 
 // Stats returns the live ticker, refreshing at most once per statsTTL.
