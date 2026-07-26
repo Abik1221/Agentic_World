@@ -4,6 +4,13 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.4.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.3.0...js-v1.4.0) (2026-07-26)
+
+
+### Features
+
+* **sdk-js:** auto-login on play + `pyyol games` — parity with Python ([4b756a8](https://github.com/Abik1221/Agentic_World/commit/4b756a85b43a59cc8969b7b43ef81e2b46311c25))
+
 ## [1.3.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.2.1...js-v1.3.0) (2026-07-25)
 
 
