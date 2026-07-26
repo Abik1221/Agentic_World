@@ -459,6 +459,52 @@ def cmd_publish(args: argparse.Namespace) -> int:
 # --- login / logout ------------------------------------------------------------
 
 
+def _login_and_save(api: str, dashboard: str, connect: str = "", provider: str = ""):
+    """Run the browser login flow, mint a persistent agent key, and store creds.
+    Shared by `pyyol login` and the auto-login prompt on game commands."""
+    from . import credentials, login
+
+    creds = login.run_login_flow(dashboard, api_url=api, provider=provider)
+    if connect:
+        creds.connect_url = connect
+    if not creds.api_key and creds.agent_id and creds.access_token:
+        st, resp = _api_post(f"{api}/v1/agent/keys", creds.access_token, {"agent_id": creds.agent_id})
+        if st == 201 and resp.get("api_key"):
+            creds.api_key = resp["api_key"]
+    credentials.save(creds)
+    return creds
+
+
+def _ensure_login(args: argparse.Namespace):
+    """Return valid creds for a game/sandbox command, launching the browser login when
+    this DEVICE isn't logged in — so `pyyol dev`/`play`/`queue` just work after install.
+    Returns None (with guidance) when non-interactive (CI/headless) so the caller errors
+    cleanly instead of hanging on a browser that can't open."""
+    from . import credentials
+
+    creds = credentials.load()
+    if creds is not None and (creds.access_token or creds.api_key):
+        return creds
+    api = (getattr(args, "api", "") or DEFAULT_API_BASE).rstrip("/")
+    dashboard = (getattr(args, "dashboard", "") or DEFAULT_DASHBOARD).rstrip("/")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(
+            f"{BAD} not logged in on this device. Run `pyyol login` (opens the browser) "
+            "or set PYYOL_TOKEN, then retry.",
+            file=sys.stderr,
+        )
+        return None
+    print("you're not logged in on this device — opening the browser to sign in…")
+    try:
+        creds = _login_and_save(api, dashboard, getattr(args, "connect", "") or "", getattr(args, "provider", "") or "")
+    except Exception as e:  # noqa: BLE001
+        print(f"{BAD} login failed: {e} — run `pyyol login` and retry.", file=sys.stderr)
+        return None
+    who = creds.agent_id or "(no agent yet)"
+    print(f"{OK} logged in as {who}. continuing…")
+    return creds
+
+
 def cmd_login(args: argparse.Namespace) -> int:
     from . import credentials, login
 
@@ -686,10 +732,13 @@ def cmd_queue(args: argparse.Namespace) -> int:
             )
         return 0
 
+    # Queuing needs a session — auto-launch login on this device if absent.
     token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
     if not token:
-        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
-        return 2
+        creds = _ensure_login(args)
+        if creds is None:
+            return 2
+        token = creds.access_token or creds.api_key or ""
 
     body: Dict[str, object] = {"game": game}
     if args.tier:
@@ -1415,18 +1464,17 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     import threading
 
     from . import config as cfgmod
-    from . import credentials, mode
+    from . import mode
     from .console import build_console
     from .runtime import RuntimeConnector
 
     cfg = _load_config_or_die()
     if cfg is None:
         return 2
-    creds = credentials.load()
-    # The connection runs on the agent key OR the dashboard JWT — either proves a
-    # session. (The agent key is the persistent, no-expiry one.)
-    if creds is None or not (creds.access_token or creds.api_key):
-        print(f"{BAD} not logged in — run `pyyol login` first.", file=sys.stderr)
+    # Auto-login on this device if needed: a first-time user who installed the SDK and
+    # ran `pyyol dev`/`play` gets the browser sign-in, then plays — no separate step.
+    creds = _ensure_login(args)
+    if creds is None:
         return 2
 
     connect_url = (
@@ -1610,6 +1658,49 @@ def cmd_arenas(args: argparse.Namespace) -> int:
             f"{('yes' if a.get('sandbox') else 'no'):<9}"
             f"{('yes' if a.get('ranked') else 'no'):<8}{a.get('status', '')}"
         )
+    return 0
+
+
+def cmd_games(args: argparse.Namespace) -> int:
+    """Show every game with how many matches are live and how many agents are playing
+    or waiting for an opponent — so you know where the action is before you queue."""
+    from . import credentials
+
+    base = _http_base(args, credentials.load())
+    if not base:
+        print(f"{BAD} no API url — pass --api or run `pyyol login`.", file=sys.stderr)
+        return 2
+    st, resp = _api_get(f"{base}/v1/games")
+    if st != 200:
+        print(f"{BAD} could not fetch games ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        return 1
+    games = resp.get("games") or []
+    if not games:
+        print("no games available.")
+        return 0
+
+    print(f"  {'GAME':<11}{'LIVE':>6}{'PLAYING':>9}{'WAITING':>9}   STATUS")
+    print(f"  {'─' * 44}")
+    total_live = total_wait = 0
+    for g in games:
+        name = g.get("game", "?")
+        live = int(g.get("live", 0))
+        playing = int(g.get("playing", 0))
+        waiting = int(g.get("waiting", 0))
+        total_live += live
+        total_wait += waiting
+        if live > 0:
+            status = f"{OK} {live} live"
+        elif waiting > 0:
+            status = f"{waiting} waiting — queue to start"
+        else:
+            status = "quiet — be the first"
+        print(f"  {name:<11}{live:>6}{playing:>9}{waiting:>9}   {status}")
+    print(f"  {'─' * 44}")
+    if total_live == 0 and total_wait == 0:
+        print("  nothing running right now — `pyyol queue <game>` to open a table.")
+    else:
+        print(f"  {total_live} live match(es), {total_wait} agent(s) waiting. `pyyol queue <game>` to join.")
     return 0
 
 
@@ -1978,6 +2069,10 @@ def build_parser() -> argparse.ArgumentParser:
     par = sub.add_parser("arenas", help="list available arenas")
     _add_api(par)
     par.set_defaults(func=cmd_arenas)
+
+    pg = sub.add_parser("games", help="show live + waiting agents per game")
+    _add_api(pg)
+    pg.set_defaults(func=cmd_games)
 
     pdoc = sub.add_parser("doctor", help="diagnose your setup (login, config, agent, platform)")
     _add_api(pdoc)
