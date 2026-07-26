@@ -4,6 +4,13 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.4.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.3.0...py-v1.4.0) (2026-07-26)
+
+
+### Features
+
+* **sdk:** auto-login on play + `pyyol games` live/waiting view ([b6253e7](https://github.com/Abik1221/Agentic_World/commit/b6253e7ce28f4544c8deb77775be502c6dcae43e))
+
 ## [1.3.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.2.0...py-v1.3.0) (2026-07-25)
 
 
