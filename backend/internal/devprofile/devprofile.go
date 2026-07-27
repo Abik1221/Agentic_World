@@ -235,6 +235,103 @@ func (s *Service) Leaderboard(ctx context.Context, window, segment string, seaso
 	return LeaderboardPage{Season: season, Segment: segment, Window: window, Entries: rows, NextCursor: next}, nil
 }
 
+// DirectoryPage is a page of the public developer directory.
+type DirectoryPage struct {
+	Season     int            `json:"season"`
+	Query      string         `json:"q,omitempty"`
+	Sort       string         `json:"sort"`
+	Total      int            `json:"count"`
+	Entries    []DirectoryRow `json:"entries"`
+	NextCursor int            `json:"next_cursor,omitempty"`
+}
+
+// Directory lists public developers, optionally filtered by a free-text query over
+// @handle / display name / public id.
+//
+// This is deliberately NOT the leaderboard: the leaderboard inner-joins
+// developer_pindex, so a developer who has signed up and claimed a handle but never
+// played a ranked match is invisible there. The directory left-joins it, so every
+// public developer is discoverable from day one and search finds them.
+func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, offset int) (DirectoryPage, error) {
+	if season <= 0 {
+		season = s.season()
+	}
+	if sort != "recent" {
+		sort = "top"
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	q = strings.TrimPrefix(strings.TrimSpace(q), "@")
+	if len(q) > 64 {
+		q = q[:64]
+	}
+	rows, err := s.repo.Directory(ctx, season, q, sort, limit, offset)
+	if err != nil {
+		return DirectoryPage{}, err
+	}
+	if rows == nil {
+		rows = []DirectoryRow{} // always marshal as [], never null
+	}
+	next := 0
+	if len(rows) == limit {
+		next = offset + limit
+	}
+	return DirectoryPage{
+		Season: season, Query: q, Sort: sort,
+		Total: len(rows), Entries: rows, NextCursor: next,
+	}, nil
+}
+
+// Spotlight is the single developer featured on the landing page.
+type Spotlight struct {
+	Developer DirectoryRow `json:"developer"`
+	TopGame   string       `json:"top_game,omitempty"`
+	// Reason explains which rule picked them: "top_p_index" (highest-rated developer
+	// who has actually played), "most_active", or "newest" (nobody has played yet).
+	Reason string `json:"reason"`
+}
+
+// Spotlight picks the developer to feature on the landing page: the highest-ranked
+// developer who has actually played a match; if nobody has played yet, the newest
+// public developer — so the slot is never empty once a single developer exists.
+func (s *Service) Spotlight(ctx context.Context, season int) (Spotlight, bool, error) {
+	if season <= 0 {
+		season = s.season()
+	}
+	rows, err := s.repo.Directory(ctx, season, "", "top", 1, 0)
+	if err != nil {
+		return Spotlight{}, false, err
+	}
+	if len(rows) == 0 {
+		return Spotlight{}, false, nil
+	}
+	row := rows[0]
+	out := Spotlight{Developer: row}
+	switch {
+	case row.Ranked && row.Matches > 0:
+		out.Reason = "top_p_index"
+	case row.Matches > 0:
+		out.Reason = "most_active"
+	default:
+		out.Reason = "newest"
+	}
+	// Their busiest arena — best-effort; an empty game just hides the label.
+	if st, _, serr := s.repo.Stats(ctx, row.Developer, season); serr == nil {
+		out.TopGame = st.FavoriteArena
+	}
+	return out, true, nil
+}
+
+// Me returns the caller's own public identity (handle, display name, avatar) so the
+// dashboard can show the handle they already claimed instead of an empty field.
+func (s *Service) Me(ctx context.Context, userPublicID string) (Identity, bool, error) {
+	return s.repo.ResolveHandle(ctx, userPublicID)
+}
+
 // SetUsername claims/updates the caller's public @handle (validated + unique).
 func (s *Service) SetUsername(ctx context.Context, userPublicID, username string) error {
 	username = strings.TrimPrefix(strings.TrimSpace(username), "@")

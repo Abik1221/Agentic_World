@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/agent-arena/arena/internal/badges"
 	"github.com/agent-arena/arena/internal/devprofile"
@@ -263,6 +264,86 @@ func (r *DevProfileRepo) Leaderboard(ctx context.Context, season int, segment st
 			return nil, err
 		}
 		out = append(out, lr)
+	}
+	return out, rows.Err()
+}
+
+// directoryBaseSQL lists every PUBLIC developer with their season record, LEFT
+// JOINing developer_pindex so an unranked developer (signed up, no match yet) is
+// still returned — the whole point of the directory vs. the leaderboard.
+//
+// "Public" = an active user who has opted into a public presence: they either claimed
+// an @handle or own at least one real (non-house) agent. House/system owners are
+// excluded because their only agents are kind='house'.
+const directoryBaseSQL = `
+WITH pub AS (
+    SELECT u.id, u.public_id,
+           COALESCE(u.username::text,'') AS username,
+           COALESCE(u.display_name,'')   AS display_name,
+           COALESCE(u.avatar_url,'')     AS avatar_url,
+           COALESCE(u.country,'')        AS country,
+           u.segment, u.created_at
+    FROM users u
+    WHERE u.status = 'active'
+      AND (u.username IS NOT NULL
+           OR EXISTS (SELECT 1 FROM agents a
+                      WHERE a.owner_user_id = u.id AND a.kind <> 'house'))
+), rec AS (
+    SELECT a.owner_user_id AS uid,
+           COUNT(DISTINCT a.id)::int                        AS agents,
+           COALESCE(SUM(rt.wins),0)::int                    AS wins,
+           COALESCE(SUM(rt.wins + rt.losses + rt.ties),0)::int AS matches
+    FROM agents a
+    LEFT JOIN ratings rt ON rt.agent_id = a.id AND rt.season = $1
+    WHERE a.kind <> 'house'
+    GROUP BY a.owner_user_id
+)
+SELECT pub.public_id, pub.username, pub.display_name, pub.avatar_url, pub.country, pub.segment,
+       COALESCE(d.p_index, 0)::float8, COALESCE(d.global_rank, 0)::int,
+       (d.user_id IS NOT NULL) AS ranked,
+       COALESCE(rec.matches, 0), COALESCE(rec.wins, 0), COALESCE(rec.agents, 0),
+       pub.created_at
+FROM pub
+LEFT JOIN developer_pindex d ON d.user_id = pub.id AND d.season = $1
+LEFT JOIN rec              ON rec.uid    = pub.id
+WHERE $2 = ''
+   OR pub.username     ILIKE '%' || $2 || '%' ESCAPE '\'
+   OR pub.display_name ILIKE '%' || $2 || '%' ESCAPE '\'
+   OR pub.public_id    ILIKE '%' || $2 || '%' ESCAPE '\'
+`
+
+// likeEscape neutralises LIKE wildcards in user input so a search for "_" or "%"
+// doesn't match everything (the queries declare ESCAPE '\').
+func likeEscape(s string) string {
+	rep := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return rep.Replace(s)
+}
+
+func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]devprofile.DirectoryRow, error) {
+	// "top": developers who have actually played rank first (that is what the landing
+	// spotlight wants), then by P-Index, then by volume. "recent": newest first.
+	order := `ORDER BY (COALESCE(rec.matches,0) > 0) DESC,
+	                   COALESCE(d.p_index,0) DESC,
+	                   COALESCE(rec.matches,0) DESC,
+	                   pub.created_at DESC, pub.id`
+	if sort == "recent" {
+		order = `ORDER BY pub.created_at DESC, pub.id`
+	}
+	rows, err := r.db.Query(ctx, directoryBaseSQL+order+` LIMIT $3 OFFSET $4`,
+		season, likeEscape(q), limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []devprofile.DirectoryRow
+	for rows.Next() {
+		var d devprofile.DirectoryRow
+		if err := rows.Scan(&d.Developer, &d.Username, &d.DisplayName, &d.AvatarURL,
+			&d.Country, &d.Segment, &d.PIndex, &d.GlobalRank, &d.Ranked,
+			&d.Matches, &d.Wins, &d.Agents, &d.JoinedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
 	}
 	return out, rows.Err()
 }

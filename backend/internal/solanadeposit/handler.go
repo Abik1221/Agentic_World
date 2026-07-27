@@ -38,6 +38,8 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		r.With(auth.RequireScope(auth.ScopeUser), h.rl).Post("/v1/deposits", h.create)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/deposits", h.list)
+		// Static route registered before the {id} wildcard (chi prefers static anyway).
+		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/deposits/config", h.config)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/deposits/{id}", h.get)
 	})
 }
@@ -61,6 +63,19 @@ func (h *Handler) sessionJSON(s Session) map[string]any {
 		"created_at":      s.CreatedAt,
 		"expires_at":      s.ExpiresAt,
 	}
+}
+
+// config serves GET /v1/deposits/config — the mint / recipient / peg the client needs
+// to check the payer's on-chain balance BEFORE creating a deposit session. Without it
+// the UI can only discover "you have no USDC" after the wallet popup fails.
+func (h *Handler) config(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"spl_token":      h.svc.USDCMint(),
+		"recipient":      h.svc.Recipient(),
+		"asset":          "USDC",
+		"decimals":       h.svc.Decimals(),
+		"coins_per_usdc": h.svc.CoinsPerUSDC(),
+	})
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {

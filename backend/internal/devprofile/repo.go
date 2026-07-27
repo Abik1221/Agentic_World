@@ -79,6 +79,26 @@ type LeaderRow struct {
 	GlobalRank  int     `json:"global_rank"`
 }
 
+// DirectoryRow is one developer in the public directory. Unlike LeaderRow it is NOT
+// gated on having a P-Index snapshot: a developer who signed up and claimed a handle
+// but has never played is still discoverable (Ranked=false, PIndex=0). This is what
+// the /u search page lists.
+type DirectoryRow struct {
+	Developer   string    `json:"developer"`
+	Username    string    `json:"username,omitempty"`
+	DisplayName string    `json:"display_name,omitempty"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	Country     string    `json:"country,omitempty"`
+	Segment     string    `json:"segment"`
+	PIndex      float64   `json:"p_index"`     // 0 when never computed
+	GlobalRank  int       `json:"global_rank"` // 0 when unranked
+	Ranked      bool      `json:"ranked"`      // has a P-Index snapshot this season
+	Matches     int       `json:"matches"`
+	Wins        int       `json:"wins"`
+	Agents      int       `json:"agents"`
+	JoinedAt    time.Time `json:"joined_at"`
+}
+
 // Repo reads the developer reputation surface.
 type Repo interface {
 	// ResolveHandle finds a developer by username OR user public id.
@@ -101,6 +121,10 @@ type Repo interface {
 	// ("all" = every segment) and window (0 = all-time; 7/30 = active in the last
 	// N days).
 	Leaderboard(ctx context.Context, season int, segment string, windowDays, limit, offset int) ([]LeaderRow, error)
+	// Directory lists PUBLIC developers matching q (blank = everyone), whether or not
+	// they have a P-Index yet. sort is "top" (played-first, then P-Index) or "recent"
+	// (newest signups first).
+	Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]DirectoryRow, error)
 	SetUsername(ctx context.Context, userPublicID, username string) error
 	Follow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
 	Unfollow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error

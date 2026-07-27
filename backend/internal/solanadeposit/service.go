@@ -155,6 +155,13 @@ func (s *Service) Recipient() string { return s.cfg.PlatformOwner }
 // USDCMint exposes the accepted mint (for the UI).
 func (s *Service) USDCMint() string { return s.cfg.USDCMint }
 
+// Decimals is the accepted token's precision (6 for USDC/USDT). The client needs it
+// to read the payer's on-chain balance BEFORE a deposit session exists.
+func (s *Service) Decimals() int { return s.cfg.USDCDecimals }
+
+// CoinsPerUSDC is the peg: how many game coins one whole token buys.
+func (s *Service) CoinsPerUSDC() int64 { return s.cfg.CoinsPerUSDC }
+
 // formatUSDC renders base units as a decimal USDC string (e.g. 5000000 → "5").
 func (s *Service) formatUSDC(base int64) string {
 	unit := pow10(s.cfg.USDCDecimals)
