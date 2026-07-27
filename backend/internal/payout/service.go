@@ -96,6 +96,9 @@ func (s *Service) solana() bool { return s.cfg.Chain == ChainSolana }
 // (in coins) goes to revenue; the Stripe payout fee (in cents) is deducted from
 // the user's payout. Net is what actually reaches the bank.
 func (s *Service) quote(coins int64) Quote {
+	if coins <= 0 {
+		return Quote{}
+	}
 	gross := coins * s.cfg.CoinCents
 	feeCoins := coins * int64(s.cfg.SellFeePct) / 100
 	stripeFee := gross*int64(s.cfg.StripeFeePct)/100 + s.cfg.StripeFeeFlatCents
@@ -106,6 +109,16 @@ func (s *Service) quote(coins int64) Quote {
 // Available returns the agent's withdrawable winnings and the quote for cashing
 // out `coins` (or all of it when coins <= 0).
 func (s *Service) Available(ctx context.Context, callerUserPublicID, agentPublicID string, coins int64) (int64, Quote, error) {
+	if agentPublicID == "" {
+		var err error
+		agentPublicID, err = s.repo.PrimaryAgent(ctx, callerUserPublicID)
+		if err != nil {
+			return 0, Quote{}, err
+		}
+		if agentPublicID == "" {
+			return 0, s.quote(0), nil
+		}
+	}
 	// Ownership check (mirrors Request): a user may only read their own agent's
 	// withdrawable balance/quote — this leaks another user's net winnings otherwise.
 	owner, _, err := s.repo.AgentOwner(ctx, agentPublicID)

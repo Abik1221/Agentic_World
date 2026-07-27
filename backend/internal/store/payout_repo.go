@@ -52,6 +52,20 @@ func (r *PayoutRepo) AgentOwner(ctx context.Context, agentPublicID string) (stri
 	return owner, connect, err
 }
 
+func (r *PayoutRepo) PrimaryAgent(ctx context.Context, ownerUserPublicID string) (string, error) {
+	var agent string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE((
+		     SELECT a.public_id
+		     FROM agents a JOIN users u ON u.id = a.owner_user_id
+		     WHERE u.public_id = $1
+		     ORDER BY a.created_at
+		     LIMIT 1
+		   ), '')`,
+		ownerUserPublicID).Scan(&agent)
+	return agent, err
+}
+
 func (r *PayoutRepo) DestinationWallet(ctx context.Context, ownerUserPublicID string) (string, error) {
 	var wallet string
 	err := r.db.QueryRow(ctx,

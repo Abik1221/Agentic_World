@@ -18,6 +18,7 @@ type fakeRepo struct {
 	withdrawable     int64
 	owner            string
 	connect          string
+	primaryAgent     string
 	wallet           string
 	walletUnverified bool // when true, VerifiedWallet returns "" (linked but not proven)
 	flagged          bool
@@ -31,13 +32,14 @@ type fakeRepo struct {
 
 func newRepo() *fakeRepo {
 	return &fakeRepo{owner: "usr_a", connect: "acct_1", withdrawable: 1000,
-		requestedAt: now.Add(-48 * time.Hour), rows: map[string]*payout.Withdrawal{}}
+		primaryAgent: "ag_a", requestedAt: now.Add(-48 * time.Hour), rows: map[string]*payout.Withdrawal{}}
 }
 
 func (r *fakeRepo) Withdrawable(context.Context, string) (int64, error) { return r.withdrawable, nil }
 func (r *fakeRepo) AgentOwner(context.Context, string) (string, string, error) {
 	return r.owner, r.connect, nil
 }
+func (r *fakeRepo) PrimaryAgent(context.Context, string) (string, error)      { return r.primaryAgent, nil }
 func (r *fakeRepo) DestinationWallet(context.Context, string) (string, error) { return r.wallet, nil }
 func (r *fakeRepo) VerifiedWallet(context.Context, string) (string, error) {
 	if r.walletUnverified {
@@ -199,6 +201,28 @@ func TestQuoteAppliesFeesAndStripeFee(t *testing.T) {
 	// net = (1000-100)*1 - 25 = 875.
 	if q.GrossCents != 1000 || q.FeeCoins != 100 || q.StripeFeeCents != 25 || q.NetCents != 875 {
 		t.Fatalf("quote = %+v, want gross1000 fee100 stripe25 net875", q)
+	}
+}
+
+func TestAvailableDefaultsToPrimaryAgentForReadOnlyQuote(t *testing.T) {
+	repo := newRepo()
+	repo.withdrawable = 750
+	avail, q, err := newSvc(repo, newBank(), &fakeXfer{}).Available(context.Background(), "usr_a", "", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if avail != 750 || q.Coins != 500 {
+		t.Fatalf("avail/quote = %d/%+v, want avail 750 quote coins 500", avail, q)
+	}
+
+	noAgent := newRepo()
+	noAgent.primaryAgent = ""
+	avail, q, err = newSvc(noAgent, newBank(), &fakeXfer{}).Available(context.Background(), "usr_a", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if avail != 0 || q.Coins != 0 || q.NetCents != 0 {
+		t.Fatalf("no-agent avail/quote = %d/%+v, want zero quote", avail, q)
 	}
 }
 

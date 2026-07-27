@@ -98,6 +98,7 @@ func (f *fakeRepo) RepayDebt(_ context.Context, _ string, coins int64) error {
 func (f *fakeRepo) UserLifetimeStats(context.Context, string) (wallet.LifetimeStats, error) {
 	return wallet.LifetimeStats{}, nil
 }
+func (f *fakeRepo) LinkedWallet(context.Context, string) (string, error)           { return "", nil }
 func (f *fakeRepo) OwnerAgents(context.Context, string) ([]wallet.AgentRow, error) { return nil, nil }
 func (f *fakeRepo) StakedInActiveMatches(context.Context, string) (int64, error)   { return 0, nil }
 func (f *fakeRepo) PendingWithdrawalCoins(context.Context, string) (int64, error)  { return 0, nil }

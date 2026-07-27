@@ -60,6 +60,7 @@ type Repo interface {
 
 	// ── owner treasury dashboard ──
 	UserLifetimeStats(ctx context.Context, userPublicID string) (LifetimeStats, error)
+	LinkedWallet(ctx context.Context, userPublicID string) (string, error)
 	OwnerAgents(ctx context.Context, userPublicID string) ([]AgentRow, error)
 	StakedInActiveMatches(ctx context.Context, agentPublicID string) (int64, error)
 	PendingWithdrawalCoins(ctx context.Context, agentPublicID string) (int64, error)

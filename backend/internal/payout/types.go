@@ -26,6 +26,9 @@ type Repo interface {
 	// AgentOwner returns the owning user's public id and Stripe Connect account id
 	// ("" if not KYC-onboarded). ErrNotFound if the agent does not exist.
 	AgentOwner(ctx context.Context, agentPublicID string) (ownerUserPublicID, connectAccountID string, err error)
+	// PrimaryAgent returns the owner's first agent public id, or "" when the owner
+	// has no agent yet. Used only for read-only quote defaults.
+	PrimaryAgent(ctx context.Context, ownerUserPublicID string) (agentPublicID string, err error)
 	// DestinationWallet returns the owner's linked Solana wallet address ("" if
 	// none) — the payout destination in Solana mode. ErrNotFound if the user is unknown.
 	DestinationWallet(ctx context.Context, ownerUserPublicID string) (walletAddress string, err error)

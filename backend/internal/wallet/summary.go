@@ -16,6 +16,7 @@ type UserSummary struct {
 	LifetimeEarnings    int64          `json:"lifetime_earnings"`
 	Agents              []AgentBalance `json:"agents"`
 	CoinCents           int64          `json:"coin_cents"`
+	LinkedWallet        string         `json:"linked_wallet,omitempty"`
 }
 
 // AgentBalance is one agent's competition wallet snapshot.
@@ -48,6 +49,10 @@ func (s *Service) UserSummary(ctx context.Context, userPublicID string) (UserSum
 		return UserSummary{}, err
 	}
 	stats, err := s.repo.UserLifetimeStats(ctx, userPublicID)
+	if err != nil {
+		return UserSummary{}, err
+	}
+	linkedWallet, err := s.repo.LinkedWallet(ctx, userPublicID)
 	if err != nil {
 		return UserSummary{}, err
 	}
@@ -98,6 +103,7 @@ func (s *Service) UserSummary(ctx context.Context, userPublicID string) (UserSum
 		LifetimeEarnings:    stats.Winnings,
 		Agents:              outAgents,
 		CoinCents:           s.cfg.CoinCents,
+		LinkedWallet:        linkedWallet,
 	}, nil
 }
 

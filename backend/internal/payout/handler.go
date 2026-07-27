@@ -68,10 +68,6 @@ func (h *Handler) Register(r chi.Router) {
 func (h *Handler) withdrawable(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	agent := r.URL.Query().Get("agent")
-	if agent == "" {
-		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "agent_required", "Specify ?agent="))
-		return
-	}
 	var coins int64
 	if q := r.URL.Query().Get("coins"); q != "" {
 		if n, err := strconv.ParseInt(q, 10, 64); err == nil {

@@ -221,6 +221,17 @@ func (r *WalletRepo) UserLifetimeStats(ctx context.Context, userPublicID string)
 	return s, err
 }
 
+func (r *WalletRepo) LinkedWallet(ctx context.Context, userPublicID string) (string, error) {
+	var address string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(verified_wallet_address, '') FROM users WHERE public_id = $1`,
+		userPublicID).Scan(&address)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", httpx.ErrNotFound
+	}
+	return address, err
+}
+
 func (r *WalletRepo) OwnerAgents(ctx context.Context, userPublicID string) ([]wallet.AgentRow, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT a.public_id, a.name FROM agents a
