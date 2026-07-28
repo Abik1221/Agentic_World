@@ -32,10 +32,24 @@ type RewardRow struct {
 
 // ComputeEconomy mirrors computeEconomy() in mafiaEconomy.ts.
 func ComputeEconomy(agentCount int, entryFee int64, platformFeePct int) EconomySnapshot {
+	// A FREE table has a zero economy — full stop.
+	//
+	// This used to silently rewrite entryFee 0 -> DefaultEntryFee (100), so a practice
+	// table reported a 1200-coin gross pool, a 120-coin rake and real per-seat payouts.
+	// The ledger was correctly skipped, but those phantom numbers were persisted to
+	// match_players.coins_delta and then surfaced as fact: on the public spectator
+	// economy endpoint, in the owner's lifetime-winnings tile, and in the spending-limit
+	// engine (NetSince has no bid > 0 filter), where an unstaked practice "win" could
+	// trip a take-profit stop. Monopoly already guarded this correctly; Mafia did not.
+	//
+	// Nothing was stolen — but it is exactly the fabricated data a free sandbox must not
+	// produce, so zero in means zero out.
 	if entryFee <= 0 {
-		entryFee = DefaultEntryFee
+		return EconomySnapshot{Agents: agentCount, PlatformFeePct: 0}
 	}
-	if platformFeePct <= 0 {
+	// Only a NEGATIVE percentage is nonsense; 0 is a legitimate rake-free table an
+	// operator may configure (Monopoly already allows it).
+	if platformFeePct < 0 {
 		platformFeePct = DefaultPlatformFeePct
 	}
 	gross := int64(agentCount) * entryFee
