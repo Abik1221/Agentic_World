@@ -95,6 +95,27 @@ type Overview struct {
 	PlatformRevenue    int64     `json:"platform_revenue_coins"`
 	TopupVolume        int64     `json:"topup_volume_coins"`
 	GeneratedAt        time.Time `json:"generated_at"`
+
+	// CoinCents is the face value of one coin, so a consumer can price the coin
+	// figures above in dollars without hardcoding the peg and silently drifting from
+	// it. Everything below is in CENTS.
+	CoinCents int64 `json:"coin_cents"`
+
+	// The REAL on-chain treasury, from the solvency monitor's last reconciliation.
+	//
+	// These are not a currency conversion of the coin figures above, and must not be
+	// presented as one. Coins valued in USD are what the platform has earned in its
+	// own ledger; this is what is actually in the hot wallet. USDC is dollar-pegged,
+	// so showing the same coin total twice under "USD" and "USDC" labels would be
+	// theatre — the useful second number is this one.
+	//
+	// TreasuryObservedAt is zero when no reconciliation has landed yet. A consumer
+	// MUST render that as "unknown", never as a zero balance: the difference between
+	// "we hold nothing" and "we have not looked" is the difference between an
+	// incident and a cold start.
+	TreasuryUSDCCents  int64     `json:"treasury_usdc_cents"`
+	LiabilityUSDCCents int64     `json:"liability_usdc_cents"`
+	TreasuryObservedAt time.Time `json:"treasury_observed_at,omitempty"`
 }
 
 // Repo is the read-only data access the admin surface needs. Implemented by
@@ -113,7 +134,30 @@ type Handler struct {
 	repo   Repo
 	authn  *auth.Authenticator
 	admins map[string]bool
+	// coinCents prices the ledger's coin figures in dollars for the dashboard.
+	coinCents int64
+	// treasury reads the last on-chain reconciliation. Nil when payouts are not
+	// configured, in which case the overview reports no treasury observation rather
+	// than a zero balance.
+	treasury TreasuryReader
 }
+
+// TreasuryReader exposes the solvency monitor's most recent reconciliation.
+// Satisfied by *payout.SolvencyMonitor; kept as an interface so adminapi does not
+// depend on the payout package.
+type TreasuryReader interface {
+	LastReading() (balanceCents, liabilityCents int64, observedAt time.Time, ok bool)
+}
+
+// SetCoinCents wires the coin→USD peg used to price the dashboard's coin totals.
+func (h *Handler) SetCoinCents(cents int64) {
+	if cents > 0 {
+		h.coinCents = cents
+	}
+}
+
+// SetTreasury wires the on-chain USDC reader. Optional.
+func (h *Handler) SetTreasury(t TreasuryReader) { h.treasury = t }
 
 // NewHandler builds the admin-read handler. adminUserIDs are the user public ids
 // (ADMIN_USER_IDS) allowed alongside any valid Platform token.
@@ -122,7 +166,7 @@ func NewHandler(repo Repo, authn *auth.Authenticator, adminUserIDs []string) *Ha
 	for _, id := range adminUserIDs {
 		admins[id] = true
 	}
-	return &Handler{repo: repo, authn: authn, admins: admins}
+	return &Handler{repo: repo, authn: authn, admins: admins, coinCents: 1}
 }
 
 // Register mounts the read-only admin routes behind Platform-or-admin auth.
@@ -174,6 +218,14 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	ov.CoinCents = h.coinCents
+	// Left at zero (and ObservedAt absent) when payouts are unconfigured or no
+	// reconciliation has landed yet — the consumer renders that as "unknown".
+	if h.treasury != nil {
+		if bal, lia, at, ok := h.treasury.LastReading(); ok {
+			ov.TreasuryUSDCCents, ov.LiabilityUSDCCents, ov.TreasuryObservedAt = bal, lia, at
+		}
 	}
 	httpx.JSON(w, http.StatusOK, ov)
 }

@@ -705,6 +705,10 @@ func run() error {
 	// top-up path (peg derived from CoinCents: 1 USDC = 100/CoinCents coins).
 	// Enabled only when fully configured; otherwise /v1/deposits returns 503.
 	var depositHandler *solanadeposit.Handler
+	// Declared out here so the admin overview can report the REAL on-chain treasury.
+	// Stays nil when payouts are unconfigured, which the overview renders as "no
+	// observation" rather than as a zero balance.
+	var solvencyMonitor *payout.SolvencyMonitor
 	if cfg.DepositsEnabled() {
 		coinsPerUSDC := int64(100)
 		if cfg.CoinCents > 0 {
@@ -725,6 +729,7 @@ func run() error {
 		// Read-only solvency monitor: reconcile the hot-wallet on-chain USDC against
 		// outstanding withdrawal liability and alert on any shortfall (never moves funds).
 		solvency := payout.NewSolvencyMonitor(store.NewPayoutRepo(st.DB), chain, cfg.SolanaPlatformATA, log, metrics.Registry())
+		solvencyMonitor = solvency
 		launch("solvency-monitor", solvency.Run(cfg.SolvencyInterval))
 		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
 	} else {
@@ -741,6 +746,14 @@ func run() error {
 	// (users/agents/matches/payments/disputes + revenue overview). Authorized by a
 	// Platform service token or the ADMIN_USER_IDS allowlist; additive only.
 	adminReadHandler := adminapi.NewHandler(store.NewAdminRepo(st.DB), authn, cfg.AdminUserIDs)
+	// Price the dashboard's coin totals in dollars, and surface the real on-chain
+	// USDC alongside them. These are different facts, not two currencies for one
+	// number: the first is what the ledger says was earned, the second is what the
+	// hot wallet actually holds.
+	adminReadHandler.SetCoinCents(cfg.CoinCents)
+	if solvencyMonitor != nil {
+		adminReadHandler.SetTreasury(solvencyMonitor)
+	}
 
 	// Match lifecycle: real engine + persistence + per-match Redis lock, real coin
 	// escrow/settlement + limit enforcement, live broadcast, ELO at finalize, and

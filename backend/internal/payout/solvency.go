@@ -3,6 +3,7 @@ package payout
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,6 +34,32 @@ type SolvencyMonitor struct {
 	balGauge prometheus.Gauge
 	liaGauge prometheus.Gauge
 	defGauge prometheus.Gauge // liability - balance, in cents (>0 ⇒ shortfall)
+
+	// last is the most recent successful reading, so the admin dashboard can show
+	// the real on-chain treasury without every viewer triggering an RPC call. Kept
+	// behind a mutex because Run() writes it and HTTP handlers read it.
+	mu   sync.RWMutex
+	last Reading
+}
+
+// Reading is one solvency observation. ObservedAt is zero until the first successful
+// check, which callers MUST treat as "unknown" rather than as a zero balance — the
+// difference between "we hold nothing" and "we have not looked yet" is the difference
+// between an incident and a cold start.
+type Reading struct {
+	BalanceCents   int64
+	LiabilityCents int64
+	ObservedAt     time.Time
+}
+
+// LastReading returns the most recent successful reconciliation. ok is false before
+// the first one lands, and callers must render that as "unknown" rather than zero.
+// The flat signature satisfies adminapi.TreasuryReader without that package having
+// to import payout.
+func (m *SolvencyMonitor) LastReading() (balanceCents, liabilityCents int64, observedAt time.Time, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.last.BalanceCents, m.last.LiabilityCents, m.last.ObservedAt, !m.last.ObservedAt.IsZero()
 }
 
 // NewSolvencyMonitor builds the monitor and registers its gauges.
@@ -61,6 +88,9 @@ func (m *SolvencyMonitor) Check(ctx context.Context) (balanceCents, liabilityCen
 	m.balGauge.Set(float64(balanceCents))
 	m.liaGauge.Set(float64(liabilityCents))
 	m.defGauge.Set(float64(liabilityCents - balanceCents))
+	m.mu.Lock()
+	m.last = Reading{BalanceCents: balanceCents, LiabilityCents: liabilityCents, ObservedAt: time.Now().UTC()}
+	m.mu.Unlock()
 	if balanceCents < liabilityCents {
 		m.log.Error("payout: TREASURY SHORTFALL — hot-wallet USDC below outstanding withdrawal liability",
 			"balance_cents", balanceCents, "liability_cents", liabilityCents,
