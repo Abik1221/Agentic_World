@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
 )
 
@@ -56,7 +58,19 @@ type Service struct {
 	// liveness suppresses forfeits during the grace window after a detected platform
 	// outage. Nil is valid and means "no grace".
 	liveness *liveness.Tracker
+	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
+	chatTracer ChatTracer
 }
+
+// ChatTracer records agent table talk to the observability pipeline. Satisfied by
+// *telemetry.Client; nil means telemetry is off and every call is a no-op.
+type ChatTracer interface {
+	EmitAgentSaid(ev telemetry.ChatEvent)
+	EmitAgentSayRejected(ev telemetry.ChatEvent)
+}
+
+// SetChatTracer installs the chat tracer (called once at wiring time).
+func (s *Service) SetChatTracer(t ChatTracer) { s.chatTracer = t }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
@@ -361,11 +375,36 @@ func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text
 	}
 	state, events, err := s.eng.Say(m.State, p.Seat, text, tone, target)
 	if err != nil {
+		// Trace the REJECTION too: "tried to speak and was silenced by the rules" is a
+		// different fact from "stayed quiet", and only one of them means a broken agent.
+		if s.chatTracer != nil {
+			reason := "illegal"
+			switch {
+			case errors.Is(err, mf.ErrFinished):
+				reason = "match_finished"
+			case !m.State.Alive[p.Seat]:
+				reason = "not_alive"
+			case !mf.CanSpeak(m.State.Phase):
+				reason = "closed_floor"
+			case strings.TrimSpace(text) == "":
+				reason = "empty"
+			}
+			s.chatTracer.EmitAgentSayRejected(telemetry.ChatEvent{
+				Game: GameName, MatchID: matchPublicID, AgentID: agentPublicID,
+				Seat: p.Seat, Kind: "say", Phase: m.State.Phase, Text: text, Reason: reason,
+			})
+		}
 		if errors.Is(err, mf.ErrFinished) {
 			return AgentView{}, ErrNotActive
 		}
 		// Closed floor (night/voting), dead seat, or empty text.
 		return AgentView{}, ErrIllegalAction
+	}
+	if s.chatTracer != nil {
+		s.chatTracer.EmitAgentSaid(telemetry.ChatEvent{
+			Game: GameName, MatchID: matchPublicID, AgentID: agentPublicID,
+			Seat: p.Seat, Kind: "say", Phase: m.State.Phase, Text: text,
+		})
 	}
 	if err := s.persist(ctx, m, state, events); err != nil {
 		return AgentView{}, err

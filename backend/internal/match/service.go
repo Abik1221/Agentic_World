@@ -13,6 +13,7 @@ import (
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/replay"
 )
 
@@ -52,7 +53,19 @@ type Service struct {
 	// liveness suppresses forfeits during the grace window after a detected platform
 	// outage. Nil is valid and means "no grace" — see SweepExpired.
 	liveness *liveness.Tracker
+	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
+	chatTracer ChatTracer
 }
+
+// ChatTracer records agent table talk to the observability pipeline. Satisfied by
+// *telemetry.Client; nil means telemetry is off and every call is a no-op.
+type ChatTracer interface {
+	EmitAgentSaid(ev telemetry.ChatEvent)
+	EmitAgentSayRejected(ev telemetry.ChatEvent)
+}
+
+// SetChatTracer installs the chat tracer (called once at wiring time).
+func (s *Service) SetChatTracer(t ChatTracer) { s.chatTracer = t }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 // Without it the service forfeits exactly as before, which is the safe default.
@@ -548,7 +561,20 @@ func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text
 	eng := s.engine(m)
 	state, events, err := eng.Say(m.State, p.Seat, text, kind)
 	if err != nil {
+		// Rejections are traced too — see the mafia equivalent.
+		if s.chatTracer != nil {
+			s.chatTracer.EmitAgentSayRejected(telemetry.ChatEvent{
+				Game: "goofspiel", MatchID: matchPublicID, AgentID: agentPublicID,
+				Seat: p.Seat, Kind: kind, Text: text, Reason: "illegal",
+			})
+		}
 		return AgentView{}, mapEngineErr(err)
+	}
+	if s.chatTracer != nil {
+		s.chatTracer.EmitAgentSaid(telemetry.ChatEvent{
+			Game: "goofspiel", MatchID: matchPublicID, AgentID: agentPublicID,
+			Seat: p.Seat, Kind: kind, Text: text,
+		})
 	}
 	updated, err := s.commit(ctx, m, eng, state, events)
 	if err != nil {

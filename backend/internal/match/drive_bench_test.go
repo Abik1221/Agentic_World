@@ -51,10 +51,10 @@ func TestDecide_ClassifiesOutcomes(t *testing.T) {
 	hand := []int{2, 4, 6}
 
 	cases := []struct {
-		name    string
-		fn      func(out any) error
+		name     string
+		fn       func(out any) error
 		wantCard int
-		wantOut benchmark.Outcome
+		wantOut  benchmark.Outcome
 	}{
 		{"legal", writeMove(6), 6, benchmark.OutcomeOK},
 		{"illegal falls back to lowest", writeMove(99), 2, benchmark.OutcomeIllegal},

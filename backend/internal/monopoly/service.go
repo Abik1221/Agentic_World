@@ -13,6 +13,7 @@ import (
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
 )
 
@@ -66,7 +67,19 @@ type Service struct {
 	// liveness suppresses forfeits during the grace window after a detected platform
 	// outage. Nil is valid and means "no grace".
 	liveness *liveness.Tracker
+	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
+	chatTracer ChatTracer
 }
+
+// ChatTracer records agent table talk to the observability pipeline. Satisfied by
+// *telemetry.Client; nil means telemetry is off and every call is a no-op.
+type ChatTracer interface {
+	EmitAgentSaid(ev telemetry.ChatEvent)
+	EmitAgentSayRejected(ev telemetry.ChatEvent)
+}
+
+// SetChatTracer installs the chat tracer (called once at wiring time).
+func (s *Service) SetChatTracer(t ChatTracer) { s.chatTracer = t }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
@@ -462,10 +475,29 @@ func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text
 	eng := mono.New(matchConfig(m.Players))
 	state, events, err := eng.Say(m.State, p.Seat, text, kind)
 	if err != nil {
+		// Rejections are traced too — see the mafia equivalent.
+		if s.chatTracer != nil {
+			reason := "illegal"
+			if errors.Is(err, mono.ErrFinished) {
+				reason = "match_finished"
+			} else if p.Seat < len(m.State.Players) && m.State.Players[p.Seat].Bankrupt {
+				reason = "bankrupt"
+			}
+			s.chatTracer.EmitAgentSayRejected(telemetry.ChatEvent{
+				Game: GameName, MatchID: matchPublicID, AgentID: agentPublicID,
+				Seat: p.Seat, Kind: kind, Phase: m.State.Phase, Text: text, Reason: reason,
+			})
+		}
 		if errors.Is(err, mono.ErrFinished) {
 			return AgentView{}, ErrNotActive
 		}
 		return AgentView{}, ErrIllegalAction // empty text, bad seat, or bankrupt
+	}
+	if s.chatTracer != nil {
+		s.chatTracer.EmitAgentSaid(telemetry.ChatEvent{
+			Game: GameName, MatchID: matchPublicID, AgentID: agentPublicID,
+			Seat: p.Seat, Kind: kind, Phase: m.State.Phase, Text: text,
+		})
 	}
 	if err := s.persist(ctx, m, state, events); err != nil {
 		return AgentView{}, err

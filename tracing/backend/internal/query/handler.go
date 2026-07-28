@@ -298,8 +298,8 @@ func (h Handler) TraceEvents(c *fiber.Ctx) error {
 	rows, err := h.Store.DB.QueryContext(c.UserContext(), `
 		SELECT
 			e.event_id,e.trace_id,t.request_id,e.span_id,s.parent_span_id,e.event_type,e.event_time,0 as sequence_number,e.source_service,'' as schema_version,
-			e.status,t.organization_id,t.project_id,t.environment,t.user_id,'' as actor_id,t.session_id,'' as run_id,'' as conversation_id,'' as app_id,
-			'' as queue_job_id,'' as component,'' as operation,s.span_type,s.step_name,
+			e.status,t.organization_id,t.project_id,t.environment,t.user_id,coalesce(r.actor_id, '') as actor_id,t.session_id,coalesce(r.run_id, '') as run_id,'' as conversation_id,'' as app_id,
+			'' as queue_job_id,coalesce(r.component, '') as component,coalesce(r.operation, '') as operation,s.span_type,s.step_name,
 			if(r.provider != '', r.provider, s.provider),if(r.model != '', r.model, s.model),s.model_version,s.tool_name,s.tool_version,
 			'' as root_input_ref,'' as root_output_ref,e.payload_ref,
 			coalesce(r.payload_json, '') as payload_json,'' as prompt_version_ids_json,'' as model_config_versions_json,
@@ -308,7 +308,7 @@ func (h Handler) TraceEvents(c *fiber.Ctx) error {
 			coalesce(r.prompt_tokens, toInt64(0)),coalesce(r.completion_tokens, toInt64(0)),coalesce(r.cached_tokens, toInt64(0)),coalesce(r.reasoning_tokens, toInt64(0)),
 			if(r.total_tokens > 0, r.total_tokens, s.total_tokens),
 			if(r.estimated_cost > 0, r.estimated_cost, s.total_cost),toFloat64(0) as reconciled_cost,
-			'' as currency,'' as pricing_version,'' as meter_source,e.error_type,'' as error_code,e.error_message,'' as sampling_reason,'' as redaction_summary_json,e.event_time
+			coalesce(r.currency, '') as currency,coalesce(r.pricing_version, '') as pricing_version,coalesce(r.meter_source, '') as meter_source,e.error_type,'' as error_code,e.error_message,'' as sampling_reason,'' as redaction_summary_json,e.event_time
 		FROM events e
 		LEFT JOIN traces t ON e.trace_id = t.trace_id
 		LEFT JOIN spans s ON e.trace_id = s.trace_id AND e.span_id = s.span_id
@@ -325,7 +325,19 @@ func (h Handler) TraceEvents(c *fiber.Ctx) error {
 				argMax(estimated_cost, ingested_at) AS estimated_cost,
 				argMax(provider, ingested_at) AS provider,
 				argMax(model, ingested_at) AS model,
-				argMax(latency_ms, ingested_at) AS event_latency_ms
+				argMax(latency_ms, ingested_at) AS event_latency_ms,
+				-- Identity + provenance. These were hardcoded empty on the read path
+				-- even though events_raw carries them, so the Trace Inspector could not
+				-- say WHICH agent produced a span, could not link a span to a match, and
+				-- could not tell gateway-metered cost from agent self-reported cost —
+				-- the platform's structural anti-cheat signal, invisible in its own UI.
+				argMax(actor_id, ingested_at) AS actor_id,
+				argMax(run_id, ingested_at) AS run_id,
+				argMax(component, ingested_at) AS component,
+				argMax(operation, ingested_at) AS operation,
+				argMax(currency, ingested_at) AS currency,
+				argMax(pricing_version, ingested_at) AS pricing_version,
+				argMax(meter_source, ingested_at) AS meter_source
 			FROM events_raw
 			WHERE trace_id = ?
 			GROUP BY event_id, trace_id

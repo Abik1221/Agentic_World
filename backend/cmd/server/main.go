@@ -743,6 +743,14 @@ func run() error {
 	livenessRepo := store.NewLivenessRepo(st.DB)
 	livenessTracker := liveness.NewTracker(clock, log)
 	livenessTracker.Detect(ctx, livenessRepo)
+	// Trace agent table talk. Chat was the single largest hole in agent
+	// observability: an agent could post hundreds of lines and Lens recorded nothing —
+	// not the line, not the rejection, not a count. In Mafia the talking IS the game,
+	// so this is the behaviour a spectator judges and an operator audits after a
+	// dispute. A disabled client makes every call a no-op.
+	matchSvc.SetChatTracer(lens)
+	mafiaSvc.SetChatTracer(lens)
+	monopolySvc.SetChatTracer(lens)
 	matchSvc.SetLiveness(livenessTracker)
 	mafiaSvc.SetLiveness(livenessTracker)
 	monopolySvc.SetLiveness(livenessTracker)
