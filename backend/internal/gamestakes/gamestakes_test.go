@@ -116,17 +116,20 @@ func TestAdminPutValidation(t *testing.T) {
 		}
 	}
 
+	// $5 / $20 / $50 at the default 1¢ peg. These were $1 / $5 / $20 before the
+	// paid-tier floor existed; the case is about ordering and keys, not pricing, so
+	// the amounts move up to stay valid without changing what is under test.
 	good := []gamestakes.Tier{
-		{Key: "high", Coins: 2000, Ordering: 2, Enabled: true},
-		{Key: "low", Coins: 100, Ordering: 0, Enabled: true},
-		{Key: "mid", Coins: 500, Ordering: 1, Enabled: true},
+		{Key: "high", Coins: 5000, Ordering: 2, Enabled: true},
+		{Key: "low", Coins: 500, Ordering: 0, Enabled: true},
+		{Key: "mid", Coins: 2000, Ordering: 1, Enabled: true},
 	}
 	if err := svc.AdminPut(ctx, "admin", "mafia", good); err != nil {
 		t.Fatalf("valid put: %v", err)
 	}
 	// Reads reflect the write (cache busted), ordered, and Resolve works.
-	if c, err := svc.Resolve(ctx, "mafia", "high"); err != nil || c != 2000 {
-		t.Fatalf("resolve after put = %d,%v; want 2000,nil", c, err)
+	if c, err := svc.Resolve(ctx, "mafia", "high"); err != nil || c != 5000 {
+		t.Fatalf("resolve after put = %d,%v; want 5000,nil", c, err)
 	}
 	got, _ := svc.AdminGet(ctx, "mafia")
 	if len(got.Tiers) != 3 || got.Tiers[0].Key != "low" {

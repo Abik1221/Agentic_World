@@ -446,6 +446,11 @@ func run() error {
 	// Low/Mid/High). Public read exposes the enabled menu; admin GET/PUT configures
 	// it with immediate effect. Play handlers resolve a chosen tier -> coin stake.
 	gameStakesSvc := gamestakes.New(store.NewGameStakesRepo(st.DB), clock, log)
+	// Stakes are administered in dollars (the unit an operator thinks in) and stored
+	// in coins (the unit the ledger settles in). The peg makes that translation; the
+	// floor keeps a paid table above the point where the rake rounds to nothing.
+	gameStakesSvc.SetCoinCents(cfg.CoinCents)
+	gameStakesSvc.SetMinStakeUSDCents(cfg.MinStakeUSDCents)
 	gameStakesHandler := gamestakes.NewHandler(gameStakesSvc, authn, cfg.AdminUserIDs)
 
 	// Wallet-ownership verification: prove control of the payout wallet (sign a

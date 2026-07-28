@@ -157,7 +157,11 @@ type Config struct {
 	ClipCDNBase string // CDN prefix for generated clip assets
 
 	// Cash-out / withdrawals (coin engine)
-	CoinCents                int64         // face value of one coin in cents (default 1)
+	CoinCents int64 // face value of one coin in cents (default 1)
+	// MinStakeUSDCents is the floor on a paid entry fee, in cents (default $5). The
+	// admin sets stakes in dollars; this is the point below which a table costs more
+	// in inference than its rake returns. 0 removes the floor (sandbox deployments).
+	MinStakeUSDCents         int64
 	WithdrawSellFeePct       int           // platform cut on withdrawal
 	StripePayoutFeePct       int           // Stripe payout fee %, passed to the user
 	StripePayoutFeeFlatCents int64         // flat Stripe payout fee, passed to the user
@@ -335,6 +339,7 @@ func Load() (*Config, error) {
 		ClipCDNBase: l.str("CLIP_CDN_BASE", "https://cdn.local/clips"),
 
 		CoinCents:                int64(l.intVal("COIN_CENTS", 1)),
+		MinStakeUSDCents:         int64(l.intVal("MIN_STAKE_USD_CENTS", 500)),
 		WithdrawSellFeePct:       l.intVal("WITHDRAW_SELL_FEE_PCT", 5),
 		StripePayoutFeePct:       l.intVal("STRIPE_PAYOUT_FEE_PCT", 0),
 		StripePayoutFeeFlatCents: int64(l.intVal("STRIPE_PAYOUT_FEE_FLAT_CENTS", 25)),
