@@ -107,6 +107,7 @@ jobs:
           STRIPE_ARENA_PASS_PRICE_ID: ${{ secrets.STRIPE_ARENA_PASS_PRICE_ID }}
           PYYOL_LENS_ENABLED: ${{ secrets.PYYOL_LENS_ENABLED }}
           PYYOL_LENS_ENDPOINT: ${{ secrets.PYYOL_LENS_ENDPOINT }}
+          PYYOL_LENS_QUERY_ENDPOINT: ${{ secrets.PYYOL_LENS_QUERY_ENDPOINT }}
           PYYOL_LENS_API_KEY: ${{ secrets.PYYOL_LENS_API_KEY }}
           PYYOL_LENS_ORG: ${{ secrets.PYYOL_LENS_ORG }}
           # Anti-bot on onboarding — REQUIRED in prod (fail-closed). Get a real key
@@ -183,6 +184,10 @@ jobs:
           # network; ORG must equal the admin's LENS_ORG_ID + the query-api org.
           PYYOL_LENS_ENABLED=${PYYOL_LENS_ENABLED:-false}
           PYYOL_LENS_ENDPOINT=${PYYOL_LENS_ENDPOINT:-http://pyyol-lens-ingest:8081}
+          # Read path for the developer trace view (a DIFFERENT service and port from
+          # ingest above). Unset ⇒ /v1/developer/traces returns 503; nothing else is
+          # affected, since trace read-back must never be able to block play.
+          PYYOL_LENS_QUERY_ENDPOINT=${PYYOL_LENS_QUERY_ENDPOINT:-http://pyyol-lens-query:8082}
           PYYOL_LENS_API_KEY=${PYYOL_LENS_API_KEY:-}
           PYYOL_LENS_ORG=${PYYOL_LENS_ORG:-pyyol}
           PYYOL_LENS_PROJECT=arena

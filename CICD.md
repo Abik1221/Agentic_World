@@ -61,6 +61,24 @@ Replace `pyyol.com` with your domain in each file before enabling.
 `ADMIN_USER_IDS`, `PLATFORM_ENGINE_PRIVATE_KEY`, `PLATFORM_ADMIN_PUBLIC_KEY`,
 `PYYOL_LENS_ENABLED`(=true), `PYYOL_LENS_API_KEY`(==tracing `INGEST_API_KEY`),
 `PYYOL_LENS_ORG`, `BASE_URL`, `CORS_ALLOWED_ORIGINS`, `ARENA_PORT`, `STRIPE_*` (optional).
+
+**`ENV` is mandatory and must be exactly `prod` or `staging` in a live deployment.**
+The arena now REFUSES TO BOOT on any other value, which is deliberate. `ENV` is the
+switch every safety gate hangs off: `ALLOW_MINT` (the free-coin test endpoint)
+defaults ON when the env is not prod-like, and the SSRF guards on agent endpoint
+verification are only refused when it is. `ENV=production` — the natural spelling, and
+wrong — or an unset `ENV` (defaults to `local`) used to boot happily with a mint
+endpoint open to anyone and the SSRF rails down, with no error and a healthy-looking
+deployment. A process that will not start gets fixed in minutes; a silently permissive
+one is never noticed.
+
+**`PYYOL_LENS_QUERY_ENDPOINT`** (e.g. `http://pyyol-lens-query:8082`) enables the
+developer trace view (`/v1/developer/traces`). Unset ⇒ that route returns 503 and
+nothing else is affected; it is a read-only convenience and never blocks play.
+
+**`MIN_STAKE_USD_CENTS`** (default `500`) is the paid-table floor the admin stake
+editor enforces. Leave it at $5 unless you intend cheaper tables; `0` removes the
+floor entirely and is for sandbox deployments only.
 **Registry (image push/pull):** `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (a Docker Hub
 PAT with read+write), `DOCKERHUB_REPO` (e.g. `nahi12/pyyol_backend`) — set in ALL THREE
 repos. **One private repo holds every service image, one tag per service** so the server
@@ -116,6 +134,23 @@ wallet is set, withdrawals stay off — the app boots fine either way.
 
 Generate the platform-bus pair once: in `backend/`, `go run ./cmd/platform-bus-keygen`.
 (See `DEPLOYMENT_PREREQS.md` for the full fail-closed contract.)
+
+## Migrations to expect on this deploy
+Postgres migrations apply automatically on arena boot (`AUTO_MIGRATE`, advisory-locked
+so multi-instance is safe); `/readyz` only passes once they have. Two are new and
+worth knowing about before you look at the data:
+- **0064** — platform liveness heartbeats (outage grace for staked matches).
+- **0065** — lifts seeded stake tiers to the $5 floor. Mafia moves $1/$5/$20 →
+  $5/$20/$50. It is guarded all-or-nothing on the originally seeded values, so if you
+  have already priced your own tiers nothing is touched. A ladder you partly re-priced
+  that still holds a sub-$5 band keeps it, and the stakes editor will refuse to save
+  until you raise it — that is intended, since a migration silently re-pricing a
+  deliberate configuration is worse than an explicit error.
+
+ClickHouse migrations apply on processor boot. **005** adds tiered retention (raw
+events 30d, per-match structure 180d, token usage 365d, rollups 90d/730d) and enables
+the skip indexes that were left commented out — expect the first merge pass after
+deploy to do real work on a large existing dataset.
 
 ## Verification baked into each pipeline
 - **Arena**: polls `/readyz` (DB reachable + migrations applied).

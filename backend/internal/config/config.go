@@ -409,8 +409,39 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
+// knownEnvs is the complete set of environment names. ENV is not free text: it is
+// the switch every other safety gate hangs off, so an unrecognised value is a
+// configuration error rather than a harmless label.
+var knownEnvs = map[string]bool{
+	"local": true, "dev": true, "test": true, "staging": true, "prod": true,
+}
+
 func (c *Config) validate() error {
 	var errs []string
+
+	// ENV IS THE MOST DANGEROUS VALUE IN THIS FILE, and until now it was the only one
+	// never checked. IsProd() matches "prod" or "staging" exactly, and everything
+	// protective keys off it: ALLOW_MINT (the free-coin test endpoint) defaults ON
+	// when IsProd() is false, and the SSRF guards on agent endpoint verification are
+	// only *refused* when IsProd() is true.
+	//
+	// So a deployment that sets ENV=production — the natural spelling, and wrong —
+	// or forgets ENV entirely (it defaults to "local") boots happily into a live
+	// environment with a mint endpoint anyone can call and the SSRF rails down. No
+	// error, no warning; the deployment looks healthy.
+	//
+	// Refusing to start is the only safe response. A process that will not boot gets
+	// noticed and fixed in minutes; a silently permissive one does not get noticed at
+	// all. Deliberately NOT auto-mapping "production" → "prod": quietly accepting a
+	// value nobody wrote down is how this class of bug survives, and the fix is one
+	// character in a deploy config.
+	if !knownEnvs[c.Env] {
+		errs = append(errs, fmt.Sprintf(
+			"ENV invalid: %q (must be one of local, dev, test, staging, prod). "+
+				"This gates ALLOW_MINT and the endpoint-verification SSRF guards, so an "+
+				"unrecognised value would run a live deployment in permissive mode", c.Env))
+	}
+
 	if c.Port < 1 || c.Port > 65535 {
 		errs = append(errs, fmt.Sprintf("PORT out of range: %d", c.Port))
 	}
