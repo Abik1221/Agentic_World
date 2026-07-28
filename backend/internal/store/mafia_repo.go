@@ -370,7 +370,9 @@ func (r *MafiaRepo) LiveMatches(ctx context.Context) ([]mafia.LiveMatch, error) 
 		        (SELECT COUNT(*) FROM mafia_seats ms WHERE ms.match_id = m.id AND ms.alive = true),
 		        (SELECT array_agg(ag.public_id ORDER BY mp.seat)
 		           FROM match_players mp JOIN agents ag ON ag.id = mp.agent_id
-		          WHERE mp.match_id = m.id)
+		          WHERE mp.match_id = m.id),
+		        COALESCE(m.bid, 0),
+		        (SELECT COUNT(*) FROM match_players mp2 WHERE mp2.match_id = m.id)
 		 FROM matches m
 		 WHERE m.game = 'mafia' AND m.status IN ('active','waiting')
 		 ORDER BY m.started_at DESC NULLS LAST, m.created_at DESC
@@ -384,15 +386,24 @@ func (r *MafiaRepo) LiveMatches(ctx context.Context) ([]mafia.LiveMatch, error) 
 		var lm mafia.LiveMatch
 		var agents []string
 		var status string
-		if err := rows.Scan(&lm.MatchID, &status, &lm.Day, &lm.Phase, &lm.Winner, &lm.Alive, &agents); err != nil {
+		var seated int
+		if err := rows.Scan(&lm.MatchID, &status, &lm.Day, &lm.Phase, &lm.Winner, &lm.Alive, &agents,
+			&lm.EntryFee, &seated); err != nil {
 			return nil, err
 		}
 		lm.Title = "Mafia AI Arena"
 		lm.Agents = agents
 		lm.Players = mf.RosterSize
+		// EntryFee lets a spectator surface tell a STAKED table from a free practice
+		// one. Without it, a table that is one developer's agent plus eleven house bots
+		// at zero stakes was published on the public Live Arena as an ordinary 12-agent
+		// staked match — the same deception the scripted demo table was removed for.
 		if status == "waiting" {
 			lm.Phase = "waiting"
-			lm.Alive = mf.RosterSize
+			// A waiting table has not dealt yet, so "alive" is meaningless: report the
+			// seats actually taken. It previously claimed the full roster was alive, so
+			// a 3-of-12 lobby rendered as "0/12 alive".
+			lm.Alive = seated
 		}
 		out = append(out, lm)
 	}

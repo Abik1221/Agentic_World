@@ -295,6 +295,13 @@ type LiveMatch struct {
 	Phase    string   `json:"phase"`
 	Winner   string   `json:"winner,omitempty"`
 	Watchers int      `json:"watchers"`
+	// EntryFee is the per-seat stake in coins; 0 means a FREE practice table.
+	//
+	// Without it the public arena list could not tell a real staked match from a
+	// practice table that is one developer's agent plus eleven house bots — both
+	// rendered identically as a live 12-agent game, which is the same deception the
+	// scripted demo table was removed for.
+	EntryFee int64 `json:"entry_fee"`
 }
 
 // ── metrics ──────────────────────────────────────────────────────────────────
