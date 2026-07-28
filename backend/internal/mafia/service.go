@@ -24,6 +24,9 @@ type Config struct {
 	PhaseWindow time.Duration
 	LockTTL     time.Duration
 	RosterSize  int
+	// MaxDays bounds the game so an abandoned staked table cannot loop forever and
+	// strand its escrow. Zero uses DefaultMaxDays; see that constant.
+	MaxDays int
 	// WaitingTTL is how long a waiting table (not yet full) may sit before the
 	// sweeper aborts it. A Mafia table needs a full 12 distinct-owner roster to
 	// start, so an unfillable lobby is the likely default, not an edge case.
@@ -90,6 +93,13 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 	if cfg.RosterSize != len(mf.RoleSetup) {
 		cfg.RosterSize = len(mf.RoleSetup)
 	}
+	// Never leave the engine unbounded: mf.New() means MaxDays 0 = unlimited, and with
+	// ForceTimeout being a pure abstain an all-silent table would loop forever with its
+	// stakes locked in escrow. A non-positive value is a misconfiguration, not a request
+	// for an infinite game.
+	if cfg.MaxDays <= 0 {
+		cfg.MaxDays = DefaultMaxDays
+	}
 	if finish == nil {
 		finish = NoopFinishHook{}
 	}
@@ -99,7 +109,7 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 	if limits == nil {
 		limits = NoopLimits{}
 	}
-	return &Service{repo: repo, lock: lock, limits: limits, wallet: wallet, bcast: bcast, ver: ver, finish: finish, clock: clock, cfg: cfg, eng: mf.New()}
+	return &Service{repo: repo, lock: lock, limits: limits, wallet: wallet, bcast: bcast, ver: ver, finish: finish, clock: clock, cfg: cfg, eng: mf.NewWithMaxDays(cfg.MaxDays)}
 }
 
 func lockKey(id string) string { return "mafia:lock:" + id }
@@ -489,9 +499,30 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 			}
 		}
 	}
+	// NO WINNER must refund the table, not confiscate it.
+	//
+	// ComputeRewards only matches a seat that is alive AND on the winning team, so a
+	// finish with no such seat leaves `payouts` EMPTY — and settleMafia posts whatever
+	// is unpaid as floor-division "remainder" to platform_revenue. That would move
+	// every player's stake to the house on a drawn/degenerate table.
+	//
+	// Narrowly reachable today (checkWin ends on parity and finalByMajority always
+	// names a team), but this is the exact defect that WAS live in Monopoly, on the
+	// same code shape — one engine tweak or MaxDays change away from firing. Guard it
+	// here rather than relying on the engine never producing the state.
+	//
+	// No rake on a refund: the platform fee is for settling a result, and there is none.
+	platformFee := econ.PlatformFee
+	if len(payouts) == 0 && m.EntryFee > 0 {
+		platformFee = 0
+		for _, p := range m.Players {
+			payouts[p.AgentPublicID] += m.EntryFee
+		}
+	}
+
 	// A zero-fee practice table staked nothing, so there is nothing to settle.
 	if m.EntryFee > 0 {
-		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.PlatformFee, payouts); err != nil {
+		if err := s.wallet.SettleTable(ctx, m.PublicID, platformFee, payouts); err != nil {
 			return err
 		}
 	}

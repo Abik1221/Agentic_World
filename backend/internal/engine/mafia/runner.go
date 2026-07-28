@@ -26,10 +26,10 @@ var ErrNotPending = errors.New("mafia: seat has no pending action this phase")
 type Table struct {
 	engine   *Engine
 	seed     []byte
-	seats    []int            // sorted living-or-dead seat ids (e.g. 1..12)
-	agents   map[int]Agent    // bot/external agent per seat; humans are absent here
-	humans   map[int]bool     // seats with no agent (human-controlled)
-	defaults map[int]Agent    // a bot for EVERY seat, used to time out a human
+	seats    []int         // sorted living-or-dead seat ids (e.g. 1..12)
+	agents   map[int]Agent // bot/external agent per seat; humans are absent here
+	humans   map[int]bool  // seats with no agent (human-controlled)
+	defaults map[int]Agent // a bot for EVERY seat, used to time out a human
 	state    State
 	log      []Event
 	moves    []Move // every applied (seat, action), in order — the replay script
@@ -87,11 +87,11 @@ func NewTable(seats []int, seed []byte, agents map[int]Agent, maxDays int) *Tabl
 }
 
 // State / Log / Finished / Winner expose the match.
-func (t *Table) State() State    { return t.state }
-func (t *Table) Log() []Event    { return t.log }
-func (t *Table) Finished() bool  { return t.state.Finished }
-func (t *Table) Winner() string  { return t.state.Winner }
-func (t *Table) Seats() []int    { return append([]int(nil), t.seats...) }
+func (t *Table) State() State        { return t.state }
+func (t *Table) Log() []Event        { return t.log }
+func (t *Table) Finished() bool      { return t.state.Finished }
+func (t *Table) Winner() string      { return t.state.Winner }
+func (t *Table) Seats() []int        { return append([]int(nil), t.seats...) }
 func (t *Table) RoleOf(s int) string { return t.state.Roles[s] }
 
 // IsHuman reports whether a seat is human-controlled.

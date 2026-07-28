@@ -19,6 +19,11 @@ type fakeRepo struct {
 	outages   int
 	beats     int
 	lastGrace time.Time
+
+	extendCalls int
+	extendedTo  time.Time
+	extendRows  int64
+	extendErr   error
 }
 
 func (r *fakeRepo) LastBeat(context.Context) (time.Time, bool, error) {
@@ -34,6 +39,12 @@ func (r *fakeRepo) RecordOutage(_ context.Context, _, _, graceUntil time.Time, _
 	r.outages++
 	r.lastGrace = graceUntil
 	return nil
+}
+
+func (r *fakeRepo) ExtendActiveDeadlines(_ context.Context, until time.Time) (int64, error) {
+	r.extendCalls++
+	r.extendedTo = until
+	return r.extendRows, r.extendErr
 }
 
 func newAt(sec int64) *fakeClock { return &fakeClock{t: time.Unix(sec, 0).UTC()} }
@@ -72,6 +83,16 @@ func TestRealOutageOpensGrace(t *testing.T) {
 	}
 	if got := tr.GraceUntil(); !got.Equal(clk.t.Add(liveness.GraceAfter)) {
 		t.Fatalf("grace_until = %v, want now+%v", got, liveness.GraceAfter)
+	}
+	// Suppressing the sweep ALONE would only postpone the mass forfeit: the same lapsed
+	// matches reappear the instant grace ends. Deadlines must actually be re-armed, and
+	// past the window so they are not immediately expired again.
+	if repo.extendCalls != 1 {
+		t.Fatalf("ExtendActiveDeadlines called %d times, want 1 — forfeits would only be delayed", repo.extendCalls)
+	}
+	if !repo.extendedTo.After(tr.GraceUntil()) {
+		t.Fatalf("deadlines re-armed to %v, not past grace_until %v — they would expire on the next sweep",
+			repo.extendedTo, tr.GraceUntil())
 	}
 
 	// Grace must EXPIRE. A window that never closed would permanently disable

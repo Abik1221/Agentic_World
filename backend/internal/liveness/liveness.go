@@ -48,6 +48,10 @@ type Repo interface {
 	Beat(ctx context.Context, at time.Time) error
 	// RecordOutage appends an audit row for a detected gap.
 	RecordOutage(ctx context.Context, startedAt, detectedAt, graceUntil time.Time, gapSeconds int64) error
+	// ExtendActiveDeadlines pushes every ACTIVE match whose move deadline already
+	// lapsed out to `until`, returning how many were moved. All three games share the
+	// matches table, so one statement covers the platform.
+	ExtendActiveDeadlines(ctx context.Context, until time.Time) (int64, error)
 }
 
 // Clock is the time source (injectable so the grace logic is testable).
@@ -64,6 +68,10 @@ const (
 	// exceed a full move window so every seat gets a real chance to act, not just
 	// a technically-open deadline it could never have met.
 	GraceAfter = 3 * time.Minute
+	// deadlineHeadroom is added past the grace window when re-arming lapsed deadlines,
+	// so a match is not instantly expired again the moment grace ends. It must exceed
+	// the longest phase/move window in any game.
+	deadlineHeadroom = 2 * time.Minute
 	// MaxGrace caps the window however long the outage was: an operator should
 	// handle a multi-hour incident deliberately, not have the sweeper paused for
 	// hours by a heuristic.
@@ -134,6 +142,24 @@ func (t *Tracker) Detect(ctx context.Context, repo Repo) {
 	t.mu.Lock()
 	t.graceUntil = until
 	t.mu.Unlock()
+
+	// Suppressing the sweep is not enough on its own: the deadlines LAPSED during the
+	// outage, so once grace expires ListActiveExpired returns exactly the same matches
+	// and forfeits them all — the outcome this whole mechanism exists to prevent. Push
+	// them past the window so every seat gets a real move window after recovery.
+	//
+	// Deliberately only moves deadlines ALREADY in the past: a match whose clock is
+	// still running was never wronged and must keep its original deadline.
+	//
+	// Best-effort — a failed extension must not stop grace from opening, since a
+	// suppressed sweep is still strictly better than an immediate mass forfeit.
+	if moved, err := repo.ExtendActiveDeadlines(ctx, until.Add(deadlineHeadroom)); err != nil {
+		if t.log != nil {
+			t.log.Warn("could not extend lapsed match deadlines after outage", "err", err)
+		}
+	} else if t.log != nil && moved > 0 {
+		t.log.Warn("extended lapsed match deadlines after outage", "matches", moved)
+	}
 
 	if t.log != nil {
 		t.log.Warn("platform outage detected on boot; suppressing match forfeits",

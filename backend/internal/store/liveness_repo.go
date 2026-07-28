@@ -43,6 +43,26 @@ func (r *LivenessRepo) Beat(ctx context.Context, at time.Time) error {
 	return err
 }
 
+// ExtendActiveDeadlines re-arms every ACTIVE match whose move deadline already lapsed.
+//
+// Only past deadlines are touched: a match still inside its window was never wronged
+// by the outage and keeps its original clock. All three games share the matches table
+// (and the partial sweep index on round_deadline WHERE status='active'), so this single
+// statement covers the whole platform.
+func (r *LivenessRepo) ExtendActiveDeadlines(ctx context.Context, until time.Time) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches
+		    SET round_deadline = $1, updated_at = now()
+		  WHERE status = 'active'
+		    AND round_deadline IS NOT NULL
+		    AND round_deadline <= now()`,
+		until)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // RecordOutage appends the audit row for a detected gap.
 func (r *LivenessRepo) RecordOutage(ctx context.Context, startedAt, detectedAt, graceUntil time.Time, gapSeconds int64) error {
 	_, err := r.db.Exec(ctx,

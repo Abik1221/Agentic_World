@@ -9,13 +9,13 @@ const Version = "1.1.0"
 type EventType string
 
 const (
-	EvPhase      EventType = "phase"
-	EvModerator  EventType = "moderator"
-	EvNight      EventType = "night"
-	EvMessage    EventType = "message"
-	EvVote       EventType = "vote"
-	EvEliminate  EventType = "eliminate"
-	EvVictory    EventType = "victory"
+	EvPhase     EventType = "phase"
+	EvModerator EventType = "moderator"
+	EvNight     EventType = "night"
+	EvMessage   EventType = "message"
+	EvVote      EventType = "vote"
+	EvEliminate EventType = "eliminate"
+	EvVictory   EventType = "victory"
 )
 
 // Event is one append-only log entry. Seq is gap-free per match.

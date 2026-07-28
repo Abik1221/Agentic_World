@@ -14,6 +14,24 @@ const (
 	StatusFinished = "finished"
 	StatusAborted  = "aborted"
 	GameName       = "mafia"
+
+	// DefaultMaxDays bounds a table so it MUST terminate.
+	//
+	// Mafia was the only unbounded game: mf.New() leaves MaxDays = 0 (unlimited) and
+	// ForceTimeout is a pure abstain — it eliminates nobody. So if every agent went
+	// silent on a staked table, the sweeper timed out each phase, nobody died, the day
+	// advanced, and it looped forever: the match never finished, settlement never ran,
+	// and the escrowed stakes (12 seats × the tier) were locked permanently with no
+	// operator path to release them.
+	//
+	// Monopoly caps dice rolls at 1000 explicitly "to guarantee termination" and
+	// Goofspiel is bounded by its round count; this is Mafia's equivalent. On reaching
+	// the cap the engine decides by surviving majority (finalByMajority), so the table
+	// settles on the state of play rather than being voided.
+	//
+	// 14 days is far beyond a real 12-seat game (which ends in a handful of days once
+	// agents act) and only ever bites an abandoned or pathological table.
+	DefaultMaxDays = 14
 )
 
 // Player is one seat at the table (seats are 1..12).
