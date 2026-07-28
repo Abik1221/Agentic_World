@@ -36,6 +36,19 @@ WARN = "•"
 # uses the 2-player queue (/v1/queue). Same enqueue request shape, different endpoint.
 GROUP_GAMES = frozenset({"mafia", "monopoly"})
 
+
+def queue_path_for(game: str) -> str:
+    """Return the matchmaking endpoint for a game.
+
+    Goofspiel is 1v1 and uses the 2-player queue; Mafia and Monopoly are N-player and
+    pool into a full table via the group queue. The request shape is identical, only
+    the endpoint differs — which is exactly why this must not be inlined at each call
+    site: `pyyol play --ranked mafia` hardcoded /v1/queue, and that queue rejects
+    every game but Goofspiel, so ranked Mafia and Monopoly could not be entered at all
+    from the CLI.
+    """
+    return "/v1/group-queue" if game in GROUP_GAMES else "/v1/queue"
+
 # Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
 # connection credential (mirrors backend platform.PrefixKey).
 _AGENT_KEY_PREFIX = "sk_arena_"
@@ -757,9 +770,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Goofspiel is 1v1 (2-player queue); Mafia/Monopoly are N-player and pool into a
-    # full table via the group queue. Same request shape, different endpoint.
-    queue_path = "/v1/group-queue" if game in GROUP_GAMES else "/v1/queue"
+    queue_path = queue_path_for(game)
     st, resp = _api_post(f"{base}{queue_path}", token, body)
     if st not in (200, 202):
         code = str(resp.get("code") or resp.get("error") or "")
@@ -1702,7 +1713,7 @@ def _start_ranked(base, token, arena, args, console) -> None:
     body: Dict[str, object] = {"game": arena}
     tier = getattr(args, "tier", "") or "low"
     body["tier"] = tier
-    st, resp = _api_post(f"{base}/v1/queue", token, body)
+    st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
     if st in (200, 202):
         console.emit("match", f"queued for RANKED {arena} (tier {tier}) — you play when matched")
         return
