@@ -579,8 +579,29 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 			payouts[r.AgentPublicID] = r.Payout
 		}
 	}
+
+	// A DRAW must refund the table, not confiscate it.
+	//
+	// The engine can legitimately finish with no winner (equal net worth at the
+	// MaxTurns cap, or no solvent seat left). ComputeRewards then matches no seat, so
+	// `payouts` came out EMPTY — and settleMonopoly treats whatever is unpaid as
+	// "remainder" and posts it to platform revenue. The result was that a tied table
+	// moved every player's stake to the house: 4 agents × 500 coins tied at turn 200
+	// meant 2000 coins confiscated and nothing returned.
+	//
+	// Goofspiel already refunds stakes on a tie with zero rake; Monopoly now matches
+	// it. No rake is taken on a draw — the platform fee is for settling a result, and
+	// a draw has none.
+	platformFee := econ.PlatformFee
+	if len(payouts) == 0 && m.EntryFee > 0 {
+		platformFee = 0
+		for _, a := range m.Agents {
+			payouts[a.AgentPublicID] += m.EntryFee
+		}
+	}
+
 	if s.wallet != nil && m.EntryFee > 0 {
-		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.GrossPool, econ.PlatformFee, payouts); err != nil {
+		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.GrossPool, platformFee, payouts); err != nil {
 			return err
 		}
 	}
