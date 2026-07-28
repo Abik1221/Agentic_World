@@ -2344,3 +2344,73 @@ tbody tr:hover td {
     font-size: 1.3rem;
   }
 }
+
+/* ── Match timeline (swimlanes) ──────────────────────────────────────────────
+   One lane per agent on a shared time axis. Marks are positioned by percentage
+   of match duration, so the lane widths stay fluid and no layout maths depends
+   on a fixed pixel scale. */
+.mt-timeline {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.mt-lane {
+  display: grid;
+  grid-template-columns: minmax(96px, 168px) 1fr;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.mt-lane-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.mt-lane-track {
+  position: relative;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.mt-mark {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  /* Marks routinely overlap in a fast match; a ring keeps adjacent ones countable
+     instead of merging into one smear. */
+  box-shadow: 0 0 0 2px var(--panel-soft);
+  cursor: help;
+}
+
+/* The axis reuses the lane grid rather than guessing an offset, so it stays aligned
+   with the tracks as the label column flexes. Its first cell is empty on purpose. */
+.mt-axis {
+  display: grid;
+  grid-template-columns: minmax(96px, 168px) 1fr;
+  gap: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.mt-axis > span:first-child {
+  grid-column: 2;
+}
+
+.mt-axis > span:last-child {
+  grid-column: 2;
+  justify-self: end;
+  /* Both labels share cell 2; the first is start-aligned, this one end-aligned. */
+  grid-row: 1;
+}

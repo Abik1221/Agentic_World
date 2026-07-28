@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { fetchQuery } from "@/lib/pyyol-lens-api";
 import { ktoks, ms } from "@/lib/benchmark-format";
+import { MatchTimeline, type TimelineEntry } from "./MatchTimeline";
 
 // Per-move detail as emitted by the arena in the benchmark_recorded payload.
 type TokenUsage = {
@@ -31,6 +32,11 @@ type BenchmarkPayload = {
   result?: string;
   decision_log?: DecisionLogEntry[];
 };
+type MatchTimelineResponse = {
+  match_id: string;
+  agents: string[];
+  entries: TimelineEntry[];
+};
 type MatchDecisions = {
   match_id: string;
   agents: { agent_id: string; game: string; benchmark: BenchmarkPayload }[];
@@ -51,10 +57,16 @@ export default async function MatchDecisionsPage({
   const { matchId } = await params;
   const id = decodeURIComponent(matchId);
 
-  const data = await fetchQuery<MatchDecisions>(
-    `/v1/matches/${encodeURIComponent(id)}/decisions`,
-  );
+  // Two sources, deliberately. `decisions` is the end-of-match aggregate and carries
+  // totals the trail cannot know; `timeline` is the durable per-decision trail and
+  // survives a match that never settled. Fetched together so a match that crashed
+  // mid-way still renders something rather than an empty page.
+  const [data, timeline] = await Promise.all([
+    fetchQuery<MatchDecisions>(`/v1/matches/${encodeURIComponent(id)}/decisions`),
+    fetchQuery<MatchTimelineResponse>(`/v1/matches/${encodeURIComponent(id)}/timeline`),
+  ]);
   const agents = data?.agents ?? [];
+  const entries = timeline?.entries ?? [];
 
   return (
     <div className="page">
@@ -73,11 +85,13 @@ export default async function MatchDecisionsPage({
         </div>
       </section>
 
-      {agents.length === 0 && (
+      <MatchTimeline entries={entries} />
+
+      {agents.length === 0 && entries.length === 0 && (
         <section className="panel">
           <p className="empty-state">
-            No decision data for this match yet. Reasoning &amp; token usage appear once a
-            benchmarked match with a hosted agent completes and telemetry is enabled.
+            No events recorded for this match. Decisions appear as each move happens;
+            token totals and reliability rates appear once the match settles.
           </p>
         </section>
       )}
