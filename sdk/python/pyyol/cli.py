@@ -1004,6 +1004,92 @@ def _refresh_kwargs(creds) -> dict:
     return {"refresh_token": creds.refresh_token, "api_url": creds.url, "on_tokens": _persist}
 
 
+# --- forfeit guard --------------------------------------------------------------
+#
+# Quitting mid-match is a LOSS, not a pause. A staked table keeps running after the
+# agent goes away: the server plays a deterministic fallback move for the missing
+# seat each turn, so the match finishes and the absent agent loses on merit — its
+# entry fee goes to the winner (minus the platform fee), and nothing is refunded.
+#
+# That is the intended rule, but the SDK used to swallow Ctrl-C with a bare
+# "stopped.", so a developer could forfeit real coins with one keystroke and no idea
+# it had cost them anything. This asks first.
+
+
+def _live_staked_matches(api: str, token: str, agent_id: str) -> list:
+    """Best-effort: staked matches this agent is currently seated in.
+
+    Deliberately short-timeout and failure-tolerant — this runs on the way out, so
+    it must never hang the exit or raise. An empty list means "nothing to warn
+    about, as far as we can tell".
+    """
+    if not (api and token and agent_id):
+        return []
+    try:
+        data = _api_get(
+            f"{api.rstrip('/')}/v1/agent/status?agent_id={urllib.parse.quote(agent_id)}",
+            token,
+        )
+    except Exception:  # noqa: BLE001 - never block the exit on a status call
+        return []
+    if not isinstance(data, dict):
+        return []
+    out = []
+    for m in data.get("active_matches") or []:
+        if not isinstance(m, dict):
+            continue
+        # Only a STAKED table can cost money; practice/sandbox tables are free, so
+        # interrupting those needs no warning at all.
+        fee = m.get("entry_fee") or m.get("bid") or 0
+        try:
+            fee = int(fee)
+        except (TypeError, ValueError):
+            fee = 0
+        if fee > 0:
+            out.append({"match_id": m.get("match_id") or m.get("id") or "?", "entry_fee": fee})
+    return out
+
+
+def _confirm_forfeit(matches: list) -> bool:
+    """Show what quitting costs and require an explicit confirmation.
+
+    Returns True when the developer confirms the forfeit. On a non-interactive
+    stdin (CI, piped, nohup) we cannot ask, so we print the warning and allow the
+    exit rather than hanging a pipeline forever.
+    """
+    total = sum(m["entry_fee"] for m in matches)
+    plural = "match" if len(matches) == 1 else "matches"
+    print("", file=sys.stderr)
+    print(
+        f"{BAD} you are still playing {len(matches)} staked {plural}.",
+        file=sys.stderr,
+    )
+    for m in matches:
+        print(f"    · {m['match_id']} — {m['entry_fee']} coins staked", file=sys.stderr)
+    print("", file=sys.stderr)
+    print(
+        "  Quitting does NOT pause or cancel the game. The table keeps playing and\n"
+        "  your seat forfeits every remaining turn, so you LOSE the match and your\n"
+        f"  stake ({total} coins) goes to the winner. Nothing is refunded.\n"
+        "  Leave this running until the match ends.",
+        file=sys.stderr,
+    )
+    print("", file=sys.stderr)
+    if not sys.stdin.isatty():
+        print(
+            "  (non-interactive shell — exiting anyway; the forfeit above will stand)",
+            file=sys.stderr,
+        )
+        return True
+    try:
+        answer = input("  Type 'forfeit' to quit and take the loss, or Enter to keep playing: ")
+    except (EOFError, KeyboardInterrupt):
+        # A second Ctrl-C is an unambiguous "get me out" — honour it.
+        print("", file=sys.stderr)
+        return True
+    return answer.strip().lower() == "forfeit"
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Load the developer's agent object and connect it to the platform over the
     outbound WebSocket. This is the local-runtime path: no inbound endpoint."""
@@ -1056,7 +1142,22 @@ def cmd_run(args: argparse.Namespace) -> int:
             **({} if _using_key else _refresh_kwargs(creds)),
         )
     except KeyboardInterrupt:
-        print("\nstopped.")
+        # Ctrl-C during a staked match is a forfeit, so confirm before honouring it.
+        live = _live_staked_matches(url, token, agent_id)
+        if live and not _confirm_forfeit(live):
+            print("  still playing — leave this window open until the match ends.", file=sys.stderr)
+            try:
+                agent.run(
+                    url=url,
+                    agent_id=agent_id,
+                    token=token,
+                    console=console,
+                    **({} if _using_key else _refresh_kwargs(creds)),
+                )
+            except KeyboardInterrupt:
+                print("\nstopped (match forfeited).", file=sys.stderr)
+            return 0
+        print("\nstopped." if not live else "\nstopped (match forfeited).")
     return 0
 
 
