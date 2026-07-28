@@ -10,6 +10,7 @@ import (
 
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/replay"
@@ -48,7 +49,14 @@ type Service struct {
 	driver *driver       // nil ⇒ paired agents self-drive (auto-drive disabled)
 	clock  platform.Clock
 	cfg    Config
+	// liveness suppresses forfeits during the grace window after a detected platform
+	// outage. Nil is valid and means "no grace" — see SweepExpired.
+	liveness *liveness.Tracker
 }
+
+// SetLiveness installs the post-outage grace tracker (called once at wiring time).
+// Without it the service forfeits exactly as before, which is the safe default.
+func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
 
 // StyleRecorder accumulates per-agent behavioral style aggregates at match finish
 // (read-only descriptive metrics; never affects play or money). Optional.
@@ -820,6 +828,16 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 
 // SweepExpired processes all matches whose move window has lapsed.
 func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
+	// Post-outage grace: a missed turn forfeits the seat's stake, which is right when
+	// an agent quits but wrong when WE were the ones unreachable. During the grace
+	// window opened after a detected platform outage we skip the sweep entirely, so
+	// deadlines that lapsed while nobody could play are not converted into losses.
+	// The matches stay active and are decided on play once agents reconnect.
+	//
+	// Nil tracker (feature unwired) or no grace ⇒ unchanged behaviour.
+	if s.liveness.InGrace() {
+		return 0, nil
+	}
 	ids, err := s.repo.ListActiveExpired(ctx, s.clock.Now(), limit)
 	if err != nil {
 		return 0, err

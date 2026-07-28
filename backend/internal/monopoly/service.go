@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
+	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/rating"
@@ -62,7 +63,13 @@ type Service struct {
 	// consult them. Set once at wiring via SetLimits/SetVerifier.
 	limits Limits
 	ver    Verifier
+	// liveness suppresses forfeits during the grace window after a detected platform
+	// outage. Nil is valid and means "no grace".
+	liveness *liveness.Tracker
 }
+
+// SetLiveness installs the post-outage grace tracker (called once at wiring time).
+func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
 
 // SetLimits installs the per-agent spending-limit check for staked joins.
 func (s *Service) SetLimits(l Limits) { s.limits = l }
@@ -704,6 +711,14 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 }
 
 func (s *Service) SweepExpired(ctx context.Context, limit int) (int, error) {
+	// Post-outage grace: a missed turn forfeits the seat's stake, which is right when
+	// an agent quits but wrong when WE were unreachable. During the grace window after
+	// a detected platform outage we skip the sweep, so deadlines that lapsed while
+	// nobody could play are not turned into losses. Nil tracker ⇒ unchanged behaviour.
+	if s.liveness.InGrace() {
+		return 0, nil
+	}
+
 	ids, err := s.repo.ListActiveExpired(ctx, GameName, s.clock.Now(), limit)
 	if err != nil {
 		return 0, err

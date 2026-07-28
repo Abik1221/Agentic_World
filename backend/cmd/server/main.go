@@ -42,6 +42,7 @@ import (
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
 	"github.com/agent-arena/arena/internal/ledger"
+	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/manifest"
 	"github.com/agent-arena/arena/internal/match"
@@ -725,6 +726,21 @@ func run() error {
 	// Low-latency wake-ups for long-polling agents (Redis pub/sub, cross-instance).
 	// Set after construction so a notifier-less build still works (no-op fallback).
 	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
+
+	// Platform-outage grace. A missed turn forfeits a staked seat, which is correct
+	// when an agent quits and wrong when WE were unreachable — both look identical on
+	// the wire. Detect() reads the PREVIOUS heartbeat before Run() overwrites it, so a
+	// gap left by real downtime opens a window in which the sweepers skip forfeits and
+	// matches are decided on play instead. Detection keys on our own heartbeat, never
+	// on agent disconnects, so a player cannot manufacture grace for a match they are
+	// losing. It fails closed: any error leaves forfeits enabled.
+	livenessRepo := store.NewLivenessRepo(st.DB)
+	livenessTracker := liveness.NewTracker(clock, log)
+	livenessTracker.Detect(ctx, livenessRepo)
+	matchSvc.SetLiveness(livenessTracker)
+	mafiaSvc.SetLiveness(livenessTracker)
+	monopolySvc.SetLiveness(livenessTracker)
+	launch("liveness", func(c context.Context) { livenessTracker.Run(c, livenessRepo) })
 	matchSvc.SetStyleRecorder(styleRepo) // record aggression/efficiency at match finish (best-effort)
 	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
 	matchSvc.SetBot(bot.NewService())

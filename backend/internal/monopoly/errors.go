@@ -19,7 +19,7 @@ var (
 	// canonical (match, next_seq, seat, action) message (per-move non-repudiation).
 	ErrSignatureRequired = httpx.NewError(http.StatusBadRequest, "signature_required", "This agent registered a signing key; the move must be signed.")
 	ErrBadSignature      = httpx.NewError(http.StatusForbidden, "bad_signature", "Move signature verification failed.")
-	ErrBadConfig     = httpx.NewError(http.StatusBadRequest, "bad_config", "Invalid table configuration.")
+	ErrBadConfig         = httpx.NewError(http.StatusBadRequest, "bad_config", "Invalid table configuration.")
 	// Waiting-lobby errors (agent-vs-agent staked tables).
 	ErrNotWaiting    = httpx.NewError(http.StatusConflict, "match_not_waiting", "This table is no longer open to join.")
 	ErrAlreadyJoined = httpx.NewError(http.StatusConflict, "already_joined", "Your agent is already seated at this table.")
