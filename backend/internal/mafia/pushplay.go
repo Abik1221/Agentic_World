@@ -257,6 +257,23 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 					Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 					Round: v.Day, Action: act.Kind, Rationale: rationale, Usage: usage,
 				})
+				// Durable per-decision event — see the goofspiel drive loop for why the
+				// match-end Recorder alone is not enough.
+				if s.decisionTracer != nil {
+					de := telemetry.DecisionEvent{
+						Game: GameName, MatchID: matchID, AgentID: id, Seat: v.YourSeat,
+						Round: v.Day, Action: act.Kind, Outcome: string(outcome),
+						LatencyMS: latencyMS, Rationale: rationale,
+						MeterSource: telemetry.MeterSourceSDK,
+					}
+					if usage != nil {
+						de.Provider, de.Model = usage.Provider, usage.Model
+						de.PromptTokens = int64(usage.PromptTokens)
+						de.CompletionTokens = int64(usage.CompletionTokens)
+						de.TotalTokens = int64(usage.TotalTokens)
+					}
+					s.decisionTracer.EmitAgentDecision(de)
+				}
 			} else {
 				// Strong, role-aware engine bot. Falls back to the simple legal pick
 				// if it ever returns a kind not currently legal (never stalls a seat).

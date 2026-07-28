@@ -240,6 +240,23 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			Seat: v.YourSeat, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
 			Round: round, Action: act.Kind, Rationale: rationale, Usage: usage,
 		})
+		// Durable per-decision event — see the goofspiel drive loop for why the
+		// match-end Recorder alone is not enough.
+		if s.decisionTracer != nil {
+			de := telemetry.DecisionEvent{
+				Game: GameName, MatchID: matchID, AgentID: agentID, Seat: v.YourSeat,
+				Round: round, Action: act.Kind, Outcome: string(outcome),
+				LatencyMS: latencyMS, Rationale: rationale,
+				MeterSource: telemetry.MeterSourceSDK,
+			}
+			if usage != nil {
+				de.Provider, de.Model = usage.Provider, usage.Model
+				de.PromptTokens = int64(usage.PromptTokens)
+				de.CompletionTokens = int64(usage.CompletionTokens)
+				de.TotalTokens = int64(usage.TotalTokens)
+			}
+			s.decisionTracer.EmitAgentDecision(de)
+		}
 		// Publish the agent's reasoning as table talk BEFORE the move lands, so
 		// spectators (and the other seats, which receive the transcript on their
 		// next view) watch it argue the deal rather than a silent action appearing.

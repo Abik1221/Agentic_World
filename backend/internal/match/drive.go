@@ -247,6 +247,25 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 				Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 				Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
 			})
+			// Emit the decision NOW, not at match end. The Recorder above is an
+			// in-process buffer flushed once when the match finishes and capped at 256
+			// moves, so an arena crash lost every decision in the match and a long game
+			// silently stopped recording. This event is durable on its own.
+			if s.decisionTracer != nil {
+				de := telemetry.DecisionEvent{
+					Game: "goofspiel", MatchID: matchID, AgentID: id, Seat: seat,
+					Round: v.Round, Action: strconv.Itoa(card), Outcome: string(outcome),
+					LatencyMS: latencyMS, Rationale: rationale,
+					MeterSource: telemetry.MeterSourceSDK,
+				}
+				if usage != nil {
+					de.Provider, de.Model = usage.Provider, usage.Model
+					de.PromptTokens = int64(usage.PromptTokens)
+					de.CompletionTokens = int64(usage.CompletionTokens)
+					de.TotalTokens = int64(usage.TotalTokens)
+				}
+				s.decisionTracer.EmitAgentDecision(de)
+			}
 			// Publish the agent's reasoning as table talk BEFORE its card lands, so
 			// spectators (and the opponent, who receives the transcript on its next
 			// view) see it argue its move rather than a silent number appearing.

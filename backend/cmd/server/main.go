@@ -751,6 +751,12 @@ func run() error {
 	matchSvc.SetChatTracer(lens)
 	mafiaSvc.SetChatTracer(lens)
 	monopolySvc.SetChatTracer(lens)
+	// Per-decision events, emitted as each turn resolves. The benchmark Recorder is an
+	// in-process buffer flushed once at match end and capped at 256 moves, so a crash
+	// lost every decision in the match and a long game silently stopped recording.
+	matchSvc.SetDecisionTracer(lens)
+	mafiaSvc.SetDecisionTracer(lens)
+	monopolySvc.SetDecisionTracer(lens)
 	matchSvc.SetLiveness(livenessTracker)
 	mafiaSvc.SetLiveness(livenessTracker)
 	monopolySvc.SetLiveness(livenessTracker)

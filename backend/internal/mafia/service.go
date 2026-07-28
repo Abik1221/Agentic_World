@@ -60,6 +60,8 @@ type Service struct {
 	liveness *liveness.Tracker
 	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
 	chatTracer ChatTracer
+	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
+	decisionTracer DecisionTracer
 }
 
 // ChatTracer records agent table talk to the observability pipeline. Satisfied by
@@ -71,6 +73,14 @@ type ChatTracer interface {
 
 // SetChatTracer installs the chat tracer (called once at wiring time).
 func (s *Service) SetChatTracer(t ChatTracer) { s.chatTracer = t }
+
+// DecisionTracer records one resolved agent turn. Satisfied by *telemetry.Client.
+type DecisionTracer interface {
+	EmitAgentDecision(ev telemetry.DecisionEvent)
+}
+
+// SetDecisionTracer installs the per-decision tracer (called once at wiring time).
+func (s *Service) SetDecisionTracer(t DecisionTracer) { s.decisionTracer = t }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
