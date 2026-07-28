@@ -20,14 +20,14 @@ type EconomySnapshot struct {
 
 // RewardRow is one agent's settlement line.
 type RewardRow struct {
-	Seat           int    `json:"seat"`
-	AgentPublicID  string `json:"agent_id,omitempty"`
-	Team           string `json:"team"`
-	Alive          bool   `json:"alive"`
-	OnWinningTeam  bool   `json:"on_winning_team"`
-	Eligible       bool   `json:"eligible"`
-	Payout         int64  `json:"payout"`
-	Reason         string `json:"reason"`
+	Seat          int    `json:"seat"`
+	AgentPublicID string `json:"agent_id,omitempty"`
+	Team          string `json:"team"`
+	Alive         bool   `json:"alive"`
+	OnWinningTeam bool   `json:"on_winning_team"`
+	Eligible      bool   `json:"eligible"`
+	Payout        int64  `json:"payout"`
+	Reason        string `json:"reason"`
 }
 
 // ComputeEconomy mirrors computeEconomy() in mafiaEconomy.ts.

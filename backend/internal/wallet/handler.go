@@ -15,12 +15,17 @@ type Handler struct {
 	svc       *Service
 	authn     *auth.Authenticator
 	allowMint bool
+	admins    map[string]bool
 }
 
 // NewHandler builds the wallet handler. allowMint gates POST /v1/admin/mint; it
 // must be false in prod/staging (Stage 5 supplies real top-ups).
-func NewHandler(svc *Service, authn *auth.Authenticator, allowMint bool) *Handler {
-	return &Handler{svc: svc, authn: authn, allowMint: allowMint}
+func NewHandler(svc *Service, authn *auth.Authenticator, allowMint bool, adminUserIDs []string) *Handler {
+	admins := make(map[string]bool, len(adminUserIDs))
+	for _, id := range adminUserIDs {
+		admins[id] = true
+	}
+	return &Handler{svc: svc, authn: authn, allowMint: allowMint, admins: admins}
 }
 
 // Register mounts the wallet routes (all require a valid credential).
@@ -33,7 +38,12 @@ func (h *Handler) Register(r chi.Router) {
 		r.Get("/v1/user/wallet/history", h.userHistory)
 		r.Post("/v1/wallet/allocate", h.allocate)
 		if h.allowMint {
-			r.Post("/v1/admin/mint", h.mint)
+			// Admin-enforced at the ROUTER, not just by the allowMint flag. mint only
+			// checked that the caller owned the target agent, so with ALLOW_MINT on
+			// (its default outside prod/staging) every registered beta tester could
+			// mint themselves coins — poisoning the leaderboard, ELO, benchmark and the
+			// withdrawal queue this release is meant to test.
+			r.With(auth.RequirePlatformOrAdmin(h.admins)).Post("/v1/admin/mint", h.mint)
 		}
 	})
 }

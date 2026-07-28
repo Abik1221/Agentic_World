@@ -49,7 +49,22 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 	if sub == "" {
 		return GoogleLoginResult{}, errInvalid("google subject is required")
 	}
-	normEmail, _ := normalizeEmail(email) // best-effort; Google emails are already valid
+	// Do NOT discard the validity flag. When normalization rejects the address
+	// (missing scope, dot-less domain, anything mail.ParseAddress rewrites) the old
+	// code silently stored email = NULL. Postgres allows unlimited NULLs in a UNIQUE
+	// column, so that row was invisible to every email lookup — permanently
+	// unmergeable, and the human's only recovery was to sign up again, producing the
+	// duplicate accounts we set out to eliminate.
+	//
+	// A blank email is still allowed through (Google may legitimately withhold it, and
+	// `sub` is the real link key) — but it is now a deliberate, commented outcome
+	// rather than a swallowed parse failure.
+	normEmail := ""
+	if e, ok := normalizeEmail(email); ok {
+		normEmail = e
+	}
+
+	agentName := googleAgentName(name, normEmail)
 
 	key, err := generateKey(s.pepper)
 	if err != nil {
@@ -60,8 +75,11 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 		Email:         normEmail,
 		UserPublicID:  platform.NewID(platform.PrefixUser),
 		AgentPublicID: platform.NewID(platform.PrefixAgent),
-		AgentName:     googleAgentName(name, normEmail),
-		AgentSlug:     slugify(googleAgentName(name, normEmail)),
+		// Derive the name ONCE. It was previously called twice, and its short-name
+		// fallback is random, so name and slug could be generated from two different
+		// values — persisting a slug that did not correspond to the stored name.
+		AgentName: agentName,
+		AgentSlug: slugify(agentName),
 		KeyPrefix:     key.Prefix,
 		KeyHash:       key.Hash,
 		Limits:        DefaultLimits(),

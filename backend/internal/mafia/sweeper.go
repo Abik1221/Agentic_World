@@ -8,8 +8,8 @@ import (
 
 // Sweeper drives phase timeouts for active Mafia tables.
 type Sweeper struct {
-	svc  *Service
-	log  *slog.Logger
+	svc   *Service
+	log   *slog.Logger
 	every time.Duration
 }
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
 )
@@ -12,11 +13,17 @@ import (
 // force-roll endpoint (off in prod) used to exercise the season champion surface.
 type Handler struct {
 	svc          *Service
+	authn        *auth.Authenticator
 	allowDevRoll bool
+	admins       map[string]bool
 }
 
-func NewHandler(svc *Service, allowDevRoll bool) *Handler {
-	return &Handler{svc: svc, allowDevRoll: allowDevRoll}
+func NewHandler(svc *Service, authn *auth.Authenticator, allowDevRoll bool, adminUserIDs []string) *Handler {
+	admins := make(map[string]bool, len(adminUserIDs))
+	for _, id := range adminUserIDs {
+		admins[id] = true
+	}
+	return &Handler{svc: svc, authn: authn, allowDevRoll: allowDevRoll, admins: admins}
 }
 
 func (h *Handler) Register(r chi.Router) {
@@ -26,7 +33,15 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/benchmark/models", h.modelBenchmark)
 	r.Get("/v1/rankings/standing", h.standing)
 	if h.allowDevRoll {
-		r.Post("/v1/admin/dev/roll-season", h.devRollSeason)
+		// Force-rolling the season was mounted on the PUBLIC router with no auth at
+		// all: any anonymous caller could finalize the season and stamp a champion,
+		// destroying the leaderboard integrity this release is meant to validate.
+		// Now authenticated AND admin-only, like every other /v1/admin route.
+		r.Group(func(r chi.Router) {
+			r.Use(h.authn.Middleware)
+			r.With(auth.RequirePlatformOrAdmin(h.admins)).
+				Post("/v1/admin/dev/roll-season", h.devRollSeason)
+		})
 	}
 }
 

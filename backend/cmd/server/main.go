@@ -426,7 +426,7 @@ func run() error {
 	ledgerSvc := ledger.New(store.NewLedgerRepo(st.DB), metrics.Registry())
 	walletSvc := wallet.New(ledgerSvc, store.NewWalletRepo(st.DB), clock,
 		wallet.Config{SessionWindow: cfg.SessionWindow, CoinCents: cfg.CoinCents}, metrics.Registry())
-	walletHandler := wallet.NewHandler(walletSvc, authn, cfg.AllowMint)
+	walletHandler := wallet.NewHandler(walletSvc, authn, cfg.AllowMint, cfg.AdminUserIDs)
 
 	// Super Admin wallet controls (P4): runtime settings (deposit/withdrawal
 	// switches, maintenance, bounds) + risk actions (freeze, manual adjust). Also
@@ -487,7 +487,7 @@ func run() error {
 	// match id) and powers the leaderboard + agent profiles + /v1/agent/stats.
 	ratingSvc := rating.New(store.NewRatingRepo(st.DB), clock,
 		rating.Config{SeasonLength: cfg.SeasonLength}, metrics.Registry())
-	ratingHandler := rating.NewHandler(ratingSvc, cfg.AllowMint)                           // dev-only season force-roll gated with mint
+	ratingHandler := rating.NewHandler(ratingSvc, authn, cfg.AllowMint, cfg.AdminUserIDs)  // dev-only season force-roll gated with mint
 	launch("season-roller", rating.NewSeasonRoller(ratingSvc, log, time.Minute).Run)       // finalise ended seasons + emit season.rolled
 	launch("rank-snapshotter", rating.NewRankSnapshotter(ratingSvc, log, 6*time.Hour).Run) // daily rank snapshot → leaderboard trend
 	styleRepo := store.NewStyleRepo(st.DB)                                                 // read-only behavioral style aggregates (goofspiel)

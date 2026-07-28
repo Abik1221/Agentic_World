@@ -1,9 +1,10 @@
 // Package mafia streams a social-deduction match to spectators over SSE. It is a
-// second game alongside Goofspiel, played entirely by AI agents while humans
-// watch. Until a real LLM-driven engine exists, a per-match Director replays a
-// canonical scripted match on a loop, so the spectator console connects to a
-// genuine live stream (Last-Event-ID resume, mid-match backlog, heartbeats) with
-// the exact event contract a real engine will later emit.
+// second game alongside Goofspiel, played entirely by AI agents while humans watch.
+//
+// Every frame relayed here comes from a real engine match. An earlier version seeded
+// an always-on scripted table so the arena never looked empty, and served it from the
+// PUBLIC live list as if it were a live game — that is gone. An empty arena now
+// reports itself honestly.
 //
 // Fan-out mirrors the spectator Hub: non-blocking and drop-slow, so a stalled
 // watcher can never delay the match clock.
@@ -16,7 +17,6 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
-	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -57,26 +57,23 @@ type EventBacklog interface {
 	LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mf.Event, error)
 }
 
-// Hub fans match events out to per-match subscriber sets and owns the Directors
-// that generate those events. Safe for concurrent use.
+// Hub fans match events out to per-match subscriber sets. Safe for concurrent use.
 type Hub struct {
 	mu          sync.RWMutex
 	subs        map[string]map[*sub]struct{}
-	directors   map[string]*director
 	realMatches map[string]struct{}
 
-	eventLog EventBacklog
-	log     *slog.Logger
-	m       *metrics
-	bufSize int
+	eventLog    EventBacklog
+	log         *slog.Logger
+	m           *metrics
+	bufSize     int
 	maxPerMatch int
 }
 
-// NewHub builds the broadcast hub and seeds the always-on demo table.
+// NewHub builds the broadcast hub.
 func NewHub(backlog EventBacklog, log *slog.Logger, reg *prometheus.Registry) *Hub {
 	h := &Hub{
 		subs:        map[string]map[*sub]struct{}{},
-		directors:   map[string]*director{},
 		realMatches: map[string]struct{}{},
 		eventLog:    backlog,
 		log:         log,
@@ -84,8 +81,6 @@ func NewHub(backlog EventBacklog, log *slog.Logger, reg *prometheus.Registry) *H
 		bufSize:     64,
 		maxPerMatch: 1000,
 	}
-	h.directors[DemoMatchID] = newDirector(DemoMatchID, "Mafia AI Arena · Table 01", demoScript, h,
-		2200*time.Millisecond, 7*time.Second)
 	return h
 }
 
@@ -180,18 +175,14 @@ func (h *Hub) Broadcast(matchID string, events []mf.Event) {
 	}
 }
 
-// Run starts every seeded Director and blocks until the context is cancelled.
-// Intended to be launched in its own goroutine from the composition root.
+// Run blocks until the context is cancelled.
+//
+// It used to start scripted "director" goroutines that replayed a hand-written
+// match on a loop so the arena always looked busy. That table was served from the
+// PUBLIC live list as though it were a real game, so it is gone; the hub now only
+// ever relays genuine engine events. Kept as a no-op lifecycle hook so the
+// composition root's launch() wiring is unchanged.
 func (h *Hub) Run(ctx context.Context) {
-	h.mu.RLock()
-	ds := make([]*director, 0, len(h.directors))
-	for _, d := range h.directors {
-		ds = append(ds, d)
-	}
-	h.mu.RUnlock()
-	for _, d := range ds {
-		go d.loop(ctx)
-	}
 	<-ctx.Done()
 }
 
@@ -222,10 +213,8 @@ func (h *Hub) broadcast(matchID string, fr frame) {
 func (h *Hub) Subscribe(matchID string) (*sub, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.directors[matchID] == nil {
-		if _, ok := h.realMatches[matchID]; !ok {
-			return nil, httpx.ErrNotFound
-		}
+	if _, ok := h.realMatches[matchID]; !ok {
+		return nil, httpx.ErrNotFound
 	}
 	set := h.subs[matchID]
 	if set == nil {
@@ -255,14 +244,8 @@ func (h *Hub) Unsubscribe(matchID string, s *sub) {
 	s.kill()
 }
 
-// backlog returns frames after lastSeq from the demo director or persisted log.
+// backlog returns frames after lastSeq from the persisted event log.
 func (h *Hub) backlog(ctx context.Context, matchID string, lastSeq int) []frame {
-	h.mu.RLock()
-	d := h.directors[matchID]
-	h.mu.RUnlock()
-	if d != nil {
-		return d.backlog(lastSeq)
-	}
 	if h.eventLog == nil {
 		return nil
 	}
@@ -286,30 +269,14 @@ func (h *Hub) watchers(matchID string) int {
 	return len(h.subs[matchID])
 }
 
-// liveMatches returns demo tables plus optional DB rows supplied by the caller.
+// liveMatches returns the real, DB-backed live tables supplied by the caller.
+//
+// It previously prepended scripted demo tables, which is why a signed-out visitor
+// always saw a "live" Mafia match that did not exist and why the Live Now counter
+// was never zero. Only genuine matches are listed now; an empty arena reports
+// itself honestly.
 func (h *Hub) liveMatches(extra []LiveMatch) []LiveMatch {
-	h.mu.RLock()
-	ds := make([]*director, 0, len(h.directors))
-	for _, d := range h.directors {
-		ds = append(ds, d)
-	}
-	h.mu.RUnlock()
-
-	out := make([]LiveMatch, 0, len(ds)+len(extra))
-	for _, d := range ds {
-		st := d.status()
-		out = append(out, LiveMatch{
-			MatchID:  d.matchID,
-			Title:    d.title,
-			Agents:   rosterNames,
-			Players:  rosterSize,
-			Alive:    st.alive,
-			Day:      st.day,
-			Phase:    st.phase,
-			Winner:   st.winner,
-			Watchers: h.watchers(d.matchID),
-		})
-	}
+	out := make([]LiveMatch, 0, len(extra))
 	for i := range extra {
 		extra[i].Watchers = h.watchers(extra[i].MatchID)
 		out = append(out, extra[i])

@@ -88,8 +88,8 @@ func (f *fakeRepo) LoadEvents(context.Context, string, int) ([]mf.Event, error) 
 func (f *fakeRepo) LoadEventsTimed(context.Context, string) ([]TimedEvent, error) {
 	return nil, nil
 }
-func (f *fakeRepo) LiveMatches(context.Context) ([]LiveMatch, error)            { return nil, nil }
-func (f *fakeRepo) CancelWaiting(context.Context, string, string) error         { return nil }
+func (f *fakeRepo) LiveMatches(context.Context) ([]LiveMatch, error)    { return nil, nil }
+func (f *fakeRepo) CancelWaiting(context.Context, string, string) error { return nil }
 func (f *fakeRepo) ExpireStaleWaiting(_ context.Context, cutoff time.Time, limit int) (int, error) {
 	f.expireCutoff, f.expireLimit = cutoff, limit
 	return f.expireN, nil

@@ -243,7 +243,20 @@ func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "invalid_google_token", "Google sign-in verification failed."))
 		return
 	}
-	res, err := h.svc.SignUpOrLoginGoogle(r.Context(), claims.Sub, claims.Email, claims.Name)
+	// An UNVERIFIED Google email must never be trusted for identity.
+	//
+	// UpsertGoogleAccount links google_sub onto whatever local account matches the
+	// email and returns a session for it. Passing an unverified claim through
+	// therefore meant anyone who could mint a Google identity asserting someone
+	// else's address could take over that account. `email_verified` was already
+	// parsed off the ID token and simply never read; we now require it, and drop the
+	// address (rather than the login) when it is unverified, so the user still gets
+	// an account keyed on the immutable `sub` — just no automatic email linking.
+	email := claims.Email
+	if !claims.EmailVerified {
+		email = ""
+	}
+	res, err := h.svc.SignUpOrLoginGoogle(r.Context(), claims.Sub, email, claims.Name)
 	if err != nil {
 		httpx.Error(w, err)
 		return
