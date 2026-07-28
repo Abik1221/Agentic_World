@@ -328,10 +328,16 @@ func run() error {
 	})
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
-	// Benchmark agent metadata: resolve each agent's active manifest at match time
-	// so the benchmark fact carries trusted, server-side version + declared model
-	// provider/model (for version-diff and provider benchmarks). Telemetry only.
-	if lens.Enabled() {
+	// Benchmark agent metadata: resolve each agent's active manifest at match time so
+	// the benchmark fact carries trusted, server-side version + declared model
+	// provider/model.
+	//
+	// NOT gated on Lens. This used to sit behind `if lens.Enabled()`, but the durable
+	// benchmark fact is written to the outbox unconditionally — so with telemetry off,
+	// agent_version/provider/model were permanently BLANK in the Postgres rows that
+	// feed the P-Index Intelligence dimension. An observability switch must never
+	// silently corrupt product data.
+	{
 		benchMeta = func(ctx context.Context, agentPublicID string) benchmark.AgentMeta {
 			m, err := manifestSvc.PublicActive(ctx, agentPublicID)
 			if err != nil {

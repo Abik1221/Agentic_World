@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -9,6 +10,29 @@ import (
 // EmitEvent path so instrumentation reads as `ctx, done := em.StartSpan(...); ...
 // done(err)`. Trace/parent linkage flows through context.Context (Go has no
 // async-local storage), producing the nested waterfall in the Pyyol Lens UI.
+
+// GameFromMatchID derives the arena (game) from a match id's prefix.
+//
+// Lens keys per-agent cost on (actor_id, session_id), where session_id is the game.
+// The gateway only receives X-Pyyol-Match, so it emitted verified cost with an EMPTY
+// session_id — which never matched the leaderboard's agent+game join key, and was
+// excluded outright once a ?game= filter was applied. Net effect: the verified tier,
+// the entire point of gateway metering, contributed $0 to every cost figure.
+//
+// Match ids are minted with a game prefix (platform.PrefixMatch/Mafia/Monopoly), so
+// the game is recoverable here without adding a header or changing the SDK.
+func GameFromMatchID(matchID string) string {
+	switch {
+	case strings.HasPrefix(matchID, "mf_"):
+		return "mafia"
+	case strings.HasPrefix(matchID, "mp_"):
+		return "monopoly"
+	case strings.HasPrefix(matchID, "m_"):
+		return "goofspiel"
+	default:
+		return ""
+	}
+}
 
 // MatchTraceID derives the stable trace id for a match so every producer of that
 // match's telemetry — the domain-event bridge (match.started/finished) and the

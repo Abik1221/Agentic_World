@@ -231,13 +231,16 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 	}
 	trace := telemetry.MatchTraceID(match)
 	p.em.EmitEvent(telemetry.Event{
-		TraceID:          trace,
-		EventType:        EventModelCallCompleted,
-		Status:           "ok",
-		StepName:         "gateway.model_call",
-		SpanType:         "model_call",
-		Operation:        "model_call",
-		ActorID:          agentID,
+		TraceID:   trace,
+		EventType: EventModelCallCompleted,
+		Status:    "ok",
+		StepName:  "gateway.model_call",
+		SpanType:  "model_call",
+		Operation: "model_call",
+		ActorID:   agentID,
+		// session_id = the arena. Without it this event never matched the leaderboard's
+		// (agent, game) join key, so verified gateway cost silently contributed $0.
+		SessionID:        telemetry.GameFromMatchID(match),
 		RunID:            match,
 		Provider:         provider,
 		Model:            u.Model,
