@@ -563,6 +563,15 @@ func run() error {
 	// Notification writer shared by the deposit + withdrawal flows (idempotent).
 	notifier := notifierAdapter{socialRepo}
 
+	// The live platform commission, read fresh for each new match from the config
+	// bus. Until now this value was published by the Super Admin, seeded into the
+	// snapshot, and read by NOTHING: Goofspiel used RAKE_PCT (5), Mafia and Monopoly
+	// were hardcoded to 10, and the admin's fee control moved no money at all. The
+	// three games now agree, and the control is real.
+	liveRake := func(fallback int) func() int {
+		return func() int { return platformCfg.Get().CommissionPct(fallback) }
+	}
+
 	mafiaSvc := mafia.NewService(
 		mafiaRepo,
 		store.NewLocker(st.Redis),
@@ -574,6 +583,7 @@ func run() error {
 		clock,
 		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
+	mafiaSvc.SetRakeSource(liveRake(mafia.DefaultPlatformFeePct))
 	mafiaSvc.SetRater(ratingSvc) // paid tables update the per-arena Mafia rating (TrueSkill)
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
@@ -597,6 +607,7 @@ func run() error {
 		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
 	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
+	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))
 	monopolySvc.SetLimits(walletSvc)
 	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg})
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
@@ -741,6 +752,7 @@ func run() error {
 	)
 	// Low-latency wake-ups for long-polling agents (Redis pub/sub, cross-instance).
 	// Set after construction so a notifier-less build still works (no-op fallback).
+	matchSvc.SetRakeSource(liveRake(cfg.RakePct))
 	matchSvc.SetNotifier(store.NewNotifier(st.Redis))
 
 	// Platform-outage grace. A missed turn forfeits a staked seat, which is correct

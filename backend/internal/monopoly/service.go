@@ -50,6 +50,11 @@ type Service struct {
 	finish FinishHook
 	clock  platform.Clock
 	cfg    Config
+	// rake, when set, supplies the LIVE platform commission for a new match, so the
+	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
+	// static config value. Read at creation only; the result is persisted on the match
+	// and settlement reads it back, so a mid-match change never re-prices a live table.
+	rake func() int
 	// pusher is set by EnablePushPlay to enable POST /v1/monopoly/pushplay
 	// (manifest push model). Nil ⇒ push-play returns 501.
 	pusher *pushPlayer
@@ -205,7 +210,7 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	id := platform.NewID(platform.PrefixMonopoly)
 	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
 	_, err := s.repo.Create(ctx, CreateMatchInput{
-		PublicID: id, Title: "Monopoly AI Arena", EntryFee: entryFee, RakePct: s.cfg.PlatformFeePct,
+		PublicID: id, Title: "Monopoly AI Arena", EntryFee: entryFee, RakePct: s.rakePct(),
 		Players: players, Seed: seed, Commit: mono.Commit(seed),
 		State: state, Deadline: deadline, Events: events,
 		Creator: Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: 0},
@@ -238,7 +243,7 @@ func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicI
 	}
 	id := platform.NewID(platform.PrefixMonopoly)
 	_, err := s.repo.CreateWaiting(ctx, CreateMatchInput{
-		PublicID: id, Title: "Monopoly AI Arena", EntryFee: entryFee, RakePct: s.cfg.PlatformFeePct,
+		PublicID: id, Title: "Monopoly AI Arena", EntryFee: entryFee, RakePct: s.rakePct(),
 		Players: players, TargetPlayers: players, Seed: seed, Commit: mono.Commit(seed),
 		Creator: Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: 0},
 	})
@@ -932,4 +937,20 @@ func finalizeAgents(agents []Player, rewards []RewardRow, entryFee int64) []Play
 		}
 	}
 	return out
+}
+
+// SetRakeSource wires the live platform commission (Super Admin → config bus) into
+// new-match pricing. Nil, or a value outside 0..50%, falls back to the static config
+// — the bound guards against a corrupt or hostile publisher setting a 100% rake and
+// taking the entire pot.
+func (s *Service) SetRakeSource(f func() int) { s.rake = f }
+
+// rakePct resolves the commission for a match about to be created.
+func (s *Service) rakePct() int {
+	if s.rake != nil {
+		if p := s.rake(); p >= 0 && p <= 50 {
+			return p
+		}
+	}
+	return s.cfg.PlatformFeePct
 }

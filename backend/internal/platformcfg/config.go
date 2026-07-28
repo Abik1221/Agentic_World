@@ -131,6 +131,28 @@ type Economy struct {
 	ReferralRewardCoins   int64 `json:"referral_reward_coins"`
 }
 
+// CommissionPct is the live platform rake, as a percentage, for a NEW match.
+//
+// Read at match creation only. The resulting percentage is persisted on the match row
+// and settlement reads it back from there, so an admin changing the fee never
+// retroactively alters a table that is already being played — a player is charged the
+// rake that was displayed when they sat down, which is the only defensible rule.
+//
+// The bound is a safety rail on a value that arrives over the config bus from another
+// service: anything negative or above 50% is treated as corrupt and the caller's own
+// default is used instead. A misconfigured or hostile publisher must not be able to
+// set a 100% rake and take the whole pot.
+func (s *Snapshot) CommissionPct(fallback int) int {
+	if s == nil {
+		return fallback
+	}
+	p := s.Economy.PlatformCommissionPct
+	if p < 0 || p > 50 {
+		return fallback
+	}
+	return p
+}
+
 // FeatureFlag is a runtime toggle with an optional rollout descriptor.
 type FeatureFlag struct {
 	Enabled bool   `json:"enabled"`

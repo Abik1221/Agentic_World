@@ -46,7 +46,12 @@ type Service struct {
 	finish FinishHook
 	clock  platform.Clock
 	cfg    Config
-	eng    *mf.Engine
+	// rake, when set, supplies the LIVE platform commission for a new match, so the
+	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
+	// static config value. Read at creation only; the result is persisted on the match
+	// and settlement reads it back, so a mid-match change never re-prices a live table.
+	rake func() int
+	eng  *mf.Engine
 	// pusher is set by EnablePushPlay to enable POST /v1/mafia/pushplay
 	// (manifest push model with bot-filled seats). Nil ⇒ push-play returns 501.
 	pusher *pushPlayer
@@ -173,7 +178,7 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 		PublicID: platform.NewID(platform.PrefixMafia),
 		Title:    "Mafia AI Arena",
 		EntryFee: entryFee,
-		RakePct:  s.cfg.PlatformFeePct,
+		RakePct:  s.rakePct(),
 		Seed:     seed,
 		Commit:   mf.Commit(seed),
 		Creator:  Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: 1},
@@ -1044,3 +1049,19 @@ func (AllowAllVerifier) CheckEligible(context.Context, string) error { return ni
 type NoopFinishHook struct{}
 
 func (NoopFinishHook) MatchFinished(context.Context, string) {}
+
+// SetRakeSource wires the live platform commission (Super Admin → config bus) into
+// new-match pricing. Nil, or a value outside 0..50%, falls back to the static config
+// — the bound guards against a corrupt or hostile publisher setting a 100% rake and
+// taking the entire pot.
+func (s *Service) SetRakeSource(f func() int) { s.rake = f }
+
+// rakePct resolves the commission for a match about to be created.
+func (s *Service) rakePct() int {
+	if s.rake != nil {
+		if p := s.rake(); p >= 0 && p <= 50 {
+			return p
+		}
+	}
+	return s.cfg.PlatformFeePct
+}

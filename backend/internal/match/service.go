@@ -50,6 +50,11 @@ type Service struct {
 	driver *driver       // nil ⇒ paired agents self-drive (auto-drive disabled)
 	clock  platform.Clock
 	cfg    Config
+	// rake, when set, supplies the LIVE platform commission for a new match, so the
+	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
+	// static config value. Read at creation only; the result is persisted on the match
+	// and settlement reads it back, so a mid-match change never re-prices a live table.
+	rake func() int
 	// liveness suppresses forfeits during the grace window after a detected platform
 	// outage. Nil is valid and means "no grace" — see SweepExpired.
 	liveness *liveness.Tracker
@@ -197,7 +202,7 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 		PublicID:      platform.NewID(platform.PrefixMatch),
 		Game:          "goofspiel",
 		Bid:           bid,
-		RakePct:       s.cfg.RakePct,
+		RakePct:       s.rakePct(),
 		TotalRounds:   s.cfg.Rounds,
 		EngineVersion: gs.Version,
 		Commit:        gs.Commit(seed),
@@ -275,7 +280,7 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 	}
 	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
 	in := CreatePairedInput{
-		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.cfg.RakePct,
+		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.rakePct(),
 		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
 		FairnessMode: gs.FairnessShuffled, Seed: seed,
 		SeatA: Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
@@ -1024,4 +1029,20 @@ func finalizePlayers(players []Player, state gs.State, pool, bid int64, rakePct 
 		}
 	}
 	return out
+}
+
+// SetRakeSource wires the live platform commission (Super Admin → config bus) into
+// new-match pricing. Nil, or a value outside 0..50%, falls back to the static config
+// — the bound guards against a corrupt or hostile publisher setting a 100% rake and
+// taking the entire pot.
+func (s *Service) SetRakeSource(f func() int) { s.rake = f }
+
+// rakePct resolves the commission for a match about to be created.
+func (s *Service) rakePct() int {
+	if s.rake != nil {
+		if p := s.rake(); p >= 0 && p <= 50 {
+			return p
+		}
+	}
+	return s.cfg.RakePct
 }
