@@ -2,6 +2,7 @@ package monopoly
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
@@ -30,6 +31,63 @@ type Player struct {
 	OwnerPublicID string
 	Seat          int
 	CoinsDelta    int64
+	// Display identity. The agents/users rows were already joined to load a seat —
+	// these columns were simply never selected, which is why the board could only
+	// ever label a seat with its number.
+	Name      string
+	OwnerName string
+	AvatarURL string
+}
+
+// TimedEvent is a logged event plus the instant it was written, so a replay can
+// reproduce the original pacing — how long a seat deliberated over a trade is part
+// of the record, not decoration.
+type TimedEvent struct {
+	Event mono.Event
+	At    time.Time
+}
+
+// RosterSeat is one seat's public identity. `Bot` marks a server-driven seat.
+type RosterSeat struct {
+	Seat      int    `json:"seat"`
+	AgentID   string `json:"agent_id,omitempty"`
+	Name      string `json:"name"`
+	Owner     string `json:"owner,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+	Bot       bool   `json:"bot"`
+}
+
+// RosterOf names EVERY seat on the board, agent-controlled or not.
+//
+// Bot seats are deliberately not persisted in match_players (see Player above), so
+// a naive projection of the agent list returns 1 row for a 4-player push-play table
+// and the UI renders three unnamed ghosts. Every seat in [0,total) that no agent
+// holds is therefore synthesized here as an explicit bot, which is honest — the
+// spectator can see it is playing the house, not a mystery opponent.
+func RosterOf(agents []Player, total int) []RosterSeat {
+	bySeat := make(map[int]Player, len(agents))
+	for _, p := range agents {
+		bySeat[p.Seat] = p
+	}
+	if total < len(agents) {
+		total = len(agents) // never drop a real seat if the count disagrees
+	}
+	out := make([]RosterSeat, 0, total)
+	for seat := 0; seat < total; seat++ {
+		if p, ok := bySeat[seat]; ok {
+			name := p.Name
+			if name == "" {
+				name = "Unnamed agent"
+			}
+			out = append(out, RosterSeat{
+				Seat: seat, AgentID: p.AgentPublicID, Name: name,
+				Owner: p.OwnerName, AvatarURL: p.AvatarURL,
+			})
+			continue
+		}
+		out = append(out, RosterSeat{Seat: seat, Name: fmt.Sprintf("House bot %d", seat+1), Bot: true})
+	}
+	return out
 }
 
 // Match is the Monopoly aggregate. Players is the total number of seats
@@ -104,13 +162,22 @@ type LiveMatch struct {
 // except future randomness, so the whole board is exposed — but State is always
 // the REDACTED state (deck orders stripped) so future cards never leak.
 type AgentView struct {
-	MatchID  string          `json:"match_id"`
-	Status   string          `json:"status"`
-	YourSeat int             `json:"your_seat"`
-	Turn     int             `json:"turn"` // seat the engine is waiting on
-	YourTurn bool            `json:"your_turn"`
-	Phase    string          `json:"phase"`
-	Legal    []string        `json:"legal,omitempty"`
+	MatchID  string   `json:"match_id"`
+	Status   string   `json:"status"`
+	YourSeat int      `json:"your_seat"`
+	Turn     int      `json:"turn"` // seat the engine is waiting on
+	YourTurn bool     `json:"your_turn"`
+	Phase    string   `json:"phase"`
+	Legal    []string `json:"legal,omitempty"`
+	// Roster names every seat on the board, bots included, so chat lines and board
+	// tokens (which carry a seat number) can be attributed to someone.
+	Roster []RosterSeat `json:"roster,omitempty"`
+	// Pending is every seat the table is waiting on — the "thinking…" set. DERIVED
+	// from state, never invented.
+	//
+	// Usually one seat (Monopoly is turn-based), but an AUCTION is concurrent: every
+	// seat still in the bidding is deciding at once, so this must be a list.
+	Pending  []int           `json:"pending,omitempty"`
 	State    *mono.State     `json:"state"`
 	Deadline *time.Time      `json:"deadline,omitempty"`
 	EntryFee int64           `json:"entry_fee"`
@@ -166,6 +233,8 @@ type Repo interface {
 	Finish(ctx context.Context, matchPublicID string, state mono.State, winnerSeat int, replayHash string, agents []Player, events []mono.Event) error
 	ListActiveExpired(ctx context.Context, game string, now time.Time, limit int) ([]string, error)
 	LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mono.Event, error)
+	// LoadEventsTimed returns the full log with write times, for paced replay.
+	LoadEventsTimed(ctx context.Context, matchPublicID string) ([]TimedEvent, error)
 	LiveMatches(ctx context.Context) ([]LiveMatch, error)
 
 	// AgentSigningKey returns the agent's registered Ed25519 public key (base64),
@@ -195,6 +264,9 @@ type Locker interface {
 // Broadcaster fans events to SSE watchers (implemented by Hub).
 type Broadcaster interface {
 	Broadcast(matchPublicID string, events []mono.Event)
+	// BroadcastPending pushes the live "thinking…" set (ephemeral, unsequenced —
+	// never persisted, never replayed).
+	BroadcastPending(matchPublicID string, seats []int)
 }
 
 // Wallet escrows entry fees and settles payouts. Optional: a nil Wallet means a

@@ -6,6 +6,8 @@ package monopoly
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -20,10 +22,18 @@ var ErrTooManyWatchers = httpx.NewError(http.StatusServiceUnavailable, "watchers
 
 // frame is one pre-encoded SSE event tagged with its sequence number so a
 // resuming client can dedup against its backlog.
+// frame is one pre-encoded SSE event tagged with its sequence number.
+//
+// seq == unsequencedSeq marks a PRESENCE frame (who is thinking): live-only, never
+// persisted, never replayed. Such frames carry no `id:` line, so they cannot move the
+// client's Last-Event-ID or break resume.
 type frame struct {
 	seq  int
 	data []byte
 }
+
+// unsequencedSeq tags a live-only frame that bypasses sequence dedup entirely.
+const unsequencedSeq = -1
 
 type sub struct {
 	ch   chan frame
@@ -69,6 +79,40 @@ func (h *Hub) RegisterMatch(matchID string) {
 	h.mu.Lock()
 	h.live[matchID] = struct{}{}
 	h.mu.Unlock()
+}
+
+// BroadcastPending pushes the "thinking…" set to watchers.
+//
+// Ephemeral presence, deliberately kept OUT of the authoritative log: it is derived
+// from state (see pendingSeats), so it can always be recomputed and never needs to be
+// replayed. Dropped for slow consumers rather than killing them — unlike a game event,
+// a missed typing indicator is harmless and the next change resyncs it.
+func (h *Hub) BroadcastPending(matchID string, seats []int) {
+	if matchID == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"pending": seats})
+	if err != nil {
+		return
+	}
+	// No `id:` line — must not advance Last-Event-ID.
+	fr := frame{seq: unsequencedSeq, data: []byte(fmt.Sprintf("event: pending\ndata: %s\n\n", body))}
+
+	h.mu.RLock()
+	targets := make([]*sub, 0, len(h.subs[matchID]))
+	for s := range h.subs[matchID] {
+		targets = append(targets, s)
+	}
+	h.mu.RUnlock()
+
+	for _, s := range targets {
+		select {
+		case s.ch <- fr:
+		case <-s.dead:
+		default:
+			// Presence is disposable.
+		}
+	}
 }
 
 // Broadcast fans engine events to live spectators. Implements Broadcaster.

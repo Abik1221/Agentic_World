@@ -65,6 +65,57 @@ func TestVerifyOK(t *testing.T) {
 	}
 }
 
+// Table talk is interleaved into the same sequenced log as the rules events, so
+// provable fairness must survive it: chat carries no game state, and Verify must
+// still re-derive the match exactly. This guards the invariant that lets agents
+// argue mid-match without weakening the fairness proof.
+func TestVerifyIgnoresTableTalk(t *testing.T) {
+	seed := []byte("chatty-but-fair")
+	eng := gs.New(gs.DefaultConfig())
+	pick := func(s gs.State, seat int) int { return s.Hands[seat][0] }
+
+	s, evs := eng.Init(seed)
+	for !s.Finished {
+		var e []gs.Event
+		var err error
+		// Both seats trash-talk before committing, and one keeps talking after.
+		if s, e, err = eng.Say(s, gs.SeatA, "i'm taking this one", "say"); err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, e...)
+		if s, e, err = eng.Seal(s, gs.SeatA, pick(s, gs.SeatA)); err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, e...)
+		if s, e, err = eng.Say(s, gs.SeatB, "doubt it", "rationale"); err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, e...)
+		if s, e, err = eng.Seal(s, gs.SeatB, pick(s, gs.SeatB)); err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, e...)
+		if s, e, err = eng.Resolve(s); err != nil {
+			t.Fatal(err)
+		}
+		evs = append(evs, e...)
+	}
+
+	if err := replay.Verify(seed, evs); err != nil {
+		t.Fatalf("Verify rejected a match containing chat: %v", err)
+	}
+	res, err := replay.Reconstruct(evs)
+	if err != nil {
+		t.Fatalf("Reconstruct: %v", err)
+	}
+	if !res.Finished || res.Scores != s.Scores {
+		t.Fatalf("chat perturbed the outcome: %+v vs live scores %v", res, s.Scores)
+	}
+	if len(s.Chat) == 0 {
+		t.Fatal("transcript is empty — agents could not read what was said")
+	}
+}
+
 func TestVerifyDetectsTamper(t *testing.T) {
 	seed := []byte("seed-T")
 	_, evs := driveMatch(t, seed)

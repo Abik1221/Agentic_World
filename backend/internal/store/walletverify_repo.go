@@ -57,6 +57,19 @@ func (r *WalletVerifyRepo) MarkVerified(ctx context.Context, userPublicID, walle
 	return err
 }
 
+// ClearVerified unlinks the payout wallet: both the proven address and the
+// destination hint go back to NULL, so the account reads "no wallet on file" and a
+// future withdrawal must re-prove ownership. Pending withdrawals keep their own
+// dest_wallet_address, so an in-flight payout is not disturbed.
+func (r *WalletVerifyRepo) ClearVerified(ctx context.Context, userPublicID string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE users
+		 SET verified_wallet_address = NULL, wallet_address = NULL, wallet_verified_at = NULL
+		 WHERE public_id = $1`,
+		userPublicID)
+	return err
+}
+
 func (r *WalletVerifyRepo) ClearChallenge(ctx context.Context, userPublicID string) error {
 	_, err := r.db.Exec(ctx, `DELETE FROM wallet_verify_challenges WHERE user_public_id = $1`, userPublicID)
 	return err

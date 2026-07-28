@@ -197,6 +197,19 @@ func (r *fakeRepo) LoadEvents(_ context.Context, id string) ([]gs.Event, error) 
 	return append([]gs.Event(nil), r.events[id]...), nil
 }
 
+// Timed variant: the fake has no clock, so events are stamped one second apart —
+// enough for tests to assert ordering and non-zero offsets.
+func (r *fakeRepo) LoadEventsTimed(_ context.Context, id string) ([]match.TimedEvent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	base := time.Unix(1_700_000_000, 0).UTC()
+	out := make([]match.TimedEvent, 0, len(r.events[id]))
+	for i, ev := range r.events[id] {
+		out = append(out, match.TimedEvent{Event: ev, At: base.Add(time.Duration(i) * time.Second)})
+	}
+	return out, nil
+}
+
 func (r *fakeRepo) AgentSigningKey(_ context.Context, agent string) (string, error) {
 	return r.signingKeys[agent], nil
 }

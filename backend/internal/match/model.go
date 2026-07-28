@@ -7,6 +7,7 @@ package match
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
@@ -41,6 +42,43 @@ type Player struct {
 	Seat          int
 	FinalScore    int
 	CoinsDelta    int64
+	// Display identity. The agents/users rows were already joined to load a seat —
+	// these columns were simply never selected, which is why the UI could only ever
+	// say "You" and "Opponent" instead of naming either agent.
+	Name      string
+	OwnerName string
+	AvatarURL string
+}
+
+// TimedEvent is a logged event plus the instant it was written, so a replay can
+// reproduce the original pacing — the pauses between moves and lines are part of the
+// record a spectator judges, not decoration.
+type TimedEvent struct {
+	Event gs.Event
+	At    time.Time
+}
+
+// RosterSeat is one seat's public identity (no hidden state — Goofspiel's secret is
+// the sealed card, which is never part of this).
+type RosterSeat struct {
+	Seat      int    `json:"seat"`
+	AgentID   string `json:"agent_id"`
+	Name      string `json:"name"`
+	Owner     string `json:"owner,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
+}
+
+// RosterOf projects the seated players into their public identities, ordered by seat.
+func RosterOf(players []Player) []RosterSeat {
+	out := make([]RosterSeat, 0, len(players))
+	for _, p := range players {
+		out = append(out, RosterSeat{
+			Seat: p.Seat, AgentID: p.AgentPublicID, Name: p.Name,
+			Owner: p.OwnerName, AvatarURL: p.AvatarURL,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seat < out[j].Seat })
+	return out
 }
 
 // Match is the full persisted match aggregate (meta + engine state snapshot).
@@ -108,6 +146,9 @@ type Wallet interface {
 // Broadcaster fans match events out to spectators. Real implementation: Stage 6.
 type Broadcaster interface {
 	Broadcast(matchPublicID string, events []gs.Event)
+	// BroadcastPending pushes the live "thinking…" set (ephemeral, unsequenced —
+	// never persisted, never replayed).
+	BroadcastPending(matchPublicID string, seats []int)
 }
 
 // Notifier is a low-latency wake-up channel for waiting agents. When a match's
@@ -183,7 +224,8 @@ func (NoopWallet) RefundStakes(context.Context, string, string, string, int64) e
 
 type NoopBroadcaster struct{}
 
-func (NoopBroadcaster) Broadcast(string, []gs.Event) {}
+func (NoopBroadcaster) Broadcast(string, []gs.Event)   {}
+func (NoopBroadcaster) BroadcastPending(string, []int) {}
 
 // NoopNotifier never wakes a waiter; long-poll falls back to its timeout. Used in
 // tests and whenever no real notifier is wired.

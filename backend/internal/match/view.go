@@ -28,6 +28,28 @@ type AgentView struct {
 	Stake            stakeView   `json:"stake"`
 	PrizeOrderCommit string      `json:"prize_order_commit"`
 	Result           *resultView `json:"result,omitempty"`
+	// Chat is the public table talk so far, oldest first. Every agent receives it
+	// on every view: an agent that cannot read what the table said cannot answer
+	// it, and a monologue is not a negotiation. `you` marks your own lines.
+	Chat []chatView `json:"chat,omitempty"`
+	// Roster names both seats. Without it the UI can only say "You" and "Opponent",
+	// and chat lines (which carry a seat number) cannot be attributed to anyone.
+	Roster []RosterSeat `json:"roster,omitempty"`
+	// Pending is every seat still owing a card this round — the "thinking…" set.
+	// DERIVED from state (an unsealed seat), never invented.
+	//
+	// A list, not a single seat: Goofspiel is simultaneous by design, so BOTH agents
+	// are normally deciding at once. `card_sealed` tells us who has committed, so the
+	// remainder is exactly who is still thinking.
+	Pending []int `json:"pending,omitempty"`
+}
+
+type chatView struct {
+	Round int    `json:"round"`
+	Seat  int    `json:"seat"`
+	You   bool   `json:"you"`
+	Text  string `json:"text"`
+	Kind  string `json:"kind"`
 }
 
 type sideView struct {
@@ -77,6 +99,20 @@ type ReplayDoc struct {
 	Events        []gs.Event      `json:"events"`
 	MoveProofs    []MoveSignature `json:"move_proofs,omitempty"`
 	MovesVerified *bool           `json:"moves_verified,omitempty"` // true only if every move is signed + valid
+	// Timing is the pacing track: one entry per event, in the same order, carrying
+	// when it happened. Kept as a SIDE-CAR rather than folded into Events because
+	// Events is hashed and verified — its bytes must not change.
+	Timing []EventTiming `json:"timing,omitempty"`
+	// Roster names the seats so a replayed match shows who played, not "seat 0".
+	Roster []RosterSeat `json:"roster,omitempty"`
+}
+
+// EventTiming pairs an event's seq with when it was written. `OffsetMs` is relative
+// to the first event, so a player can schedule playback without clock arithmetic.
+type EventTiming struct {
+	Seq      int       `json:"seq"`
+	At       time.Time `json:"at"`
+	OffsetMs int64     `json:"offset_ms"`
 }
 
 // view projects a Match into the redacted AgentView for a given viewer.
@@ -137,6 +173,24 @@ func (s *Service) view(m Match, viewerAgentPublicID string) AgentView {
 				OppScore: st.Scores[opp], CoinsDelta: cd, YourCoins: cd,
 			}
 		}
+	}
+
+	v.Roster = RosterOf(m.Players)
+	// Both seats seal in parallel, so anyone unsealed is still deciding.
+	if m.Status == StatusActive && !st.Finished {
+		for seat := 0; seat < 2; seat++ {
+			if st.Sealed[seat] == nil {
+				v.Pending = append(v.Pending, seat)
+			}
+		}
+	}
+
+	// Table talk is public by definition, so it goes to every viewer — including a
+	// spectator with no seat (seat == -1), whose own lines simply never match.
+	for _, c := range st.Chat {
+		v.Chat = append(v.Chat, chatView{
+			Round: c.Round, Seat: c.Seat, You: c.Seat == seat, Text: c.Text, Kind: c.Kind,
+		})
 	}
 	return v
 }

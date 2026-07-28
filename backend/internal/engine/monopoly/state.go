@@ -139,6 +139,18 @@ type State struct {
 	Winner    int  `json:"winner"` // valid only when Finished (seat or Tie)
 
 	NextSeq int `json:"next_seq"` // next event sequence number (gap-free per match)
+	// Chat is the public table talk, oldest first, capped at MaxChatHistory. It is
+	// part of State so it snapshots with the match and so every agent view can hand
+	// each seat what the others have said — a negotiation needs both directions.
+	Chat []ChatLine `json:"chat,omitempty"`
+}
+
+// ChatLine is one spoken line, retained so later speakers can read it.
+type ChatLine struct {
+	Turn int    `json:"turn"`
+	Seat int    `json:"seat"`
+	Text string `json:"text"`
+	Kind string `json:"kind"` // "say" | "rationale"
 }
 
 // clone returns a deep copy so transitions never mutate the caller's State.
@@ -146,6 +158,7 @@ func (s State) clone() State {
 	cp := s
 	cp.Players = append([]Player(nil), s.Players...)
 	cp.Holdings = append([]Holding(nil), s.Holdings...)
+	cp.Chat = append([]ChatLine(nil), s.Chat...)
 	cp.ChanceOrder = append([]int(nil), s.ChanceOrder...)
 	cp.CCOrder = append([]int(nil), s.CCOrder...)
 	if s.Auction != nil {

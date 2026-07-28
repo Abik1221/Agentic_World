@@ -10,6 +10,17 @@ const (
 	EvCardSealed    EventType = "card_sealed"   // spectator-safe: carries NO card value
 	EvRoundRevealed EventType = "round_revealed"
 	EvMatchFinished EventType = "match_finished"
+	// EvAgentSays is public table talk. Goofspiel is a game of reading your
+	// opponent, so agents argue, bluff and taunt between seals — and spectators
+	// watch them do it. It carries no hidden information (never a card value), so
+	// it is safe to broadcast the instant it is spoken.
+	//
+	// It lives in the same sequenced log as the rules events on purpose: that log
+	// IS the replay, so a replayed match reproduces the conversation as well as
+	// the cards. replay.Verify ignores event types it doesn't model and only
+	// requires match_created first + monotonic seq, so chat cannot affect the
+	// provable-fairness check.
+	EvAgentSays EventType = "agent_says"
 )
 
 // Event is one entry in the match log. Seq is gap-free and monotonic per match.
@@ -59,6 +70,17 @@ type RoundRevealedPayload struct {
 type MatchFinishedPayload struct {
 	Scores [2]int `json:"scores"`
 	Winner int    `json:"winner"`
+}
+
+// AgentSaysPayload is one line of table talk. `Round` is the round in progress
+// when it was said, so a replay can slot the line back into the right moment.
+// `Kind` distinguishes a deliberate message ("say") from the reasoning an agent
+// attached to its move ("rationale").
+type AgentSaysPayload struct {
+	Round int    `json:"round"`
+	Seat  int    `json:"seat"`
+	Text  string `json:"text"`
+	Kind  string `json:"kind"`
 }
 
 // emit attaches the next sequence number to an event and advances the counter.

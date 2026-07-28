@@ -16,6 +16,7 @@ func (c fakeClock) Now() time.Time { return c.t }
 type fakeBcast struct{}
 
 func (fakeBcast) Broadcast(string, []mono.Event) {}
+func (fakeBcast) BroadcastPending(string, []int) {}
 
 type fakeLock struct{}
 
@@ -37,8 +38,10 @@ type fakeRepo struct {
 	advanced       []string
 }
 
-func (f *fakeRepo) Create(context.Context, CreateMatchInput) (Match, error)        { return Match{}, nil }
-func (f *fakeRepo) CreateWaiting(context.Context, CreateMatchInput) (Match, error) { return Match{}, nil }
+func (f *fakeRepo) Create(context.Context, CreateMatchInput) (Match, error) { return Match{}, nil }
+func (f *fakeRepo) CreateWaiting(context.Context, CreateMatchInput) (Match, error) {
+	return Match{}, nil
+}
 func (f *fakeRepo) ListWaiting(context.Context, int64, string, int) ([]LobbyItem, error) {
 	return nil, nil
 }
@@ -76,8 +79,11 @@ func (f *fakeRepo) ListActiveExpired(context.Context, string, time.Time, int) ([
 	return f.expiredIDs, nil
 }
 func (f *fakeRepo) LoadEvents(context.Context, string, int) ([]mono.Event, error) { return nil, nil }
-func (f *fakeRepo) LiveMatches(context.Context) ([]LiveMatch, error)              { return nil, nil }
-func (f *fakeRepo) AgentSigningKey(context.Context, string) (string, error)       { return "", nil }
+func (f *fakeRepo) LoadEventsTimed(context.Context, string) ([]TimedEvent, error) {
+	return nil, nil
+}
+func (f *fakeRepo) LiveMatches(context.Context) ([]LiveMatch, error)        { return nil, nil }
+func (f *fakeRepo) AgentSigningKey(context.Context, string) (string, error) { return "", nil }
 func (f *fakeRepo) RecordMoveSignature(context.Context, string, int, int, string, string, string) error {
 	return nil
 }

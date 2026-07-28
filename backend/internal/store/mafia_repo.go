@@ -120,7 +120,8 @@ func (r *MafiaRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	rows, err := r.db.Query(ctx,
 		`SELECT mp.seat, ag.public_id, u.public_id,
 		        COALESCE(ms.role, ''), COALESCE(ms.team, ''), COALESCE(ms.alive, true),
-		        COALESCE(ms.coins_delta, mp.coins_delta, 0)
+		        COALESCE(ms.coins_delta, mp.coins_delta, 0),
+		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''), COALESCE(u.avatar_url, '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 JOIN users u ON u.id = mp.owner_user_id
@@ -134,7 +135,8 @@ func (r *MafiaRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	var out []mafia.Player
 	for rows.Next() {
 		var p mafia.Player
-		if err := rows.Scan(&p.Seat, &p.AgentPublicID, &p.OwnerPublicID, &p.Role, &p.Team, &p.Alive, &p.CoinsDelta); err != nil {
+		if err := rows.Scan(&p.Seat, &p.AgentPublicID, &p.OwnerPublicID, &p.Role, &p.Team, &p.Alive, &p.CoinsDelta,
+			&p.Name, &p.OwnerName, &p.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -287,6 +289,42 @@ func (r *MafiaRepo) ListActiveExpired(ctx context.Context, game string, now time
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// LoadEventsTimed is LoadEvents plus each event's wall-clock write time.
+//
+// Kept SEPARATE from LoadEvents on purpose: the plain events feed game logic and the
+// replay hash, and mafia.Event must stay byte-identical between memory and a DB
+// round-trip (see the hash-stability guarantee). Timing is presentation data for
+// replay pacing, so it travels alongside rather than inside the event.
+func (r *MafiaRepo) LoadEventsTimed(ctx context.Context, matchPublicID string) ([]mafia.TimedEvent, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT seq, type, payload, created_at FROM match_events
+		 WHERE match_id = (SELECT id FROM matches WHERE public_id=$1)
+		 ORDER BY seq ASC`, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []mafia.TimedEvent
+	for rows.Next() {
+		var seq int
+		var typ string
+		var payload []byte
+		var at time.Time
+		if err := rows.Scan(&seq, &typ, &payload, &at); err != nil {
+			return nil, err
+		}
+		p, err := mf.DecodePayload(mf.EventType(typ), payload)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mafia.TimedEvent{
+			Event: mf.Event{Seq: seq, Type: mf.EventType(typ), Payload: p},
+			At:    at,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (r *MafiaRepo) LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mf.Event, error) {

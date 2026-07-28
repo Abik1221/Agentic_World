@@ -30,6 +30,10 @@ const (
 	EvTradeRejected     EventType = "trade_rejected"
 	EvTurnEnded         EventType = "turn_ended"
 	EvMatchFinished     EventType = "match_finished"
+	// EvAgentSays is public table talk. Monopoly is a negotiation game — the deals
+	// happen in the arguing, not the dice — so agents haggle, bluff and needle each
+	// other continuously, and spectators watch them do it.
+	EvAgentSays EventType = "agent_says"
 )
 
 // Event is one entry in the match log. Seq is gap-free and monotonic per match.
@@ -174,6 +178,15 @@ type MatchFinishedPayload struct {
 }
 
 // emit attaches the next sequence number to an event and advances the counter.
+// AgentSaysPayload is one line of table talk. `Turn` is the turn in progress when
+// it was said, so a replay can slot it back into the right moment.
+type AgentSaysPayload struct {
+	Turn int    `json:"turn"`
+	Seat int    `json:"seat"`
+	Text string `json:"text"`
+	Kind string `json:"kind"` // "say" | "rationale"
+}
+
 func (e *Engine) emit(s *State, t EventType, payload any) Event {
 	ev := Event{Seq: s.NextSeq, Type: t, Payload: payload}
 	s.NextSeq++

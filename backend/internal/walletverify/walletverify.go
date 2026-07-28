@@ -59,6 +59,9 @@ type Repo interface {
 	GetChallenge(ctx context.Context, userPublicID string) (Challenge, bool, error)
 	MarkVerified(ctx context.Context, userPublicID, walletAddress string, at time.Time) error
 	ClearChallenge(ctx context.Context, userPublicID string) error
+	// ClearVerified removes the user's verified wallet AND the payout destination
+	// hint, returning them to the "no wallet on file" state.
+	ClearVerified(ctx context.Context, userPublicID string) error
 }
 
 // Service issues + verifies wallet-ownership challenges.
@@ -91,6 +94,18 @@ func (s *Service) StartChallenge(ctx context.Context, userPublicID, walletAddres
 		return "", "", err
 	}
 	return challengeMessage(userPublicID, nonce, expiresAt), nonce, nil
+}
+
+// Unlink removes the user's linked payout wallet (verified address + destination
+// hint) and drops any pending challenge. Withdrawals already in flight are
+// unaffected: each withdrawal row persists its own dest_wallet_address, so this
+// only means a future withdrawal must prove a wallet again.
+func (s *Service) Unlink(ctx context.Context, userPublicID string) error {
+	if err := s.repo.ClearVerified(ctx, userPublicID); err != nil {
+		return err
+	}
+	_ = s.repo.ClearChallenge(ctx, userPublicID)
+	return nil
 }
 
 // Verify checks a base58 Ed25519 signature over the pending challenge message for

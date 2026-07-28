@@ -39,6 +39,10 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/mafia/live", h.live)
 	r.Get("/v1/mafia/{id}/watch", h.watch)
 	r.Get("/v1/mafia/{id}/economy", h.economy)
+	// Public seat → agent identity. Spectators need this to label the table: the
+	// event stream carries seat numbers only, so without it a viewer cannot show
+	// who is speaking, who is being voted for, or whose avatar to light up.
+	r.Get("/v1/mafia/{id}/roster", h.roster)
 	r.Get("/v1/mafia/{id}/replay", h.replay)
 
 	r.Group(func(r chi.Router) {
@@ -51,6 +55,9 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(agent).Post("/v1/mafia/pushplay", h.pushplay)
 		r.With(agent).Get("/v1/mafia/{id}/state", h.state)
 		r.With(agent).Post("/v1/mafia/{id}/action", h.action)
+		// Free-form table talk during discussion. Separate from /action: it does
+		// not consume the seat's formal statement and may be called repeatedly.
+		r.With(agent).Post("/v1/mafia/{id}/say", h.say)
 	})
 }
 
@@ -109,6 +116,17 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 		case <-s.dead:
 			return
 		case fr := <-s.ch:
+			// Presence frames (thinking indicators) are unsequenced: they must be
+			// written through without dedup and must NOT advance lastSeq, or a
+			// resuming client would skip real game events after them.
+			if fr.seq == unsequencedSeq {
+				httpx.ArmWriteDeadline(w)
+				if _, err := w.Write(fr.data); err != nil {
+					return
+				}
+				_ = rc.Flush()
+				continue
+			}
 			if fr.seq <= lastSeq {
 				continue
 			}
@@ -139,6 +157,21 @@ func (h *Handler) live(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"matches": h.hub.liveMatches(extra)})
 }
 
+// roster returns the public identity of every seat. Safe for anyone to read: it
+// carries names and avatars, never roles or any other hidden state.
+func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
+	if h.svc == nil {
+		httpx.Error(w, httpx.ErrNotFound)
+		return
+	}
+	seats, err := h.svc.Roster(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"seats": seats, "players": len(seats)})
+}
+
 func (h *Handler) economy(w http.ResponseWriter, r *http.Request) {
 	if h.svc == nil {
 		httpx.Error(w, httpx.ErrNotFound)
@@ -157,12 +190,29 @@ func (h *Handler) replay(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.ErrNotFound)
 		return
 	}
-	events, err := h.svc.ReplayPublic(r.Context(), chi.URLParam(r, "id"))
+	timed, roster, err := h.svc.ReplayTimed(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"events": events})
+	// Each event carries `at` (absolute) and `offset_ms` (from the first event), so a
+	// player can reproduce the original pacing without doing clock arithmetic — the
+	// pauses between lines are part of the record, not decoration.
+	var start time.Time
+	if len(timed) > 0 {
+		start = timed[0].At
+	}
+	out := make([]map[string]any, 0, len(timed))
+	for _, te := range timed {
+		out = append(out, map[string]any{
+			"seq":       te.Event.Seq,
+			"type":      te.Event.Type,
+			"payload":   te.Event.Payload,
+			"at":        te.At.UTC(),
+			"offset_ms": te.At.Sub(start).Milliseconds(),
+		})
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"events": out, "roster": roster})
 }
 
 func (h *Handler) lobby(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +302,29 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		// writing either the state or an error.
 		httpx.ArmWriteDeadline(w)
 	}
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, view)
+}
+
+// say posts one line of free-form table talk. Legal only while the floor is open
+// (discussion): the town is asleep at night and the ballot is closed during voting.
+// It never consumes the seat's formal statement and never advances the phase, so an
+// agent can argue back the moment it is accused.
+func (h *Handler) say(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Text   string `json:"text"`
+		Tone   string `json:"tone"`   // accuse | defend | claim | info | alliance
+		Target int    `json:"target"` // optional seat this line is aimed at
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	view, err := h.svc.Say(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), in.Text, in.Tone, in.Target)
 	if err != nil {
 		httpx.Error(w, err)
 		return

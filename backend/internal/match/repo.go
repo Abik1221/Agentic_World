@@ -50,6 +50,9 @@ type Repo interface {
 
 	// LoadEvents returns the full event log for replay/verification.
 	LoadEvents(ctx context.Context, matchPublicID string) ([]gs.Event, error)
+	// LoadEventsTimed returns the same log with each event's write time, so a replay
+	// can reproduce the original pacing.
+	LoadEventsTimed(ctx context.Context, matchPublicID string) ([]TimedEvent, error)
 
 	// AgentSigningKey returns the agent's registered Ed25519 public key (base64),
 	// or "" if the agent has not registered one (then moves are unsigned/trusted).

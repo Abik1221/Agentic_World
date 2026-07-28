@@ -87,6 +87,16 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 		case <-s.dead:
 			return
 		case fr := <-s.ch:
+			// Presence frames are unsequenced: write through without dedup and do
+			// NOT advance lastSeq, or a resuming client would skip real events.
+			if fr.seq == unsequencedSeq {
+				httpx.ArmWriteDeadline(w)
+				if _, err := w.Write(fr.data); err != nil {
+					return
+				}
+				_ = rc.Flush()
+				continue
+			}
 			if fr.seq <= lastSeq {
 				continue // already delivered via backlog
 			}

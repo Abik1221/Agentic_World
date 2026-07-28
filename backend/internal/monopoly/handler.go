@@ -41,6 +41,9 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/monopoly/{id}/watch", h.watch)
 	r.Get("/v1/monopoly/{id}/economy", h.economy)
 	r.Get("/v1/monopoly/{id}/replay", h.replay)
+	// Public seat → identity for every seat on the board (bots included), so a
+	// spectator can label tokens and chat lines.
+	r.Get("/v1/monopoly/{id}/roster", h.roster)
 
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
@@ -52,6 +55,9 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(agent).Post("/v1/monopoly/pushplay", h.pushplay)
 		r.With(agent).Get("/v1/monopoly/{id}/state", h.state)
 		r.With(agent).Post("/v1/monopoly/{id}/action", h.action)
+		// Table talk. Separate from /action: speaking is not a move, is not
+		// turn-gated, and may happen any number of times per turn.
+		r.With(agent).Post("/v1/monopoly/{id}/say", h.say)
 	})
 }
 
@@ -120,6 +126,16 @@ func (h *Handler) watch(w http.ResponseWriter, r *http.Request) {
 		case <-s.dead:
 			return
 		case fr := <-s.ch:
+			// Presence frames are unsequenced: write through without dedup and do
+			// NOT advance lastSeq, or a resuming client would skip real events.
+			if fr.seq == unsequencedSeq {
+				httpx.ArmWriteDeadline(w)
+				if _, err := w.Write(fr.data); err != nil {
+					return
+				}
+				_ = rc.Flush()
+				continue
+			}
 			if fr.seq <= lastSeq {
 				continue
 			}
@@ -160,12 +176,27 @@ func (h *Handler) economy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) replay(w http.ResponseWriter, r *http.Request) {
-	events, err := h.svc.Replay(r.Context(), chi.URLParam(r, "id"))
+	timed, roster, err := h.svc.ReplayTimed(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"events": events})
+	// `at` + `offset_ms` per event so a viewer can reproduce the original pacing.
+	var start time.Time
+	if len(timed) > 0 {
+		start = timed[0].At
+	}
+	out := make([]map[string]any, 0, len(timed))
+	for _, te := range timed {
+		out = append(out, map[string]any{
+			"seq":       te.Event.Seq,
+			"type":      te.Event.Type,
+			"payload":   te.Event.Payload,
+			"at":        te.At.UTC(),
+			"offset_ms": te.At.Sub(start).Milliseconds(),
+		})
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"events": out, "roster": roster})
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +291,36 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		// writing either the state or an error.
 		httpx.ArmWriteDeadline(w)
 	}
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, view)
+}
+
+// roster returns the public identity of every seat, bots included.
+func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
+	seats, err := h.svc.Roster(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"seats": seats, "players": len(seats)})
+}
+
+// say posts one line of public table talk. No turn is required: an agent may
+// speak at any point in a live match, and a line never counts as a move.
+func (h *Handler) say(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Text string `json:"text"`
+		Kind string `json:"kind"` // "say" (default) | "rationale"
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	view, err := h.svc.Say(r.Context(), p.AgentPublicID, chi.URLParam(r, "id"), in.Text, in.Kind)
 	if err != nil {
 		httpx.Error(w, err)
 		return

@@ -89,9 +89,19 @@ type Notifier interface {
 // SetNotifier installs the wake-up channel (called once at wiring time).
 func (s *Service) SetNotifier(n Notifier) { s.notify = n }
 
-// publish broadcasts events to spectators AND wakes any long-polling State callers.
-func (s *Service) publish(matchID string, events []mono.Event) {
+// publish pushes game events AND the resulting "thinking…" set.
+//
+// The pending set travels with the events that changed it, in the same tick, so a
+// seat stops being shown as deciding exactly as its action lands. Taking state here
+// means no future call site can emit events and leave a stale indicator behind.
+func (s *Service) publish(matchID string, state mono.State, events []mono.Event) {
 	s.bcast.Broadcast(matchID, events)
+	if state.Finished {
+		s.bcast.BroadcastPending(matchID, nil)
+	} else {
+		eng := mono.New(matchConfig(len(state.Players)))
+		s.bcast.BroadcastPending(matchID, pendingSeats(state, eng.PendingSeat(state)))
+	}
 	if s.notify != nil {
 		s.notify.Notify(matchID)
 	}
@@ -173,7 +183,7 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	if err != nil {
 		return "", err
 	}
-	s.publish(id, events)
+	s.publish(id, state, events)
 	return id, nil
 }
 
@@ -307,7 +317,7 @@ func (s *Service) startTable(ctx context.Context, m Match) error {
 		}
 		return err
 	}
-	s.publish(m.PublicID, events)
+	s.publish(m.PublicID, state, events)
 	return nil
 }
 
@@ -367,6 +377,99 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 
 // tryAct is one optimistic-concurrency attempt: read the snapshot, validate, step,
 // persist. A racing writer surfaces as ErrConcurrentUpdate for Act's retry loop.
+// pendingSeats is who the table is waiting on, derived from state.
+//
+// Normally that is just the seat on turn. During an AUCTION it is every seat still
+// in the bidding — they decide concurrently, so a single "turn" seat would under-
+// report the table and the UI would show one bidder thinking while three others
+// silently were too.
+func pendingSeats(st mono.State, turn int) []int {
+	if st.Finished {
+		return nil
+	}
+	if a := st.Auction; a != nil {
+		var out []int
+		for seat, in := range a.InAuction {
+			if in && seat < len(st.Players) && !st.Players[seat].Bankrupt {
+				out = append(out, seat)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if turn < 0 {
+		return nil
+	}
+	return []int{turn}
+}
+
+// Roster returns the public identity of every seat on the board, bots included.
+// Public data only — no cash, no holdings, no hidden state.
+func (s *Service) Roster(ctx context.Context, matchPublicID string) ([]RosterSeat, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return RosterOf(m.Agents, m.Players), nil
+}
+
+// Say posts one line of public table talk from a seated agent.
+//
+// Unlike Act this is NOT turn-gated: Monopoly's deal-making lives between turns,
+// so an agent may talk while another seat is rolling, mid-auction, or while a
+// trade sits pending. A line is never a move — it cannot roll, buy, bid or pass.
+// The line joins the authoritative event log (so it replays with the match), is
+// broadcast to spectators, and lands in State.Chat, which every agent view
+// carries — that is what lets the other seats answer.
+func (s *Service) Say(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
+	}
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		view, err := s.trySay(ctx, agentPublicID, matchPublicID, text, kind)
+		if errors.Is(err, ErrConcurrentUpdate) {
+			continue
+		}
+		return view, err
+	}
+	return AgentView{}, ErrBusy
+}
+
+func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if m.Status != StatusActive {
+		return AgentView{}, ErrNotActive
+	}
+	p := m.agentByAgentID(agentPublicID)
+	if p == nil {
+		return AgentView{}, ErrNotPlayer
+	}
+	eng := mono.New(matchConfig(m.Players))
+	state, events, err := eng.Say(m.State, p.Seat, text, kind)
+	if err != nil {
+		if errors.Is(err, mono.ErrFinished) {
+			return AgentView{}, ErrNotActive
+		}
+		return AgentView{}, ErrIllegalAction // empty text, bad seat, or bankrupt
+	}
+	if err := s.persist(ctx, m, state, events); err != nil {
+		return AgentView{}, err
+	}
+	m, err = s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, err
+	}
+	return s.view(m, agentPublicID), nil
+}
+
 func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID string, act mono.Action, signature string, platformDriven bool) (AgentView, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -462,7 +565,7 @@ func (s *Service) persist(ctx context.Context, m Match, state mono.State, events
 	if err := s.repo.Advance(ctx, m.PublicID, state, &deadline, events); err != nil {
 		return err
 	}
-	s.publish(m.PublicID, events)
+	s.publish(m.PublicID, state, events)
 	return nil
 }
 
@@ -487,7 +590,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 	if err := s.repo.Finish(ctx, m.PublicID, state, state.Winner, hash, agents, events); err != nil {
 		return err
 	}
-	s.publish(m.PublicID, events)
+	s.publish(m.PublicID, state, events)
 
 	// Paid tables update the per-arena skill rating (TrueSkill, N-player). Placement
 	// is a server-authoritative net-worth ordering across the AGENT seats: bankrupt
@@ -673,6 +776,21 @@ func (s *Service) Replay(ctx context.Context, matchPublicID string) ([]mono.Even
 	return s.repo.LoadEvents(ctx, matchPublicID, -1)
 }
 
+// ReplayTimed returns the log with each event's timestamp plus the roster —
+// everything needed to replay a past table exactly as it happened, at its original
+// pace and with every seat named (bots included).
+func (s *Service) ReplayTimed(ctx context.Context, matchPublicID string) ([]TimedEvent, []RosterSeat, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return nil, nil, ErrNotFound
+	}
+	timed, err := s.repo.LoadEventsTimed(ctx, matchPublicID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return timed, RosterOf(m.Agents, m.Players), nil
+}
+
 func (s *Service) Live(ctx context.Context) ([]LiveMatch, error) {
 	return s.repo.LiveMatches(ctx)
 }
@@ -701,6 +819,9 @@ func (s *Service) view(m Match, viewerAgent string) AgentView {
 		Phase: m.State.Phase, Turn: pending, State: &redacted,
 		EntryFee: m.EntryFee,
 		Economy:  ComputeEconomy(len(m.Agents), m.EntryFee, m.RakePct),
+		// Every seat, bots included — see RosterOf.
+		Roster:  RosterOf(m.Agents, m.Players),
+		Pending: pendingSeats(m.State, pending),
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline

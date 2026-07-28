@@ -108,11 +108,28 @@ func lockKey(matchPublicID string) string { return "match:lock:" + matchPublicID
 // agent into one match each). (M6)
 func agentJoinLockKey(agentPublicID string) string { return "agent:join:lock:" + agentPublicID }
 
-// publish fans new events to spectators (SSE) and wakes any agent long-polling
-// this match. Both are best-effort and off the correctness path.
-func (s *Service) publish(matchPublicID string, events []gs.Event) {
+// publish pushes game events AND the resulting "thinking…" set.
+//
+// Both seats seal simultaneously in Goofspiel, so the pending set is normally BOTH
+// agents; a seat drops out of it the moment its card_sealed lands, in the same tick.
+func (s *Service) publish(matchPublicID string, state gs.State, events []gs.Event) {
 	s.bcast.Broadcast(matchPublicID, events)
+	s.bcast.BroadcastPending(matchPublicID, unsealedSeats(state))
 	s.notify.Notify(matchPublicID)
+}
+
+// unsealedSeats is who still owes a card — derived from state, never invented.
+func unsealedSeats(state gs.State) []int {
+	if state.Finished {
+		return nil
+	}
+	var out []int
+	for seat := 0; seat < 2; seat++ {
+		if state.Sealed[seat] == nil {
+			out = append(out, seat)
+		}
+	}
+	return out
 }
 
 func (s *Service) engine(m Match) *gs.Engine {
@@ -239,7 +256,7 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 		_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
 		return "", err
 	}
-	s.publish(publicID, events)
+	s.publish(publicID, state, events)
 	// Auto-drive connected agents over their sockets (no-op unless enabled + at
 	// least one seat is connected); a non-connected seat self-drives via HTTP.
 	s.maybeDrive(publicID, aAgent, bAgent)
@@ -277,7 +294,7 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
 		return "", err // no stake was taken, so nothing to unwind
 	}
-	s.publish(publicID, events)
+	s.publish(publicID, state, events)
 	return publicID, nil
 }
 
@@ -343,7 +360,7 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		_ = s.wallet.RefundStakes(ctx, matchPublicID, creator, agentPublicID, m.Bid)
 		return AgentView{}, err
 	}
-	s.publish(matchPublicID, events)
+	s.publish(matchPublicID, state, events)
 
 	updated, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -465,6 +482,73 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	return s.view(updated, agentPublicID), nil
 }
 
+// Roster returns the public seat → agent identities for a match. Public data only
+// (name, owner, avatar) — a sealed card is the game's only secret and is never here,
+// so this is safe to serve to any spectator mid-match.
+func (s *Service) Roster(ctx context.Context, matchPublicID string) ([]RosterSeat, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return RosterOf(m.Players), nil
+}
+
+// Say posts one line of public table talk from a seated agent.
+//
+// Unlike Act this is NOT turn-gated and carries no round argument: an agent may
+// speak whenever it likes during a live match — while the opponent is still
+// deciding, between rounds, twice in a row. Talking never seals a card and never
+// advances the round, so it cannot be used to stall or to skip a turn. Only the
+// card itself is ordered.
+//
+// The line is appended to the authoritative event log (so it replays with the
+// match) and broadcast to spectators, and it lands in State.Chat, which every
+// agent view carries — that is what lets the other seat actually answer it.
+func (s *Service) Say(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
+	// Same lock + optimistic-concurrency retry as act: two agents talking at once
+	// (or one talking while the other seals) race on the same match row.
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
+	}
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		view, err := s.trySay(ctx, agentPublicID, matchPublicID, text, kind)
+		if errors.Is(err, ErrConcurrentUpdate) {
+			continue
+		}
+		return view, err
+	}
+	return AgentView{}, ErrBusy
+}
+
+func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if m.Status != StatusActive {
+		return AgentView{}, ErrNotActive
+	}
+	p := m.playerByAgent(agentPublicID)
+	if p == nil {
+		return AgentView{}, ErrNotPlayer
+	}
+
+	eng := s.engine(m)
+	state, events, err := eng.Say(m.State, p.Seat, text, kind)
+	if err != nil {
+		return AgentView{}, mapEngineErr(err)
+	}
+	updated, err := s.commit(ctx, m, eng, state, events)
+	if err != nil {
+		return AgentView{}, err
+	}
+	return s.view(updated, agentPublicID), nil
+}
+
 // commit resolves the round if both seats have sealed, persists, broadcasts, and
 // returns the updated match aggregate (so callers avoid a redundant re-read). A
 // lost optimistic-concurrency race propagates as ErrConcurrentUpdate.
@@ -484,7 +568,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
 			return Match{}, err
 		}
-		s.publish(m.PublicID, events)
+		s.publish(m.PublicID, state, events)
 		m.State = state
 		return m, nil
 	}
@@ -516,7 +600,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 		if err != nil {
 			return Match{}, err
 		}
-		s.publish(m.PublicID, all)
+		s.publish(m.PublicID, resolved, all)
 		m.State = resolved
 		m.Players = players
 		m.Status = StatusFinished
@@ -528,7 +612,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, all); err != nil {
 		return Match{}, err
 	}
-	s.publish(m.PublicID, all)
+	s.publish(m.PublicID, resolved, all)
 	m.State = resolved
 	m.RoundDeadline = &next
 	return m, nil
@@ -824,6 +908,18 @@ func (s *Service) Replay(ctx context.Context, matchPublicID string) (ReplayDoc, 
 		ReplayHash:    m.ReplayHash,
 		Status:        m.Status,
 		Events:        events,
+		Roster:        RosterOf(m.Players),
+	}
+	// Pacing side-car: same order as Events, never mixed into them (Events is hashed).
+	// Best-effort — a replay without timing is still correct, just unpaced.
+	if timed, terr := s.repo.LoadEventsTimed(ctx, matchPublicID); terr == nil && len(timed) > 0 {
+		start := timed[0].At
+		doc.Timing = make([]EventTiming, 0, len(timed))
+		for _, te := range timed {
+			doc.Timing = append(doc.Timing, EventTiming{
+				Seq: te.Event.Seq, At: te.At.UTC(), OffsetMs: te.At.Sub(start).Milliseconds(),
+			})
+		}
 	}
 	if m.Status == StatusFinished {
 		doc.Seed = m.Seed // provable-fairness reveal

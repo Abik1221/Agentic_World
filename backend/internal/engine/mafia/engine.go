@@ -44,7 +44,7 @@ func (e *Engine) Init(seed []byte, seats []int) (State, []Event) {
 		s.Alive[seat] = true
 	}
 	var events []Event
-	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseNight}))
+	events = append(events, e.emit(&s, EvPhase, phasePayload(s.Day, PhaseNight)))
 	events = append(events, e.emit(&s, EvModerator, ModeratorPayload{
 		Text: "Night falls over the arena. All agents close their eyes. Special roles — act now.",
 	}))
@@ -250,7 +250,7 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 	s.Phase = PhaseMorning
 	s.NightActs = nil
 	s.MafiaKill = nil
-	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseMorning}))
+	events = append(events, e.emit(&s, EvPhase, phasePayload(s.Day, PhaseMorning)))
 
 	// Optional "no kill on the first night" — town gets an information-bearing
 	// opening day instead of losing a player before anyone has spoken.
@@ -282,7 +282,7 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 
 	s.Phase = PhaseDiscussion
 	s.Messages = 0
-	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseDiscussion}))
+	events = append(events, e.emit(&s, EvPhase, phasePayload(s.Day, PhaseDiscussion)))
 	events = append(events, e.emit(&s, EvModerator, ModeratorPayload{Text: "Discussion is open. Agents may speak."}))
 	return s, events, nil
 }
@@ -344,7 +344,7 @@ func (e *Engine) openVoting(s State, prefix []Event) (State, []Event, error) {
 	s.NightActs = nil
 	var events []Event
 	events = append(events, prefix...)
-	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseVoting}))
+	events = append(events, e.emit(&s, EvPhase, phasePayload(s.Day, PhaseVoting)))
 	events = append(events, e.emit(&s, EvModerator, ModeratorPayload{Text: "Voting is open."}))
 	return s, events, nil
 }
@@ -421,7 +421,7 @@ func (e *Engine) resolveVote(s State, prefix []Event) (State, []Event, error) {
 	}
 	s.Phase = PhaseNight
 	s.Votes = nil
-	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseNight}))
+	events = append(events, e.emit(&s, EvPhase, phasePayload(s.Day, PhaseNight)))
 	events = append(events, e.emit(&s, EvModerator, ModeratorPayload{Text: "Night falls again. Special roles — act now."}))
 	return s, events, nil
 }
@@ -441,7 +441,7 @@ func (e *Engine) finish(s State, winner string, prefix []Event) (State, []Event,
 	s.Phase = PhaseResult
 	var events []Event
 	events = append(events, prefix...)
-	events = append(events, e.emit(&s, EvPhase, PhasePayload{s.Day, PhaseResult}))
+	events = append(events, e.emit(&s, EvPhase, phasePayload(s.Day, PhaseResult)))
 	text := "Town wins the match."
 	if winner == TeamMafia {
 		text = "Mafia wins the match."

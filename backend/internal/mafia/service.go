@@ -18,9 +18,11 @@ import (
 type Config struct {
 	EntryFee       int64
 	PlatformFeePct int
-	PhaseWindow    time.Duration
-	LockTTL        time.Duration
-	RosterSize     int
+	// PhaseWindow forces every phase to the same length. Zero (the default) uses
+	// the engine's per-phase clock — see Service.phaseWindow.
+	PhaseWindow time.Duration
+	LockTTL     time.Duration
+	RosterSize  int
 	// WaitingTTL is how long a waiting table (not yet full) may sit before the
 	// sweeper aborts it. A Mafia table needs a full 12 distinct-owner roster to
 	// start, so an unfillable lobby is the likely default, not an edge case.
@@ -59,9 +61,9 @@ type Rater interface {
 func (s *Service) SetRater(r Rater) { s.rater = r }
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {
-	if cfg.PhaseWindow <= 0 {
-		cfg.PhaseWindow = 45 * time.Second
-	}
+	// PhaseWindow is left at zero on purpose when unset: that selects the engine's
+	// per-phase clock (night short, discussion long, voting tight) instead of one
+	// flat window for every phase. A non-zero value is an explicit operator override.
 	if cfg.LockTTL <= 0 {
 		cfg.LockTTL = 15 * time.Second
 	}
@@ -236,7 +238,7 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 		}
 	}
 
-	deadline := s.clock.Now().Add(s.cfg.PhaseWindow)
+	deadline := s.clock.Now().Add(s.phaseWindow(state.Phase))
 	if err := s.repo.Start(ctx, m.PublicID, roles, state, deadline, events); err != nil {
 		// Compensate the stake-then-start dual-write: the stake committed (ledger tx)
 		// but flipping the match to active failed, so the coins would be stranded in a
@@ -250,7 +252,7 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 		}
 		return err
 	}
-	s.publish(m.PublicID, events)
+	s.publish(m.PublicID, state, events)
 	return nil
 }
 
@@ -299,6 +301,63 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 		return view, err
 	}
 	return AgentView{}, ErrBusy // retries exhausted under heavy contention
+}
+
+// Say posts one line of free-form table talk during discussion.
+//
+// Separate from Act on purpose: this does not consume the seat's formal statement,
+// does not advance the phase, and may be called as often as the agent likes while
+// the floor is open. In Mafia the talking IS the game — an agent accused on the
+// floor has to be able to answer immediately, not wait for a turn.
+//
+// persist() broadcasts the resulting message event, so spectators see the line on
+// the same SSE stream, in the same tick, as everything else.
+func (s *Service) Say(ctx context.Context, agentPublicID, matchPublicID, text, tone string, target int) (AgentView, error) {
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
+	}
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		view, err := s.trySay(ctx, agentPublicID, matchPublicID, text, tone, target)
+		if errors.Is(err, ErrConcurrentUpdate) {
+			continue
+		}
+		return view, err
+	}
+	return AgentView{}, ErrBusy
+}
+
+func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text, tone string, target int) (AgentView, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if m.Status != StatusActive {
+		return AgentView{}, ErrNotActive
+	}
+	p := m.playerByAgent(agentPublicID)
+	if p == nil {
+		return AgentView{}, ErrNotPlayer
+	}
+	state, events, err := s.eng.Say(m.State, p.Seat, text, tone, target)
+	if err != nil {
+		if errors.Is(err, mf.ErrFinished) {
+			return AgentView{}, ErrNotActive
+		}
+		// Closed floor (night/voting), dead seat, or empty text.
+		return AgentView{}, ErrIllegalAction
+	}
+	if err := s.persist(ctx, m, state, events); err != nil {
+		return AgentView{}, err
+	}
+	m, err = s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, err
+	}
+	return s.viewFor(ctx, m, agentPublicID), nil
 }
 
 // tryAct is one optimistic-concurrency attempt: read the snapshot, validate, apply,
@@ -381,15 +440,32 @@ func nightSubmissionAdded(before, after mf.State) bool {
 	return len(after.MafiaKill)+len(after.NightActs) > len(before.MafiaKill)+len(before.NightActs)
 }
 
+// phaseWindow is how long the given phase may run before the sweeper forces it on.
+//
+// Each phase gets its own length (night is short and secret, discussion is the long
+// one where the game is actually played, voting is tighter) — a single flat window
+// either rushed the debate or left the table asleep for the same 45s. The lengths
+// come from the engine so the countdown a spectator runs off the phase event and
+// the deadline the server enforces are the same number by construction.
+//
+// cfg.PhaseWindow is still honoured as an explicit override when an operator sets
+// one, so existing deployments and tests can pin a fixed window.
+func (s *Service) phaseWindow(phase string) time.Duration {
+	if s.cfg.PhaseWindow > 0 {
+		return s.cfg.PhaseWindow
+	}
+	return mf.PhaseDuration(phase)
+}
+
 func (s *Service) persist(ctx context.Context, m Match, state mf.State, events []mf.Event) error {
 	if state.Finished {
 		return s.finalize(ctx, m, state, events)
 	}
-	deadline := s.clock.Now().Add(s.cfg.PhaseWindow)
+	deadline := s.clock.Now().Add(s.phaseWindow(state.Phase))
 	if err := s.repo.Advance(ctx, m.PublicID, state, &deadline, state.Alive, events); err != nil {
 		return err
 	}
-	s.publish(m.PublicID, events)
+	s.publish(m.PublicID, state, events)
 	return nil
 }
 
@@ -418,7 +494,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	if err := s.repo.Finish(ctx, m.PublicID, state, state.Winner, hash, players, events); err != nil {
 		return err
 	}
-	s.publish(m.PublicID, events)
+	s.publish(m.PublicID, state, events)
 
 	// Paid tables update the per-arena skill rating (TrueSkill, N-player). The
 	// result is faction-based and server-authoritative: the whole winning team ranks
@@ -534,8 +610,19 @@ type Notifier interface {
 func (s *Service) SetNotifier(n Notifier) { s.notify = n }
 
 // publish broadcasts events to spectators AND wakes any long-polling State callers.
-func (s *Service) publish(matchID string, events []mf.Event) {
+// publish pushes game events AND the resulting "thinking…" set.
+//
+// The pending set travels with the events that changed it, in the same tick, so a
+// seat that just spoke stops being pending exactly as its message appears rather
+// than a frame later. Taking state here (instead of a separate call) means no future
+// call site can emit events and silently leave a stale indicator behind.
+func (s *Service) publish(matchID string, state mf.State, events []mf.Event) {
 	s.bcast.Broadcast(matchID, events)
+	if state.Finished {
+		s.bcast.BroadcastPending(matchID, nil) // nobody is thinking any more
+	} else {
+		s.bcast.BroadcastPending(matchID, mf.PendingActors(state))
+	}
 	if s.notify != nil {
 		s.notify.Notify(matchID)
 	}
@@ -595,6 +682,17 @@ func stateVersion(st mf.State) string {
 		st.Day, st.Phase, st.NextSeq, len(st.NightActs), len(st.Votes), st.Messages, st.Finished)
 }
 
+// Roster returns the public seat → agent identities for a match. Public data only
+// (name, owner, avatar, alive) — roles are hidden information and never included,
+// so this is safe to serve to any spectator at any point in a live match.
+func (s *Service) Roster(ctx context.Context, matchPublicID string) ([]RosterSeat, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	return RosterOf(m.Players, m.State.Alive), nil
+}
+
 func (s *Service) Economy(ctx context.Context, matchPublicID string) (EconomySnapshot, []RewardRow, error) {
 	m, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -633,6 +731,47 @@ func (s *Service) ReplayPublic(ctx context.Context, matchPublicID string) ([]mf.
 		return events, nil
 	}
 	return mf.RedactLog(events), nil
+}
+
+// ReplayTimed is ReplayPublic with each event's original timestamp and the roster,
+// i.e. everything needed to replay a past match exactly as it happened — who said
+// what, to whom, and with the same pauses between lines.
+//
+// Redaction is identical to ReplayPublic: night secrets stay hidden until the match
+// is finished. Timing must never become a side channel that leaks them.
+func (s *Service) ReplayTimed(ctx context.Context, matchPublicID string) ([]TimedEvent, []RosterSeat, error) {
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return nil, nil, ErrNotFound
+	}
+	timed, err := s.repo.LoadEventsTimed(ctx, matchPublicID)
+	if err != nil {
+		return nil, nil, err
+	}
+	roster := RosterOf(m.Players, m.State.Alive)
+	if m.Status == StatusFinished {
+		return timed, roster, nil
+	}
+	// Mid-match: drop the same events RedactLog would, keeping their timestamps.
+	keep := make(map[int]bool, len(timed))
+	for _, ev := range mf.RedactLog(eventsOf(timed)) {
+		keep[ev.Seq] = true
+	}
+	out := make([]TimedEvent, 0, len(timed))
+	for _, te := range timed {
+		if keep[te.Event.Seq] {
+			out = append(out, te)
+		}
+	}
+	return out, roster, nil
+}
+
+func eventsOf(timed []TimedEvent) []mf.Event {
+	out := make([]mf.Event, 0, len(timed))
+	for _, te := range timed {
+		out = append(out, te.Event)
+	}
+	return out
 }
 
 func (s *Service) Live(ctx context.Context) ([]LiveMatch, error) {
@@ -691,9 +830,21 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 		Day: m.State.Day, Phase: m.State.Phase,
 		Alive: cloneAlive(m.State.Alive), EntryFee: m.EntryFee,
 		Economy: ComputeEconomy(len(m.Players), m.EntryFee, m.RakePct),
+		// Public identities only — roles stay in the redacted per-seat view.
+		Roster: RosterOf(m.Players, m.State.Alive),
+	}
+	if m.Status == StatusActive {
+		// Who the table is waiting on, straight from the rules. PendingActors was
+		// already computed for the runner and simply never surfaced.
+		v.Pending = mf.PendingActors(m.State)
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline
+		// Full phase length + whether talking is allowed right now. Together with
+		// DeadlineMs this is everything a client needs to render "NIGHT · 0:23" and
+		// disable the composer, without hardcoding the rules on the client.
+		v.PhaseDurationMs = s.phaseWindow(m.State.Phase).Milliseconds()
+		v.CanSpeak = mf.CanSpeak(m.State.Phase)
 		if m.RoundDeadline != nil {
 			if rem := m.RoundDeadline.Sub(s.clock.Now()).Milliseconds(); rem > 0 {
 				v.DeadlineMs = rem

@@ -229,7 +229,8 @@ func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.
 
 func (r *MonopolyRepo) loadAgents(ctx context.Context, matchPublicID string) ([]monopoly.Player, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT mp.seat, ag.public_id, u.public_id, COALESCE(mp.coins_delta, 0)
+		`SELECT mp.seat, ag.public_id, u.public_id, COALESCE(mp.coins_delta, 0),
+		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''), COALESCE(u.avatar_url, '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 JOIN users u ON u.id = mp.owner_user_id
@@ -242,7 +243,8 @@ func (r *MonopolyRepo) loadAgents(ctx context.Context, matchPublicID string) ([]
 	var out []monopoly.Player
 	for rows.Next() {
 		var p monopoly.Player
-		if err := rows.Scan(&p.Seat, &p.AgentPublicID, &p.OwnerPublicID, &p.CoinsDelta); err != nil {
+		if err := rows.Scan(&p.Seat, &p.AgentPublicID, &p.OwnerPublicID, &p.CoinsDelta,
+			&p.Name, &p.OwnerName, &p.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -325,6 +327,40 @@ func (r *MonopolyRepo) ListActiveExpired(ctx context.Context, game string, now t
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// LoadEventsTimed is LoadEvents plus each event's wall-clock write time, for a
+// replay that reproduces the original pacing. Separate from LoadEvents because the
+// plain events feed the replay hash and must stay byte-identical across a DB
+// round-trip; timing rides alongside as presentation data.
+func (r *MonopolyRepo) LoadEventsTimed(ctx context.Context, matchPublicID string) ([]monopoly.TimedEvent, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT seq, type, payload, created_at FROM match_events
+		 WHERE match_id = (SELECT id FROM matches WHERE public_id=$1)
+		 ORDER BY seq ASC`, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []monopoly.TimedEvent
+	for rows.Next() {
+		var seq int
+		var typ string
+		var payload []byte
+		var at time.Time
+		if err := rows.Scan(&seq, &typ, &payload, &at); err != nil {
+			return nil, err
+		}
+		var p any
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, err
+		}
+		out = append(out, monopoly.TimedEvent{
+			Event: mono.Event{Seq: seq, Type: mono.EventType(typ), Payload: p},
+			At:    at,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (r *MonopolyRepo) LoadEvents(ctx context.Context, matchPublicID string, afterSeq int) ([]mono.Event, error) {

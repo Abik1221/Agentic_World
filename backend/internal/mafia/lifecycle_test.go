@@ -28,7 +28,8 @@ func (l fakeLock) Lock(context.Context, string, time.Duration) (func(), bool, er
 
 type fakeBcast struct{}
 
-func (fakeBcast) Broadcast(string, []mf.Event) {}
+func (fakeBcast) Broadcast(string, []mf.Event)   {}
+func (fakeBcast) BroadcastPending(string, []int) {}
 
 // fakeRepo implements mafia.Repo; only the fields a given test needs are set.
 type fakeRepo struct {
@@ -84,6 +85,9 @@ func (f *fakeRepo) ListActiveExpired(context.Context, string, time.Time, int) ([
 	return f.expiredIDs, nil
 }
 func (f *fakeRepo) LoadEvents(context.Context, string, int) ([]mf.Event, error) { return nil, nil }
+func (f *fakeRepo) LoadEventsTimed(context.Context, string) ([]TimedEvent, error) {
+	return nil, nil
+}
 func (f *fakeRepo) LiveMatches(context.Context) ([]LiveMatch, error)            { return nil, nil }
 func (f *fakeRepo) CancelWaiting(context.Context, string, string) error         { return nil }
 func (f *fakeRepo) ExpireStaleWaiting(_ context.Context, cutoff time.Time, limit int) (int, error) {

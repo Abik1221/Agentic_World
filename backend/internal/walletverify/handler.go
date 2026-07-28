@@ -38,6 +38,7 @@ func (h *Handler) Register(r chi.Router) {
 		user := auth.RequireScope(auth.ScopeUser)
 		r.With(user).Post("/v1/wallet/verify/challenge", h.challenge)
 		r.With(user).Post("/v1/wallet/verify", h.verify)
+		r.With(user).Post("/v1/wallet/verify/unlink", h.unlink)
 	})
 }
 
@@ -83,4 +84,30 @@ func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"verified": true, "wallet_address": in.WalletAddress})
+}
+
+// unlink removes the linked payout wallet, so a user can take their wallet off the
+// account entirely. Gated by the same 2FA step-up as verify: both change where money
+// can be sent, so both need the second factor when the user has one.
+func (h *Handler) unlink(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		TOTPCode string `json:"totp_code"`
+	}
+	// Body is required (send `{}` when 2FA is off) — DecodeJSON rejects an empty body.
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if h.stepUp != nil {
+		if err := h.stepUp.Require(r.Context(), p.UserPublicID, in.TOTPCode); err != nil {
+			httpx.Error(w, err)
+			return
+		}
+	}
+	if err := h.svc.Unlink(r.Context(), p.UserPublicID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"unlinked": true})
 }

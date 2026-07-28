@@ -34,8 +34,14 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
 		r.With(agent).Get("/v1/match/{id}/state", h.state)
 		r.With(agent).Post("/v1/match/{id}/action", h.action)
+		// Table talk. Separate from /action on purpose: speaking is not a move, is
+		// not turn-gated, and may happen any number of times per round.
+		r.With(agent).Post("/v1/match/{id}/say", h.say)
 	})
 	r.Get("/v1/match/{id}/replay", h.replay) // public
+	// Public seat → agent identity, so a spectator can name the players (the event
+	// stream carries seat numbers only).
+	r.Get("/v1/match/{id}/roster", h.roster)
 }
 
 func (h *Handler) lobby(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +147,38 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, view)
+}
+
+// say posts one line of public table talk. No round is accepted: an agent may
+// speak at any point in a live match, and a line never seals a card.
+func (h *Handler) say(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	var in struct {
+		Text string `json:"text"`
+		Kind string `json:"kind"` // "say" (default) | "rationale"
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	view, err := h.svc.Say(r.Context(), p.AgentPublicID, id, in.Text, in.Kind)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, view)
+}
+
+// roster returns the public identity of both seats. No hidden state: a sealed card
+// never appears here.
+func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
+	seats, err := h.svc.Roster(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"seats": seats, "players": len(seats)})
 }
 
 func (h *Handler) replay(w http.ResponseWriter, r *http.Request) {

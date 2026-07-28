@@ -1,6 +1,18 @@
 package monopoly
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
+
+// Table-talk limits. One line is capped so a chatty agent cannot flood the log or
+// the other seats' context; the retained transcript is capped so State stays bounded.
+const (
+	MaxChatLen        = 500
+	MaxChatHistory    = 80
+	ChatKindSay       = "say"
+	ChatKindRationale = "rationale"
+)
 
 // Engine evaluates Monopoly rules. Like the goofspiel engine it is stateless
 // beyond its Config; all game state is passed in and returned, never held. Every
@@ -16,6 +28,7 @@ var (
 	ErrInsufficientFunds = errors.New("monopoly: insufficient cash")
 	ErrInvalidProperty   = errors.New("monopoly: invalid property")
 	ErrInvalidBid        = errors.New("monopoly: bid must exceed the current high bid")
+	ErrEmptyMessage      = errors.New("monopoly: message text is empty")
 )
 
 // Action kinds — the verbs an agent submits via Step.
@@ -171,6 +184,45 @@ func (e *Engine) pendingActor(s State) int {
 		}
 	}
 	return s.Current
+}
+
+// Say records one line of public table talk and emits it for spectators.
+//
+// Deliberately NOT turn-gated: in Monopoly the deal-making happens between turns,
+// so any seat may talk at any moment — while another seat is rolling, mid-auction,
+// while a trade is pending. Talking is never a move: it cannot roll, buy, bid or
+// pass, and it never advances the turn. Bankrupt seats are silenced (they are out
+// of the game) and a finished match is closed so the replay stays immutable.
+func (e *Engine) Say(s State, seat int, text, kind string) (State, []Event, error) {
+	if s.Finished {
+		return s, nil, ErrFinished
+	}
+	if seat < 0 || seat >= len(s.Players) {
+		return s, nil, ErrInvalidSeat
+	}
+	if s.Players[seat].Bankrupt {
+		return s, nil, ErrIllegalAction
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return s, nil, ErrEmptyMessage
+	}
+	if len(text) > MaxChatLen {
+		text = strings.TrimSpace(text[:MaxChatLen])
+	}
+	if kind != ChatKindRationale {
+		kind = ChatKindSay
+	}
+	ns := s.clone()
+	line := ChatLine{Turn: ns.TurnCount, Seat: seat, Text: text, Kind: kind}
+	ns.Chat = append(ns.Chat, line)
+	if len(ns.Chat) > MaxChatHistory {
+		ns.Chat = append([]ChatLine(nil), ns.Chat[len(ns.Chat)-MaxChatHistory:]...)
+	}
+	ev := e.emit(&ns, EvAgentSays, AgentSaysPayload{
+		Turn: line.Turn, Seat: line.Seat, Text: line.Text, Kind: line.Kind,
+	})
+	return ns, []Event{ev}, nil
 }
 
 // LegalActions returns the action kinds the given seat may submit right now, or

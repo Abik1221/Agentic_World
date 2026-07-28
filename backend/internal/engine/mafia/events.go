@@ -28,6 +28,11 @@ type Event struct {
 type PhasePayload struct {
 	Day   int    `json:"day"`
 	Phase string `json:"phase"`
+	// DurationMs is how long this phase runs. It ships with the phase event so a
+	// SPECTATOR can run the same countdown the players see — previously the shot
+	// clock existed only on the authenticated agent view, so watchers had no way
+	// to know how long night lasts or when debate closes.
+	DurationMs int64 `json:"duration_ms"`
 }
 
 type ModeratorPayload struct {

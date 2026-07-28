@@ -80,6 +80,19 @@ type State struct {
 	Winner     int           `json:"winner"` // valid only when Finished
 	History    []RoundResult `json:"history"`
 	NextSeq    int           `json:"next_seq"` // next event sequence number (gap-free per match)
+	// Chat is the public table talk, oldest first, capped at MaxChatHistory. It is
+	// part of State (not a side buffer) so it snapshots and reconstructs with the
+	// match, and so the agent view can hand every seat what the others have said —
+	// an agent that cannot read the table cannot answer it.
+	Chat []ChatLine `json:"chat,omitempty"`
+}
+
+// ChatLine is one spoken line, retained so later speakers can read it.
+type ChatLine struct {
+	Round int    `json:"round"`
+	Seat  int    `json:"seat"`
+	Text  string `json:"text"`
+	Kind  string `json:"kind"` // "say" | "rationale"
 }
 
 // clone returns a deep copy so transitions never mutate the caller's State.
@@ -87,6 +100,7 @@ func (s State) clone() State {
 	cp := s
 	cp.PrizeOrder = append([]int(nil), s.PrizeOrder...)
 	cp.History = append([]RoundResult(nil), s.History...)
+	cp.Chat = append([]ChatLine(nil), s.Chat...)
 	for seat := 0; seat < 2; seat++ {
 		cp.Hands[seat] = append([]int(nil), s.Hands[seat]...)
 		if s.Sealed[seat] != nil {

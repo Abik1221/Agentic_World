@@ -118,7 +118,8 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 
 func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]match.Player, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT ag.public_id, u.public_id, mp.seat, COALESCE(mp.final_score,0), COALESCE(mp.coins_delta,0)
+		`SELECT ag.public_id, u.public_id, mp.seat, COALESCE(mp.final_score,0), COALESCE(mp.coins_delta,0),
+		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''), COALESCE(u.avatar_url, '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 JOIN users  u  ON u.id  = mp.owner_user_id
@@ -131,7 +132,8 @@ func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	var out []match.Player
 	for rows.Next() {
 		var p match.Player
-		if err := rows.Scan(&p.AgentPublicID, &p.OwnerPublicID, &p.Seat, &p.FinalScore, &p.CoinsDelta); err != nil {
+		if err := rows.Scan(&p.AgentPublicID, &p.OwnerPublicID, &p.Seat, &p.FinalScore, &p.CoinsDelta,
+			&p.Name, &p.OwnerName, &p.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -319,6 +321,41 @@ func (r *MatchRepo) CancelWaiting(ctx context.Context, matchPublicID, creatorAge
 		return match.ErrNotWaiting
 	}
 	return nil
+}
+
+// LoadEventsTimed is LoadEvents plus each event's wall-clock write time.
+//
+// Separate from LoadEvents on purpose: the plain events feed the fairness proof and
+// the replay hash, both of which require gs.Event to be byte-identical between memory
+// and a DB round-trip. Timing is presentation data for pacing, so it rides alongside.
+func (r *MatchRepo) LoadEventsTimed(ctx context.Context, matchPublicID string) ([]match.TimedEvent, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT seq, type, payload, created_at FROM match_events
+		 WHERE match_id = (SELECT id FROM matches WHERE public_id=$1)
+		 ORDER BY seq ASC`, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []match.TimedEvent
+	for rows.Next() {
+		var seq int
+		var typ string
+		var payload []byte
+		var at time.Time
+		if err := rows.Scan(&seq, &typ, &payload, &at); err != nil {
+			return nil, err
+		}
+		var p any
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, err
+		}
+		out = append(out, match.TimedEvent{
+			Event: gs.Event{Seq: seq, Type: gs.EventType(typ), Payload: p},
+			At:    at,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (r *MatchRepo) LoadEvents(ctx context.Context, matchPublicID string) ([]gs.Event, error) {

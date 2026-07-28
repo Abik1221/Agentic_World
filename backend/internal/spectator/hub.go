@@ -7,12 +7,18 @@
 package spectator
 
 import (
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// unsequencedSeq tags a live-only frame (presence / "thinking…") that carries no
+// `id:` line, so it bypasses sequence dedup and never moves Last-Event-ID.
+const unsequencedSeq = -1
 
 // frame is one pre-encoded SSE event tagged with its sequence number so a
 // resuming client can dedup against its backlog.
@@ -77,6 +83,41 @@ func (h *Hub) SetMaxConns(n int) {
 // Broadcast pushes events to every watcher of matchPublicID. It NEVER blocks: a
 // subscriber whose buffer is full is dropped (drop-slow). Implements
 // match.Broadcaster.
+// BroadcastPending pushes the "thinking…" set to watchers.
+//
+// Ephemeral presence, deliberately kept OUT of the log: it is derived from state (an
+// unsealed seat), so it can always be recomputed and never needs replaying — and
+// keeping it out leaves the fairness-proof log untouched. Both seats seal
+// simultaneously in Goofspiel, so this is normally two seats at once.
+//
+// Dropped for slow consumers rather than killing them: a missed typing indicator is
+// harmless, unlike a missed game event.
+func (h *Hub) BroadcastPending(matchPublicID string, seats []int) {
+	if matchPublicID == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"pending": seats})
+	if err != nil {
+		return
+	}
+	fr := frame{seq: unsequencedSeq, data: []byte(fmt.Sprintf("event: pending\ndata: %s\n\n", body))}
+
+	h.mu.RLock()
+	targets := make([]*sub, 0, len(h.subs[matchPublicID]))
+	for s := range h.subs[matchPublicID] {
+		targets = append(targets, s)
+	}
+	h.mu.RUnlock()
+
+	for _, s := range targets {
+		select {
+		case s.ch <- fr:
+		default:
+			// Presence is disposable.
+		}
+	}
+}
+
 func (h *Hub) Broadcast(matchPublicID string, events []gs.Event) {
 	if len(events) == 0 {
 		return

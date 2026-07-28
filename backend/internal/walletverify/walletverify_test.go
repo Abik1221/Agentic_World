@@ -36,6 +36,10 @@ func (r *fakeRepo) ClearChallenge(_ context.Context, user string) error {
 	delete(r.ch, user)
 	return nil
 }
+func (r *fakeRepo) ClearVerified(_ context.Context, user string) error {
+	delete(r.verified, user)
+	return nil
+}
 
 // newWallet returns a fresh Solana keypair as (base58 address, signer).
 func newWallet(t *testing.T) (string, ed25519.PrivateKey) {
@@ -112,6 +116,42 @@ func TestVerifyNoChallenge(t *testing.T) {
 	addr, priv := newWallet(t)
 	if err := svc.Verify(context.Background(), "usr_a", addr, sign(priv, "x")); err != walletverify.ErrNoChallenge {
 		t.Fatalf("no challenge = %v, want ErrNoChallenge", err)
+	}
+}
+
+// Unlink takes the wallet back off the account: a verified wallet, then no wallet, and
+// a pending challenge cleared along with it.
+func TestUnlinkRemovesVerifiedWallet(t *testing.T) {
+	repo := newRepo()
+	svc := newSvc(repo)
+	ctx := context.Background()
+	addr, priv := newWallet(t)
+
+	msg, _, err := svc.StartChallenge(ctx, "usr_a", addr)
+	if err != nil {
+		t.Fatalf("challenge: %v", err)
+	}
+	if err := svc.Verify(ctx, "usr_a", addr, sign(priv, msg)); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+
+	if err := svc.Unlink(ctx, "usr_a"); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if w, ok := repo.verified["usr_a"]; ok {
+		t.Fatalf("wallet still linked after unlink: %q", w)
+	}
+	if _, ok := repo.ch["usr_a"]; ok {
+		t.Fatal("pending challenge survived unlink")
+	}
+}
+
+// Unlinking with nothing linked is a no-op, not an error — the UI can offer "remove"
+// without first proving a wallet exists.
+func TestUnlinkWithoutLinkedWalletIsNoop(t *testing.T) {
+	repo := newRepo()
+	if err := newSvc(repo).Unlink(context.Background(), "usr_a"); err != nil {
+		t.Fatalf("unlink on empty account: %v", err)
 	}
 }
 

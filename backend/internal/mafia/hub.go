@@ -11,6 +11,8 @@ package mafia
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -27,10 +29,18 @@ var ErrTooManyWatchers = httpx.NewError(http.StatusServiceUnavailable, "watchers
 
 // frame is one pre-encoded SSE event tagged with its sequence number so a
 // resuming client can dedup against its backlog.
+//
+// seq == unsequencedSeq marks a PRESENCE frame (who is thinking): live-only, never
+// persisted, never part of the replay. Such frames carry no `id:` line, so they do
+// not move the client's Last-Event-ID and cannot break resume — a reconnect picks up
+// from the last real game event, and fresh presence arrives on the next change.
 type frame struct {
 	seq  int
 	data []byte
 }
+
+// unsequencedSeq tags a live-only frame that must bypass sequence dedup entirely.
+const unsequencedSeq = -1
 
 // sub is a single watcher's buffered mailbox. Closing dead signals the handler
 // goroutine to disconnect (used when the buffer overflows = slow consumer).
@@ -92,6 +102,47 @@ func (h *Hub) RegisterMatch(matchID string) {
 // kill targets, investigation findings, doctor/sheriff actions and the acting
 // seats' roles — are stripped here so hidden information never leaves the server
 // mid-match. The full log is still persisted for the post-match replay.
+// BroadcastPending pushes the "thinking…" set to watchers of a match.
+//
+// This is ephemeral presence, deliberately kept OUT of the authoritative log: it is
+// derived from state (see Service.baseView / mf.PendingActors), so it can always be
+// recomputed and never needs to be replayed. Keeping it out of match_events also
+// keeps the log churn-free and leaves Goofspiel's fairness proof untouched.
+//
+// Dropped for slow consumers like any other frame — a lagging watcher missing a
+// typing indicator is harmless, and the next change resyncs it.
+func (h *Hub) BroadcastPending(matchID string, seats []int) {
+	if matchID == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]any{"pending": seats})
+	if err != nil {
+		return
+	}
+	// No `id:` line — this must not advance Last-Event-ID.
+	fr := frame{
+		seq:  unsequencedSeq,
+		data: []byte(fmt.Sprintf("event: pending\ndata: %s\n\n", body)),
+	}
+
+	h.mu.RLock()
+	targets := make([]*sub, 0, len(h.subs[matchID]))
+	for s := range h.subs[matchID] {
+		targets = append(targets, s)
+	}
+	h.mu.RUnlock()
+
+	for _, s := range targets {
+		select {
+		case s.ch <- fr:
+		case <-s.dead:
+		default:
+			// Presence is disposable: drop it rather than killing the watcher.
+			h.m.droppedSlow.Inc()
+		}
+	}
+}
+
 func (h *Hub) Broadcast(matchID string, events []mf.Event) {
 	if len(events) == 0 {
 		return

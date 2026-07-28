@@ -6,11 +6,13 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/benchmark"
+	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 )
 
@@ -145,6 +147,18 @@ type goofspielTurnView struct {
 	PrizeOrderCommit string           `json:"prize_order_commit"`
 	MoveWindowMs     int64            `json:"move_window_ms"`
 	DeadlineMs       int64            `json:"deadline_ms,omitempty"`
+	// Chat is what has been said at the table so far, oldest first. Without it an
+	// agent's `rationale` would be a monologue — it could talk but never answer.
+	Chat []goofspielChatLine `json:"chat,omitempty"`
+}
+
+// goofspielChatLine is one line of table talk as an agent sees it.
+type goofspielChatLine struct {
+	Round int    `json:"round"`
+	Seat  int    `json:"seat"`
+	You   bool   `json:"you"`
+	Text  string `json:"text"`
+	Kind  string `json:"kind"`
 }
 
 // goofspielRound is one resolved round in the turn view's history: the prize, both
@@ -233,6 +247,15 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 				Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 				Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
 			})
+			// Publish the agent's reasoning as table talk BEFORE its card lands, so
+			// spectators (and the opponent, who receives the transcript on its next
+			// view) see it argue its move rather than a silent number appearing.
+			// Best-effort: a rejected line must never block the move.
+			if strings.TrimSpace(rationale) != "" {
+				if _, serr := s.Say(ctx, id, matchID, rationale, gs.ChatKindRationale); serr != nil {
+					d.log.Debug("ranked drive: table talk not posted", "err", serr)
+				}
+			}
 			if _, err := s.DriveAct(ctx, id, matchID, v.Round, card); err == nil {
 				acted = true
 			}
@@ -273,7 +296,14 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, matchID st
 			YourCard: r.YourCard, OppCard: r.OppCard, Winner: r.Winner,
 		})
 	}
+	chat := make([]goofspielChatLine, 0, len(v.Chat))
+	for _, c := range v.Chat {
+		chat = append(chat, goofspielChatLine{
+			Round: c.Round, Seat: c.Seat, You: c.You, Text: c.Text, Kind: c.Kind,
+		})
+	}
 	req := goofspielTurnView{
+		Chat: chat,
 		Game: "goofspiel", MatchID: matchID, Seat: seat, Round: v.Round,
 		TotalRounds:  v.TotalRounds,
 		CurrentPrize: v.CurrentPrize, PrizePool: v.PrizePool,

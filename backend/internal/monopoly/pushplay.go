@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
@@ -239,6 +240,15 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			Seat: v.YourSeat, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
 			Round: round, Action: act.Kind, Rationale: rationale, Usage: usage,
 		})
+		// Publish the agent's reasoning as table talk BEFORE the move lands, so
+		// spectators (and the other seats, which receive the transcript on their
+		// next view) watch it argue the deal rather than a silent action appearing.
+		// Best-effort: a rejected line must never block the move.
+		if strings.TrimSpace(rationale) != "" {
+			if _, serr := s.Say(ctx, agentID, matchID, rationale, mono.ChatKindRationale); serr != nil {
+				p.log.Debug("monopoly push-play: table talk not posted", "err", serr)
+			}
+		}
 		if outcome.Fallback() {
 			fallbacks++
 		}

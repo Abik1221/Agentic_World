@@ -1,6 +1,9 @@
 package goofspiel
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // Engine evaluates Goofspiel rules. It is stateless beyond its Config; all game
 // state is passed in and returned, never held.
@@ -13,6 +16,16 @@ var (
 	ErrAlreadyActed = errors.New("goofspiel: seat already sealed this round")
 	ErrIllegalCard  = errors.New("goofspiel: card is not in the seat's hand")
 	ErrNotReady     = errors.New("goofspiel: both seats must seal before resolve")
+	ErrEmptyMessage = errors.New("goofspiel: message text is empty")
+)
+
+// Table-talk limits. One line is capped so a chatty agent cannot flood the log or
+// the opponent's context; the retained transcript is capped so State stays bounded.
+const (
+	MaxChatLen        = 500
+	MaxChatHistory    = 60
+	ChatKindSay       = "say"
+	ChatKindRationale = "rationale"
 )
 
 // New builds an engine, normalizing the config (defaults + clamps) so callers
@@ -85,6 +98,47 @@ func (e *Engine) Seal(s State, seat, card int) (State, []Event, error) {
 	v := card
 	ns.Sealed[seat] = &v
 	ev := e.emit(&ns, EvCardSealed, CardSealedPayload{Round: ns.Round, Seat: seat})
+	return ns, []Event{ev}, nil
+}
+
+// Say records one line of public table talk and emits it for spectators.
+//
+// Deliberately NOT turn-gated: any seat may speak at any point in a live match,
+// including while the other seat is still deciding, and speaking never consumes
+// a turn or blocks the round. Only the card itself is ordered — talk is free.
+// A finished match is closed to new talk so the replay stays immutable.
+//
+// Text is trimmed and clamped to MaxChatLen; empty text is rejected rather than
+// emitting a blank line into the log.
+func (e *Engine) Say(s State, seat int, text, kind string) (State, []Event, error) {
+	if s.Finished {
+		return s, nil, ErrFinished
+	}
+	if seat < 0 || seat > 1 {
+		return s, nil, ErrInvalidSeat
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return s, nil, ErrEmptyMessage
+	}
+	if len(text) > MaxChatLen {
+		text = strings.TrimSpace(text[:MaxChatLen])
+	}
+	if kind != ChatKindRationale {
+		kind = ChatKindSay
+	}
+	ns := s.clone()
+	line := ChatLine{Round: ns.Round, Seat: seat, Text: text, Kind: kind}
+	ns.Chat = append(ns.Chat, line)
+	// Bound the retained transcript: the log keeps every line, but State is
+	// snapshotted on every transition and handed to agents, so it must not grow
+	// without limit over a long match.
+	if len(ns.Chat) > MaxChatHistory {
+		ns.Chat = append([]ChatLine(nil), ns.Chat[len(ns.Chat)-MaxChatHistory:]...)
+	}
+	ev := e.emit(&ns, EvAgentSays, AgentSaysPayload{
+		Round: line.Round, Seat: line.Seat, Text: line.Text, Kind: line.Kind,
+	})
 	return ns, []Event{ev}, nil
 }
 
