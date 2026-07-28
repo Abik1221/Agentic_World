@@ -3,6 +3,7 @@ package manifest
 import (
 	"context"
 	"encoding/json"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"net/http"
 	"strings"
 
@@ -60,7 +61,17 @@ type Service struct {
 	repo   Repo
 	probe  EndpointProbe
 	sealer Sealer
+	// tracer records endpoint verification outcomes. Nil ⇒ telemetry off.
+	tracer LifecycleTracer
 }
+
+// LifecycleTracer records agent lifecycle transitions. Satisfied by *telemetry.Client.
+type LifecycleTracer interface {
+	EmitAgentLifecycle(eventType string, ev telemetry.LifecycleEvent)
+}
+
+// SetLifecycleTracer installs the lifecycle tracer (called once at wiring time).
+func (s *Service) SetLifecycleTracer(t LifecycleTracer) { s.tracer = t }
 
 // New builds the service. Pass a non-nil probe and sealer to enable endpoint
 // verification (M2); pass nil for both for metadata-only operation.

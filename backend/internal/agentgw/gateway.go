@@ -328,6 +328,19 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 	ws.SetReadLimit(1 << 20) // 1 MiB
 	_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{T: FrameRegistered, AgentID: agentID, Version: ProtocolVersion, LatestSDK: latestSDK, MinSDK: minSDK})
 	g.log.Info("agentgw: agent connected", "agent", agentID, "name", reg.AgentName, "games", reg.Games, "sdk", reg.SDKVersion, "sdk_lang", reg.SDKLanguage)
+	// Also as a first-class event. The log line above is INFO and the Lens tee
+	// defaults to WARN, so connect/disconnect were dropped before leaving the process
+	// — leaving "was the agent even connected, and when did it drop?" unanswerable
+	// from the observability product built to answer it.
+	g.em.EmitAgentLifecycle(telemetry.EventAgentConnected, telemetry.LifecycleEvent{
+		AgentID: agentID,
+		Detail: map[string]any{
+			"agent_name": reg.AgentName,
+			"games":      reg.Games,
+			"sdk":        reg.SDKVersion,
+			"sdk_lang":   reg.SDKLanguage,
+		},
+	})
 
 	// Writer + heartbeat run in the background; the read loop drives the lifetime.
 	var wg sync.WaitGroup
@@ -338,6 +351,7 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 	c.close(websocket.StatusNormalClosure, "")
 	wg.Wait()
 	g.log.Info("agentgw: agent disconnected", "agent", agentID)
+	g.em.EmitAgentLifecycle(telemetry.EventAgentDisconnected, telemetry.LifecycleEvent{AgentID: agentID})
 }
 
 // register installs c as the live connection for its agent id, displacing (and

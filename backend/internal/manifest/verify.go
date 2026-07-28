@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/agentclient"
@@ -75,7 +76,36 @@ func (s *Service) SetEndpointSecret(ctx context.Context, ownerPublicID, agentPub
 // advertised supportedGames must cover every game the manifest declares). On
 // full success the manifest is marked verified and becomes the agent's active
 // manifest. Every attempt (success or failure) is recorded for audit.
-func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, manifestPublicID string) (VerificationReport, error) {
+func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, manifestPublicID string) (report VerificationReport, err error) {
+	// Emit the OUTCOME once, whichever of the four exit paths is taken.
+	//
+	// A FAILED verification previously produced no telemetry at all — only a DB audit
+	// row — so a developer whose endpoint never passed had nothing to look at, and an
+	// operator could not see that verifications were failing in aggregate. A deferred
+	// emit also means a future early-return cannot silently skip it.
+	defer func() {
+		if s.tracer == nil || err != nil {
+			return // a hard error (not a verification verdict) is surfaced to the caller
+		}
+		evType := telemetry.EventAgentEndpointFailed
+		if report.Verified {
+			evType = telemetry.EventAgentEndpointVerified
+		}
+		s.tracer.EmitAgentLifecycle(evType, telemetry.LifecycleEvent{
+			AgentID: agentPublicID,
+			Reason:  report.Reason,
+			Detail: map[string]any{
+				"manifest":        manifestPublicID,
+				"health_ok":       report.HealthOK,
+				"handshake_ok":    report.HandshakeOK,
+				"games_covered":   report.GamesCovered,
+				"health_latency":  report.HealthLatency,
+				"sdk_version":     report.SDKVersion,
+				"supported_games": report.SupportedGames,
+			},
+		})
+	}()
+
 	if s.probe == nil {
 		return VerificationReport{}, ErrVerificationUnavailable
 	}
@@ -96,7 +126,7 @@ func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, mani
 		return VerificationReport{}, err
 	}
 
-	report := VerificationReport{ManifestID: manifestPublicID}
+	report = VerificationReport{ManifestID: manifestPublicID}
 	target := agentclient.Target{EndpointURL: m.EndpointURL, Token: token}
 	attempt := VerificationAttempt{ManifestPublicID: manifestPublicID}
 

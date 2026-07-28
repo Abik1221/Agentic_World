@@ -757,6 +757,10 @@ func run() error {
 	matchSvc.SetDecisionTracer(lens)
 	mafiaSvc.SetDecisionTracer(lens)
 	monopolySvc.SetDecisionTracer(lens)
+	// Endpoint verification outcomes. A FAILED verification previously produced no
+	// telemetry at all, so a developer whose endpoint never passed had nothing to look
+	// at and an operator could not see failures in aggregate.
+	manifestSvc.SetLifecycleTracer(lens)
 	matchSvc.SetLiveness(livenessTracker)
 	mafiaSvc.SetLiveness(livenessTracker)
 	monopolySvc.SetLiveness(livenessTracker)
