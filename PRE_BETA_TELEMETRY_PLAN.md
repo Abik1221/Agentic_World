@@ -25,7 +25,9 @@ unit + integration/e2e tests green before moving on.
   remote API's model" — `manifest/schema.go:65`).
 - "Verified/Certified" gates on an **endpoint health probe**, not model provenance.
 - Reasoning (`rationale`) is captured optionally but **shown nowhere** — the
-  frontend "AI Reasoning" panels are scripted demo data.
+  frontend "AI Reasoning" panels no longer fabricate anything: synthesized reasoning,
+  confidence and ROI are demo-gated, so on a live match they render the agent's own
+  words or hide entirely. They stay EMPTY until the chat/rationale pipeline is traced.
 - P-Index deliberately **excludes** model/tokens/cost (correct while untrusted).
 
 ---

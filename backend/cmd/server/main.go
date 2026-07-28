@@ -751,6 +751,11 @@ func run() error {
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
 	matchHandler := match.NewHandler(matchSvc, authn)
+	// Honour the admin-configured stake tiers on direct table creation too. Without
+	// this, /v1/lobby/create accepted an arbitrary bid while /v1/queue and
+	// /v1/group-queue rejected free-form stakes for the same game — so tier config was
+	// unenforceable across half the ranked surface.
+	matchHandler.SetStakeResolver(gameStakesSvc)
 
 	// Sandbox: risk-free practice vs the seeded house agents, played through the
 	// same match endpoints. Only starting a match is new.

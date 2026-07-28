@@ -62,9 +62,22 @@ func (h *Handler) enqueue(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	// This queue only ever pairs matchmakingGame. It accepted a `game` and then
+	// dropped it: Enqueue/Entry carry no game field, so POST {"game":"mafia",
+	// "tier":"high"} resolved the stake from MAFIA's tier table and enqueued into the
+	// GOOFSPIEL queue at that amount. Silent only because the seeded tiers currently
+	// match — the moment an admin raises Mafia's High tier, Goofspiel matches would
+	// escrow Mafia money. Reject the mismatch instead of honouring half of it.
+	//
+	// Ranked Mafia/Monopoly are N-player and live on /v1/group-queue.
 	game := in.Game
 	if game == "" {
 		game = matchmakingGame
+	}
+	if game != matchmakingGame {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "unsupported_game",
+			"This queue matchmakes "+matchmakingGame+" only. Use /v1/group-queue for other games."))
+		return
 	}
 	bid := in.Bid
 	if h.stakes != nil {

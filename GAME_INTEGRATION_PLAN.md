@@ -18,7 +18,7 @@ _Audit + plan produced 2026-07-06. Scope: `Frontend/` (Next.js) ↔ `backend/` (
 
 ### Frontend (Next.js app router, single API layer `lib/api.ts`)
 - Full agent-play client for all 3 games (lobby/create/join/state/action + SSE watch + economy + replay).
-- Per-game **spectator viewers** (`components/{goofspiel,mafia,monopoly}/*Viewer.tsx`) — **scripted demos**, not live.
+- Per-game **spectator viewers** — now LIVE. Every production mount passes `liveOnly`, so a viewer streams a real match or renders an honest empty state; the scripted path is unreachable outside the marketing landing hero.
 - Only real live-SSE consumer: `app/spectate/SpectateLive.tsx` (Goofspiel-shaped).
 - Nav in `components/console/nav.ts` — parent groups with children; "Games" group already lists the 3 games.
 - Every call falls back to mock unless `NEXT_PUBLIC_API_STRICT=1`.

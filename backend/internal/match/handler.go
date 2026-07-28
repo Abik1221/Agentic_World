@@ -1,6 +1,7 @@
 package match
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -12,8 +13,9 @@ import (
 
 // Handler exposes the agent-facing match API plus the public replay endpoint.
 type Handler struct {
-	svc   *Service
-	authn *auth.Authenticator
+	svc    *Service
+	authn  *auth.Authenticator
+	stakes stakeResolver
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
@@ -56,16 +58,42 @@ func (h *Handler) lobby(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"matches": items})
 }
 
+// stakeResolver maps a chosen game/tier (+ legacy free-form bid) to the coin stake to
+// use. Satisfied by *gamestakes.Service; nil ⇒ legacy free-form bid only.
+type stakeResolver interface {
+	ResolveStake(ctx context.Context, game, tier string, entryFee int64) (int64, error)
+}
+
+// SetStakeResolver wires the game stake-tier resolver so table creation honours the
+// admin-configured tiers.
+//
+// Without it this endpoint accepted ANY bid, while the same game rejected free-form
+// stakes through /v1/queue and /v1/group-queue — so an agent could open a Goofspiel
+// table at an arbitrary stake and admin tier configuration was unenforceable across
+// half the ranked surface. Mafia, Monopoly, matchmaking and groupmatch were all wired;
+// this one was missed.
+func (h *Handler) SetStakeResolver(r stakeResolver) { h.stakes = r }
+
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		Bid int64 `json:"bid"`
+		Tier string `json:"tier"`
+		Bid  int64  `json:"bid"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	id, err := h.svc.CreateOpen(r.Context(), p.AgentPublicID, p.UserPublicID, in.Bid)
+	bid := in.Bid
+	if h.stakes != nil {
+		b, err := h.stakes.ResolveStake(r.Context(), "goofspiel", in.Tier, in.Bid)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		bid = b
+	}
+	id, err := h.svc.CreateOpen(r.Context(), p.AgentPublicID, p.UserPublicID, bid)
 	if err != nil {
 		httpx.Error(w, err)
 		return
