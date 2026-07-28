@@ -105,7 +105,7 @@ type Config struct {
 	CoinsPerUSDC   int64         // peg: coins credited per 1 USDC (default 100)
 	USDCDecimals   int           // token decimals (USDC = 6)
 	SessionTTL     time.Duration // how long a deposit session stays open
-	MinDepositBase int64         // minimum deposit in token base units
+	MinDepositBase int64         // minimum deposit in token base units (fallback)
 	// DepositFeePct is the platform's cut on every deposit (default 5): the user is
 	// credited (100−fee)% of the pegged coins and the platform keeps the rest.
 	DepositFeePct int

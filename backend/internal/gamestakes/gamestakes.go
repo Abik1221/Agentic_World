@@ -75,8 +75,12 @@ type Service struct {
 	// present and accept stakes in dollars; it never enters money movement.
 	coinCents int64
 	// minStakeUSDCents is the floor on a paid tier. Zero disables the floor, which
-	// is what sandbox/practice deployments want.
+	// is what sandbox/practice deployments want. Used only when minStakeSource is nil.
 	minStakeUSDCents int64
+	// minStakeSource supplies the LIVE admin-configured floor. The floor is policy,
+	// not a constant, so an operator can move it without a redeploy. Nil ⇒ the static
+	// value above.
+	minStakeSource func() int64
 
 	mu    sync.RWMutex
 	cache map[string]cacheEntry
@@ -105,11 +109,26 @@ func (s *Service) SetCoinCents(cents int64) {
 	}
 }
 
-// SetMinStakeUSDCents overrides the paid-tier floor. Zero removes it.
+// SetMinStakeUSDCents overrides the static paid-tier floor. Zero removes it.
 func (s *Service) SetMinStakeUSDCents(cents int64) {
 	if cents >= 0 {
 		s.minStakeUSDCents = cents
 	}
+}
+
+// SetMinStakeSource wires the live admin-configured floor, checked at write time so a
+// change takes effect on the next save rather than the next deploy.
+func (s *Service) SetMinStakeSource(f func() int64) { s.minStakeSource = f }
+
+// minStake resolves the floor for a write happening now. A negative published value
+// is nonsense and falls back; zero is a deliberate "no floor" and is honoured.
+func (s *Service) minStake() int64 {
+	if s.minStakeSource != nil {
+		if c := s.minStakeSource(); c >= 0 {
+			return c
+		}
+	}
+	return s.minStakeUSDCents
 }
 
 // usdCents converts a coin stake to cents. Exact: the config gate requires
@@ -179,6 +198,19 @@ func (s *Service) List(ctx context.Context, game string) ([]Tier, error) {
 	// Priced in dollars as well as coins so a client renders "$5" without having to
 	// know the peg — the peg is ours to keep, not every caller's to reimplement.
 	return s.withUSD(out), nil
+}
+
+// LowestEnabledCoins returns the cheapest enabled tier for a game. ok is false when
+// the game has no enabled tiers, which callers use to fall back rather than to
+// silently browse a stake nobody configured.
+func (s *Service) LowestEnabledCoins(ctx context.Context, game string) (int64, bool) {
+	enabled, err := s.List(ctx, game)
+	if err != nil || len(enabled) == 0 {
+		return 0, false
+	}
+	// List returns tiers ordered by `ordering`, and AdminPut enforces that coins
+	// strictly increase with it, so the first entry is the cheapest by construction.
+	return enabled[0].Coins, true
 }
 
 // HasTiers reports whether a game has at least one ENABLED tier. Callers require a
@@ -287,9 +319,9 @@ func (s *Service) AdminPut(ctx context.Context, actor, game string, tiers []Tier
 		}
 		// The floor is checked on the RESOLVED coin value, not on whatever the caller
 		// sent, so it cannot be bypassed by submitting coins instead of dollars.
-		if s.minStakeUSDCents > 0 && s.usdCents(t.Coins) < s.minStakeUSDCents {
+		if floor := s.minStake(); floor > 0 && s.usdCents(t.Coins) < floor {
 			return errInvalid("tier " + t.Key + ": entry fee is below the $" +
-				strconv.FormatInt(s.minStakeUSDCents/100, 10) + " minimum")
+				strconv.FormatInt(floor/100, 10) + " minimum")
 		}
 		// Keep the echoed value consistent with what was actually stored, so the admin
 		// UI redisplays the real figure rather than the one that was submitted.

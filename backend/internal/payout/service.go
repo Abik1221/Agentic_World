@@ -37,8 +37,10 @@ type Service struct {
 	notifier  Notifier  // user notifications; nil ⇒ none
 	clock     platform.Clock
 	cfg       Config
-	log       *slog.Logger
-	m         *metrics
+	// economy supplies the LIVE admin-configured fee/minimum. Nil ⇒ static config.
+	economy func() (feePct int, minCoins int64)
+	log     *slog.Logger
+	m       *metrics
 }
 
 // SetGate wires the Super Admin withdrawal gate (walletadmin). Optional.
@@ -89,6 +91,35 @@ func New(repo Repo, bank Bank, xfer Transferrer, clock platform.Clock, cfg Confi
 // confirmation watcher (ConfirmBroadcasted) is a no-op until this is set.
 func (s *Service) SetConfirmer(c Confirmer) { s.confirmer = c }
 
+// SetEconomySource wires the LIVE admin-configured cash-out economics (withdrawal
+// fee %, minimum withdrawal in coins). Nil keeps the static config.
+//
+// Read when a withdrawal is REQUESTED. The resulting fee is persisted on the
+// withdrawal row and payout settles from that row, so an admin changing the fee never
+// re-prices a cash-out a user already asked for — they are charged the fee they were
+// quoted, which is the only defensible rule. Same timing contract as the match rake.
+func (s *Service) SetEconomySource(f func() (feePct int, minCoins int64)) { s.economy = f }
+
+// feePct resolves the withdrawal fee for a quote being made now.
+func (s *Service) feePct() int {
+	if s.economy != nil {
+		if p, _ := s.economy(); p >= 0 && p <= 50 {
+			return p
+		}
+	}
+	return s.cfg.SellFeePct
+}
+
+// minCoins resolves the minimum withdrawal for a request being made now.
+func (s *Service) minCoins() int64 {
+	if s.economy != nil {
+		if _, m := s.economy(); m > 0 {
+			return m
+		}
+	}
+	return s.cfg.MinCoins
+}
+
 // solana reports whether the service runs on the Solana payout rail.
 func (s *Service) solana() bool { return s.cfg.Chain == ChainSolana }
 
@@ -100,7 +131,7 @@ func (s *Service) quote(coins int64) Quote {
 		return Quote{}
 	}
 	gross := coins * s.cfg.CoinCents
-	feeCoins := coins * int64(s.cfg.SellFeePct) / 100
+	feeCoins := coins * int64(s.feePct()) / 100
 	stripeFee := gross*int64(s.cfg.StripeFeePct)/100 + s.cfg.StripeFeeFlatCents
 	net := (coins-feeCoins)*s.cfg.CoinCents - stripeFee
 	return Quote{Coins: coins, GrossCents: gross, FeeCoins: feeCoins, StripeFeeCents: stripeFee, NetCents: net}
@@ -254,7 +285,7 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 		}
 		// Minimum-withdrawal single source of truth: when the Super Admin gate is wired
 		// it owns the coin minimum/maximum; the env floor is only a no-gate fallback.
-		if s.gate == nil && coins < s.cfg.MinCoins {
+		if s.gate == nil && coins < s.minCoins() {
 			return ErrTooSmall
 		}
 		avail, err := s.repo.Withdrawable(ctx, agentPublicID)

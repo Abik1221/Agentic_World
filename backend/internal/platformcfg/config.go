@@ -121,6 +121,14 @@ type Reward struct {
 }
 
 // Economy is the coin economy + platform fees (economy_config, typed).
+//
+// Until now every field here except the commission was WRITE-ONLY: the Super Admin
+// published them, the bus carried them, this struct held them, and no code read them.
+// The operator could set a coin price or a minimum withdrawal and nothing changed,
+// because the arena served its own env vars instead. The accessors below are the read
+// side, and every one of them is bounded — these values arrive from another service,
+// so a corrupt or hostile publisher must not be able to set a 100% fee or a zero
+// minimum and drain the platform.
 type Economy struct {
 	PlatformCommissionPct int   `json:"platform_commission_pct"`
 	CoinPriceCentsPer100  int64 `json:"coin_price_cents_per_100"`
@@ -129,6 +137,77 @@ type Economy struct {
 	MinWithdrawalCents    int64 `json:"min_withdrawal_cents"`
 	MaxWithdrawalCents    int64 `json:"max_withdrawal_cents"`
 	ReferralRewardCoins   int64 `json:"referral_reward_coins"`
+	// WithdrawFeePct is the platform's cut on a cash-out. Same shape and same
+	// reasoning as PlatformCommissionPct: the operator sets a percentage.
+	WithdrawFeePct int `json:"withdraw_fee_pct"`
+	// MinStakeUSDCents is the paid-table floor the stake editor enforces. Admin-owned
+	// so the floor is a policy decision rather than a constant compiled into a binary.
+	MinStakeUSDCents int64 `json:"min_stake_usd_cents"`
+}
+
+// WithdrawFeePct is the live cash-out fee. Read when a withdrawal is REQUESTED; the
+// resulting fee is persisted on the withdrawal row and payout settles from that, so
+// changing the fee never re-prices a cash-out someone already asked for.
+//
+// Bounded 0..50: a fee above half the balance is indistinguishable from confiscation,
+// and this value crosses a service boundary. 0 is legitimate (a fee-free promotion).
+func (s *Snapshot) WithdrawFeePct(fallback int) int {
+	if s == nil {
+		return fallback
+	}
+	p := s.Economy.WithdrawFeePct
+	if p < 0 || p > 50 {
+		return fallback
+	}
+	return p
+}
+
+// MinWithdrawalCoins converts the admin's dollar minimum into coins at the given peg.
+// Zero or negative (unset, or a nonsense peg) falls back — a zero minimum would let
+// someone spam dust withdrawals, each of which costs a real on-chain fee the platform
+// absorbs.
+func (s *Snapshot) MinWithdrawalCoins(fallback, coinCents int64) int64 {
+	if s == nil || coinCents <= 0 || s.Economy.MinWithdrawalCents <= 0 {
+		return fallback
+	}
+	return s.Economy.MinWithdrawalCents / coinCents
+}
+
+// MinDepositCents is the smallest accepted top-up. Unset falls back.
+func (s *Snapshot) MinDepositCents(fallback int64) int64 {
+	if s == nil || s.Economy.MinPurchaseCents <= 0 {
+		return fallback
+	}
+	return s.Economy.MinPurchaseCents
+}
+
+// MaxDepositCents is the largest accepted top-up. Unset, or below the minimum (which
+// would reject every deposit), falls back.
+func (s *Snapshot) MaxDepositCents(fallback int64) int64 {
+	if s == nil || s.Economy.MaxPurchaseCents <= 0 {
+		return fallback
+	}
+	if s.Economy.MinPurchaseCents > 0 && s.Economy.MaxPurchaseCents < s.Economy.MinPurchaseCents {
+		return fallback
+	}
+	return s.Economy.MaxPurchaseCents
+}
+
+// MinStakeUSDCents is the admin-owned paid-table floor.
+//
+// No absence heuristic here, deliberately: the defaults snapshot is seeded from local
+// config and the published snapshot unmarshals OVER it, so a field the admin never
+// set is simply never on the wire and our own value survives untouched. That is the
+// same presence mechanism the commission relies on. Inferring "unset" from a zero —
+// or worse, from other fields also being zero — would make a legitimate 0 (a
+// deliberately floorless sandbox) impossible to express.
+//
+// Only a negative value is rejected, because it is not a policy anyone can mean.
+func (s *Snapshot) MinStakeUSDCents(fallback int64) int64 {
+	if s == nil || s.Economy.MinStakeUSDCents < 0 {
+		return fallback
+	}
+	return s.Economy.MinStakeUSDCents
 }
 
 // CommissionPct is the live platform rake, as a percentage, for a NEW match.

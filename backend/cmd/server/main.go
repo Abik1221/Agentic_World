@@ -576,6 +576,25 @@ func run() error {
 	liveRake := func(fallback int) func() int {
 		return func() int { return platformCfg.Get().CommissionPct(fallback) }
 	}
+	// The rest of the economy, read the same way. Every one of these was published by
+	// the Super Admin and read by NOTHING until now: the operator could set a coin
+	// price, a withdrawal fee or a deposit minimum and the arena would keep serving
+	// its own env vars. Each accessor is bounded, since these cross a service
+	// boundary and a corrupt publisher must not be able to set a 100% fee.
+	liveCashout := func() (int, int64) {
+		snap := platformCfg.Get()
+		return snap.WithdrawFeePct(cfg.WithdrawSellFeePct),
+			snap.MinWithdrawalCoins(cfg.WithdrawMinCoins, cfg.CoinCents)
+	}
+	liveMinDepositCents := func() int64 {
+		return platformCfg.Get().MinDepositCents(cfg.DepositMinUSDC * 100)
+	}
+	liveMinStakeUSDCents := func() int64 {
+		return platformCfg.Get().MinStakeUSDCents(cfg.MinStakeUSDCents)
+	}
+	// The paid-table floor is policy, not a constant: an operator moves it from the
+	// admin without a redeploy. Env stays the fallback for a bus-less deployment.
+	gameStakesSvc.SetMinStakeSource(liveMinStakeUSDCents)
 
 	mafiaSvc := mafia.NewService(
 		mafiaRepo,
@@ -586,9 +605,15 @@ func run() error {
 		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
-		mafia.Config{EntryFee: 100, PlatformFeePct: 10, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
+		// No hardcoded economics here: the stake comes from the admin's tiers (see
+		// SetDefaultStakeSource / SetRakeSource below) and these are only the
+		// fallbacks used when the admin has configured nothing at all.
+		mafia.Config{EntryFee: mafia.DefaultEntryFee, PlatformFeePct: cfg.RakePct, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
 	)
-	mafiaSvc.SetRakeSource(liveRake(mafia.DefaultPlatformFeePct))
+	mafiaSvc.SetRakeSource(liveRake(cfg.RakePct))
+	mafiaSvc.SetDefaultStakeSource(func(ctx context.Context) (int64, bool) {
+		return gameStakesSvc.LowestEnabledCoins(ctx, "mafia")
+	})
 	mafiaSvc.SetRater(ratingSvc) // paid tables update the per-arena Mafia rating (TrueSkill)
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
@@ -687,6 +712,9 @@ func run() error {
 			VelocityWindow: cfg.WithdrawVelocityWindow, MaxPerWindow: cfg.WithdrawMaxPerWindow,
 			MaxCentsPerWindow: cfg.WithdrawMaxCentsPerWindow, NewAddressCooldown: cfg.WithdrawNewAddressCooldown,
 		}, log, metrics.Registry())
+	// Cash-out economics from the admin, resolved when a withdrawal is REQUESTED and
+	// persisted on the row, so settlement never re-prices what the user was quoted.
+	payoutSvc.SetEconomySource(liveCashout)
 	if solanaXfer != nil {
 		// The transferrer also confirms finality; the watcher burns/releases escrow
 		// once each broadcast withdrawal reaches a terminal on-chain state.
@@ -722,7 +750,8 @@ func run() error {
 				SessionTTL: cfg.DepositSessionTTL, MinDepositBase: cfg.DepositMinUSDC * 1_000_000,
 			}, log)
 		depositSvc.SetGate(walletAdminSvc) // Super Admin deposit gate (settings/freeze)
-		depositSvc.SetNotifier(notifier)   // notify user when a deposit is credited
+		depositSvc.SetMinDepositSource(liveMinDepositCents)
+		depositSvc.SetNotifier(notifier) // notify user when a deposit is credited
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
 		depositHandler.SetRateLimit(depositRL)
 		launch("solana-deposit-listener", solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run)

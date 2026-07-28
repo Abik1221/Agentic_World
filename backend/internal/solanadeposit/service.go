@@ -24,6 +24,24 @@ type Service struct {
 	clock    platform.Clock
 	cfg      Config
 	log      *slog.Logger
+	// minDeposit supplies the LIVE admin-configured minimum, in CENTS. Nil ⇒ the
+	// static config value.
+	minDeposit func() int64
+}
+
+// SetMinDepositSource wires the admin-configured minimum top-up. The admin sets it in
+// dollars; USDC carries 6 decimals, so cents convert to base units at 10^4 each.
+// Nil, or a non-positive value, keeps the static config.
+func (s *Service) SetMinDepositSource(f func() int64) { s.minDeposit = f }
+
+// minDepositBase resolves the floor for a session being opened now, in base units.
+func (s *Service) minDepositBase() int64 {
+	if s.minDeposit != nil {
+		if cents := s.minDeposit(); cents > 0 {
+			return cents * 10_000
+		}
+	}
+	return s.cfg.MinDepositBase
 }
 
 // SetGate wires the Super Admin deposit gate (walletadmin). Optional.
@@ -83,8 +101,8 @@ func (s *Service) Create(ctx context.Context, userPublicID string, amountBase in
 	if amountBase <= 0 {
 		return Session{}, errInvalid("amount must be greater than zero")
 	}
-	if s.cfg.MinDepositBase > 0 && amountBase < s.cfg.MinDepositBase {
-		return Session{}, errInvalid(fmt.Sprintf("minimum deposit is %s USDC", s.formatUSDC(s.cfg.MinDepositBase)))
+	if minBase := s.minDepositBase(); minBase > 0 && amountBase < minBase {
+		return Session{}, errInvalid(fmt.Sprintf("minimum deposit is %s USDC", s.formatUSDC(minBase)))
 	}
 	coins := s.coinsFor(amountBase)
 	if coins <= 0 {

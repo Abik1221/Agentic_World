@@ -47,9 +47,16 @@ func Defaults(cfg *config.Config) *Snapshot {
 			MaxSeasonsStored: 50,
 		},
 		Rewards: nil,
+		// Seeded from local config so that an admin who has NOT configured a field
+		// leaves our value untouched: the published snapshot unmarshals over these,
+		// so absent-on-the-wire means "keep ours". Every accessor on Snapshot takes
+		// its fallback from here.
 		Economy: Economy{
 			PlatformCommissionPct: cfg.RakePct,
 			MinWithdrawalCents:    cfg.WithdrawMinCoins * cfg.CoinCents,
+			WithdrawFeePct:        cfg.WithdrawSellFeePct,
+			MinPurchaseCents:      cfg.DepositMinUSDC * 100,
+			MinStakeUSDCents:      cfg.MinStakeUSDCents,
 		},
 		Flags: map[string]FeatureFlag{},
 		// Empty supported-versions => the engine keeps its own built-in manifest

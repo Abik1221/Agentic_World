@@ -46,6 +46,8 @@ type Service struct {
 	finish FinishHook
 	clock  platform.Clock
 	cfg    Config
+	// defaultStake supplies the admin's cheapest enabled tier for lobby browsing.
+	defaultStake func(context.Context) (int64, bool)
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -147,7 +149,23 @@ func lockKey(id string) string { return "mafia:lock:" + id }
 // agent's concurrent joins serialize across both games. (M6)
 func agentJoinLockKey(agentPublicID string) string { return "agent:join:lock:" + agentPublicID }
 
+// SetDefaultStakeSource wires the admin's cheapest configured tier as the lobby's
+// default browse stake, so "show me the tables" lands on a stake the operator
+// actually offers instead of a constant compiled in months ago. Nil ⇒ static config.
+func (s *Service) SetDefaultStakeSource(f func(context.Context) (int64, bool)) {
+	s.defaultStake = f
+}
+
 func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID string) ([]LobbyItem, error) {
+	if entryFee <= 0 {
+		// The admin's lowest enabled tier, falling back to config only when no tiers
+		// are configured at all.
+		if s.defaultStake != nil {
+			if coins, ok := s.defaultStake(ctx); ok {
+				entryFee = coins
+			}
+		}
+	}
 	if entryFee <= 0 {
 		entryFee = s.cfg.EntryFee
 	}
