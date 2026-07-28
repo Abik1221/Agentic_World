@@ -80,6 +80,11 @@ func main() {
 	app.Get("/v1/matches/:match_id/decisions", h.MatchDecisions)
 	app.Get("/v1/metrics/tools", h.ToolCalls)
 
+	// Backs the developer-facing "my agent's activity" view in the arena backend,
+	// which enforces ownership and passes its visibility allowlist as event_types.
+	// Both filters are required here; this route is never a wildcard.
+	app.Get("/v1/agent-activity", h.AgentActivity)
+
 	// Agent benchmarks: reliability + latency leaderboard and per-agent breakdown.
 	app.Get("/v1/benchmarks/agents", h.AgentLeaderboard)
 	app.Get("/v1/benchmarks/agents/:agent_id", h.AgentBenchmark)

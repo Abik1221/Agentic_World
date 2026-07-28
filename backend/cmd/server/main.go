@@ -33,6 +33,7 @@ import (
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
+	"github.com/agent-arena/arena/internal/devtrace"
 	"github.com/agent-arena/arena/internal/docs"
 	mafiaengine "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/events"
@@ -537,6 +538,15 @@ func run() error {
 	devProfileSvc.SetCoinCents(cfg.CoinCents) // price lifetime earnings in USD
 	devProfileHandler := devprofile.NewHandler(devProfileSvc, authn)
 
+	// A developer's read-back of their OWN agent's traces. Ownership is resolved
+	// here (Postgres is the only place that knows it) and the visibility allowlist
+	// is applied twice — see internal/devtrace. Unconfigured Lens = the routes
+	// answer 503 rather than the arena failing to start.
+	devTraceHandler := devtrace.NewHandler(
+		devtrace.New(store.NewDevTraceRepo(st.DB), cfg.PyyolLensQueryEndpoint, cfg.PyyolLensAPIKey, cfg.PyyolLensOrg),
+		authn,
+	)
+
 	// All event handlers are now registered — start the dispatcher (see the NOTE at
 	// its handler-registration block above).
 	launch("event-dispatcher", eventBus.Run)
@@ -1028,6 +1038,7 @@ func run() error {
 		ratingHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,
+		devTraceHandler.Register,
 		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
 		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
 		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)

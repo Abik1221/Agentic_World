@@ -221,6 +221,11 @@ type Config struct {
 	// traces; failures, trace lifecycle, and benchmark facts are always kept.
 	// Default 1.0 (keep all); lower under high match volume.
 	PyyolLensTraceSampleRate float64
+	// PyyolLensQueryEndpoint is the Lens READ api (a different service and port from
+	// the ingest endpoint above), used to serve a developer their own agent's
+	// activity. Empty disables the developer trace view rather than failing requests:
+	// telemetry read-back is a convenience, and it must never take the arena down.
+	PyyolLensQueryEndpoint string
 
 	// LLMGatewayEnabled mounts the Pyyol LLM Gateway (/gw/*): a transparent reverse
 	// proxy that observes ranked agents' real model/token/cost by forwarding their
@@ -373,6 +378,7 @@ func Load() (*Config, error) {
 		PyyolLensOrg:             l.str("PYYOL_LENS_ORG", "pyyol"),
 		PyyolLensLogLevel:        l.str("PYYOL_LENS_LOG_LEVEL", "warn"),
 		PyyolLensTraceSampleRate: l.floatVal("PYYOL_LENS_TRACE_SAMPLE_RATE", 1.0),
+		PyyolLensQueryEndpoint:   l.str("PYYOL_LENS_QUERY_ENDPOINT", ""),
 
 		PlatformEnginePrivateKey: l.str("PLATFORM_ENGINE_PRIVATE_KEY", ""),
 		PlatformAdminPublicKey:   l.str("PLATFORM_ADMIN_PUBLIC_KEY", ""),
