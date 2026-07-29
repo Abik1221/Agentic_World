@@ -151,7 +151,10 @@ jobs:
           SANDBOX_ENABLED=true
           AGENT_VERIFY_ALLOW_PRIVATE=false
           ALLOW_MINT=false
-          HCAPTCHA_SECRET=${HCAPTCHA_SECRET}
+          # :- like every other optional value here. This was the ONLY one without a
+          # fallback, so it depended entirely on the env: block above still declaring
+          # the key — remove that line and `set -u` aborts the whole deploy.
+          HCAPTCHA_SECRET=${HCAPTCHA_SECRET:-}
 
           # ── Data layer (Postgres + Redis run in this compose) ──
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
