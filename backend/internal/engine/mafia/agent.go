@@ -25,11 +25,22 @@ type Agent interface {
 type Bot struct {
 	name string
 	rng  *hashRand
+	// seed is kept so table talk can derive its own stream. Chat MUST NOT draw from
+	// b.rng: that stream drives move selection, and interleaving a variable number of
+	// chat draws into it would change which moves come out — breaking replay.
+	seed []byte
+	// turn counts Decide calls, so a seat asked twice in one discussion phase does
+	// not repeat itself word for word.
+	turn int
 }
 
 // NewBot builds a deterministic bot for a seat.
 func NewBot(name string, seed []byte, seat int) *Bot {
-	return &Bot{name: name, rng: newHashRand(seed, fmt.Sprintf("bot:%d", seat))}
+	return &Bot{
+		name: name,
+		rng:  newHashRand(seed, fmt.Sprintf("bot:%d", seat)),
+		seed: append([]byte(nil), seed...),
+	}
 }
 
 func (b *Bot) Name() string { return b.name }
@@ -41,10 +52,15 @@ func (b *Bot) Decide(v AgentView) Action {
 	case PhaseNight:
 		return b.decideNight(v)
 	case PhaseDiscussion:
-		return Action{
-			Kind: ActMessage, Tone: "info",
-			Text: fmt.Sprintf("Seat %d shares a read on the table.", v.Seat),
+		// Was one hardcoded sentence for every bot, every round, every match. See
+		// chat.go: intent comes from the transcript, wording from the match seed.
+		b.turn++
+		if act, ok := Speak(b.seed, v, b.turn); ok {
+			return act
 		}
+		// Staying quiet is a legitimate move, and a table where everyone speaks every
+		// round is the other way to look mechanical.
+		return Action{}
 	case PhaseVoting:
 		return Action{Kind: ActVote, Target: b.voteTarget(v)}
 	}
