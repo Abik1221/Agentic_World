@@ -25,7 +25,7 @@ jobs:
       # Build both SDKs so the cross-language e2e tests (agentgw crosslang_test)
       # actually RUN instead of skipping — they drive the REAL Python + JS SDK
       # connectors against the Go gateway over WSS.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Build JS SDK (for the cross-lang e2e)
