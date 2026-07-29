@@ -39,12 +39,58 @@ type Service struct {
 	cfg       Config
 	// economy supplies the LIVE admin-configured fee/minimum. Nil ⇒ static config.
 	economy func() (feePct int, minCoins int64)
-	log     *slog.Logger
-	m       *metrics
+	// breaker halts ALL payouts when total outflow spikes. Nil disables it.
+	breaker *Breaker
+	// totals feeds the breaker platform-wide volume. Satisfied by the payout repo.
+	totals PayoutTotals
+	log    *slog.Logger
+	m      *metrics
 }
 
 // SetGate wires the Super Admin withdrawal gate (walletadmin). Optional.
 func (s *Service) SetGate(g Gate) { s.gate = g }
+
+// SetBreaker wires the payout circuit breaker. Nil leaves payouts unguarded.
+func (s *Service) SetBreaker(b *Breaker, totals PayoutTotals) {
+	s.breaker, s.totals = b, totals
+}
+
+// BreakerState reports the halt status for the admin surface.
+func (s *Service) BreakerState() (open bool, reason string, since time.Time) {
+	if s.breaker == nil {
+		return false, "", time.Time{}
+	}
+	return s.breaker.Tripped()
+}
+
+// ResumePayouts clears a tripped breaker. Deliberately an explicit human action —
+// see the note on Breaker.
+func (s *Service) ResumePayouts(adminUserID string) {
+	if s.breaker == nil {
+		return
+	}
+	open, reason, since := s.breaker.Tripped()
+	s.breaker.Reset()
+	if open {
+		s.log.Warn("payout: circuit breaker RESET by admin",
+			"admin", adminUserID, "was_open_since", since, "original_reason", reason)
+	}
+}
+
+// checkBreaker guards a payout about to happen. Evaluated at BOTH request and
+// approval: request is where a flood first shows up, and approval is where the money
+// actually leaves — a queue built up before the breaker tripped must not drain
+// afterwards just because each item was accepted earlier.
+func (s *Service) checkBreaker(ctx context.Context, pendingCents int64) error {
+	if s.breaker == nil || s.totals == nil {
+		return nil
+	}
+	if err := s.breaker.Check(ctx, s.totals, s.clock.Now(), pendingCents); err != nil {
+		s.log.Error("payout: CIRCUIT BREAKER OPEN — payouts halted", "error", err)
+		return err
+	}
+	return nil
+}
 
 // SetNotifier wires the user-notification writer. Optional.
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
@@ -296,6 +342,12 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 			return ErrInsufficient
 		}
 		q := s.quote(coins)
+		// Inside the lock on purpose: outside it, a burst of concurrent requests each
+		// read the same pre-burst volume and every one of them passes. Serialized,
+		// each sees the committed total including its siblings.
+		if err := s.checkBreaker(ctx, q.NetCents); err != nil {
+			return err
+		}
 		if q.NetCents <= 0 {
 			return ErrTooSmall
 		}
@@ -352,6 +404,13 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 	// (adminUserID == ""), so they are always a distinct approver and are unaffected. (M2)
 	if adminUserID != "" && adminUserID == w.Owner {
 		return ErrSelfApproval
+	}
+	// Approval is where money actually leaves, so it is checked again here — not only
+	// at request time. A queue of withdrawals accepted BEFORE the breaker tripped must
+	// not drain afterwards just because each was individually approved earlier; that is
+	// exactly the backlog an attacker would build.
+	if err := s.checkBreaker(ctx, w.NetCents); err != nil {
+		return err
 	}
 	if s.clock.Now().Sub(w.RequestedAt) < s.cfg.Clearing {
 		return ErrClearing
