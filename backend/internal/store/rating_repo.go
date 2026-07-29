@@ -256,14 +256,27 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 		   ORDER BY agent_public_id, created_at DESC
 		 ),
 		 bench AS (
-		   SELECT agent_id,
-		          SUM(latency_sum_ms) AS lat_sum,
-		          SUM(decisions)      AS decisions,
-		          SUM(tokens)         AS tokens,
-		          SUM(estimated_cost) AS cost
-		   FROM agent_match_benchmark
-		   WHERE game = $2
-		   GROUP BY agent_id
+		   -- Joined to matches for REAL wall-clock game time. Tokens-per-minute is the
+		   -- headline efficiency number on the public models board, and dividing by
+		   -- thinking time instead would answer a different question (throughput while
+		   -- deciding) under a label that promises game time. Only finished matches
+		   -- with a sane duration contribute, so a stuck or aborted match cannot
+		   -- inflate the denominator to near-zero and produce an absurd rate.
+		   SELECT b.agent_id,
+		          SUM(b.latency_sum_ms) AS lat_sum,
+		          SUM(b.decisions)      AS decisions,
+		          SUM(b.tokens)         AS tokens,
+		          SUM(b.estimated_cost) AS cost,
+		          SUM(b.legal)          AS legal,
+		          SUM(b.fallbacks)      AS fallbacks,
+		          SUM(EXTRACT(EPOCH FROM (m.finished_at - m.started_at))) FILTER (
+		            WHERE m.finished_at IS NOT NULL AND m.started_at IS NOT NULL
+		              AND m.finished_at > m.started_at
+		          ) AS play_seconds
+		   FROM agent_match_benchmark b
+		   LEFT JOIN matches m ON m.public_id = b.match_id
+		   WHERE b.game = $2
+		   GROUP BY b.agent_id
 		 )
 		 SELECT mdl.provider, mdl.model,
 		        COUNT(*)::int                              AS agents,
@@ -274,7 +287,11 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 		        COALESCE(SUM(r.coins_earned),0)::bigint    AS coins_won,
 		        COALESCE(ROUND(SUM(b.lat_sum) / NULLIF(SUM(b.decisions),0)),0)::int AS avg_latency_ms,
 		        COALESCE(SUM(b.cost),0)::double precision  AS est_cost_usd,
-		        COALESCE(SUM(b.tokens),0)::bigint          AS tokens
+		        COALESCE(SUM(b.tokens),0)::bigint          AS tokens,
+		        COALESCE(SUM(b.legal),0)::bigint           AS legal,
+		        COALESCE(SUM(b.fallbacks),0)::bigint       AS fallbacks,
+		        COALESCE(SUM(b.decisions),0)::bigint       AS decisions,
+		        COALESCE(SUM(b.play_seconds),0)::double precision AS play_seconds
 		 FROM mdl
 		 JOIN agents  a ON a.public_id = mdl.agent_public_id AND a.kind <> 'house'
 		 JOIN ratings r ON r.agent_id = a.id AND r.game = $2 AND r.season = $1
@@ -290,7 +307,8 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 	for rows.Next() {
 		var s rating.ModelStat
 		if err := rows.Scan(&s.Provider, &s.Model, &s.Agents, &s.Wins, &s.Losses, &s.Ties, &s.AvgElo, &s.CoinsWon,
-			&s.AvgLatencyMs, &s.EstCostUSD, &s.Tokens); err != nil {
+			&s.AvgLatencyMs, &s.EstCostUSD, &s.Tokens,
+			&s.Legal, &s.Fallbacks, &s.Decisions, &s.PlaySeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

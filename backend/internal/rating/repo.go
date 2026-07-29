@@ -60,6 +60,28 @@ type ModelStat struct {
 	AvgLatencyMs int     `json:"avg_latency_ms"`
 	EstCostUSD   float64 `json:"est_cost_usd"`
 	Tokens       int64   `json:"tokens"`
+
+	// Raw counters behind the derived rates below. Exposed so a caller can audit the
+	// arithmetic instead of taking a score on faith.
+	Legal       int64   `json:"legal"`
+	Fallbacks   int64   `json:"fallbacks"`
+	Decisions   int64   `json:"decisions"`
+	PlaySeconds float64 `json:"play_seconds"`
+
+	// TokensPerMin is token throughput per minute of REAL match wall-clock time —
+	// the practical "what will this model cost me to run" signal. 0 when no finished
+	// match has contributed a duration yet.
+	TokensPerMin float64 `json:"tokens_per_min"`
+	// LegalRate and FallbackRate are the model's move quality: how often it produced a
+	// legal move, and how often the engine had to substitute one because it did not.
+	LegalRate    float64 `json:"legal_rate"`
+	FallbackRate float64 `json:"fallback_rate"`
+	// Intelligence is the 0..1000 score, computed with the SAME weights and
+	// thresholds as the P-Index intelligence dimension (see migration 0051). Reusing
+	// that formula matters: a second, differently-defined "intelligence" number on a
+	// public page would contradict the one on developer profiles, and neither would
+	// be trustworthy. 0 until the model has enough decisions to score honestly.
+	Intelligence int `json:"intelligence"`
 }
 
 // Standing is one agent's season position (for "your rank this season").

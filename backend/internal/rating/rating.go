@@ -329,8 +329,70 @@ func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int)
 		if decisive := m.Wins + m.Losses; decisive > 0 {
 			m.WinRate = float64(m.Wins) / float64(decisive)
 		}
+		deriveModelQuality(m)
 	}
 	return BenchmarkPage{Season: season, Game: game, Models: models}, nil
+}
+
+// Intelligence scoring constants, mirroring the P-Index v2 intelligence dimension
+// (migration 0051). They are duplicated as named constants rather than re-read from
+// pindex_config because this is a public read path that must not depend on whether an
+// operator has activated a config version — but the VALUES must stay in step, which
+// is why they are named after their source.
+const (
+	intelWLegal       = 0.4
+	intelWReliability = 0.4
+	intelWSpeed       = 0.2
+	intelLatencyFast  = 500.0  // ms/decision at or below which speed scores full marks
+	intelLatencySlow  = 8000.0 // ms/decision at or above which speed scores nothing
+	intelMinDecisions = 200    // below this, the sample is too small to score honestly
+	intelScale        = 1000
+)
+
+// deriveModelQuality computes the public efficiency + quality figures for one model.
+//
+// Every one of these is 0 rather than a guess when the inputs are missing. A model
+// with no finished matches showing "0 tokens/min" is honest; showing an extrapolated
+// rate from a partial match would be a number nobody could reproduce.
+func deriveModelQuality(m *ModelStat) {
+	// Tokens per minute of real match wall-clock.
+	if m.PlaySeconds > 0 && m.Tokens > 0 {
+		m.TokensPerMin = float64(m.Tokens) / (m.PlaySeconds / 60)
+	}
+	if m.Decisions <= 0 {
+		return
+	}
+	d := float64(m.Decisions)
+	m.LegalRate = float64(m.Legal) / d
+	m.FallbackRate = float64(m.Fallbacks) / d
+
+	// The intelligence score needs a real sample. Below the threshold it stays 0 and
+	// the UI says "not enough data" — a model that played three turns must not be
+	// able to top a public leaderboard on a lucky run.
+	if m.Decisions < intelMinDecisions {
+		return
+	}
+	reliability := 1 - m.FallbackRate
+	speed := 1.0
+	if lat := float64(m.AvgLatencyMs); lat > intelLatencyFast {
+		if lat >= intelLatencySlow {
+			speed = 0
+		} else {
+			speed = 1 - (lat-intelLatencyFast)/(intelLatencySlow-intelLatencyFast)
+		}
+	}
+	score := intelWLegal*m.LegalRate + intelWReliability*clamp01(reliability) + intelWSpeed*speed
+	m.Intelligence = int(clamp01(score) * intelScale)
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // Standing returns an agent's rank + totals in the given arena for the current season.
