@@ -27,6 +27,30 @@ type Stats struct {
 	FavoriteArena    string `json:"favorite_arena,omitempty"`
 }
 
+// SandboxStats is practice activity — matches played against the house.
+//
+// A SEPARATE TYPE from Stats, deliberately, and that separation is the whole design.
+// Sandbox is unrated: it never touches the ratings table, never moves coins, and must
+// never influence reputation, or the P-Index becomes farmable for free against
+// deterministic bots and the "verified" signal collapses.
+//
+// Keeping them as distinct types rather than a flag on one struct means the two can
+// never be accidentally summed. A future change that wants a combined total has to say
+// so explicitly, in a place a reviewer will see, instead of a boolean quietly flipping
+// somewhere and practice wins leaking into a public record.
+//
+// It exists at all because effort should be visible: a developer who has practised 200
+// matches currently has nothing on their profile showing that work.
+type SandboxStats struct {
+	TotalMatches int `json:"total_matches"`
+	// ByGame is practice matches per arena, so the profile can show WHERE the work
+	// went rather than one opaque number.
+	ByGame map[string]int `json:"by_game,omitempty"`
+	// LastPlayed powers "practising recently" — activity is only interesting if it is
+	// current, and a stale count reads as abandoned.
+	LastPlayed *time.Time `json:"last_played,omitempty"`
+}
+
 // ArenaStat is the developer's standing in one arena (best agent's rating + summed record).
 type ArenaStat struct {
 	Game    string `json:"game"`
@@ -108,6 +132,8 @@ type Repo interface {
 	// ResolveHandle finds a developer by username OR user public id.
 	ResolveHandle(ctx context.Context, handle string) (Identity, bool, error)
 	Stats(ctx context.Context, userPublicID string, season int) (Stats, []ArenaStat, error)
+	// SandboxActivity returns unrated practice counts. Never mixed into Stats.
+	SandboxActivity(ctx context.Context, userPublicID string) (SandboxStats, error)
 	// LifetimeCoinsEarned sums net coins earned across all of the developer's
 	// (non-house) agents and every season — the basis for total USD earnings.
 	LifetimeCoinsEarned(ctx context.Context, userPublicID string) (int64, error)

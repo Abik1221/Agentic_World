@@ -25,16 +25,19 @@ type PIndexView struct {
 
 // DeveloperProfile is the permanent public profile.
 type DeveloperProfile struct {
-	Developer     Identity         `json:"developer"`
-	Season        int              `json:"season"`
-	PIndex        *pindex.Snapshot `json:"p_index"`
-	Stats         Stats            `json:"stats"`
-	Arenas        []ArenaStat      `json:"arenas"`
-	Agents        []AgentCard      `json:"agents"`
-	RecentMatches []MatchRow       `json:"recent_matches"`
-	Achievements  []Badge          `json:"achievements"`
-	Followers     int              `json:"followers"`
-	Following     int              `json:"following"`
+	Developer Identity         `json:"developer"`
+	Season    int              `json:"season"`
+	PIndex    *pindex.Snapshot `json:"p_index"`
+	Stats     Stats            `json:"stats"`
+	// Sandbox is unrated PRACTICE, carried in its own field so no consumer can mistake
+	// it for competitive record. It shows effort; it never contributes to reputation.
+	Sandbox       SandboxStats `json:"sandbox"`
+	Arenas        []ArenaStat  `json:"arenas"`
+	Agents        []AgentCard  `json:"agents"`
+	RecentMatches []MatchRow   `json:"recent_matches"`
+	Achievements  []Badge      `json:"achievements"`
+	Followers     int          `json:"followers"`
+	Following     int          `json:"following"`
 	// TotalEarningsUSD is the developer's lifetime net winnings (coins earned across
 	// all of their agents and seasons) converted to US dollars via the coin peg.
 	TotalEarningsUSD float64 `json:"total_earnings_usd"`
@@ -92,6 +95,11 @@ func (s *Service) Profile(ctx context.Context, handle string) (DeveloperProfile,
 		return DeveloperProfile{}, true, err
 	}
 	p.Stats, p.Arenas = stats, arenas
+	// Practice activity. A failure here must not blank a developer's whole profile —
+	// competitive record is the important half, so sandbox degrades to zero.
+	if sb, err := s.repo.SandboxActivity(ctx, id.UserPublicID); err == nil {
+		p.Sandbox = sb
+	}
 
 	if p.Agents, err = s.repo.Agents(ctx, id.UserPublicID, season); err != nil {
 		return DeveloperProfile{}, true, err

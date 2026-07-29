@@ -12,6 +12,7 @@ import (
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"time"
 )
 
 // DevProfileRepo is the pgx implementation of devprofile.Repo: it reads the
@@ -100,6 +101,46 @@ func (r *DevProfileRepo) Stats(ctx context.Context, userPublicID string, season 
 		arenas = append(arenas, a)
 	}
 	return st, arenas, rows.Err()
+}
+
+// SandboxActivity counts a developer's unrated practice matches.
+//
+// Reads from `matches` (mode = 'sandbox'), NOT from ratings — sandbox never writes a
+// ratings row, which is exactly why this needs its own query rather than a filter on
+// the reputation ones. Those stay untouched and stay competitive-only.
+//
+// House agents are excluded from the owner side so the developer's own seat is
+// counted once, not once per opponent on the table.
+func (r *DevProfileRepo) SandboxActivity(ctx context.Context, userPublicID string) (devprofile.SandboxStats, error) {
+	out := devprofile.SandboxStats{ByGame: map[string]int{}}
+	rows, err := r.db.Query(ctx,
+		`SELECT m.game, COUNT(DISTINCT m.id)::int, MAX(m.finished_at)
+		   FROM matches m
+		   JOIN match_players mp ON mp.match_id = m.id
+		   JOIN agents a         ON a.id = mp.agent_id
+		  WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
+		    AND a.kind <> 'house'
+		    AND m.mode = 'sandbox'
+		    AND m.status = 'finished'
+		  GROUP BY m.game`, userPublicID)
+	if err != nil {
+		return devprofile.SandboxStats{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var game string
+		var n int
+		var last *time.Time
+		if err := rows.Scan(&game, &n, &last); err != nil {
+			return devprofile.SandboxStats{}, err
+		}
+		out.ByGame[game] = n
+		out.TotalMatches += n
+		if last != nil && (out.LastPlayed == nil || last.After(*out.LastPlayed)) {
+			out.LastPlayed = last
+		}
+	}
+	return out, rows.Err()
 }
 
 func (r *DevProfileRepo) Agents(ctx context.Context, userPublicID string, season int) ([]devprofile.AgentCard, error) {
