@@ -209,6 +209,19 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 	}
 	rec, err := s.repo.CredentialsByEmail(ctx, normEmail)
 	if err != nil {
+		// Fall back to the address EXACTLY as typed.
+		//
+		// Sign-up now folds Gmail aliases (dots, +tags, googlemail.com) so one inbox
+		// cannot hold several accounts. Anyone who registered a dotted address BEFORE
+		// that rule existed is stored dotted, and canonicalising their login would
+		// stop matching their own row — locking them out of an account holding real
+		// coins. Trying the literal form second costs one query on a failed login and
+		// nothing on a successful one.
+		if literal := strings.ToLower(strings.TrimSpace(email)); literal != normEmail {
+			rec, err = s.repo.CredentialsByEmail(ctx, literal)
+		}
+	}
+	if err != nil {
 		equalizeTiming(password, s.pepper)
 		return LoginResult{}, ErrInvalidCredentials
 	}

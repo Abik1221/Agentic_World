@@ -1,0 +1,56 @@
+# Automated dependency updates, as PRs — never as a build-time mutation.
+#
+# The alternative people reach for is `npm audit fix` / `go get -u` inside the deploy
+# job. It is worse on both counts. It breaks reproducibility (the image you deploy is
+# not the image CI tested, because the lockfile changed after the tests ran), and with
+# --force it happily ships MAJOR downgrades: on this repo's client it proposes
+# @solana/web3.js 0.0.3, which would remove the wallet entirely. Auto-applying that at
+# 3am with nobody watching is how a security tool becomes the outage.
+#
+# So: Dependabot opens the bump, CI runs the full suite against it, a human merges.
+# Currency WITH verification. The vuln-gate job (ci.yml) is the other half — it fails
+# the build if a known-vulnerable dependency is reachable, so one cannot be merged
+# even by hand.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 10
+    groups:
+      go-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directory: /tracing/backend
+    schedule: { interval: weekly }
+    groups:
+      go-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /sdk/js
+    schedule: { interval: weekly }
+    groups:
+      js-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /tracing/web
+    schedule: { interval: weekly }
+    groups:
+      web-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /sdk/python
+    schedule: { interval: weekly }
+
+  # The toolchain itself: Docker base images and pinned Action versions drift out of
+  # support just as quietly as libraries do.
+  - package-ecosystem: docker
+    directory: /backend
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

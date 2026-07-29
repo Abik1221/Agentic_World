@@ -1,0 +1,74 @@
+# Fails the build when a KNOWN-VULNERABLE dependency is actually reachable.
+#
+# This is the half that has teeth. Dependabot proposes fixes; this stops anything
+# vulnerable being merged in the first place, including by hand.
+#
+# govulncheck is used rather than a plain `go list` diff because it does REACHABILITY
+# analysis: it reports only advisories whose vulnerable symbol your code can actually
+# call. That keeps the signal honest — a CVE in a transitive dependency you never
+# invoke does not block a release at 2am, so nobody learns to bypass the gate.
+name: vuln-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly: a dependency you never touch can become vulnerable without any commit,
+    # so a push-only gate would go stale and quietly stop protecting anything.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [backend, tracing/backend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Patch-current within a supported series. Bare "latest" would let a new
+          # major land mid-deploy and break the build with no commit to blame.
+          go-version: "1.26.x"
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+      - name: govulncheck
+        working-directory: ${{ matrix.module }}
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  npm:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [sdk/js, tracing/web]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - name: npm audit (production deps)
+        working-directory: ${{ matrix.dir }}
+        run: |
+          # --omit=dev: a vulnerable build-time tool is not a shipped vulnerability,
+          # and treating it as one trains people to ignore the gate.
+          npm audit --omit=dev --audit-level=high
+
+  python-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit
+        working-directory: sdk/python
+        run: |
+          python -m pip install --quiet pip-audit
+          pip-audit --strict --desc

@@ -80,9 +80,9 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 		// values — persisting a slug that did not correspond to the stored name.
 		AgentName: agentName,
 		AgentSlug: slugify(agentName),
-		KeyPrefix:     key.Prefix,
-		KeyHash:       key.Hash,
-		Limits:        DefaultLimits(),
+		KeyPrefix: key.Prefix,
+		KeyHash:   key.Hash,
+		Limits:    DefaultLimits(),
 	})
 	if err != nil {
 		return GoogleLoginResult{}, err

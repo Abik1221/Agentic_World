@@ -101,7 +101,43 @@ func normalizeEmail(raw string) (email string, ok bool) {
 	if !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
 		return "", false
 	}
-	return strings.ToLower(addr.Address), true
+	return canonicalizeEmail(strings.ToLower(addr.Address)), true
+}
+
+// canonicalizeEmail folds provider-specific aliases so ONE mailbox cannot hold two
+// accounts.
+//
+// The column is CITEXT UNIQUE, so case was already handled. Aliases were not:
+// n.a.h.o.m@gmail.com, nahom+test@gmail.com and nahom@googlemail.com all deliver to
+// the same inbox but were three separate sign-ups — which matters here because a new
+// account carries a referral reward, so "one inbox, unlimited accounts" is a farm.
+//
+// DELIBERATELY LIMITED TO GOOGLE. Dot-insensitivity is a Gmail behaviour, not a
+// standard: for most providers user.name@ and username@ are DIFFERENT mailboxes, and
+// plus is a legal local-part character (RFC 5321) that some hosts treat literally.
+// Canonicalizing those would silently merge two real people's accounts, which is a
+// far worse failure than letting one person hold an alias. So unknown domains are
+// left exactly as typed, and the rule only widens if we can point at a provider's
+// documented behaviour.
+func canonicalizeEmail(lower string) string {
+	at := strings.LastIndex(lower, "@")
+	if at <= 0 {
+		return lower
+	}
+	local, domain := lower[:at], lower[at+1:]
+	if domain != "gmail.com" && domain != "googlemail.com" {
+		return lower
+	}
+	// Gmail: everything from the first '+' is a user-chosen tag, and dots are ignored.
+	if plus := strings.IndexByte(local, '+'); plus >= 0 {
+		local = local[:plus]
+	}
+	local = strings.ReplaceAll(local, ".", "")
+	if local == "" {
+		return lower // "+tag@gmail.com" is not a real address; leave it to fail elsewhere
+	}
+	// googlemail.com is an alias of gmail.com — same mailbox, different spelling.
+	return local + "@gmail.com"
 }
 
 // validatePassword enforces the minimum-strength rules for a new password.
