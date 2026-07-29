@@ -118,6 +118,51 @@ type Overview struct {
 	TreasuryObservedAt time.Time `json:"treasury_observed_at,omitempty"`
 }
 
+// UserDetail is everything an operator needs about ONE developer, in one place.
+//
+// Deliberately a DIFFERENT shape from the public profile. A developer sees their
+// record; an operator needs the money and the behaviour behind it — what was staked,
+// what was paid out, what the platform earned from them, and whether any of it looks
+// wrong. Reusing the public profile here would mean an operator investigating a
+// refund had to open four screens and join the numbers by eye.
+//
+// Sandbox is reported SEPARATELY from competitive throughout, for the same reason it
+// is on the public profile: practice against deterministic bots is not comparable to
+// staked play, and a combined figure hides exactly the pattern an operator is looking
+// for (someone farming practice, or someone whose real losses do not match their
+// deposits).
+type UserDetail struct {
+	PublicID  string    `json:"public_id"`
+	Username  string    `json:"username,omitempty"`
+	Email     string    `json:"email,omitempty"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+
+	Agents int `json:"agents"`
+
+	// Play, split by mode — never summed.
+	CompetitiveMatches int `json:"competitive_matches"`
+	SandboxMatches     int `json:"sandbox_matches"`
+	Wins               int `json:"wins"`
+	Losses             int `json:"losses"`
+
+	// Money, all in COINS unless the name says cents. Balance is what they hold now;
+	// the rest is lifetime flow.
+	Balance          int64 `json:"balance"`
+	LifetimeDeposits int64 `json:"lifetime_deposits"`
+	LifetimeWinnings int64 `json:"lifetime_winnings"`
+	WithdrawnCoins   int64 `json:"withdrawn_coins"`
+	// PlatformRevenue is what the platform earned FROM THIS USER — rake on their
+	// settled matches plus withdrawal fees. The number that answers "is this account
+	// worth the support cost".
+	PlatformRevenue int64 `json:"platform_revenue"`
+	// PendingWithdrawals is money committed to leaving but not yet gone.
+	PendingWithdrawals int64 `json:"pending_withdrawals"`
+
+	// Tokens burned by their agents — the platform's inference cost for this user.
+	TokensUsed int64 `json:"tokens_used"`
+}
+
 // Repo is the read-only data access the admin surface needs. Implemented by
 // store.AdminRepo. All lists are newest-first and bounded by (limit, offset).
 type Repo interface {
@@ -127,6 +172,8 @@ type Repo interface {
 	ListPayments(ctx context.Context, limit, offset int) ([]Payment, error)
 	ListDisputes(ctx context.Context, status string, limit, offset int) ([]Dispute, error)
 	Overview(ctx context.Context) (Overview, error)
+	// UserDetail is the per-developer operator view. Not the public profile.
+	UserDetail(ctx context.Context, userPublicID string) (UserDetail, bool, error)
 }
 
 // Handler serves the admin-read routes.
@@ -175,6 +222,8 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		r.With(guard).Get("/v1/admin/users", h.users)
+		r.Use(h.authn.Middleware)
+		r.With(guard).Get("/v1/admin/users/{id}", h.userDetail)
 		r.With(guard).Get("/v1/admin/agents", h.agents)
 		r.With(guard).Get("/v1/admin/matches", h.matches)
 		r.With(guard).Get("/v1/admin/payments", h.payments)
@@ -187,6 +236,23 @@ func (h *Handler) users(w http.ResponseWriter, r *http.Request) {
 	limit, offset := page(r)
 	items, err := h.repo.ListUsers(r.Context(), limit, offset)
 	writeList(w, "users", items, limit, offset, err)
+}
+
+// userDetail serves one developer's operator record.
+func (h *Handler) userDetail(w http.ResponseWriter, r *http.Request) {
+	d, found, err := h.repo.UserDetail(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if !found {
+		httpx.Error(w, httpx.ErrNotFound)
+		return
+	}
+	// Money figures must never be served from a cache — an operator acting on a stale
+	// balance is exactly how a double refund happens.
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, d)
 }
 
 func (h *Handler) agents(w http.ResponseWriter, r *http.Request) {
