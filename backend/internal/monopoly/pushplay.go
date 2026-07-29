@@ -163,6 +163,16 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 	// Per-match benchmark: record every driven decision's outcome + latency for
 	// the developer's seat, emitted (durably when wired) at match end.
 	rec := benchmark.NewRecorder("monopoly", matchID)
+	// Read the stake ONCE per match, not per decision. Monopoly marks practice by a
+	// zero entry fee (see CreateTable), and sandbox decisions must be distinguishable
+	// in telemetry — mixing unrated practice into latency, cost or reliability figures
+	// makes all three meaningless. A failed read falls back to competitive: the
+	// conservative direction, since mislabelling real play as practice would hide it
+	// from the figures that matter.
+	mode := ModeCompetitive
+	if m, err := s.repo.Get(context.Background(), matchID); err == nil && m.EntryFee <= 0 {
+		mode = ModeSandbox
+	}
 	var agentMeta benchmark.AgentMeta
 	if p.meta != nil {
 		agentMeta = p.meta(ctx, agentID)
@@ -245,6 +255,7 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 		if s.decisionTracer != nil {
 			de := telemetry.DecisionEvent{
 				Game: GameName, MatchID: matchID, AgentID: agentID, Seat: v.YourSeat,
+				Mode:  mode,
 				Round: round, Action: act.Kind, Outcome: string(outcome),
 				LatencyMS: latencyMS, Rationale: rationale,
 				MeterSource: telemetry.MeterSourceSDK,

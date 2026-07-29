@@ -34,9 +34,15 @@ type DecisionEvent struct {
 	Outcome   string
 	LatencyMS int64
 	// Rationale is the agent's own reasoning, when it supplied any.
-	Rationale        string
-	Provider         string
-	Model            string
+	Rationale string
+	Provider  string
+	Model     string
+	// Mode is "sandbox" or "competitive". Carried on every decision because the two
+	// are not comparable and must never be aggregated together: sandbox is unrated
+	// practice against deterministic house bots, so mixing it into latency, cost or
+	// reliability figures makes every one of them meaningless. Without this field the
+	// trace UI cannot separate them at all — the events look identical on the wire.
+	Mode             string
 	PromptTokens     int64
 	CompletionTokens int64
 	TotalTokens      int64
@@ -66,6 +72,11 @@ func (c *Client) EmitAgentDecision(ev DecisionEvent) {
 	}
 	if ev.Rationale != "" {
 		payload["rationale"] = ev.Rationale
+	}
+	// Mode rides in the payload so a query can split sandbox from competitive without
+	// joining back to the match table — the trace store has no access to it.
+	if ev.Mode != "" {
+		payload["mode"] = ev.Mode
 	}
 	c.EmitEvent(Event{
 		// Same trace id as the rest of the match, so decisions, chat and lifecycle all

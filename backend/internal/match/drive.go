@@ -257,6 +257,13 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 					Round: v.Round, Action: strconv.Itoa(card), Outcome: string(outcome),
 					LatencyMS: latencyMS, Rationale: rationale,
 					MeterSource: telemetry.MeterSourceSDK,
+					// Sandbox and competitive are not comparable; tagging at the source
+					// is what lets the trace UI keep them apart later.
+					// maybeDrive is reached only from the competitive pairing path;
+					// sandbox matches are driven elsewhere and never enter this loop.
+					// Constant rather than a lookup: a per-decision query for a value
+					// that cannot vary here would be pure cost.
+					Mode: ModeCompetitive,
 				}
 				if usage != nil {
 					de.Provider, de.Model = usage.Provider, usage.Model

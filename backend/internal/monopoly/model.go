@@ -15,11 +15,17 @@ const (
 	StatusAborted  = "aborted"
 	GameName       = "monopoly"
 
-	DefaultEntryFee       int64 = 0 // practice tables by default; stake >0 for pooled play
-	DefaultPlatformFeePct int   = 10
-	DefaultPlayers        int   = 4
-	MinPlayers            int   = 2
-	MaxPlayers            int   = 8
+	DefaultEntryFee int64 = 0 // practice tables by default; stake >0 for pooled play
+
+	// Play modes, for telemetry. Monopoly marks practice by a ZERO entry fee rather
+	// than a column, so these name the distinction in one place instead of leaving
+	// bare strings at each emit site.
+	ModeCompetitive           = "competitive"
+	ModeSandbox               = "sandbox"
+	DefaultPlatformFeePct int = 10
+	DefaultPlayers        int = 4
+	MinPlayers            int = 2
+	MaxPlayers            int = 8
 )
 
 // Player is one REAL (agent-controlled) seat. Bot seats are NOT persisted as
