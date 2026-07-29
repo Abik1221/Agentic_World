@@ -173,6 +173,26 @@ func (r *PayoutRepo) WithdrawnSince(ctx context.Context, ownerUserPublicID strin
 	return count, cents, nil
 }
 
+// NetPaidBetween sums PLATFORM-WIDE net payout cents filed in a period — the input to
+// the payout circuit breaker.
+//
+// Deliberately not per-owner: the breaker exists precisely to catch what per-owner
+// limits cannot, which is many accounts each withdrawing a legal amount at once.
+//
+// Counts anything that has left or is committed to leaving ('requested' onward), not
+// just 'paid'. A queue of approved-but-unsent payouts is money already gone as far as
+// the treasury is concerned, and waiting for settlement to notice would mean the
+// breaker trips after the drain rather than during it.
+func (r *PayoutRepo) NetPaidBetween(ctx context.Context, from, to time.Time) (int64, error) {
+	var cents int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(SUM(w.net_cents), 0) FROM withdrawals w
+		  WHERE w.requested_at >= $1 AND w.requested_at < $2
+		    AND w.status IN ('requested','approved','processing','broadcasted','paid')`,
+		from, to).Scan(&cents)
+	return cents, err
+}
+
 func (r *PayoutRepo) AgentFlagged(ctx context.Context, agentPublicID string) (bool, error) {
 	var flagged bool
 	err := r.db.QueryRow(ctx,
