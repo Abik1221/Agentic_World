@@ -205,3 +205,59 @@ func TestSeatsDoNotRepeatEachOtherInARound(t *testing.T) {
 		}
 	}
 }
+
+// Talk has to matter. A seat that spends the round accusing seat 3 and then votes
+// seat 1 reads as broken, not as bluffing — and it makes the discussion decorative.
+func TestTownVotesTheSeatItAccused(t *testing.T) {
+	seed := []byte("coherence-seed")
+	me, accused := 4, 3
+	tgt := accused
+	v := AgentView{
+		Seat: me, Day: 1, Phase: PhaseVoting, Role: RoleVillager,
+		Alive:  map[int]bool{1: true, 2: true, 3: true, 4: true, 5: true},
+		Public: []Event{msg(me, "I'm on seat 3", &tgt)},
+	}
+	if got := NewBot("b", seed, me).voteTarget(v); got != accused {
+		t.Fatalf("voted seat %d after accusing seat %d — the discussion is decorative", got, accused)
+	}
+}
+
+// With no read of its own, a seat follows the table's pressure rather than seat order.
+func TestTownFollowsTheTablesPressure(t *testing.T) {
+	seed := []byte("pressure-seed")
+	me, hot := 5, 3
+	tgt := hot
+	v := AgentView{
+		Seat: me, Day: 1, Phase: PhaseVoting, Role: RoleVillager,
+		Alive: map[int]bool{1: true, 2: true, 3: true, 4: true, 5: true},
+		Public: []Event{
+			msg(1, "seat 3 is quiet", &tgt),
+			msg(2, "agreed on 3", &tgt),
+		},
+	}
+	if got := NewBot("b", seed, me).voteTarget(v); got != hot {
+		t.Fatalf("voted seat %d while the table was pressuring seat %d", got, hot)
+	}
+}
+
+// A vote must never land on the voter or a dead seat, however the talk went.
+func TestVoteNeverTargetsSelfOrTheDead(t *testing.T) {
+	seed := []byte("safety-seed")
+	me, dead := 2, 3
+	self, corpse := me, dead
+	v := AgentView{
+		Seat: me, Day: 1, Phase: PhaseVoting, Role: RoleVillager,
+		Alive: map[int]bool{1: true, 2: true, 3: false, 4: true},
+		Public: []Event{
+			msg(1, "it's seat 2", &self),  // accused of being me
+			msg(4, "no, seat 3", &corpse), // pointing at a corpse
+		},
+	}
+	got := NewBot("b", seed, me).voteTarget(v)
+	if got == me {
+		t.Fatal("voted for itself")
+	}
+	if got == dead {
+		t.Fatal("voted for an eliminated seat")
+	}
+}

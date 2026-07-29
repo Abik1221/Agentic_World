@@ -103,11 +103,59 @@ func (b *Bot) voteTarget(v AgentView) int {
 			return t[0]
 		}
 	}
+	// Vote the way you argued.
+	//
+	// Town used to fall through to "lowest living seat", which made every table
+	// predictable (survive by not being seat 1) and — now that the bots actually
+	// discuss — incoherent: a seat would spend the round accusing seat 3 and then
+	// vote seat 1. A player reading the transcript would watch bots contradict
+	// themselves, which reads as broken rather than as bluffing.
+	//
+	// So town follows the accusation it made, or the loudest one on the table. This
+	// also makes the discussion MATTER: talk you can influence changes the vote, which
+	// is the whole point of practising against it.
+	if t := b.accusationTarget(v); t > 0 && v.Alive[t] && t != v.Seat {
+		return t
+	}
 	others := aliveOthers(v)
 	if len(others) > 0 {
 		return others[0]
 	}
 	return v.Seat
+}
+
+// accusationTarget returns the seat this bot argued against this round, falling back
+// to whoever the table pressured most. Its own accusation wins: a seat that talks
+// itself into a read and then follows someone else's is not how a table behaves.
+func (b *Bot) accusationTarget(v AgentView) int {
+	tally := map[int]int{}
+	mine := 0
+	for _, e := range v.Public {
+		m, ok := e.Payload.(MessagePayload)
+		if !ok || m.Target == nil {
+			continue
+		}
+		t := *m.Target
+		if t == v.Seat || !v.Alive[t] {
+			continue // never vote yourself, or a corpse
+		}
+		if m.From == v.Seat {
+			mine = t
+		}
+		tally[t]++
+	}
+	if mine > 0 {
+		return mine
+	}
+	// Otherwise the seat under the most pressure. Ties resolve to the lowest seat so
+	// the choice stays deterministic and replay-stable.
+	best, bestN := 0, 0
+	for seat, n := range tally {
+		if n > bestN || (n == bestN && seat < best) {
+			best, bestN = seat, n
+		}
+	}
+	return best
 }
 
 // knownMafia returns seats this agent has personally proven are Mafia, from its own
