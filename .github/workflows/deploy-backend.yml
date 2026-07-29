@@ -180,7 +180,11 @@ jobs:
           CHECKOUT_CANCEL_URL=${BASE_URL}/billing/cancel
 
           # ── Pyyol Lens telemetry (optional) ──
-          # Endpoint defaults to the Lens ingest container on the shared `pyyol`
+          # NOTE: no backticks or \$( ) anywhere in this heredoc — it is unquoted
+          # (<<EOF), so shell substitution runs on the runner. A backtick pair here
+          # executed 'pyyol' on every deploy and silently blanked the rest of this
+          # comment; anything more dangerous would have run just as happily.
+          # Endpoint defaults to the Lens ingest container on the shared 'pyyol'
           # network; ORG must equal the admin's LENS_ORG_ID + the query-api org.
           PYYOL_LENS_ENABLED=${PYYOL_LENS_ENABLED:-false}
           PYYOL_LENS_ENDPOINT=${PYYOL_LENS_ENDPOINT:-http://pyyol-lens-ingest:8081}
