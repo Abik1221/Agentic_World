@@ -26,6 +26,10 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/leaderboard/developers", h.leaderboard)
 	r.Get("/v1/developers", h.directory)
 	r.Get("/v1/developers/spotlight", h.spotlight)
+	// Live availability for the sign-up field. Public and unauthenticated on purpose:
+	// it is needed BEFORE an account exists, and usernames are already public in the
+	// directory, so it discloses nothing that /v1/developers does not.
+	r.Get("/v1/developers/username-available", h.usernameAvailable)
 	r.Get("/v1/developers/{handle}", h.profile)
 	r.Get("/v1/developers/{handle}/pindex", h.pindex)
 	r.Get("/v1/developers/{handle}/matches", h.matches)
@@ -35,9 +39,54 @@ func (h *Handler) Register(r chi.Router) {
 		gr.Use(h.authn.Middleware)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/me", h.me)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/developer/username", h.setUsername)
+		// A handle derived from who they already are, so the field is never empty and
+		// "skipping" still produces a real @handle rather than a database id.
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/username-suggestion", h.usernameSuggestion)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/developers/{handle}/follow", h.follow)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/developers/{handle}/follow", h.unfollow)
 	})
+}
+
+// usernameAvailable backs the green/red flag under the username input.
+func (h *Handler) usernameAvailable(w http.ResponseWriter, r *http.Request) {
+	status, err := h.svc.CheckUsername(r.Context(), r.URL.Query().Get("u"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Never cached: a name free a minute ago may not be now, and a stale "available"
+	// turns into a failed submit.
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, status)
+}
+
+// usernameSuggestion proposes a free handle for the signed-in developer.
+//
+// Derived from their display name, falling back to the email local part — never from
+// the public id, since surfacing "usr_01H8XK" as somebody's name is the exact problem
+// this exists to prevent.
+func (h *Handler) usernameSuggestion(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	id, _, err := h.svc.Me(r.Context(), p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Already claimed one → hand it back rather than proposing a second identity.
+	if id.Username != "" {
+		httpx.JSON(w, http.StatusOK, map[string]any{"username": id.Username, "claimed": true})
+		return
+	}
+	// The auth principal carries no email (it holds ids and scopes only, which is the
+	// right shape for a token), so the display name is the input. SuggestUsername
+	// falls back to "player<n>" when there is nothing usable — still a real handle.
+	suggestion, err := h.svc.SuggestUsername(r.Context(), id.DisplayName, "")
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, map[string]any{"username": suggestion, "claimed": false})
 }
 
 func (h *Handler) leaderboard(w http.ResponseWriter, r *http.Request) {

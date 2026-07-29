@@ -335,14 +335,11 @@ func (s *Service) Me(ctx context.Context, userPublicID string) (Identity, bool, 
 // SetUsername claims/updates the caller's public @handle (validated + unique).
 func (s *Service) SetUsername(ctx context.Context, userPublicID, username string) error {
 	username = strings.TrimPrefix(strings.TrimSpace(username), "@")
-	if !usernameRe.MatchString(username) {
-		return httpx.NewError(http.StatusBadRequest, "invalid_username", "username must be 3–30 chars: letters, digits, underscore")
-	}
-	// A public id (usr_…/agt_…) is a valid username shape and appears in URLs, so a
-	// username must not impersonate one — otherwise a handle could resolve to two
-	// rows (see ResolveHandle) and hijack another developer's profile/follows.
-	if lower := strings.ToLower(username); strings.HasPrefix(lower, "usr_") || strings.HasPrefix(lower, "agt_") {
-		return httpx.NewError(http.StatusBadRequest, "invalid_username", "username may not start with a reserved id prefix")
+	// ONE validator, shared with the live availability check (see username.go). Two
+	// implementations of "is this allowed" is how a field shows a green tick and then
+	// the save is rejected.
+	if reason := validateUsernameShape(username); reason != "" {
+		return httpx.NewError(http.StatusBadRequest, "invalid_username", reason)
 	}
 	if err := s.repo.SetUsername(ctx, userPublicID, username); err != nil {
 		return err
