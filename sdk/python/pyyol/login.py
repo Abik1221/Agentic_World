@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hmac
 import secrets
+import sys
 import threading
 import urllib.parse
 import webbrowser
@@ -80,7 +81,16 @@ def run_login_flow(
                     # directly. If it doesn't, `pyyol login` mints one post-auth.
                     api_key=(q.get("api_key") or [""])[0],
                 )
-            done.set()
+                # Only a callback that PASSES the CSRF check ends the wait.
+                #
+                # This used to fire unconditionally, so anything that could reach the
+                # loopback port — any local process, any page doing a cross-origin GET
+                # at the right moment — could abort a legitimate sign-in just by
+                # arriving first with a wrong state. It never leaked credentials (the
+                # state check already gated that), but it made the login trivially
+                # killable. A forged callback is now answered 400 and ignored, and the
+                # real one still completes.
+                done.set()
 
         def log_message(self, *_a):  # silence the default stderr logging
             pass
@@ -96,9 +106,39 @@ def run_login_flow(
         )
         if provider:  # let the dashboard pre-select GitHub/Google/wallet
             auth_url += f"&provider={urllib.parse.quote(provider, safe='')}"
-        (_opener or webbrowser.open)(auth_url)
-        if not done.wait(timeout) or not captured.get("token"):
-            raise TimeoutError("login timed out or was cancelled")
+
+        # ALWAYS print the URL, then try to open it.
+        #
+        # webbrowser.open() returns False — or worse, True having done nothing — over
+        # SSH, in WSL, in containers, and on headless boxes. Without the URL on screen
+        # the user sat watching a silent prompt until a 3-minute timeout, with no way
+        # to know what was expected of them or that anything had failed. Every mature
+        # CLI (gh, wrangler, vercel, stripe) prints the link for exactly this reason.
+        #
+        # It is printed BEFORE the open attempt so it is visible even if opening
+        # raises, and the loopback port is already listening by this point, so a user
+        # who pastes it into a browser on the same machine completes normally.
+        opened = False
+        try:
+            opened = bool((_opener or webbrowser.open)(auth_url))
+        except Exception:  # noqa: BLE001 — a browser we cannot launch is not fatal
+            opened = False
+        # Printed unconditionally, including under an injected opener: gating this on
+        # "are we in a test" would mean the tested path is not the shipped one, and
+        # this message is the whole safety net for a browser that never appears.
+        print(
+            ("opening your browser to sign in…" if opened else "couldn't open a browser automatically."),
+            file=sys.stderr,
+        )
+        print(f"  if it didn't open, visit:\n  {auth_url}\n", file=sys.stderr)
+
+        if not done.wait(timeout):
+            raise TimeoutError(
+                f"login timed out after {int(timeout)}s — no response came back from the browser. "
+                "Open the URL above and finish signing in, then run the command again."
+            )
+        if not captured.get("token"):
+            raise RuntimeError("login was cancelled or rejected in the browser")
     finally:
         httpd.shutdown()
         httpd.server_close()

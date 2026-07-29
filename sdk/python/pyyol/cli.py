@@ -408,7 +408,7 @@ def cmd_simulate(args: argparse.Namespace) -> int:
 def cmd_publish(args: argparse.Namespace) -> int:
     from . import credentials
 
-    creds = credentials.load()
+    creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
     api = (args.api or (creds.url if creds else "")).rstrip("/")
     agent = args.agent or (creds.agent_id if creds else "")
     token = args.token or (creds.access_token if creds else "")
@@ -594,9 +594,8 @@ def cmd_wallet(args: argparse.Namespace) -> int:
     see why ranked play was refused ("not enough coins") without leaving the CLI."""
     from . import credentials
 
-    creds = credentials.load()
+    creds = _ensure_login(args)
     if creds is None or not creds.access_token:
-        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
         return 2
     base = _http_base(args, creds)
     st, w = _api_get(f"{base}/v1/user/wallet", creds.access_token)
@@ -636,9 +635,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     from . import credentials
 
-    creds = credentials.load()
+    creds = _ensure_login(args)
     if creds is None or not creds.access_token:
-        print(f"{BAD} not logged in — run `pyyol login` first", file=sys.stderr)
         return 2
     api = (args.api or creds.url).rstrip("/")
     agent_id = args.agent or creds.agent_id
@@ -725,7 +723,10 @@ def cmd_queue(args: argparse.Namespace) -> int:
     is driven automatically once matched; this only enqueues + reports the match."""
     from . import credentials
 
-    creds = credentials.load()
+    # Watching a live match is one of the first things a new developer tries, so it
+    # prompts to sign in rather than turning them away with an error — same treatment
+    # as `dev`/`play`. Passing --api explicitly still skips the prompt entirely.
+    creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
     base = _http_base(args, creds)
     if not base:
         print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
@@ -1108,7 +1109,13 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     from . import credentials
 
-    creds = credentials.load()
+    # An explicit --url/PYYOL_URL means the caller is wiring transport themselves
+    # (CI, self-host); otherwise sign in rather than erroring out.
+    creds = (
+        credentials.load()
+        if (args.url or os.environ.get("PYYOL_URL", ""))
+        else _ensure_login(args)
+    )
     url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
     if not url:
         print(

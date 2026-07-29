@@ -114,7 +114,22 @@ export function runLoginFlow(opts: {
         `${opts.dashboardUrl.replace(/\/$/, "")}/cli-login` +
         `?callback=${encodeURIComponent(callback)}&state=${state}`;
       if (opts.provider) authUrl += `&provider=${encodeURIComponent(opts.provider)}`;
-      opener(authUrl);
+
+      // Print the URL, then try to open it. Browser launching silently fails over
+      // SSH, in WSL, and in containers, and without the link on screen the user just
+      // watches a dead prompt until the timeout. Matches the Python SDK, and every
+      // mature CLI, which print it for exactly this reason.
+      let opened = false;
+      try {
+        opener(authUrl);
+        opened = true;
+      } catch {
+        opened = false;
+      }
+      process.stderr.write(
+        (opened ? "opening your browser to sign in…\n" : "couldn't open a browser automatically.\n") +
+          `  if it didn't open, visit:\n  ${authUrl}\n\n`,
+      );
     });
   });
 }
