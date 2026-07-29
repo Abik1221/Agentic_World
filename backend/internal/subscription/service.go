@@ -12,12 +12,12 @@ import (
 
 // Config tunes Arena Pass economics and Stripe price wiring.
 type Config struct {
-	Plan             Plan
-	StripePriceID    string
-	SuccessURL       string
-	CancelURL        string
-	PortalReturnURL  string
-	DevMode          bool
+	Plan            Plan
+	StripePriceID   string
+	SuccessURL      string
+	CancelURL       string
+	PortalReturnURL string
+	DevMode         bool
 }
 
 // Service runs subscription checkout, portal, and webhook-driven grants.
@@ -50,11 +50,11 @@ func (s *Service) Status(ctx context.Context, userPublicID string) (Status, erro
 		return Status{}, err
 	}
 	st := Status{
-		Plan:         rec.PlanKey,
-		Status:       rec.Status,
-		Active:       rec.Status == StatusActive || rec.Status == StatusPastDue,
-		MonthlyCoins: rec.MonthlyCoins,
-		CurrentPeriodEnd: rec.CurrentPeriodEnd,
+		Plan:               rec.PlanKey,
+		Status:             rec.Status,
+		Active:             rec.Status == StatusActive || rec.Status == StatusPastDue,
+		MonthlyCoins:       rec.MonthlyCoins,
+		CurrentPeriodEnd:   rec.CurrentPeriodEnd,
 		ManageBillingAvail: rec.StripeCustomerID != "",
 	}
 	if st.Plan == "" {
@@ -123,11 +123,11 @@ func (s *Service) syncSubscription(ctx context.Context, payload []byte) error {
 	var env struct {
 		Data struct {
 			Object struct {
-				ID                 string `json:"id"`
-				Customer           string `json:"customer"`
-				Status             string `json:"status"`
-				CurrentPeriodEnd   int64  `json:"current_period_end"`
-				Metadata           map[string]string `json:"metadata"`
+				ID               string            `json:"id"`
+				Customer         string            `json:"customer"`
+				Status           string            `json:"status"`
+				CurrentPeriodEnd int64             `json:"current_period_end"`
+				Metadata         map[string]string `json:"metadata"`
 			} `json:"object"`
 		} `json:"data"`
 	}
@@ -177,9 +177,9 @@ func (s *Service) grantInvoice(ctx context.Context, payload []byte) error {
 	var env struct {
 		Data struct {
 			Object struct {
-				ID       string `json:"id"`
-				Customer string `json:"customer"`
-				Status   string `json:"status"`
+				ID       string            `json:"id"`
+				Customer string            `json:"customer"`
+				Status   string            `json:"status"`
 				Metadata map[string]string `json:"metadata"`
 				Lines    struct {
 					Data []struct {

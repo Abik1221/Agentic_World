@@ -70,7 +70,9 @@ func (t *Table) Finished() bool { return t.state.Finished }
 func (t *Table) Winner() int    { return t.state.Winner }
 
 // IsHuman reports whether a seat is human-controlled (no agent).
-func (t *Table) IsHuman(seat int) bool { return seat >= 0 && seat < len(t.agents) && t.agents[seat] == nil }
+func (t *Table) IsHuman(seat int) bool {
+	return seat >= 0 && seat < len(t.agents) && t.agents[seat] == nil
+}
 
 // SeatName returns a display name for a seat (agent name, or "You" for a human).
 func (t *Table) SeatName(seat int) string {

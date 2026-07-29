@@ -75,7 +75,7 @@ type State struct {
 	PrizePool  int           `json:"prize_pool"`  // contested pool for the current round (incl. carry-over)
 	Hands      [2][]int      `json:"hands"`       // remaining cards per seat
 	Scores     [2]int        `json:"scores"`
-	Sealed     [2]*int       `json:"sealed"`  // this round's sealed cards; nil until submitted
+	Sealed     [2]*int       `json:"sealed"` // this round's sealed cards; nil until submitted
 	Finished   bool          `json:"finished"`
 	Winner     int           `json:"winner"` // valid only when Finished
 	History    []RoundResult `json:"history"`

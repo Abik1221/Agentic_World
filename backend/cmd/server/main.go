@@ -761,6 +761,11 @@ func run() error {
 			}, log)
 		depositSvc.SetGate(walletAdminSvc) // Super Admin deposit gate (settings/freeze)
 		depositSvc.SetMinDepositSource(liveMinDepositCents)
+		// The entry fee is now admin-controlled too, so the economy screen owns BOTH
+		// sides of the round trip rather than only the way out.
+		depositSvc.SetDepositFeeSource(func() int {
+			return platformCfg.Get().DepositFeePct(cfg.DepositFeePct)
+		})
 		depositSvc.SetNotifier(notifier) // notify user when a deposit is credited
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
 		depositHandler.SetRateLimit(depositRL)

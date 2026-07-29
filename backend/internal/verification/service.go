@@ -4,9 +4,9 @@ import "context"
 
 // Verification levels / badges (scaffold; promotion logic deepens in Stage 9).
 const (
-	BadgeNew            = "new"             // < 10 matches
-	BadgeVerifiedBot    = "verified_bot"    // consistent bot timing over enough matches
-	BadgeTournament     = "tournament_ready" // verified + clean record (Stage 9 gates funded play)
+	BadgeNew         = "new"              // < 10 matches
+	BadgeVerifiedBot = "verified_bot"     // consistent bot timing over enough matches
+	BadgeTournament  = "tournament_ready" // verified + clean record (Stage 9 gates funded play)
 )
 
 // Thresholds for v1 eligibility. Conservative: only flag once there is enough

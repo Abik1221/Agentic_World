@@ -140,6 +140,10 @@ type Economy struct {
 	// WithdrawFeePct is the platform's cut on a cash-out. Same shape and same
 	// reasoning as PlatformCommissionPct: the operator sets a percentage.
 	WithdrawFeePct int `json:"withdraw_fee_pct"`
+	// DepositFeePct is the cut on money coming IN. The charge existed but was
+	// env-only, so the admin owned the fee on the way out and not the one on the
+	// way in — an odd split for a screen whose whole job is the economy.
+	DepositFeePct int `json:"deposit_fee_pct"`
 	// MinStakeUSDCents is the paid-table floor the stake editor enforces. Admin-owned
 	// so the floor is a policy decision rather than a constant compiled into a binary.
 	MinStakeUSDCents int64 `json:"min_stake_usd_cents"`
@@ -156,6 +160,20 @@ func (s *Snapshot) WithdrawFeePct(fallback int) int {
 		return fallback
 	}
 	p := s.Economy.WithdrawFeePct
+	if p < 0 || p > 50 {
+		return fallback
+	}
+	return p
+}
+
+// DepositFeePct is the live entry fee. Bounded 0..50 like every other fee crossing
+// the bus: above half is indistinguishable from confiscation, and 0 is a legitimate
+// setting (a fee-free deposit promotion).
+func (s *Snapshot) DepositFeePct(fallback int) int {
+	if s == nil {
+		return fallback
+	}
+	p := s.Economy.DepositFeePct
 	if p < 0 || p > 50 {
 		return fallback
 	}

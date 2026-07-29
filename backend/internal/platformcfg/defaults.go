@@ -55,6 +55,7 @@ func Defaults(cfg *config.Config) *Snapshot {
 			PlatformCommissionPct: cfg.RakePct,
 			MinWithdrawalCents:    cfg.WithdrawMinCoins * cfg.CoinCents,
 			WithdrawFeePct:        cfg.WithdrawSellFeePct,
+			DepositFeePct:         cfg.DepositFeePct,
 			MinPurchaseCents:      cfg.DepositMinUSDC * 100,
 			MinStakeUSDCents:      cfg.MinStakeUSDCents,
 		},

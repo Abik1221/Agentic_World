@@ -30,10 +30,10 @@ func NewError(status int, code, msg string) *APIError {
 }
 
 var (
-	ErrBadRequest    = NewError(http.StatusBadRequest, "invalid_request", "The request was invalid.")
-	ErrUnauthorized  = NewError(http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
-	ErrForbidden     = NewError(http.StatusForbidden, "forbidden", "You do not have access to this resource.")
-	ErrNotFound      = NewError(http.StatusNotFound, "not_found", "Resource not found.")
-	ErrRateLimited   = NewError(http.StatusTooManyRequests, "rate_limited", "Too many requests.")
-	ErrInternal      = NewError(http.StatusInternalServerError, "internal", "An unexpected error occurred.")
+	ErrBadRequest   = NewError(http.StatusBadRequest, "invalid_request", "The request was invalid.")
+	ErrUnauthorized = NewError(http.StatusUnauthorized, "unauthenticated", "Authentication is required.")
+	ErrForbidden    = NewError(http.StatusForbidden, "forbidden", "You do not have access to this resource.")
+	ErrNotFound     = NewError(http.StatusNotFound, "not_found", "Resource not found.")
+	ErrRateLimited  = NewError(http.StatusTooManyRequests, "rate_limited", "Too many requests.")
+	ErrInternal     = NewError(http.StatusInternalServerError, "internal", "An unexpected error occurred.")
 )

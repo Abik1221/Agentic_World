@@ -67,10 +67,10 @@ func runGoofspiel(_ int, seed []byte) (MatchOutcome, error) {
 	}
 
 	return MatchOutcome{
-		Completed:  s.Finished,
-		Winner:     seatOrTie(s.Winner, goofspiel.Tie),
-		Moves:      moves,
-		Events:     len(log),
+		Completed: s.Finished,
+		Winner:    seatOrTie(s.Winner, goofspiel.Tie),
+		Moves:     moves,
+		Events:    len(log),
 		ReplayHash: hashReplay(struct {
 			History any
 			Scores  [2]int

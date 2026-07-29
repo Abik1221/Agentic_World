@@ -23,9 +23,9 @@ func (Intelligence) Score(in DeveloperInputs, cfg Config) SubScore {
 		return SubScore{Key: keyIntelligence, Score: 0, Reason: "no benchmarked decisions yet"}
 	}
 
-	legal := clamp(in.LegalRate, 0, 1)          // higher is better
+	legal := clamp(in.LegalRate, 0, 1)            // higher is better
 	reliability := clamp(1-in.FallbackRate, 0, 1) // fewer timeouts/illegal/transport = better
-	speed := 1.0                                 // default full credit if no band configured
+	speed := 1.0                                  // default full credit if no band configured
 	if ic.LatencySlowMS > ic.LatencyFastMS {
 		speed = clamp(1-(in.AvgLatencyMS-ic.LatencyFastMS)/(ic.LatencySlowMS-ic.LatencyFastMS), 0, 1)
 	}

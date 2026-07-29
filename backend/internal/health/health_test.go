@@ -21,7 +21,7 @@ type fakeChecker struct {
 	appErr  error
 }
 
-func (f fakeChecker) Ping(context.Context) error                  { return f.pingErr }
+func (f fakeChecker) Ping(context.Context) error                      { return f.pingErr }
 func (f fakeChecker) MigrationsApplied(context.Context) (bool, error) { return f.applied, f.appErr }
 
 func newServer(c health.Checker) http.Handler {
@@ -43,9 +43,9 @@ func TestLiveAlwaysOK(t *testing.T) {
 
 func TestReady(t *testing.T) {
 	tests := []struct {
-		name   string
-		check  fakeChecker
-		want   int
+		name  string
+		check fakeChecker
+		want  int
 	}{
 		{"ready", fakeChecker{applied: true}, http.StatusOK},
 		{"deps down", fakeChecker{pingErr: errors.New("pg down")}, http.StatusServiceUnavailable},

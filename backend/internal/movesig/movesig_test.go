@@ -35,9 +35,9 @@ func TestVerifyRejectsTamperAndReplay(t *testing.T) {
 
 	// A signature is bound to its exact slot + card — nothing else may reuse it.
 	cases := []struct {
-		name                      string
-		match                     string
-		round, seat, card         int
+		name              string
+		match             string
+		round, seat, card int
 	}{
 		{"different card", "m_1", 3, 0, 8},
 		{"different round", "m_1", 4, 0, 9},
@@ -93,9 +93,9 @@ func TestVerifyActionRejectsTampering(t *testing.T) {
 	sig := signAction(priv, movesig.DomainMonopoly, "mn_1", 7, 0, "buy|12|0|")
 	// Each field is bound: any change must invalidate the signature.
 	cases := []struct {
-		name                 string
+		name                  string
 		domain, match, action string
-		seq, seat            int
+		seq, seat             int
 	}{
 		{"wrong domain", movesig.DomainMafia, "mn_1", "buy|12|0|", 7, 0},
 		{"wrong match", movesig.DomainMonopoly, "mn_2", "buy|12|0|", 7, 0},

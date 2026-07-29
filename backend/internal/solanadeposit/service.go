@@ -27,7 +27,12 @@ type Service struct {
 	// minDeposit supplies the LIVE admin-configured minimum, in CENTS. Nil ⇒ the
 	// static config value.
 	minDeposit func() int64
+	// feePct supplies the LIVE admin-configured deposit fee percentage. Nil ⇒ config.
+	feePct func() int
 }
+
+// SetDepositFeeSource wires the live admin-configured entry fee.
+func (s *Service) SetDepositFeeSource(f func() int) { s.feePct = f }
 
 // SetMinDepositSource wires the admin-configured minimum top-up. The admin sets it in
 // dollars; USDC carries 6 decimals, so cents convert to base units at 10^4 each.
@@ -94,6 +99,25 @@ func (s *Service) coinsFor(base int64) int64 {
 		return 0
 	}
 	return base * s.cfg.CoinsPerUSDC / pow10(s.cfg.USDCDecimals)
+}
+
+// depositFeePct resolves the LIVE admin-configured entry fee.
+//
+// The fee itself is not new — it has always been deducted at the credit site below.
+// What was missing is the operator being able to change it: it was env-only, so the
+// admin's economy screen could not touch the charge on money coming in even though it
+// owned the one on money going out.
+//
+// Bounded 0..50 for the same reason as every other fee crossing the config bus: this
+// value arrives from another service, and a rate above half is indistinguishable from
+// confiscation.
+func (s *Service) depositFeePct() int {
+	if s.feePct != nil {
+		if p := s.feePct(); p >= 0 && p <= 50 {
+			return p
+		}
+	}
+	return s.cfg.DepositFeePct
 }
 
 // Create opens a deposit session for amountBase token base units.
@@ -300,7 +324,7 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 		coins := s.coinsFor(received)
 		// Platform deposit fee: the user is credited (100−fee)% of the pegged coins,
 		// the platform keeps the rest. Floored so escrow accounting stays whole.
-		feeCoins := coins * int64(s.cfg.DepositFeePct) / 100
+		feeCoins := coins * int64(s.depositFeePct()) / 100
 		userCoins := coins - feeCoins
 
 		// Credit FIRST (idempotent on the ledger key), then record. A crash between

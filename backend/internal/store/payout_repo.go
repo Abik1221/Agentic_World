@@ -31,55 +31,33 @@ var _ payout.Repo = (*PayoutRepo)(nil)
 // (bank.Hold agent→escrow) BEFORE the row exists, so the balance already excludes every
 // in-flight and paid withdrawal. Subtracting them again would under-report. Concurrency
 // is handled by the per-owner advisory lock + the ledger's non-negative constraint.
-// Withdrawable is what an agent may actually cash out: the lesser of its balance and
-// the owner's NET PLAY RESULT.
+// Withdrawable is what an agent may cash out: its wallet balance.
 //
-// This used to return the raw wallet balance, which made the platform a mixer. Deposit
-// USDC, play nothing, withdraw to a different address, and dirty funds come out the
-// other side looking like gaming winnings — for the cost of the withdrawal fee. That
-// is the single fastest way for a money platform to lose its banking and exchange
-// access, and it is the risk the comment on the owner-lock already named ("beyond
-// their net winnings") while nothing actually enforced it.
+// DEPOSITS ARE WITHDRAWABLE. An earlier version restricted this to net play winnings
+// to stop the platform being used to move money. That control was removed
+// deliberately: refusing to return a user's own funds is its own kind of wrong, it
+// reads as trapping money, and it costs more trust than the abuse it prevents. The
+// round trip is PRICED instead — a fee on the way in and again on the way out.
 //
-// The rule is the one every regulated betting operator uses: DEPOSITS MUST BE PLAYED,
-// not parked. Winnings from settled matches are withdrawable; money that only ever sat
-// in the wallet is not — it can be spent on entry fees, which is what it is for.
+// What actually guards against a deposit-withdraw cycle being used to move funds is
+// not this function, and it is worth naming so nobody assumes it is unprotected:
+//   - every withdrawal requires manual admin approval (no auto-approve on this rail),
+//   - payouts only reach a wallet whose ownership was proven by signature,
+//   - a newly verified address is frozen for 24h before it can receive anything,
+//   - platform-wide velocity caps and the payout circuit breaker bound total outflow,
+//   - the admin user panel shows "deposited N, played 0" so the pattern is visible to
+//     the person clicking approve.
 //
-// net = (winnings from finished matches) - (already withdrawn)
-//
-// Both sides are historical facts from settled rows, so this cannot be gamed by an
-// in-flight match. Deposits are deliberately absent from the formula: they raise the
-// BALANCE (so you can play) without raising the entitlement (so you cannot launder).
-// A user who deposits and then wins can withdraw their winnings; the deposit itself
-// stays as stake until it is played.
+// Those are behavioural controls with a human in the loop, which is the right shape:
+// they stop the abuse without punishing the ordinary user who simply changed their
+// mind about playing.
 func (r *PayoutRepo) Withdrawable(ctx context.Context, agentPublicID string) (int64, error) {
-	var balance, netPlay int64
+	var avail int64
 	err := r.db.QueryRow(ctx,
-		`WITH ag AS (SELECT a.id, a.owner_user_id FROM agents a WHERE a.public_id = $1)
-		 SELECT
-		   COALESCE((SELECT wl.balance FROM wallets wl WHERE wl.agent_id = (SELECT id FROM ag)), 0),
-		   COALESCE((SELECT SUM(mp.coins_delta) FROM match_players mp
-		               JOIN matches m ON m.id = mp.match_id
-		               JOIN agents a2 ON a2.id = mp.agent_id
-		              WHERE a2.owner_user_id = (SELECT owner_user_id FROM ag)
-		                AND m.status = 'finished'), 0)
-		   -
-		   COALESCE((SELECT SUM(wd.coins) FROM withdrawals wd
-		              WHERE wd.user_id = (SELECT owner_user_id FROM ag)
-		                AND wd.status IN ('paid','approved','requested')), 0)`,
-		agentPublicID).Scan(&balance, &netPlay)
-	if err != nil {
-		return 0, err
-	}
-	// A losing player has a negative net result; they are owed nothing, not a negative.
-	if netPlay < 0 {
-		netPlay = 0
-	}
-	// Never more than is actually in the wallet, whatever the play history says.
-	if netPlay < balance {
-		return netPlay, nil
-	}
-	return balance, nil
+		`SELECT COALESCE((SELECT wl.balance FROM wallets wl
+		   JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1), 0)`,
+		agentPublicID).Scan(&avail)
+	return avail, err
 }
 
 func (r *PayoutRepo) AgentOwner(ctx context.Context, agentPublicID string) (string, string, error) {

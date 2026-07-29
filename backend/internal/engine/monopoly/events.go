@@ -150,10 +150,10 @@ type AuctionResultPayload struct {
 
 type BankruptPayload struct {
 	Seat     int    `json:"seat"`
-	Creditor int    `json:"creditor"`          // Bank(-1) or a seat
-	Amount   int    `json:"amount,omitempty"`  // debt that could not be paid
+	Creditor int    `json:"creditor"`           // Bank(-1) or a seat
+	Amount   int    `json:"amount,omitempty"`   // debt that could not be paid
 	Property int    `json:"property,omitempty"` // the square whose rent/action triggered it, or -1
-	Reason   string `json:"reason,omitempty"`  // "rent" | "tax" | "card" | "jail_fine" | ...
+	Reason   string `json:"reason,omitempty"`   // "rent" | "tax" | "card" | "jail_fine" | ...
 }
 
 // TradePayload describes a proposed/executed/rejected trade.

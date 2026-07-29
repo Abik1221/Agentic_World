@@ -76,6 +76,7 @@ type Config struct {
 	SolanaPlatformATA   string        // platform USDC token account (deposits must land here)
 	DepositSessionTTL   time.Duration // how long a deposit session stays open
 	DepositMinUSDC      int64         // minimum deposit in whole USDC (0 = no minimum)
+	DepositFeePct       int           // platform cut on money coming IN (default 5)
 	DepositPollInterval time.Duration // listener cadence
 
 	// Solana withdrawals (Beta wallet pipeline P3). Setting the hot-wallet secret
@@ -315,6 +316,7 @@ func Load() (*Config, error) {
 		SolanaPlatformATA:   l.str("SOLANA_PLATFORM_ATA", ""),
 		DepositSessionTTL:   l.dur("DEPOSIT_SESSION_TTL", 30*time.Minute),
 		DepositMinUSDC:      int64(l.intVal("DEPOSIT_MIN_USDC", 1)),
+		DepositFeePct:       l.intVal("DEPOSIT_FEE_PCT", 5),
 		DepositPollInterval: l.dur("DEPOSIT_POLL_INTERVAL", 15*time.Second),
 
 		SolanaHotWalletSecret:    l.str("SOLANA_HOT_WALLET_SECRET", ""),

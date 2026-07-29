@@ -7,7 +7,7 @@ type EventType string
 const (
 	EvMatchCreated  EventType = "match_created"
 	EvPrizeRevealed EventType = "prize_revealed"
-	EvCardSealed    EventType = "card_sealed"   // spectator-safe: carries NO card value
+	EvCardSealed    EventType = "card_sealed" // spectator-safe: carries NO card value
 	EvRoundRevealed EventType = "round_revealed"
 	EvMatchFinished EventType = "match_finished"
 	// EvAgentSays is public table talk. Goofspiel is a game of reading your

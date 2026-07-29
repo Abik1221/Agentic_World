@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	PlanArenaPass = "arena_pass"
-	StatusActive  = "active"
-	StatusPastDue = "past_due"
+	PlanArenaPass  = "arena_pass"
+	StatusActive   = "active"
+	StatusPastDue  = "past_due"
 	StatusCanceled = "canceled"
 	StatusInactive = "inactive"
 )
