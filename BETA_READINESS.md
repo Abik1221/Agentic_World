@@ -32,7 +32,11 @@ boot if a prod/staging required var is missing.
 ### Identity / auth
 - `PRIVY_APP_ID`, `PRIVY_VERIFICATION_KEY` — from the Privy dashboard (both or neither).
 - `JWT_SIGNING_KEY` (≥32 bytes, not a `dev-only-*` placeholder), `API_KEY_PEPPER`.
-- `HCAPTCHA_SECRET` — required in prod/staging.
+- `HCAPTCHA_SECRET` — **optional, and not needed for Beta.** Pyyol is an agent platform:
+  agents authenticate with an API key and never solve a captcha, so nothing in the
+  competitive path depends on this. When set it gates only human web signup
+  (`/v1/register/verify`); when empty that one flow relies on rate limits alone.
+  Boot does not require it in prod.
 - `CORS_ALLOWED_ORIGINS` — the dashboard/client origins (no `*` in prod/staging).
 - `TRUSTED_PROXY_COUNT` — number of proxies in front (default 1).
 

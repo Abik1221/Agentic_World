@@ -34,6 +34,15 @@ type SolvencyMonitor struct {
 	balGauge prometheus.Gauge
 	liaGauge prometheus.Gauge
 	defGauge prometheus.Gauge // liability - balance, in cents (>0 ⇒ shortfall)
+	expGauge prometheus.Gauge // balance above the exposure ceiling, in cents (>0 ⇒ sweep)
+
+	// exposureCapCents is the most we are willing to leave sitting in the hot wallet.
+	// The hot wallet holds a live signing key, so its balance IS the maximum a key
+	// compromise can take. Float only the working capital that outstanding payouts
+	// actually need and sweep the rest to a cold address the server cannot sign for.
+	// Zero disables the check (the correct default for devnet, where the tokens are
+	// worthless and an alert would only be noise).
+	exposureCapCents int64
 
 	// last is the most recent successful reading, so the admin dashboard can show
 	// the real on-chain treasury without every viewer triggering an RPC call. Kept
@@ -69,10 +78,18 @@ func NewSolvencyMonitor(repo liabilityRepo, balances BalanceProvider, platformAT
 		balGauge: prometheus.NewGauge(prometheus.GaugeOpts{Name: "treasury_balance_cents", Help: "Hot-wallet USDC balance (cents)."}),
 		liaGauge: prometheus.NewGauge(prometheus.GaugeOpts{Name: "withdrawal_liability_cents", Help: "Outstanding un-paid withdrawal liability (cents)."}),
 		defGauge: prometheus.NewGauge(prometheus.GaugeOpts{Name: "treasury_shortfall_cents", Help: "Liability minus balance (cents); >0 means the treasury can't cover owed payouts."}),
+		expGauge: prometheus.NewGauge(prometheus.GaugeOpts{Name: "treasury_excess_exposure_cents", Help: "Hot-wallet balance above the exposure ceiling (cents); >0 means sweep to cold storage."}),
 	}
-	reg.MustRegister(m.balGauge, m.liaGauge, m.defGauge)
+	reg.MustRegister(m.balGauge, m.liaGauge, m.defGauge, m.expGauge)
 	return m
 }
+
+// SetExposureCap sets the hot-wallet exposure ceiling in cents. Zero disables the
+// check. This monitor deliberately only ALERTS: sweeping funds out would need a
+// second signing key held by this same process, which would recreate on the sweep
+// path exactly the exposure the cap exists to limit. The sweep is a human action
+// against a cold address, and this is the signal to perform it.
+func (m *SolvencyMonitor) SetExposureCap(cents int64) { m.exposureCapCents = cents }
 
 // Check runs one reconciliation pass. Returns balance and liability in cents.
 func (m *SolvencyMonitor) Check(ctx context.Context) (balanceCents, liabilityCents int64, err error) {
@@ -95,6 +112,22 @@ func (m *SolvencyMonitor) Check(ctx context.Context) (balanceCents, liabilityCen
 		m.log.Error("payout: TREASURY SHORTFALL — hot-wallet USDC below outstanding withdrawal liability",
 			"balance_cents", balanceCents, "liability_cents", liabilityCents,
 			"shortfall_cents", liabilityCents-balanceCents, "ata", m.ata)
+	}
+	// Over-funding is a quieter risk than a shortfall and has no natural alarm: nothing
+	// breaks, users get paid, and the balance simply grows until a key compromise is
+	// catastrophic instead of merely expensive. Reported against the CAP rather than
+	// against liability, because the cap is the number an operator chose to accept.
+	if m.exposureCapCents > 0 {
+		excess := balanceCents - m.exposureCapCents
+		if excess < 0 {
+			excess = 0
+		}
+		m.expGauge.Set(float64(excess))
+		if excess > 0 {
+			m.log.Warn("payout: HOT WALLET OVER EXPOSURE CAP — sweep the excess to cold storage",
+				"balance_cents", balanceCents, "cap_cents", m.exposureCapCents,
+				"excess_cents", excess, "liability_cents", liabilityCents, "ata", m.ata)
+		}
 	}
 	return balanceCents, liabilityCents, nil
 }

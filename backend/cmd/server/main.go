@@ -773,6 +773,9 @@ func run() error {
 		// Read-only solvency monitor: reconcile the hot-wallet on-chain USDC against
 		// outstanding withdrawal liability and alert on any shortfall (never moves funds).
 		solvency := payout.NewSolvencyMonitor(store.NewPayoutRepo(st.DB), chain, cfg.SolanaPlatformATA, log, metrics.Registry())
+		// Cap the float. Anything above this should live at a cold address this process
+		// holds no key for; the monitor alerts, a human sweeps.
+		solvency.SetExposureCap(cfg.HotWalletCapCents)
 		solvencyMonitor = solvency
 		launch("solvency-monitor", solvency.Run(cfg.SolvencyInterval))
 		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)

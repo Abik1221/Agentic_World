@@ -93,6 +93,7 @@ substitute for an external security review before handling real funds.
 | `SOLANA_USDC_MINT` | accepted mint | mainnet USDC |
 | `SOLANA_PLATFORM_OWNER` | Solana Pay recipient wallet | — |
 | `SOLANA_PLATFORM_ATA` | platform USDC token account (deposits land here) | — |
+| `HOT_WALLET_CAP_CENTS` | most we accept sitting in the hot wallet before the monitor asks for a cold sweep; `0` disables | `0` |
 | `DEPOSIT_SESSION_TTL` / `DEPOSIT_MIN_USDC` / `DEPOSIT_POLL_INTERVAL` | deposit tunables | 30m / 1 / 15s |
 | `SOLANA_HOT_WALLET_SECRET` | base58 payout signer, PLAINTEXT (dev/local; warned in prod) | unset ⇒ Stripe/Dev rail |
 | `SOLANA_HOT_WALLET_SECRET_ENC` | **preferred (prod):** base64(secretbox) of the signer, decrypted at boot; takes precedence over the plaintext form. Produce with `go run ./cmd/wallet-secret-encrypt` | — |
@@ -160,3 +161,26 @@ on-ramp. Only set the full `STRIPE_*` set if you later add card top-ups.
 
 After swapping, redeploy (push or `workflow_dispatch`), keep the wallet gate closed
 (`deposits_enabled=false`), run the tiny-amount smoke test in §3.8, then open up.
+
+
+## Hot-wallet exposure
+
+The hot wallet holds a live signing key, so **its balance is the maximum a key
+compromise can take**. Keep only the working capital outstanding payouts need there
+and hold the rest at a cold address this server has no key for.
+
+Set `HOT_WALLET_CAP_CENTS` to that working-capital ceiling. The solvency monitor
+already reads the on-chain balance each pass; above the cap it exports
+`treasury_excess_exposure_cents` and logs `HOT WALLET OVER EXPOSURE CAP`. Alert on
+that gauge being `> 0` for more than one interval.
+
+Sizing: cover a normal day of payouts with headroom — roughly
+`p95 daily payout volume x 2`. Too low and you page yourself over routine float; too
+high and the cap defends nothing.
+
+**The sweep is deliberately manual.** Moving the excess out automatically would need a
+second signing key in this same process, which would recreate on the sweep path the
+exact exposure the cap exists to limit. The alert is the signal for a human to sweep
+to cold storage.
+
+Leave it at `0` on devnet — the tokens are worthless there and the alert is only noise.
