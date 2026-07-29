@@ -176,6 +176,17 @@ type Config struct {
 	WithdrawMaxCentsPerWindow  int64         // max net cents withdrawn per window (0 ⇒ unlimited)
 	WithdrawNewAddressCooldown time.Duration // freeze payouts for this long after the wallet is (re)verified
 
+	// Payout circuit breaker — the platform-wide backstop. Per-owner velocity caps
+	// bound one account; these bound EVERYONE at once, which is the shape that
+	// actually drains a treasury (leaked key, coin-crediting bug, coordinated ring).
+	// Zero on either trigger disables that trigger; both zero disables the breaker.
+	PayoutBreakerWindow      time.Duration // period the ceiling applies to
+	PayoutBreakerWindowCents int64         // absolute ceiling on net payout per window
+	PayoutBreakerSpike       float64       // trip above this multiple of the baseline
+	PayoutBreakerBaselineN   int           // prior windows averaged into the baseline
+	PayoutBreakerMinBaseline int64         // floor under the baseline, so a quiet spell
+	//                                       does not make every payout look infinite
+
 	// Trust & anti-fraud (Stage 9)
 	AdminUserIDs      []string      // user public ids allowed to use admin endpoints
 	DetectInterval    time.Duration // anti-fraud detection sweep cadence
@@ -353,6 +364,14 @@ func Load() (*Config, error) {
 		// for high-volume operators, set 0 to rely only on the per-count cap.
 		WithdrawMaxCentsPerWindow:  int64(l.intVal("WITHDRAW_MAX_CENTS_PER_WINDOW", 1_000_000)),
 		WithdrawNewAddressCooldown: l.dur("WITHDRAW_NEW_ADDRESS_COOLDOWN", 24*time.Hour),
+		// Defaults sized for a beta: $5,000/hour absolute, or 5x a 24-hour trailing
+		// baseline, whichever trips first. The $200 baseline floor stops a quiet night
+		// turning an ordinary morning withdrawal into an "infinite spike".
+		PayoutBreakerWindow:      l.dur("PAYOUT_BREAKER_WINDOW", time.Hour),
+		PayoutBreakerWindowCents: int64(l.intVal("PAYOUT_BREAKER_WINDOW_CENTS", 500_000)),
+		PayoutBreakerSpike:       l.floatVal("PAYOUT_BREAKER_SPIKE", 5.0),
+		PayoutBreakerBaselineN:   l.intVal("PAYOUT_BREAKER_BASELINE_WINDOWS", 24),
+		PayoutBreakerMinBaseline: int64(l.intVal("PAYOUT_BREAKER_MIN_BASELINE_CENTS", 20_000)),
 
 		AdminUserIDs:      l.csv("ADMIN_USER_IDS", ""),
 		DetectInterval:    l.dur("DETECT_INTERVAL", time.Hour),

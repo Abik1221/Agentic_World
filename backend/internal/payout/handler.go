@@ -59,6 +59,10 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(user).Get("/v1/withdrawals", h.list)
 		r.With(user, h.rl).Post("/v1/withdrawals", h.request)
 		r.With(ownerOrAdmin).Get("/v1/withdrawals/{id}", h.get)
+		// Payout breaker: see whether payouts are halted and why, and resume them.
+		// Admin-only and enforced at the router, like every other /v1/admin action.
+		r.With(adminOnly).Get("/v1/admin/payouts/breaker", h.breakerState)
+		r.With(adminOnly).Post("/v1/admin/payouts/breaker/resume", h.breakerResume)
 		r.With(adminOnly).Get("/v1/admin/withdrawals", h.adminList)
 		r.With(adminOnly).Post("/v1/admin/withdrawals/{id}/approve", h.approve)
 		r.With(adminOnly).Post("/v1/admin/withdrawals/{id}/reject", h.reject)
@@ -91,6 +95,28 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"withdrawals": items})
+}
+
+// breakerState reports whether payouts are halted, and the ORIGINAL reason — the
+// diagnosis, not whatever tripped last.
+func (h *Handler) breakerState(w http.ResponseWriter, r *http.Request) {
+	open, reason, since := h.svc.BreakerState()
+	out := map[string]any{"halted": open, "reason": reason}
+	if !since.IsZero() {
+		out["since"] = since
+	}
+	// Never cached: a stale "all clear" is the one answer an operator must not get.
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// breakerResume clears a trip. Deliberately a manual action with the admin recorded:
+// a breaker that resets itself is one an attacker waits out.
+func (h *Handler) breakerResume(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	h.svc.ResumePayouts(p.UserPublicID)
+	open, reason, _ := h.svc.BreakerState()
+	httpx.JSON(w, http.StatusOK, map[string]any{"halted": open, "reason": reason})
 }
 
 func (h *Handler) adminList(w http.ResponseWriter, r *http.Request) {

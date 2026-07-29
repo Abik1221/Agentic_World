@@ -715,6 +715,16 @@ func run() error {
 	// Cash-out economics from the admin, resolved when a withdrawal is REQUESTED and
 	// persisted on the row, so settlement never re-prices what the user was quoted.
 	payoutSvc.SetEconomySource(liveCashout)
+	// Platform-wide payout breaker. Every other control here is per-owner and cannot
+	// see the shape that actually empties a treasury: many accounts each withdrawing
+	// a legal amount at once. Fails closed and stays closed until an admin resumes.
+	payoutSvc.SetBreaker(&payout.Breaker{
+		Window:           cfg.PayoutBreakerWindow,
+		WindowCents:      cfg.PayoutBreakerWindowCents,
+		SpikeMultiple:    cfg.PayoutBreakerSpike,
+		BaselineWindows:  cfg.PayoutBreakerBaselineN,
+		MinBaselineCents: cfg.PayoutBreakerMinBaseline,
+	}, store.NewPayoutRepo(st.DB))
 	if solanaXfer != nil {
 		// The transferrer also confirms finality; the watcher burns/releases escrow
 		// once each broadcast withdrawal reaches a terminal on-chain state.
