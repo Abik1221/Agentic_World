@@ -302,7 +302,19 @@ SELECT pub.public_id, pub.username, pub.display_name, pub.avatar_url, pub.countr
        COALESCE(d.p_index, 0)::float8, COALESCE(d.global_rank, 0)::int,
        (d.user_id IS NOT NULL) AS ranked,
        COALESCE(rec.matches, 0), COALESCE(rec.wins, 0), COALESCE(rec.agents, 0),
-       pub.created_at
+       pub.created_at,
+       -- The agent whose name matched the query, when that is WHY this row is here.
+       -- Without it a search for an agent returns a developer whose handle looks
+       -- nothing like what was typed, and the result reads as a bug.
+       COALESCE((
+           SELECT a.name FROM agents a
+           WHERE a.owner_user_id = pub.id AND a.kind <> 'house' AND $2 <> ''
+             AND (a.name ILIKE '%' || $2 || '%' ESCAPE '\'
+                  OR a.slug      ILIKE '%' || $2 || '%' ESCAPE '\'
+                  OR a.public_id ILIKE '%' || $2 || '%' ESCAPE '\')
+           ORDER BY a.created_at
+           LIMIT 1
+       ), '') AS matched_agent
 FROM pub
 LEFT JOIN developer_pindex d ON d.user_id = pub.id AND d.season = $1
 LEFT JOIN rec              ON rec.uid    = pub.id
@@ -310,6 +322,16 @@ WHERE $2 = ''
    OR pub.username     ILIKE '%' || $2 || '%' ESCAPE '\'
    OR pub.display_name ILIKE '%' || $2 || '%' ESCAPE '\'
    OR pub.public_id    ILIKE '%' || $2 || '%' ESCAPE '\'
+   -- Agents are how most people know each other here: a developer is far more likely
+   -- to be recognised by the bot they shipped than by the handle they registered, so
+   -- an agent name, slug or id finds its owner.
+   OR EXISTS (
+        SELECT 1 FROM agents a
+        WHERE a.owner_user_id = pub.id AND a.kind <> 'house'
+          AND (a.name ILIKE '%' || $2 || '%' ESCAPE '\'
+               OR a.slug      ILIKE '%' || $2 || '%' ESCAPE '\'
+               OR a.public_id ILIKE '%' || $2 || '%' ESCAPE '\')
+   )
 `
 
 // likeEscape neutralises LIKE wildcards in user input so a search for "_" or "%"
@@ -340,7 +362,7 @@ func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort stri
 		var d devprofile.DirectoryRow
 		if err := rows.Scan(&d.Developer, &d.Username, &d.DisplayName, &d.AvatarURL,
 			&d.Country, &d.Segment, &d.PIndex, &d.GlobalRank, &d.Ranked,
-			&d.Matches, &d.Wins, &d.Agents, &d.JoinedAt); err != nil {
+			&d.Matches, &d.Wins, &d.Agents, &d.JoinedAt, &d.MatchedAgent); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

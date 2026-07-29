@@ -97,6 +97,10 @@ type DirectoryRow struct {
 	Wins        int       `json:"wins"`
 	Agents      int       `json:"agents"`
 	JoinedAt    time.Time `json:"joined_at"`
+	// MatchedAgent is the agent whose name matched the search, when that is why this
+	// row was returned. Empty for an unfiltered list or a handle/name match. The UI
+	// shows it so a result that looks nothing like the query still explains itself.
+	MatchedAgent string `json:"matched_agent,omitempty"`
 }
 
 // Repo reads the developer reputation surface.
