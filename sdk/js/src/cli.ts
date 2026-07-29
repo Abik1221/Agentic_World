@@ -5,6 +5,7 @@
  * publish, replay, profile, leaderboard, arenas, doctor, update. Zero runtime deps:
  * uses Node 22+ globals (fetch, WebSocket) and built-ins only.
  */
+import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -427,13 +428,52 @@ export const agent = new ${cls}();
   return 0;
 }
 
+// Where a running match is watched in the browser, per game. Mirrors the Python SDK.
+// Verified against the client's routes: Goofspiel and Monopoly take ?match= at the
+// top level; Mafia's viewer lives under /arena. A wrong path is worse than no link —
+// it lands the developer on a DIFFERENT live match.
+const WATCH_ROUTE: Record<string, string> = {
+  goofspiel: "/goofspiel",
+  mafia: "/arena/mafia",
+  monopoly: "/monopoly",
+};
+
+function watchUrl(arena: string, matchId: string): string {
+  const route = WATCH_ROUTE[arena];
+  if (!route || !matchId) return "";
+  // encodeURIComponent (not encodeURI) so a slash is escaped too, and cannot alter
+  // the path instead of the query.
+  return `${DEFAULT_DASHBOARD}${route}?match=${encodeURIComponent(matchId)}`;
+}
+
+// Only the first match of a run opens a tab — sandbox iteration means dozens per
+// session, and a tab each is something you learn to dread. The link is always printed.
+let openedOnce = false;
+
+function announceMatch(arena: string, matchId: string, label: string): void {
+  console.log(`  ${OK} started ${arena} match ${matchId} ${label}`.trimEnd());
+  const url = watchUrl(arena, matchId);
+  if (!url) return;
+  console.log(`  ${OK} watch it live: ${url}`);
+  if (openedOnce || !process.stdout.isTTY) return;
+  openedOnce = true;
+  try {
+    const cmd =
+      process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+    spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+    console.log(`  ${OK} opened it in your browser — logs keep streaming here`);
+  } catch {
+    /* the link is already printed; opening is a bonus */
+  }
+}
+
 async function startSandbox(base: string, token: string, arena: string, label: string): Promise<void> {
   const path = PLAY_PATH[arena] ?? PLAY_PATH.goofspiel;
   for (let i = 0; i < 6; i++) {
     const [st, resp] = await apiPost(`${base}${path}`, token, {});
     if (st === 200 || st === 201) {
-      const mid = resp.match_id ?? resp.id ?? "";
-      console.log(`  ${OK} started ${arena} match ${mid} ${label}`.trimEnd());
+      const mid = String(resp.match_id ?? resp.id ?? "");
+      announceMatch(arena, mid, label);
       return;
     }
     const code = String(resp.code ?? resp.error ?? "");

@@ -1683,7 +1683,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         for i in range(matches):
             if stop.is_set():
                 return
-            _start_sandbox(base, token, arena, console, attempt_label=f"{i + 1}/{matches}")
+            _start_sandbox(base, token, arena, console, attempt_label=f"{i + 1}/{matches}", args=args)
             time.sleep(2.0)
 
     threading.Thread(target=kicker, daemon=True, name="pyyol-kicker").start()
@@ -1698,14 +1698,82 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     return 0
 
 
-def _start_sandbox(base, token, arena, console, attempt_label="") -> None:
+# Where a running match is watched in the browser, per game.
+#
+# These are the real routes, verified against the client: Goofspiel and Monopoly take
+# ?match= at the top level, Mafia's viewer lives under /arena. A wrong path here is
+# worse than no link — it drops the developer on a DIFFERENT live match and everything
+# they see is someone else's game.
+_WATCH_ROUTE = {
+    "goofspiel": "/goofspiel",
+    "mafia": "/arena/mafia",
+    "monopoly": "/monopoly",
+}
+
+
+def _watch_url(dashboard: str, arena: str, match_id: str) -> str:
+    """Browser URL for a specific live match. Empty when we cannot name it exactly —
+    a link to 'some match' would be a lie dressed as a convenience."""
+    route = _WATCH_ROUTE.get(arena)
+    if not (dashboard and route and match_id):
+        return ""
+    # safe="" so a slash is escaped too. quote() defaults to safe="/", which would let
+    # a match id containing one alter the PATH rather than the query — the link would
+    # then point somewhere else entirely.
+    return f"{dashboard.rstrip('/')}{route}?match={urllib.parse.quote(match_id, safe='')}"
+
+
+# Only the FIRST match of a run opens a tab. Sandbox iteration means dozens of matches
+# per session, and a browser tab per match is not a feature — it is something you
+# learn to dread. After the first, the link is printed and the developer clicks when
+# they want it. `--open` forces every match; `--no-open` suppresses entirely.
+_opened_once = {"done": False}
+
+
+def _announce_match(console, args, arena: str, match_id: str, label: str = "") -> None:
+    """Report a started match and hand the developer a way to watch it.
+
+    The terminal keeps streaming either way — this only adds the route into the UI,
+    which previously did not exist at all: the CLI printed a match id and left you to
+    find the game yourself.
+    """
+    console.emit("match", f"started {arena} match {match_id} {label}".rstrip())
+
+    dashboard = (getattr(args, "dashboard", "") or DEFAULT_DASHBOARD).rstrip("/")
+    url = _watch_url(dashboard, arena, match_id)
+    if not url:
+        return
+
+    mode = getattr(args, "open_browser", "auto")
+    console.emit("match", f"watch it live: {url}")
+
+    if mode == "never":
+        return
+    should_open = mode == "always" or (mode == "auto" and not _opened_once["done"])
+    if not should_open:
+        return
+    # Never in CI/headless: a browser that cannot open would print a stack trace over
+    # the match log for no benefit.
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        return
+    _opened_once["done"] = True
+    try:
+        import webbrowser
+
+        if webbrowser.open(url):
+            console.emit("match", "opened it in your browser — logs keep streaming here")
+    except Exception:  # noqa: BLE001 — the link is already printed; opening is a bonus
+        pass
+
+
+def _start_sandbox(base, token, arena, console, attempt_label="", args=None) -> None:
     path = _PLAY_PATH.get(arena, _PLAY_PATH["goofspiel"])
     last = {}
     for _ in range(6):  # ~9s: wait for the socket to be registered before starting
         st, resp = _api_post(f"{base}{path}", token, {})
         if st in (200, 201):
             mid = resp.get("match_id") or resp.get("id") or ""
-            console.emit("match", f"started {arena} match {mid} {attempt_label}".rstrip())
+            _announce_match(console, args or argparse.Namespace(), arena, mid, attempt_label)
             return
         last = resp
         code = str(resp.get("code") or resp.get("error") or "")
@@ -1722,7 +1790,16 @@ def _start_ranked(base, token, arena, args, console) -> None:
     body["tier"] = tier
     st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
     if st in (200, 202):
-        console.emit("match", f"queued for RANKED {arena} (tier {tier}) — you play when matched")
+        # The queue can pair instantly, in which case the response already names the
+        # match — link it, exactly like sandbox. Ranked is where real coins are on the
+        # table, so being able to watch it immediately matters more here, not less.
+        mid = str(resp.get("match_id") or "")
+        if mid:
+            _announce_match(console, args, arena, mid, f"RANKED · tier {tier}")
+        else:
+            console.emit(
+                "match", f"queued for RANKED {arena} (tier {tier}) — you play when matched"
+            )
         return
     code = str(resp.get("code") or resp.get("error") or "")
     if "certified" in code:
@@ -2139,6 +2216,18 @@ def build_parser() -> argparse.ArgumentParser:
     pdev.add_argument("--token", default="", help="token (or PYYOL_TOKEN; defaults to login)")
     pdev.add_argument("--quiet", action="store_true")
     pdev.add_argument("--no-color", action="store_true")
+    # Watching the match you just started should not require hunting for it. The link
+    # is ALWAYS printed; this only controls the browser tab.
+    #   auto (default) — open the first match of the run, print the rest
+    #   always         — open every match
+    #   never          — never open (CI, tmux, remote boxes)
+    pdev.add_argument(
+        "--open",
+        dest="open_browser",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="open the live match in your browser: auto (first only) | always | never",
+    )
     _add_api(pdev)
     pdev.set_defaults(func=cmd_dev)
 
@@ -2158,6 +2247,18 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--token", default="")
     pp.add_argument("--quiet", action="store_true")
     pp.add_argument("--no-color", action="store_true")
+    # Watching the match you just started should not require hunting for it. The link
+    # is ALWAYS printed; this only controls the browser tab.
+    #   auto (default) — open the first match of the run, print the rest
+    #   always         — open every match
+    #   never          — never open (CI, tmux, remote boxes)
+    pp.add_argument(
+        "--open",
+        dest="open_browser",
+        choices=["auto", "always", "never"],
+        default="auto",
+        help="open the live match in your browser: auto (first only) | always | never",
+    )
     _add_api(pp)
     pp.set_defaults(func=cmd_play)
 
