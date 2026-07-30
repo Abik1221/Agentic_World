@@ -43,6 +43,19 @@ type Options struct {
 	// TurnTimeout bounds a synchronous turn/initialize round-trip. On expiry the
 	// caller gets a timeout error and the engine falls back. Defaults to 10s.
 	TurnTimeout time.Duration
+	// ReconnectGrace is how long a turn waits for a briefly-disconnected agent to
+	// come back before giving up and letting the engine play its fallback.
+	//
+	// Without this a single dropped frame costs a turn immediately: the agent is not
+	// in the connection map for a few hundred milliseconds, request() returns
+	// ErrNotConnected, and the engine plays the fallback move. Reconnects are fast,
+	// so a run of blips could burn every round of a match — losing a STAKED match
+	// without the agent ever making a decision. Defaults to 8s.
+	//
+	// It is bounded, and the caller's context still governs: an agent that is
+	// genuinely gone cannot stall the table beyond this, and a move deadline shorter
+	// than the grace wins.
+	ReconnectGrace time.Duration
 	// HeartbeatInterval is how often the gateway probes an idle socket. Defaults 15s.
 	HeartbeatInterval time.Duration
 	// LivenessTimeout marks a socket offline after this long with no frame at all.
@@ -77,6 +90,9 @@ type Options struct {
 func (o Options) withDefaults() Options {
 	if o.TurnTimeout <= 0 {
 		o.TurnTimeout = 10 * time.Second
+	}
+	if o.ReconnectGrace <= 0 {
+		o.ReconnectGrace = 8 * time.Second
 	}
 	if o.HeartbeatInterval <= 0 {
 		o.HeartbeatInterval = 15 * time.Second
@@ -223,6 +239,38 @@ func (g *Gateway) lookup(agentID string) *conn {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.conns[agentID]
+}
+
+// awaitConn returns the agent's connection, waiting up to ReconnectGrace for a
+// reconnect if it is not currently registered. Returns nil if the agent does not
+// come back in time or the context ends first.
+//
+// This exists because losing the socket for a moment must not cost a move. The
+// engine's fallback is deliberate and correct for an agent that answers badly or
+// slowly — but an agent that is merely mid-reconnect has not answered at all, and
+// charging it a turn (and, in ranked, a stake) for a network blip is not the same
+// thing. Polling rather than signalling keeps this off the hot path entirely: the
+// loop only runs when the agent is already missing.
+func (g *Gateway) awaitConn(ctx context.Context, agentID string) *conn {
+	if c := g.lookup(agentID); c != nil {
+		return c
+	}
+	deadline := time.Now().Add(g.opts.ReconnectGrace)
+	t := time.NewTicker(100 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			if c := g.lookup(agentID); c != nil {
+				return c
+			}
+			if time.Now().After(deadline) {
+				return nil
+			}
+		}
+	}
 }
 
 // Handler upgrades an inbound HTTP request to a WebSocket, runs the register
@@ -451,7 +499,7 @@ func (g *Gateway) request(ctx context.Context, agentID, frameType string, body a
 	})
 	defer func() { done(err) }()
 
-	c := g.lookup(agentID)
+	c := g.awaitConn(ctx, agentID)
 	if c == nil {
 		return nil, ErrNotConnected
 	}

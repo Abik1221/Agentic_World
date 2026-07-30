@@ -231,3 +231,21 @@ Change `SOLANA_CLUSTER` to `mainnet-beta` and, in the same change, the RPC URL, 
 mint, the platform owner/ATA, and the hot-wallet secret. Set `HOT_WALLET_CAP_CENTS`
 to a real ceiling — boot refuses without one. If you miss any of these the deployment
 fails loudly rather than half-switching.
+
+
+## Agent disconnects during a staked match
+
+A dropped socket must not cost a move. The engine's fallback is correct for an agent
+that answers badly or slowly — but an agent mid-reconnect has not answered at all,
+and charging it a turn for a network blip is not the same thing. In a staked match a
+run of blips could lose the whole stake without the agent ever making a decision.
+
+`AGENT_RECONNECT_GRACE` (default `8s`) is how long a turn waits for the agent to come
+back before the fallback is played. It is a bound, not a promise: an agent that is
+genuinely gone cannot stall the table beyond it, and a move deadline shorter than the
+grace still wins.
+
+Raise it if you see fallback moves attributed to `transport` errors on agents that are
+otherwise healthy. Lower it only if tables are visibly stalling — the cost of a longer
+grace is latency on a table whose player has already left, and the cost of a shorter
+one is somebody's stake.

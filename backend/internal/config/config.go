@@ -107,7 +107,13 @@ type Config struct {
 	SolanaHotWalletSecretEnc string
 	SolanaHotWalletEncKey    string        // master key that decrypts SecretEnc (never logged)
 	WithdrawConfirmInterval  time.Duration // confirmation watcher cadence
-	SolvencyInterval         time.Duration // hot-wallet vs liability reconciliation cadence
+	// AgentReconnectGrace is how long a turn waits for a briefly-disconnected agent
+	// before the engine plays its fallback. A dropped socket must not cost a move —
+	// in ranked, a run of blips can lose a real stake without the agent deciding
+	// anything. 0 uses the gateway default (8s).
+	AgentReconnectGrace time.Duration
+
+	SolvencyInterval time.Duration // hot-wallet vs liability reconciliation cadence
 	// HotWalletCapCents is the most we accept sitting in the hot wallet before the
 	// monitor asks for a sweep to cold storage. The hot wallet signs payouts, so its
 	// balance is the blast radius of a key compromise. 0 disables the alert.
@@ -344,6 +350,7 @@ func Load() (*Config, error) {
 		SolanaHotWalletSecretEnc: l.str("SOLANA_HOT_WALLET_SECRET_ENC", ""),
 		SolanaHotWalletEncKey:    l.str("SOLANA_HOT_WALLET_ENC_KEY", ""),
 		WithdrawConfirmInterval:  l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
+		AgentReconnectGrace:      l.dur("AGENT_RECONNECT_GRACE", 8*time.Second),
 		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),
 		HotWalletCapCents:        int64(l.intVal("HOT_WALLET_CAP_CENTS", 0)),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),

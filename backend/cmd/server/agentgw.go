@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/agentgw"
@@ -69,8 +70,8 @@ func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID st
 // (login credential) and the manifest secret store (publish fallback). When a
 // platform-config provider is supplied, the gateway learns the latest/minimum
 // SDK version per language (live) for the upgrade nudge + too-old refusal.
-func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg.Provider, em *telemetry.Client, log *slog.Logger) *agentgw.Gateway {
-	opts := agentgw.Options{ClientIP: middleware.ClientIP, Emitter: em}
+func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg.Provider, em *telemetry.Client, log *slog.Logger, reconnectGrace time.Duration) *agentgw.Gateway {
+	opts := agentgw.Options{ClientIP: middleware.ClientIP, Emitter: em, ReconnectGrace: reconnectGrace}
 	if cfg != nil {
 		opts.SDKVersionInfo = func(language string) (latest, min string) {
 			sdk := cfg.Get().SDK
