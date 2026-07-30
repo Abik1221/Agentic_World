@@ -110,9 +110,15 @@ func TestBuyCreditsWallet(t *testing.T) {
 	apiKey, agentID, dash := c.onboard("itest-buyer")
 
 	// Non-prod mint = the test path for "coins bought". Requires ALLOW_MINT=true.
-	code := c.do(http.MethodPost, "/v1/admin/mint", dash, map[string]any{"agent": agentID, "amount": 500}, nil)
+	// Called with a Platform token, not the developer's dashboard token: mint is
+	// admin-guarded precisely so a self-registered developer cannot credit their own
+	// wallet, so the harness authenticates as the platform would.
+	code := c.do(http.MethodPost, "/v1/admin/mint", platformToken(), map[string]any{"agent": agentID, "amount": 500}, nil)
 	if code == 404 {
 		t.Skip("mint disabled (ALLOW_MINT=false); enable it or wire Stripe test mode to run this")
+	}
+	if code == 401 || code == 403 {
+		t.Skipf("mint rejected the platform token (%d) — PLATFORM_ADMIN_PUBLIC_KEY is not the e2e key", code)
 	}
 	if code != 200 {
 		t.Fatalf("mint = %d, want 200", code)

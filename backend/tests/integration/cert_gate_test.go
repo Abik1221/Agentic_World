@@ -78,7 +78,8 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 	// 3. Certified agent → ranked queue is now OPEN (202 accepted). Mint the stake
 	// first: enqueue runs an affordability preflight, so the agent must be able to
 	// cover the chosen tier's coins (Low = 100).
-	if code := c.do(http.MethodPost, "/v1/admin/mint", su.DashboardToken, map[string]any{"agent": su.AgentID, "amount": 500}, nil); code != http.StatusOK {
+	// Platform token, not the developer's own — see platformToken().
+	if code := c.do(http.MethodPost, "/v1/admin/mint", platformToken(), map[string]any{"agent": su.AgentID, "amount": 500}, nil); code != http.StatusOK {
 		t.Fatalf("mint stake: got %d", code)
 	}
 	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, nil); code != http.StatusAccepted {

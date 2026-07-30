@@ -45,6 +45,12 @@ jobs:
       API_KEY_PEPPER: e2e-pepper
       ENV: local # dev claim verifier + mint enabled so the money-flow harness runs
       ALLOW_MINT: "true"
+      # /v1/admin/mint is admin-guarded so a self-registered developer cannot credit
+      # their own wallet. The harness therefore signs a real Platform token instead of
+      # the guard being relaxed for tests; this is the matching public key. Test-only:
+      # the private half is a fixed seed in tests/integration/platform_token.go and is
+      # worthless against any server not booted with exactly this key.
+      PLATFORM_ADMIN_PUBLIC_KEY: "hEs2p9t8OVVv1nEXwfpd7gNJySwFBs/pZ4Sybn+BOwY="
       AUTO_MIGRATE: "true" # apply migrations in-process on boot
       PORT: "8080"
       # The harness mock agents run on http://127.0.0.1 (loopback, plaintext), so
