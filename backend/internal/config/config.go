@@ -69,6 +69,17 @@ type Config struct {
 	// when the RPC URL + platform owner + platform ATA are all set (see
 	// DepositsEnabled); otherwise /v1/deposits returns 503 and the listener is off.
 	// The coin peg is derived from CoinCents (1 USDC = 100¢ = 100/CoinCents coins).
+	// SolanaCluster is the ONE switch that says which network this deployment is
+	// playing with real money on: "devnet" or "mainnet-beta". Required whenever
+	// deposits are configured.
+	//
+	// It is a named cluster and not a DEVNET=true boolean on purpose. A boolean has
+	// no safe default — unset meaning mainnet risks a misconfigured deploy touching
+	// real funds, unset meaning devnet risks a mainnet deploy silently running fake —
+	// and, more importantly, a boolean cannot be cross-checked. The danger here was
+	// never "which flag did we set", it is a MISMATCH between the flag and the RPC
+	// URL and the mint. See validateSolanaCluster.
+	SolanaCluster       string
 	SolanaRPCURL        string
 	SolanaCommitment    string        // finalized (default) | confirmed
 	SolanaUSDCMint      string        // SPL mint accepted for deposits (defaults to mainnet USDC)
@@ -313,6 +324,7 @@ func Load() (*Config, error) {
 		PrivyVerificationKey: l.str("PRIVY_VERIFICATION_KEY", ""),
 		GoogleClientID:       l.str("GOOGLE_CLIENT_ID", ""),
 
+		SolanaCluster:       strings.ToLower(strings.TrimSpace(l.str("SOLANA_CLUSTER", ""))),
 		SolanaRPCURL:        l.str("SOLANA_RPC_URL", ""),
 		SolanaCommitment:    l.str("SOLANA_COMMITMENT", "finalized"),
 		SolanaUSDCMint:      l.str("SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
@@ -580,10 +592,118 @@ func (c *Config) validate() error {
 			errs = append(errs, "AGENT_VERIFY_ALLOW_INSECURE must not be set in prod/staging (it permits plaintext http:// agent endpoints)")
 		}
 	}
+	errs = append(errs, c.validateSolanaCluster()...)
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// Known cluster names. Deliberately the exact strings Solana itself uses, so what is
+// in the deploy config matches what appears in explorers and RPC docs.
+const (
+	ClusterDevnet  = "devnet"
+	ClusterMainnet = "mainnet-beta"
+)
+
+// Mints we can identify by sight. Used only to catch a cluster/mint mismatch — the
+// allowlist that decides what we actually accept lives in solanadeposit.
+const (
+	mainnetUSDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	mainnetUSDTMint = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+)
+
+// IsMainnet reports whether this deployment is pointed at real money.
+func (c *Config) IsMainnet() bool { return c.SolanaCluster == ClusterMainnet }
+
+// validateSolanaCluster refuses to boot on a network/asset mismatch.
+//
+// The failure this exists to prevent is not "someone set the wrong flag" — it is a
+// deployment whose pieces disagree, because that is the one that looks healthy.
+// SOLANA_USDC_MINT defaults to the REAL mainnet USDC mint, so a devnet deploy that
+// forgets to set it will happily quote and settle against mainnet USDC while its RPC
+// points at devnet. Nothing in the logs says anything is wrong.
+//
+// Each check below is a pair that must agree. Disagreement is a hard boot failure:
+// a process that will not start gets fixed in minutes, and a process that silently
+// mixes test and real money does not get noticed until the money is gone.
+func (c *Config) validateSolanaCluster() []string {
+	var errs []string
+	if !c.DepositsEnabled() {
+		// No Solana rail configured at all — nothing to cross-check, and demanding a
+		// cluster from deployments that do not touch chain would be noise.
+		return nil
+	}
+
+	switch c.SolanaCluster {
+	case ClusterDevnet, ClusterMainnet:
+	case "":
+		return []string{
+			"SOLANA_CLUSTER is required when Solana deposits are configured " +
+				"(set it to \"devnet\" or \"mainnet-beta\"). It is the switch that decides " +
+				"whether this deployment moves real money, and it is cross-checked against " +
+				"SOLANA_RPC_URL and SOLANA_USDC_MINT",
+		}
+	default:
+		return []string{fmt.Sprintf(
+			"SOLANA_CLUSTER invalid: %q (must be %q or %q)",
+			c.SolanaCluster, ClusterDevnet, ClusterMainnet)}
+	}
+
+	// --- cluster vs RPC endpoint -------------------------------------------------
+	rpc := strings.ToLower(c.SolanaRPCURL)
+	rpcLooksTest := strings.Contains(rpc, "devnet") || strings.Contains(rpc, "testnet") ||
+		strings.Contains(rpc, "localhost") || strings.Contains(rpc, "127.0.0.1")
+	switch {
+	case c.SolanaCluster == ClusterMainnet && rpcLooksTest:
+		errs = append(errs, fmt.Sprintf(
+			"SOLANA_CLUSTER is %q but SOLANA_RPC_URL points at a test endpoint (%s) — "+
+				"real withdrawals would be signed against a network that cannot settle them",
+			ClusterMainnet, c.SolanaRPCURL))
+	case c.SolanaCluster == ClusterDevnet && !rpcLooksTest:
+		// Not provably wrong (a private RPC may be named anything), so this names the
+		// risk rather than guessing: a devnet build on a mainnet RPC spends real USDC.
+		errs = append(errs, fmt.Sprintf(
+			"SOLANA_CLUSTER is %q but SOLANA_RPC_URL (%s) does not look like a devnet/testnet "+
+				"endpoint — if this URL is mainnet, test play would move REAL funds. Use a URL "+
+				"containing \"devnet\", or set SOLANA_CLUSTER=%s if this really is mainnet",
+			ClusterDevnet, c.SolanaRPCURL, ClusterMainnet))
+	}
+
+	// --- cluster vs mint ---------------------------------------------------------
+	// The mint is the asset itself, so a mismatch here is the most direct way to end
+	// up crediting real-money tokens on a build everyone believes is a sandbox.
+	isMainnetMint := c.SolanaUSDCMint == mainnetUSDCMint || c.SolanaUSDCMint == mainnetUSDTMint
+	if c.SolanaCluster == ClusterDevnet && isMainnetMint {
+		errs = append(errs, fmt.Sprintf(
+			"SOLANA_CLUSTER is %q but SOLANA_USDC_MINT is the MAINNET mint (%s). This is the "+
+				"default value, so it is almost certainly unset — set SOLANA_USDC_MINT to your "+
+				"devnet mint. Left as-is, devnet play would be denominated in real USDC",
+			ClusterDevnet, c.SolanaUSDCMint))
+	}
+	if c.SolanaCluster == ClusterMainnet && !isMainnetMint {
+		errs = append(errs, fmt.Sprintf(
+			"SOLANA_CLUSTER is %q but SOLANA_USDC_MINT (%s) is not a recognised mainnet "+
+				"stablecoin mint — deposits would credit coins for a token with no value",
+			ClusterMainnet, c.SolanaUSDCMint))
+	}
+
+	// --- mainnet-only requirements -----------------------------------------------
+	if c.SolanaCluster == ClusterMainnet {
+		// The hot wallet signs payouts, so its balance is the blast radius of a key
+		// compromise. Going live with no ceiling means nothing ever asks you to sweep.
+		if c.WithdrawalsSolana() && c.HotWalletCapCents <= 0 {
+			errs = append(errs, "HOT_WALLET_CAP_CENTS must be set (> 0) on "+
+				ClusterMainnet+" when Solana withdrawals are enabled — without a ceiling "+
+				"nothing ever tells you the signing wallet is holding more than it should")
+		}
+		// A live-money deployment running the free-coin endpoint is not a deployment.
+		if c.AllowMint {
+			errs = append(errs, "ALLOW_MINT must be off on "+ClusterMainnet+
+				" (it mints coins with no deposit behind them)")
+		}
+	}
+	return errs
 }
 
 // loader reads env vars, applies defaults, and accumulates parse/missing errors.

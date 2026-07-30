@@ -118,6 +118,10 @@ jobs:
           PRIVY_VERIFICATION_KEY: ${{ secrets.PRIVY_VERIFICATION_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           # Solana USDC deposits (all four required to enable real deposits)
+          # SOLANA_CLUSTER is the network switch: "devnet" or "mainnet-beta". The
+          # backend refuses to boot if it disagrees with the RPC URL or the mint, so
+          # this cannot silently drift out of sync with the rest of the block below.
+          SOLANA_CLUSTER: ${{ secrets.SOLANA_CLUSTER }}
           SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
           SOLANA_USDC_MINT: ${{ secrets.SOLANA_USDC_MINT }}
           SOLANA_PLATFORM_OWNER: ${{ secrets.SOLANA_PLATFORM_OWNER }}
@@ -208,6 +212,7 @@ jobs:
           GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
 
           # ── Solana USDC deposits (need RPC + mint + owner + ATA to enable) ──
+          SOLANA_CLUSTER=${SOLANA_CLUSTER:-}
           SOLANA_RPC_URL=${SOLANA_RPC_URL:-}
           SOLANA_USDC_MINT=${SOLANA_USDC_MINT:-}
           SOLANA_PLATFORM_OWNER=${SOLANA_PLATFORM_OWNER:-}

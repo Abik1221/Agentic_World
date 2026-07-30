@@ -92,6 +92,7 @@ substitute for an external security review before handling real funds.
 | `SOLANA_COMMITMENT` | commitment level | `finalized` |
 | `SOLANA_USDC_MINT` | accepted mint | mainnet USDC |
 | `SOLANA_PLATFORM_OWNER` | Solana Pay recipient wallet | — |
+| `SOLANA_CLUSTER` | **`devnet` or `mainnet-beta`** — the network switch; cross-checked against the RPC URL and the mint | — (required) |
 | `SOLANA_PLATFORM_ATA` | platform USDC token account (deposits land here) | — |
 | `HOT_WALLET_CAP_CENTS` | most we accept sitting in the hot wallet before the monitor asks for a cold sweep; `0` disables | `0` |
 | `DEPOSIT_SESSION_TTL` / `DEPOSIT_MIN_USDC` / `DEPOSIT_POLL_INTERVAL` | deposit tunables | 30m / 1 / 15s |
@@ -184,3 +185,49 @@ exact exposure the cap exists to limit. The alert is the signal for a human to s
 to cold storage.
 
 Leave it at `0` on devnet — the tokens are worthless there and the alert is only noise.
+
+
+## Switching between devnet and mainnet
+
+`SOLANA_CLUSTER` is the single switch. Set it as a GitHub secret to `devnet` or
+`mainnet-beta`.
+
+It is a named cluster rather than a `DEVNET=true` boolean for two reasons. A boolean
+has no safe default — unset meaning mainnet risks a misconfigured deploy touching real
+funds; unset meaning devnet risks a mainnet deploy silently running fake. And a boolean
+cannot be cross-checked, which is the part that actually matters: **the danger was never
+which flag you set, it is a mismatch between the flag, the RPC URL, and the mint.**
+
+`SOLANA_USDC_MINT` defaults to the **real mainnet USDC mint**. A devnet deploy that
+forgets to set it settles devnet play in real USDC, against a devnet RPC, with nothing
+in the logs saying anything is wrong. That is the failure this refuses to boot on.
+
+The backend will not start if any pair disagrees:
+
+| check | refused when |
+|---|---|
+| cluster vs RPC | `mainnet-beta` with a devnet/testnet/localhost RPC |
+| cluster vs RPC | `devnet` with an RPC that doesn't look like devnet (it may be mainnet — real funds) |
+| cluster vs mint | `devnet` with the mainnet USDC/USDT mint (i.e. the default, left unset) |
+| cluster vs mint | `mainnet-beta` with an unrecognised mint (would credit a worthless token) |
+| mainnet only | withdrawals enabled with `HOT_WALLET_CAP_CENTS` unset or `0` |
+| mainnet only | `ALLOW_MINT` on (free coins with no deposit behind them) |
+
+A process that will not boot gets fixed in minutes. A process that silently mixes test
+and real money is not noticed until the money is gone.
+
+### Beta (now)
+
+```
+SOLANA_CLUSTER      = devnet
+SOLANA_RPC_URL      = https://api.devnet.solana.com
+SOLANA_USDC_MINT    = <your devnet mint>       # must NOT be the mainnet default
+HOT_WALLET_CAP_CENTS= 0                        # off; devnet tokens are worthless
+```
+
+### Going to mainnet
+
+Change `SOLANA_CLUSTER` to `mainnet-beta` and, in the same change, the RPC URL, the
+mint, the platform owner/ATA, and the hot-wallet secret. Set `HOT_WALLET_CAP_CENTS`
+to a real ceiling — boot refuses without one. If you miss any of these the deployment
+fails loudly rather than half-switching.
