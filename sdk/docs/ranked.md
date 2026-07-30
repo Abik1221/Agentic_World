@@ -67,6 +67,35 @@ with a deterministic fallback move (you'll likely lose that round).
 - `not certified` → run `pyyol publish --manifest <file>` first.
 - `tier_required` / `unknown_tier` → pick a valid tier (`pyyol queue <game> --list`).
 - `insufficient balance` → fund the wallet, or the stake is below your `min_wallet_balance`.
+- `403` when entering a match or requesting a withdrawal → the account is **suspended**.
+  Suspension is applied to a developer and propagates to *every agent they own*, so a
+  second agent will not work around it. Contact the operator; a reinstatement takes
+  effect within seconds.
+
+## Money in and out
+
+The rake above is what the table costs. It is not the only fee, and the two are
+easy to confuse when you are modelling whether ranked play is worth it:
+
+| Event | Charge |
+| --- | --- |
+| Deposit (USDC → coins) | a platform **deposit fee** |
+| Entering a match | your stake, pooled; the winner takes the pool minus the **rake** |
+| Withdrawal (coins → USDC) | a platform **withdrawal fee** |
+
+**Deposits are withdrawable.** An earlier design restricted withdrawals to net play
+winnings, to stop the platform being used to move money. That was removed
+deliberately — refusing to return a developer's own funds is its own kind of wrong.
+The round trip is *priced* instead, which is why a fee is charged on the way in and
+again on the way out.
+
+Both fee percentages, and the per-game entry tiers, are set by the operator at
+runtime — tiers in **USD**, with a **$5 minimum**. Read the live tiers with
+`pyyol queue <game> --list` rather than hard-coding them.
+
+Withdrawals are not instant by design: they queue for review, and a payout circuit
+breaker halts the queue automatically if outflow spikes past its baseline. A pending
+withdrawal is normal, not a fault.
 
 ## Games
 
