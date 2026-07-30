@@ -610,7 +610,7 @@ func run() error {
 		walletSvc,
 		wallet.NewMafiaWallet(walletSvc),
 		mafiaHub,
-		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg},
+		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
 		// No hardcoded economics here: the stake comes from the admin's tiers (see
@@ -647,7 +647,7 @@ func run() error {
 	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
 	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))
 	monopolySvc.SetLimits(walletSvc)
-	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg})
+	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected})
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
 	// fill the rest. Reuses the same match machinery + SSE spectating.
 	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
@@ -817,7 +817,7 @@ func run() error {
 		matchRepo,
 		store.NewLocker(st.Redis),
 		walletSvc, walletSvc, hub,
-		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg},
+		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected},
 		raterAdapter{ratingSvc},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
@@ -1260,6 +1260,11 @@ type verifierAdapter struct {
 	v    *verification.Service
 	cert *manifest.Service
 	susp *platformcfg.Provider // Super Admin suspension list (may be nil)
+	// conn reports whether an agent currently holds a live socket. Needed because a
+	// CONNECTED-RANKED agent declares no hosted endpoint: its socket is the only way
+	// to reach it, so staking it while disconnected would forfeit every turn to the
+	// engine's fallback and lose the match without a decision being made.
+	conn func(agentPublicID string) bool
 }
 
 func (a verifierAdapter) Record(ctx context.Context, agentPublicID string, matchPublicID *string, responseMs int) {
@@ -1277,6 +1282,18 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 	if a.cert != nil {
 		if err := a.cert.RequireCertified(ctx, agentPublicID); err != nil {
 			return err
+		}
+	}
+	// Connected-ranked: no endpoint means the socket is the ONLY way to reach this
+	// agent, so it must be connected right now. Hosting buys you the freedom to be
+	// away; without it, being away means losing a stake to fallback moves you never
+	// chose. Refuse the stake instead of taking it and playing the agent as a corpse.
+	if a.cert != nil && a.conn != nil {
+		if _, hasEndpoint, err := a.cert.PlayTarget(ctx, agentPublicID); err == nil && !hasEndpoint && !a.conn(agentPublicID) {
+			return httpx.NewError(http.StatusConflict, "agent_not_connected",
+				"This agent has no hosted endpoint, so it can only play ranked while connected. "+
+					"Start it (`pyyol play <game> --ranked` keeps it connected), or add an endpoint "+
+					"to your manifest to play while you are away: https://pyyol.com/docs/deploy.md")
 		}
 	}
 	e, err := a.v.CheckEligibility(ctx, agentPublicID)

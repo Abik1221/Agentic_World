@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"net/http"
+	"strings"
 
 	"github.com/agent-arena/arena/internal/agentclient"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -211,6 +212,14 @@ func (s *Service) PlayTarget(ctx context.Context, agentPublicID string) (agentcl
 	m, found, err := s.repo.ActiveManifest(ctx, agentPublicID)
 	if err != nil || !found {
 		return agentclient.Target{}, false, err
+	}
+	// A connected-ranked agent declares no endpoint, so there is nothing to push to.
+	// Reporting ok here would hand the driver a seat pointing at "" — it would fail
+	// every turn and the engine would play fallbacks for a match the agent could have
+	// played perfectly well over its socket. Say "no target" and let seatFor use the
+	// socket, which is what it prefers anyway.
+	if strings.TrimSpace(m.EndpointURL) == "" {
+		return agentclient.Target{}, false, nil
 	}
 	token, err := s.resolveToken(ctx, m)
 	if err != nil {

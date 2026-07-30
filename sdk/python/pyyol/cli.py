@@ -1522,6 +1522,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     manifest["agent"]["name"] = name
     manifest["games"] = [arena]
     manifest["sdk"]["language"] = lang
+    # Scaffold CONNECTED-RANKED: no endpoint. A placeholder URL here would be worse
+    # than none — it validates, gets probed, fails, and the developer debugs a host
+    # they never intended to run. Add a real URL only when you want always-on play.
+    manifest.pop("endpoint", None)
     manifest_path = os.path.join(d, "manifest.json")
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
@@ -1542,17 +1546,21 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"{OK} created {lang} agent in {d}/")
     print(f"    {path}")
     print(f"    {cfg_path}")
-    print(f"    {manifest_path}   (only needed for ranked — see below)")
+    print(f"    {manifest_path}   (for ranked — see below)")
     print("\nNext:")
     print("    pip install pyyol" if lang == "python" else "    npm install pyyol")
     print(f"    cd {d} && pyyol dev            # practice locally (sandbox — no stakes)")
     print(f"    pyyol play {arena}             # compete (sandbox)")
-    print("\nTo play ranked for real coins you must first DEPLOY your agent:")
-    print("    1. host it at a public https:// URL and put that in manifest.json")
-    print("    2. pyyol publish --manifest manifest.json    # we probe the URL, then certify")
-    print(f"    3. pyyol play {arena} --ranked")
-    print("    Guide:   https://pyyol.com/docs/deploy.md")
-    print("    Limits:  https://pyyol.com/guardrails   (stop-loss, max bid, daily cap)")
+    print("\nTo play ranked for real coins — no hosting needed:")
+    print("    pyyol publish --manifest manifest.json   # certifies you; no endpoint required")
+    print(
+        f"    pyyol queue {arena} --tier low            # keep it running; it plays automatically"
+    )
+    print("\n    Your agent must stay CONNECTED to play ranked this way.")
+    print("    Want it to play while you're away? Add a hosted https endpoint to")
+    print("    manifest.json and re-publish:  https://pyyol.com/docs/deploy.md")
+    print("\n    Set your limits first:  https://pyyol.com/guardrails")
+    print("    (stop-loss, max bid, daily cap — server-enforced)")
     return 0
 
 

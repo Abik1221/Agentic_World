@@ -153,9 +153,21 @@ func Validate(d Document) []FieldError {
 	return errs
 }
 
+// validateEndpoint checks a hosted endpoint IF one is declared.
+//
+// An empty endpoint is valid and means "connected ranked": the agent plays while its
+// socket is held open, and the platform drives it there. seatFor already prefers the
+// socket and only falls back to an endpoint when the socket is absent, so a connected
+// agent never touches its endpoint — the requirement was policy, not necessity.
+//
+// Requiring one made every developer rent a server, write a Dockerfile and obtain TLS
+// before their FIRST ranked match. That cliff is where people quit, and an arena with
+// no agents in it has nothing to offer the ones who make it over. Declaring an
+// endpoint is now an upgrade: it buys always-on play (auto_join) and lets a staked
+// match continue when you are not connected.
 func validateEndpoint(e EndpointBlock, add func(field, msg string)) {
 	if strings.TrimSpace(e.URL) == "" {
-		add("endpoint.url", "is required")
+		// No endpoint: connected-ranked. Nothing else in this block is meaningful.
 		return
 	}
 	u, err := url.Parse(e.URL)

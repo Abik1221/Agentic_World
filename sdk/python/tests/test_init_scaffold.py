@@ -13,7 +13,9 @@ import sys
 def _init(tmp_path, name="scaffold-agent"):
     subprocess.run(
         [sys.executable, "-c", f"from pyyol.cli import main; main(['init', '{name}'])"],
-        cwd=tmp_path, check=True, capture_output=True,
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
     )
     return tmp_path / name
 
@@ -25,11 +27,16 @@ def test_init_writes_a_schema_valid_manifest(tmp_path):
 
     m = json.loads(mf.read_text())
     assert m["manifestVersion"] == "1.0"
-    # endpoint.url + bearer-token are what the platform validates and probes.
-    assert m["endpoint"]["authentication"] == "bearer-token"
-    assert m["endpoint"]["url"].startswith("https://"), "the scaffold must model an https endpoint"
-    assert m["agent"]["name"] == "scaffold-agent", "the manifest should name the agent you just created"
+    assert m["agent"]["name"] == "scaffold-agent", (
+        "the manifest should name the agent you just created"
+    )
     assert m["games"], "the manifest must declare at least one game"
+    assert m["runtime"]["timeout"] > 0, "runtime.timeout is required by the platform"
+
+    # NO endpoint by default — the scaffold models CONNECTED ranked, which needs no
+    # hosting. A placeholder URL would be worse than none: it validates, gets probed,
+    # fails, and sends the developer debugging a host they never meant to run.
+    assert "endpoint" not in m, "the scaffold must not ship a placeholder endpoint"
 
 
 def test_scaffolding_does_not_mutate_the_shared_template(tmp_path):

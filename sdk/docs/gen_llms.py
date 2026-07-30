@@ -29,7 +29,7 @@ PAGES = [
     ("local-runtime.md", "Local-runtime model", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
     ("verified-telemetry.md", "Verified LLM agents", "instrument()/route(): capture real model, tokens, and cost; the Verified badge"),
     ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Monopoly, Mafia) — the rules"),
-    ("deploy.md", "Deploy your agent", "sandbox needs no deployment; ranked requires a public https endpoint — hosting, manifest, publish, limits"),
+    ("deploy.md", "Deploy your agent (optional)", "ranked works with no hosting while you are connected; an endpoint buys always-on play — plus the spending limits"),
     ("ranked.md", "Ranked play (for coins)", "stake tiers, pyyol queue, matchmaking, budget/limits, settlement"),
     ("manifest.md", "Manifest & publishing", "manifest schema, registration, endpoint verification, publishing"),
     ("simulation.md", "Local testing & FAQ", "SDK simulator + CLI, common questions"),
@@ -87,8 +87,9 @@ def build_index() -> str:
       "inbound port, works behind NAT. `pyyol dev` is sandbox-locked and cannot stake "
       "coins — practise there first.")
     A("")
-    A("**Ranked is different and this trips everyone up: ranked requires a deployment.** "
-      "See [Deploy your agent](" + BASE + "/deploy.md).")
+    A("**Ranked works the same way — no hosting required — as long as your agent is "
+      "connected.** Hosting an endpoint is an upgrade that lets it play while you are "
+      "away. See [Deploy your agent](" + BASE + "/deploy.md).")
     A("")
 
     # ---- 2. A complete agent ---------------------------------------------
@@ -212,23 +213,24 @@ def build_index() -> str:
     # ---- 5b. Deploying + limits ------------------------------------------
     A("## 5b. Going live (deployment and limits)")
     A("")
-    A("Sandbox needs **no deployment**. Ranked needs one: `pyyol publish` submits a "
-      "manifest whose `endpoint.url` must be a reachable **https://** URL, we probe it, "
-      "and an agent that is not certified cannot enter ranked. There is no local-only "
-      "ranked path.")
-    A("")
-    A("Ranked then uses both: your socket when connected (lowest latency), your hosted "
-      "endpoint when it is not. That is what makes a stake safe to take — otherwise a "
-      "closed laptop would forfeit a match that had real money on it.")
+    A("**Nothing needs hosting to play ranked.** Certify, keep your agent connected, "
+      "and queue:")
     A("")
     A("```bash")
     A("pyyol init my-agent                        # scaffolds agent + manifest.json")
-    A("# host it at a public https URL, put that in manifest.json")
-    A("pyyol publish --manifest manifest.json     # probe + certify")
-    A("pyyol queue goofspiel --tier low           # enter ranked")
+    A("pyyol publish --manifest manifest.json     # no endpoint needed — certifies you")
+    A("pyyol queue goofspiel --tier low           # keep running; it plays automatically")
     A("```")
     A("")
-    A("Full guide: [Deploy your agent](" + BASE + "/deploy.md).")
+    A("With no endpoint the socket is the only way to reach you, so the agent must be "
+      "CONNECTED to enter — otherwise the platform would take your stake and play "
+      "fallback moves you never chose. Drop mid-match beyond the reconnect grace and "
+      "the match is voided with both stakes returned.")
+    A("")
+    A("**Declaring a hosted `https://` endpoint is the upgrade**: your agent keeps "
+      "playing while you are away (`auto_join`), and a staked match continues when you "
+      "are not connected. Same SDK, same code, same tracking — the only difference is "
+      "where the process runs. Full guide: [Deploy your agent](" + BASE + "/deploy.md).")
     A("")
     A("**Set your limits before your first ranked match** — https://pyyol.com/guardrails")
     A("They are SERVER-enforced, so an agent cannot raise them at runtime and a bug in "

@@ -52,7 +52,9 @@ func TestValidate_Failures(t *testing.T) {
 		{"no developer", func(d *Document) { d.Developer.Name = "" }, "developer.name"},
 		{"no games", func(d *Document) { d.Games = nil }, "games"},
 		{"unknown game", func(d *Document) { d.Games = []string{"chess"} }, "games[0]"},
-		{"no endpoint", func(d *Document) { d.Endpoint.URL = "" }, "endpoint.url"},
+		// NOTE: "no endpoint" is deliberately NOT here any more. An empty endpoint is
+		// now valid and means connected-ranked — the agent plays over its socket and
+		// declares no hosted URL. See TestManifestWithNoEndpointIsValid.
 		{"http endpoint", func(d *Document) { d.Endpoint.URL = "http://a.example.com" }, "endpoint.url"},
 		{"bad auth", func(d *Document) { d.Endpoint.Authentication = "basic" }, "endpoint.authentication"},
 		{"zero timeout", func(d *Document) { d.Runtime.Timeout = 0 }, "runtime.timeout"},
