@@ -45,6 +45,14 @@ linters:
       - linters:
           - staticcheck
         text: "QF[0-9]+"
+      # The Mafia payload structs are the Go-side declaration of the streamed wire
+      # contract and line up 1:1 with the MafiaEvent union on the frontend. They are
+      # serialised through wireEvent.Payload (an `any`), so nothing references them by
+      # name and `unused` cannot see them. Deleting them to satisfy the linter would
+      # delete the only place the wire shape is written down in this repo.
+      - linters:
+          - unused
+        path: internal/mafia/events\.go
       # cmd/* are one-shot dev tools that exit via log.Fatal on error; a deferred
       # cancel not running before process exit is harmless there.
       - linters:

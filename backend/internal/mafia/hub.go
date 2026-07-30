@@ -186,30 +186,6 @@ func (h *Hub) Run(ctx context.Context) {
 	<-ctx.Done()
 }
 
-// broadcast pushes one frame to every current watcher of matchID. It NEVER
-// blocks: a subscriber whose buffer is full is dropped (drop-slow).
-func (h *Hub) broadcast(matchID string, fr frame) {
-	h.m.broadcastEvents.Inc()
-	h.mu.RLock()
-	targets := make([]*sub, 0, len(h.subs[matchID]))
-	for s := range h.subs[matchID] {
-		targets = append(targets, s)
-	}
-	h.mu.RUnlock()
-
-	for _, s := range targets {
-		select {
-		case s.ch <- fr:
-		case <-s.dead:
-		default:
-			h.m.droppedSlow.Inc()
-			s.kill()
-		}
-	}
-}
-
-// Subscribe registers a watcher for a match. ErrNotFound for an unknown match,
-// ErrTooManyWatchers when this instance's per-match cap is hit.
 func (h *Hub) Subscribe(matchID string) (*sub, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

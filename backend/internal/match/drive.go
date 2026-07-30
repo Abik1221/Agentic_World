@@ -324,9 +324,7 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, matchID st
 	}
 	chat := make([]goofspielChatLine, 0, len(v.Chat))
 	for _, c := range v.Chat {
-		chat = append(chat, goofspielChatLine{
-			Round: c.Round, Seat: c.Seat, You: c.You, Text: c.Text, Kind: c.Kind,
-		})
+		chat = append(chat, goofspielChatLine(c))
 	}
 	req := goofspielTurnView{
 		Chat: chat,

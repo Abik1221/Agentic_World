@@ -60,7 +60,10 @@ jobs:
         with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
-        with: { version: latest, working-directory: backend }
+        # Pinned, for the same reason the Go toolchain above is pinned: `latest` lets a
+        # new linter release enable new checks and fail a build with no commit to
+        # blame, usually at the worst moment. Bump this deliberately.
+        with: { version: v2.12.2, working-directory: backend }
 
   vuln:
     runs-on: ubuntu-latest

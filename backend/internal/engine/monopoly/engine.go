@@ -219,9 +219,8 @@ func (e *Engine) Say(s State, seat int, text, kind string) (State, []Event, erro
 	if len(ns.Chat) > MaxChatHistory {
 		ns.Chat = append([]ChatLine(nil), ns.Chat[len(ns.Chat)-MaxChatHistory:]...)
 	}
-	ev := e.emit(&ns, EvAgentSays, AgentSaysPayload{
-		Turn: line.Turn, Seat: line.Seat, Text: line.Text, Kind: line.Kind,
-	})
+	// Identical field set to ChatLine — convert rather than restate it field by field.
+	ev := e.emit(&ns, EvAgentSays, AgentSaysPayload(line))
 	return ns, []Event{ev}, nil
 }
 

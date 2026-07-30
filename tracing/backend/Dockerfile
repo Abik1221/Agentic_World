@@ -1,5 +1,7 @@
 # Builds ingest-api, query-api, control-api, and processor (same image, different CMD).
-FROM golang:1.23-alpine AS builder
+# Must satisfy go.mod's `go 1.26.1`. GOTOOLCHAIN=auto below meant an older base
+# silently downloaded a newer toolchain on every build — slow, and it hid the drift.
+FROM golang:1.26-alpine AS builder
 
 ENV GOTOOLCHAIN=auto
 RUN apk add --no-cache git ca-certificates
