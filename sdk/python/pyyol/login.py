@@ -109,8 +109,15 @@ def run_login_flow(
                 return
             q = urllib.parse.parse_qs(parsed.query)
             token = (q.get("token") or [""])[0]
-            # Constant-time CSRF-state check (mirrors the signing module's discipline).
-            ok = bool(token) and hmac.compare_digest((q.get("state") or [""])[0], state)
+            api_key = (q.get("api_key") or [""])[0]
+            # Accept the callback if EITHER credential came back.
+            #
+            # The dashboard now returns both: `token` (the developer's session, for
+            # owner-scope commands like publish) and `api_key` (the narrow agent key
+            # that plays matches). Requiring `token` specifically would break against
+            # a dashboard that only sends one of them — which is exactly the state
+            # every already-deployed frontend is in during a rollout.
+            ok = bool(token or api_key) and hmac.compare_digest((q.get("state") or [""])[0], state)
             self.send_response(200 if ok else 400)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -193,7 +200,7 @@ def run_login_flow(
                 f"login timed out after {int(timeout)}s — no response came back from the browser. "
                 "Open the URL above and finish signing in, then run the command again."
             )
-        if not captured.get("token"):
+        if not (captured.get("token") or captured.get("api_key")):
             raise RuntimeError("login was cancelled or rejected in the browser")
     finally:
         httpd.shutdown()
@@ -203,7 +210,7 @@ def run_login_flow(
         url=api_url,
         connect_url=captured.get("connect_url") or derive_connect_url(api_url),
         agent_id=captured.get("agent_id", ""),
-        access_token=captured["token"],
+        access_token=captured.get("token", ""),
         refresh_token=captured.get("refresh", ""),
         api_key=captured.get("api_key", ""),
     )

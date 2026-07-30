@@ -122,3 +122,61 @@ def test_success_page_tells_the_user_to_return_to_the_terminal():
     # And the failure page must NOT imply anything was signed in.
     bad = login._BAD_PAGE.decode("utf-8").lower()
     assert "nothing was signed in" in bad
+
+
+def _run_callback(home, query: str, timeout: float = 10.0):
+    """Drive the loopback with a chosen callback query string and return Credentials."""
+    import urllib.parse
+    import urllib.request
+
+    from pyyol import login
+
+    def opener(auth_url: str) -> bool:
+        # Stand in for the dashboard: read the CSRF state it handed us, then call back.
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(auth_url).query)
+        cb, state = q["callback"][0], q["state"][0]
+        urllib.request.urlopen(f"{cb}?state={state}&{query}", timeout=5).read()
+        return True
+
+    return login.run_login_flow(
+        "https://pyyol.com", api_url="https://api.pyyol.com", timeout=timeout, _opener=opener
+    )
+
+
+def test_dashboard_token_and_agent_key_are_stored_separately(home):
+    """The two credentials must not be conflated.
+
+    The dashboard used to return the AGENT key as `token`, so the CLI stored it as
+    access_token — which is what owner commands send. `pyyol publish` then
+    authenticated as the agent and got 403 agent_cannot_modify_limits, making ranked
+    play unreachable from the CLI at all.
+    """
+    creds = _run_callback(home, "token=dash-jwt-abc&api_key=sk_arena_xyz&agent_id=ag_1")
+
+    assert creds.access_token == "dash-jwt-abc", "owner credential must land in access_token"
+    assert creds.api_key == "sk_arena_xyz", "agent key must land in api_key"
+    assert creds.access_token != creds.api_key, "the two credentials must never be the same value"
+
+
+def test_login_still_works_against_a_dashboard_that_sends_only_one(home):
+    """During a rollout the deployed frontend may send either field alone. Refusing
+    the callback would break login for everyone until the frontend caught up."""
+    only_key = _run_callback(home, "api_key=sk_arena_only&agent_id=ag_2")
+    assert only_key.api_key == "sk_arena_only"
+
+    only_tok = _run_callback(home, "token=dash-only&agent_id=ag_3")
+    assert only_tok.access_token == "dash-only"
+
+
+def test_a_callback_with_neither_credential_is_rejected(home):
+    """State alone must not be enough — otherwise an empty callback 'succeeds'.
+
+    A credential-less callback is answered 400 and ignored, so the flow keeps waiting
+    for a real one and ends in TimeoutError. Asserting the specific type matters: a
+    blind `Exception` here would also pass if the flow crashed for some unrelated
+    reason, which is the opposite of what this is checking.
+    """
+    import pytest
+
+    with pytest.raises(TimeoutError):
+        _run_callback(home, "agent_id=ag_4", timeout=1.0)
