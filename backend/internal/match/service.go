@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
@@ -61,6 +62,18 @@ type Service struct {
 	// turns mints the per-turn proof token that binds a gateway LLM call to one
 	// decision. Nil ⇒ no token is issued, so nothing can be proven LLM-backed.
 	turns TurnMinter
+	// integrity counts an agent's proven-LLM decisions. Nil ⇒ no ranked integrity
+	// check at all.
+	integrity IntegrityChecker
+	// integrityMinPct is the share of a ranked match's decisions that must be proven
+	// LLM-backed. INCLUSIVE ("at least this share"), which is what makes 100 a usable
+	// setting — a strictly-greater rule could never be satisfied by 13 of 13. A
+	// MAJORITY is therefore configured as 51, not 50.
+	//
+	// 0 DISABLES enforcement, which is the correct default until the proof has
+	// actually shipped to developers: an SDK that sends no proof makes every honest
+	// agent look deterministic, and enforcing then would void real matches wholesale.
+	integrityMinPct int
 	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
 	chatTracer ChatTracer
 	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
@@ -93,6 +106,46 @@ func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
 // EnableRankedDrive, which copies it onto the driver — otherwise views ship without
 // a token and no decision can be proven LLM-backed.
 func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
+
+// SetIntegrityCheck enables the ranked LLM-backing check. minPct is the share of a
+// match's decisions that must be PROVEN LLM-backed; 0 leaves enforcement off and only
+// the measurement (recorded by the gateway) accumulates.
+//
+// Turn this on only after looking at what honest agents actually score. Batching,
+// caching and retry patterns are all legitimate and produce fewer proofs than
+// decisions, so the right threshold is an observation, not a guess.
+func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
+	s.integrity, s.integrityMinPct = c, minPct
+}
+
+// rankedIntegrityFailed reports whether a finished ranked match should be VOIDED
+// because a seat cannot show it was played by an LLM, and names the seat if so.
+//
+// Pyyol is an arena for AI agents and ranked carries real money, so a hand-written
+// script taking stakes from developers who are genuinely paying for inference is the
+// thing this exists to stop. decisions is how many moves each seat actually made.
+//
+// FAILS OPEN. If the count cannot be read the match settles normally, because the
+// alternative — voiding on a database hiccup — would cancel legitimate matches in
+// bulk during an outage. A cheat that slips through is still recorded and reviewable;
+// a wrongly voided match is a broken product for everyone playing at that moment.
+func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions int) (bool, string) {
+	if s.integrity == nil || s.integrityMinPct <= 0 || decisions <= 0 {
+		return false, ""
+	}
+	for _, p := range m.Players {
+		bound, err := s.integrity.BoundDecisions(ctx, m.PublicID, p.AgentPublicID)
+		if err != nil {
+			slog.Warn("match: integrity check unavailable; settling normally",
+				"match", m.PublicID, "agent", p.AgentPublicID, "error", err)
+			return false, ""
+		}
+		if bound*100 < decisions*s.integrityMinPct {
+			return true, p.AgentPublicID
+		}
+	}
+	return false, ""
+}
 
 // StyleRecorder accumulates per-agent behavioral style aggregates at match finish
 // (read-only descriptive metrics; never affects play or money). Optional.
@@ -717,7 +770,24 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	// Do NOT reorder to Finish-first: that would strand escrow (winner never paid,
 	// and Act/HandleTimeout early-return on a finished match, so nothing re-drives).
 	if m.Mode != ModeSandbox {
-		if err := s.wallet.Settle(ctx, m.PublicID, winnerAgent, pool, m.RakePct); err != nil {
+		// A ranked match that cannot show it was played by an LLM is VOIDED rather
+		// than settled: both stakes go back and nobody is paid. Refund and Settle
+		// share one idempotency key, so exactly one of them can ever take effect —
+		// a re-drive after a crash cannot pay out a match that was voided, or void
+		// one that already paid.
+		//
+		// Voiding rather than forfeiting is deliberate. Detection is new and will
+		// have false positives (batching, caching, a model timing out into a
+		// deterministic fallback), and taking a real developer's stake on a false
+		// positive is not recoverable in the way an un-played match is.
+		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History)); failed {
+			slog.Warn("match: VOIDED — seat could not prove its decisions were LLM-backed",
+				"match", m.PublicID, "agent", agent, "decisions", len(state.History),
+				"min_pct", s.integrityMinPct)
+			if err := s.wallet.Refund(ctx, m.PublicID); err != nil {
+				return nil, err
+			}
+		} else if err := s.wallet.Settle(ctx, m.PublicID, winnerAgent, pool, m.RakePct); err != nil {
 			return nil, err
 		}
 	}

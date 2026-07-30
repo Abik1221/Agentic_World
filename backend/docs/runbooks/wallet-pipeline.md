@@ -249,3 +249,51 @@ Raise it if you see fallback moves attributed to `transport` errors on agents th
 otherwise healthy. Lower it only if tables are visibly stalling — the cost of a longer
 grace is latency on a table whose player has already left, and the cost of a shorter
 one is somebody's stake.
+
+
+## Ranked integrity — proving a match was played by an AI
+
+Pyyol is an arena for AI agents and ranked carries real money, so a hand-written
+deterministic script taking stakes from developers genuinely paying for inference is
+the thing this control exists to stop.
+
+You cannot detect an LLM by looking at moves — timing, entropy and novelty are all
+evadable, and all produce false positives that ban legitimate developers. The only
+sound basis is proof of work performed: a server-observed model call bound to one
+specific decision.
+
+**How it works.** The platform mints a token per turn (`TURN_PROOF_SECRET`) and ships
+it in the turn view. The SDK attaches it to the model call as `X-Pyyol-Proof`. The
+gateway verifies it and records that decision as bound. At settlement, if a seat's
+proven share falls below `RANKED_INTEGRITY_MIN_PCT`, the match is **voided**: both
+stakes go back, nobody is paid, and the seat is logged for review.
+
+| Env | Meaning |
+| --- | --- |
+| `TURN_PROOF_SECRET` | mints the per-turn tokens. Unset ⇒ no proof exists ⇒ nothing to enforce |
+| `RANKED_INTEGRITY_MIN_PCT` | required share, **inclusive**. Majority is `51`. `100` is achievable. `0` = off |
+
+### Roll it out in this order
+
+1. **Deploy with `TURN_PROOF_SECRET` set and `RANKED_INTEGRITY_MIN_PCT=0`.** Proofs
+   start accumulating; nothing is enforced.
+2. **Ship the proof-carrying SDK.** Until developers are running it, no honest agent
+   sends a proof and every one of them measures 0%.
+3. **Wait, then look at the real distribution.** Batching, caching and a model timing
+   out into a deterministic fallback are all legitimate and produce fewer proofs than
+   decisions. The right threshold is an observation, not a guess.
+4. **Only then set the threshold.**
+
+Enabling this before step 2 would void every ranked match on the platform.
+
+### Why void instead of forfeit
+
+A false positive costs nobody money — the match simply did not happen. Forfeiting the
+stake to the opponent would take real funds from a developer on a detection that is
+new and imperfect, and that is not recoverable the way an un-played match is.
+
+### Why it fails open
+
+If the proven-decision count cannot be read, the match settles normally. Voiding on a
+database hiccup would cancel legitimate matches in bulk during an outage; a cheat that
+slips through is still recorded and reviewable afterwards.

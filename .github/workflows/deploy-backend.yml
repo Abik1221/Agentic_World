@@ -137,6 +137,11 @@ jobs:
           # specific decision. Unset ⇒ no proof is offered at all, so ranked
           # integrity has nothing to measure. Required before enforcement.
           TURN_PROOF_SECRET: ${{ secrets.TURN_PROOF_SECRET }}
+          # Share of a ranked match's decisions that must be PROVEN LLM-backed, or the
+          # match is voided and both stakes returned. Unset ⇒ 0 ⇒ measurement only.
+          # Do NOT set this until the proof-carrying SDK has shipped AND you have
+          # looked at what honest agents actually score.
+          RANKED_INTEGRITY_MIN_PCT: ${{ secrets.RANKED_INTEGRITY_MIN_PCT }}
           # Coin economy / withdrawal policy (optional tuning)
           COIN_CENTS: ${{ secrets.COIN_CENTS }}
           WITHDRAW_SELL_FEE_PCT: ${{ secrets.WITHDRAW_SELL_FEE_PCT }}
@@ -224,6 +229,7 @@ jobs:
           SOLANA_COMMITMENT=${SOLANA_COMMITMENT:-finalized}
           HOT_WALLET_CAP_CENTS=${HOT_WALLET_CAP_CENTS:-0}
           TURN_PROOF_SECRET=${TURN_PROOF_SECRET:-}
+          RANKED_INTEGRITY_MIN_PCT=${RANKED_INTEGRITY_MIN_PCT:-0}
 
           # ── Solana withdrawals (encrypted hot-wallet secret; deposits must be on) ──
           SOLANA_HOT_WALLET_SECRET_ENC=${SOLANA_HOT_WALLET_SECRET_ENC:-}

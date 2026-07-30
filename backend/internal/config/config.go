@@ -114,6 +114,17 @@ type Config struct {
 	// switched on.
 	TurnProofSecret string
 
+	// RankedIntegrityMinPct is the share of a ranked match's decisions that must be
+	// PROVEN LLM-backed (a gateway call carrying that turn's proof token) or the
+	// match is voided and both stakes returned. Inclusive, so a majority is 51 and
+	// 100 is achievable.
+	//
+	// DEFAULTS TO 0 (off) on purpose. No published SDK sends a proof yet, so every
+	// honest agent currently measures zero — switching this on before the SDK ships,
+	// and before looking at what honest agents actually score, would void real
+	// matches wholesale. Measure first.
+	RankedIntegrityMinPct int
+
 	// AgentReconnectGrace is how long a turn waits for a briefly-disconnected agent
 	// before the engine plays its fallback. A dropped socket must not cost a move —
 	// in ranked, a run of blips can lose a real stake without the agent deciding
@@ -358,6 +369,7 @@ func Load() (*Config, error) {
 		SolanaHotWalletEncKey:    l.str("SOLANA_HOT_WALLET_ENC_KEY", ""),
 		WithdrawConfirmInterval:  l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
 		TurnProofSecret:          l.str("TURN_PROOF_SECRET", ""),
+		RankedIntegrityMinPct:    l.intVal("RANKED_INTEGRITY_MIN_PCT", 0),
 		AgentReconnectGrace:      l.dur("AGENT_RECONNECT_GRACE", 8*time.Second),
 		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),
 		HotWalletCapCents:        int64(l.intVal("HOT_WALLET_CAP_CENTS", 0)),

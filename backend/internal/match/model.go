@@ -130,6 +130,13 @@ type Limits interface {
 }
 
 // Wallet escrows stakes and settles winnings. Real implementation: Stage 4.
+// IntegrityChecker reports how many decisions an agent PROVED were made by an LLM in
+// a match — decisions whose model call carried a proof token the platform minted for
+// that exact turn. See internal/turnproof.
+type IntegrityChecker interface {
+	BoundDecisions(ctx context.Context, matchID, agentPublicID string) (int, error)
+}
+
 type Wallet interface {
 	// StakeMatch escrows BOTH seats' bids in a single atomic transaction, so a
 	// partial failure can never orphan one player's coins in escrow.

@@ -869,6 +869,10 @@ func run() error {
 		// Before EnableRankedDrive: the driver copies the minter at construction, so
 		// installing it afterwards would ship views with no proof token.
 		matchSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
+		// Ranked integrity: void a staked match whose decisions cannot be shown to be
+		// LLM-backed. Off unless RANKED_INTEGRITY_MIN_PCT is set — see the config
+		// comment for why measuring has to come first.
+		matchSvc.SetIntegrityCheck(store.NewPIndexRepo(st.DB), cfg.RankedIntegrityMinPct)
 		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, manifestProbe, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
