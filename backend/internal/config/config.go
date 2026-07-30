@@ -79,7 +79,12 @@ type Config struct {
 	// and, more importantly, a boolean cannot be cross-checked. The danger here was
 	// never "which flag did we set", it is a MISMATCH between the flag and the RPC
 	// URL and the mint. See validateSolanaCluster.
-	SolanaCluster       string
+	SolanaCluster string
+	// Warnings are non-fatal configuration concerns surfaced at boot. Kept separate
+	// from validate()'s errors because refusing to start is the right answer only
+	// when we KNOW something is wrong — see validateSolanaCluster for a case where
+	// we can only suspect it.
+	Warnings            []string
 	SolanaRPCURL        string
 	SolanaCommitment    string        // finalized (default) | confirmed
 	SolanaUSDCMint      string        // SPL mint accepted for deposits (defaults to mainnet USDC)
@@ -661,12 +666,19 @@ func (c *Config) validateSolanaCluster() []string {
 				"real withdrawals would be signed against a network that cannot settle them",
 			ClusterMainnet, c.SolanaRPCURL))
 	case c.SolanaCluster == ClusterDevnet && !rpcLooksTest:
-		// Not provably wrong (a private RPC may be named anything), so this names the
-		// risk rather than guessing: a devnet build on a mainnet RPC spends real USDC.
-		errs = append(errs, fmt.Sprintf(
+		// WARN, not fail. You cannot infer a cluster from a URL: a private devnet
+		// endpoint from Helius, QuickNode or a self-hosted validator may contain no
+		// recognisable substring at all, and blocking boot on a string match would
+		// reject a correct deployment — the worst kind of safety check, because the
+		// operator's only recourse is to disable it.
+		//
+		// The real protection for this direction is the mint check below, which is
+		// authoritative rather than heuristic: the mint IS the asset, and a devnet
+		// mint does not exist on mainnet. So this stays as a loud note to look twice.
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
 			"SOLANA_CLUSTER is %q but SOLANA_RPC_URL (%s) does not look like a devnet/testnet "+
-				"endpoint — if this URL is mainnet, test play would move REAL funds. Use a URL "+
-				"containing \"devnet\", or set SOLANA_CLUSTER=%s if this really is mainnet",
+				"endpoint. If that URL is really mainnet, test play would move REAL funds — "+
+				"confirm it, or set SOLANA_CLUSTER=%s",
 			ClusterDevnet, c.SolanaRPCURL, ClusterMainnet))
 	}
 
