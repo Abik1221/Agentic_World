@@ -83,6 +83,13 @@ def gateway_headers() -> Dict[str, str]:
         if getattr(acc, "match_id", ""):
             h["X-Pyyol-Match"] = acc.match_id
         h["X-Pyyol-Turn"] = str(getattr(acc, "turn", 0))
+        # Only this header makes the attribution provable. Match and turn are chosen
+        # by us and could name any decision; the proof is minted by the platform for
+        # one specific turn, so a call carrying it could not have been fabricated.
+        # Absent on older platforms — the call is then simply unproven, not rejected.
+        proof = getattr(acc, "turn_proof", "")
+        if proof:
+            h["X-Pyyol-Proof"] = proof
     return h
 
 

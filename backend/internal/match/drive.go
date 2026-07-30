@@ -93,6 +93,17 @@ type driver struct {
 	meta     benchmark.AgentMetaResolver
 	log      *slog.Logger
 	maxMatch time.Duration
+	// turns mints the per-turn proof token shipped in the view. Nil ⇒ no token, and
+	// the agent simply has nothing to attach — the gateway then counts no decision as
+	// provably LLM-backed, which is the correct answer when the platform cannot prove
+	// otherwise.
+	turns TurnMinter
+}
+
+// TurnMinter issues the token that binds a gateway LLM call to one decision.
+// Satisfied by *turnproof.Signer.
+type TurnMinter interface {
+	Mint(agentID, matchID string, round int) string
 }
 
 // seatFor returns how to drive a seat: its live socket if connected, else its
@@ -121,7 +132,7 @@ func (s *Service) EnableRankedDrive(gw mover, resolver RemoteResolver, client Pu
 	if log == nil {
 		log = slog.Default()
 	}
-	s.driver = &driver{gw: gw, resolver: resolver, client: client, em: em, persist: persist, meta: meta, log: log, maxMatch: 5 * time.Minute}
+	s.driver = &driver{gw: gw, resolver: resolver, client: client, em: em, persist: persist, meta: meta, log: log, maxMatch: 5 * time.Minute, turns: s.turns}
 }
 
 // goofspielTurnView is the self-contained per-seat JSON asked over the socket; it
@@ -145,8 +156,14 @@ type goofspielTurnView struct {
 	OppScore         int              `json:"opponent_score"`
 	History          []goofspielRound `json:"history"`
 	PrizeOrderCommit string           `json:"prize_order_commit"`
-	MoveWindowMs     int64            `json:"move_window_ms"`
-	DeadlineMs       int64            `json:"deadline_ms,omitempty"`
+	// TurnProof binds a gateway LLM call to THIS decision. Attach it as
+	// X-Pyyol-Proof on the model call you make while deciding this turn (the SDK's
+	// route()/instrument() does it for you). Only a call carrying it counts as
+	// evidence the decision was LLM-backed. Empty when the platform has no proof
+	// secret configured.
+	TurnProof    string `json:"turn_proof,omitempty"`
+	MoveWindowMs int64  `json:"move_window_ms"`
+	DeadlineMs   int64  `json:"deadline_ms,omitempty"`
 	// Chat is what has been said at the table so far, oldest first. Without it an
 	// agent's `rationale` would be a monologue — it could talk but never answer.
 	Chat []goofspielChatLine `json:"chat,omitempty"`
@@ -242,7 +259,7 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 			if err != nil || !v.YourTurn || len(v.You.Hand) == 0 {
 				continue
 			}
-			card, outcome, latencyMS, rationale, usage := d.decide(ctx, sd, seat, matchID, v)
+			card, outcome, latencyMS, rationale, usage := d.decide(ctx, sd, seat, id, matchID, v)
 			rec.Record(benchmark.Decision{
 				Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 				Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
@@ -314,7 +331,7 @@ func (d *driver) flushBenchmark(rec *benchmark.Recorder) {
 // decide asks the connected agent for its card; on transport failure or an illegal
 // card it falls back to the lowest card in hand (deterministic, engine-legal) so a
 // flaky agent loses the round rather than wedging the match.
-func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, matchID string, v AgentView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, agentID, matchID string, v AgentView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	hist := make([]goofspielRound, 0, len(v.History))
 	for _, r := range v.History {
 		hist = append(hist, goofspielRound{
@@ -337,6 +354,7 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, matchID st
 		YourScore:    v.You.Score, OppScore: v.Opponent.Score,
 		History:          hist,
 		PrizeOrderCommit: v.PrizeOrderCommit,
+		TurnProof:        d.mintProof(agentID, matchID, v.Round),
 		MoveWindowMs:     v.MoveWindowMs,
 		DeadlineMs:       v.DeadlineMs,
 	}
@@ -354,6 +372,14 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, matchID st
 	default:
 		return move.Card, benchmark.OutcomeOK, latencyMS, move.Rationale, move.Usage
 	}
+}
+
+// mintProof returns the turn's proof token, or "" when no minter is configured.
+func (d *driver) mintProof(agentID, matchID string, round int) string {
+	if d.turns == nil {
+		return ""
+	}
+	return d.turns.Mint(agentID, matchID, round)
 }
 
 func containsInt(xs []int, v int) bool {

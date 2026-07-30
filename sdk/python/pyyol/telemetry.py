@@ -166,6 +166,11 @@ class UsageAccumulator:
         # Turn context (for gateway attribution); set by turn_usage().
         self.match_id = ""
         self.turn = 0
+        # The platform's proof token for THIS turn, shipped in the turn view as
+        # `turn_proof`. Attached to every model call so the gateway can tell that a
+        # call was genuinely made while deciding this move — match_id and turn are
+        # self-declared and prove nothing on their own.
+        self.turn_proof = ""
         # Ordered, de-duplicated list of models/providers seen this turn. A single
         # turn usually uses one model, but chains/retries may use several.
         self.models: List[str] = []
@@ -232,16 +237,19 @@ def current_usage() -> Optional[UsageAccumulator]:
 class turn_usage:
     """Context manager installing a fresh UsageAccumulator for the turn. Always
     active (independent of the Tracer), so usage is captured even with Lens off.
-    match_id/turn are carried so gateway routing can attribute a call to the match."""
+    match_id/turn are carried so gateway routing can attribute a call to the match,
+    and turn_proof so the gateway can VERIFY that attribution rather than trust it."""
 
-    def __init__(self, match_id: str = "", turn: int = 0) -> None:
+    def __init__(self, match_id: str = "", turn: int = 0, turn_proof: str = "") -> None:
         self._match_id = match_id
         self._turn = turn
+        self._turn_proof = turn_proof
 
     def __enter__(self) -> UsageAccumulator:
         self._acc = UsageAccumulator()
         self._acc.match_id = self._match_id
         self._acc.turn = self._turn
+        self._acc.turn_proof = self._turn_proof
         self._token = _current_usage.set(self._acc)
         return self._acc
 

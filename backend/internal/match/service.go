@@ -58,6 +58,9 @@ type Service struct {
 	// liveness suppresses forfeits during the grace window after a detected platform
 	// outage. Nil is valid and means "no grace" — see SweepExpired.
 	liveness *liveness.Tracker
+	// turns mints the per-turn proof token that binds a gateway LLM call to one
+	// decision. Nil ⇒ no token is issued, so nothing can be proven LLM-backed.
+	turns TurnMinter
 	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
 	chatTracer ChatTracer
 	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
@@ -85,6 +88,11 @@ func (s *Service) SetDecisionTracer(t DecisionTracer) { s.decisionTracer = t }
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 // Without it the service forfeits exactly as before, which is the safe default.
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
+
+// SetTurnMinter installs the per-turn proof minter. Must be called BEFORE
+// EnableRankedDrive, which copies it onto the driver — otherwise views ship without
+// a token and no decision can be proven LLM-backed.
+func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
 
 // StyleRecorder accumulates per-agent behavioral style aggregates at match finish
 // (read-only descriptive metrics; never affects play or money). Optional.

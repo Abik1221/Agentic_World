@@ -397,7 +397,11 @@ class RuntimeConnector:
                 round_no=turn_no,
                 agent_id=self.agent_id,
             ),
-            turn_usage(match_id=view.get("match_id", ""), turn=turn_no) as usage,
+            turn_usage(
+                match_id=view.get("match_id", ""),
+                turn=turn_no,
+                turn_proof=view.get("turn_proof", ""),
+            ) as usage,
         ):
             status, move = self.agent.decide_turn(view)
         ms = int((time.perf_counter() - started) * 1000)
