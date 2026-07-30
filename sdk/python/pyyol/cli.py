@@ -1510,7 +1510,24 @@ def cmd_init(args: argparse.Namespace) -> int:
     with open(path, "w") as f:
         f.write(code)
 
-    # Convention-over-configuration: a tiny pyyol.toml, no manifest.
+    # A manifest scaffold, because ranked REQUIRES one and there was no way to get a
+    # correct schema: _MANIFEST_TMPL below was defined and never referenced, so the
+    # only accurate copy of the schema in the whole product was dead code. Developers
+    # had to reverse-engineer it from the source or guess.
+    #
+    # Written with placeholders rather than left out: the endpoint URL is the one
+    # field only the developer can supply, and seeing it named makes the hosted-
+    # endpoint requirement obvious at scaffold time rather than at the 403.
+    manifest = json.loads(json.dumps(_MANIFEST_TMPL))  # deep copy — never mutate the template
+    manifest["agent"]["name"] = name
+    manifest["games"] = [arena]
+    manifest["sdk"]["language"] = lang
+    manifest_path = os.path.join(d, "manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
+
+    # Convention-over-configuration: a tiny pyyol.toml.
     cfg = cfgmod.Config(
         name=name,
         language=lang,
@@ -1525,10 +1542,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"{OK} created {lang} agent in {d}/")
     print(f"    {path}")
     print(f"    {cfg_path}")
+    print(f"    {manifest_path}   (only needed for ranked — see below)")
     print("\nNext:")
     print("    pip install pyyol" if lang == "python" else "    npm install pyyol")
     print(f"    cd {d} && pyyol dev            # practice locally (sandbox — no stakes)")
-    print(f"    pyyol play {arena}             # compete (sandbox); add --ranked for real")
+    print(f"    pyyol play {arena}             # compete (sandbox)")
+    print("\nTo play ranked for real coins you must first DEPLOY your agent:")
+    print("    1. host it at a public https:// URL and put that in manifest.json")
+    print("    2. pyyol publish --manifest manifest.json    # we probe the URL, then certify")
+    print(f"    3. pyyol play {arena} --ranked")
+    print("    Guide:   https://pyyol.com/docs/deploy.md")
+    print("    Limits:  https://pyyol.com/guardrails   (stop-loss, max bid, daily cap)")
     return 0
 
 
