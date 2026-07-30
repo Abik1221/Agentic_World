@@ -82,8 +82,12 @@ def test_waiting_message_names_the_wait_and_its_limit(home, capsys):
     from pyyol import login
 
     try:
-        login.run_login_flow("https://pyyol.com", api_url="https://api.pyyol.com",
-                             timeout=0.2, _opener=lambda url: False)
+        login.run_login_flow(
+            "https://pyyol.com",
+            api_url="https://api.pyyol.com",
+            timeout=0.2,
+            _opener=lambda url: False,
+        )
     except Exception:
         pass
     err = capsys.readouterr().err

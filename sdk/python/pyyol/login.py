@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .credentials import Credentials
 
+
 # The loopback pages are the LAST thing a developer sees in the sign-in flow, right
 # after a branded dashboard. Served as unstyled default-serif HTML they read as a
 # broken redirect or a phishing intercept rather than as the product — so they carry
@@ -170,7 +171,11 @@ def run_login_flow(
         # "are we in a test" would mean the tested path is not the shipped one, and
         # this message is the whole safety net for a browser that never appears.
         print(
-            ("opening your browser to sign in…" if opened else "couldn't open a browser automatically."),
+            (
+                "opening your browser to sign in…"
+                if opened
+                else "couldn't open a browser automatically."
+            ),
             file=sys.stderr,
         )
         print(f"  if it didn't open, visit:\n  {auth_url}\n", file=sys.stderr)
