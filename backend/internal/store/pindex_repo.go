@@ -156,6 +156,39 @@ func (r *PIndexRepo) RecordVerifiedCost(ctx context.Context, matchID, agentPubli
 	return err
 }
 
+// RecordBoundDecision marks one decision as provably LLM-backed: a gateway call
+// carrying a proof token the platform minted for exactly this (agent, match, round).
+//
+// Idempotent on (match, agent, round) BY DESIGN. An agent that makes several calls
+// while deciding one move has backed one decision, and must not be able to inflate
+// its integrity ratio by retrying or by fanning out across models.
+//
+// A no-op when the agent public id is unknown (INSERT…SELECT yields no row).
+func (r *PIndexRepo) RecordBoundDecision(ctx context.Context, matchID, agentPublicID string, round int) error {
+	if matchID == "" {
+		return nil // a call outside a match binds to no decision
+	}
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO agent_match_bound_decisions (match_id, agent_id, round)
+		 SELECT $1, a.id, $3 FROM agents a WHERE a.public_id = $2
+		 ON CONFLICT (match_id, agent_id, round) DO NOTHING`,
+		matchID, agentPublicID, round)
+	return err
+}
+
+// BoundDecisions returns how many DISTINCT decisions in this match the agent proved
+// were LLM-backed. Compared against the decisions it actually made to get the ranked
+// integrity ratio.
+func (r *PIndexRepo) BoundDecisions(ctx context.Context, matchID, agentPublicID string) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM agent_match_bound_decisions b
+		   JOIN agents a ON a.id = b.agent_id
+		  WHERE b.match_id = $1 AND a.public_id = $2`,
+		matchID, agentPublicID).Scan(&n)
+	return n, err
+}
+
 // TodayStats returns an agent's match count + token spend since the given day
 // start (UTC), for the auto-play daily match-cap + token-budget stop-conditions.
 func (r *PIndexRepo) TodayStats(ctx context.Context, agentPublicID string, dayStart time.Time) (matches int, tokens int64, err error) {

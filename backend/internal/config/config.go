@@ -107,6 +107,13 @@ type Config struct {
 	SolanaHotWalletSecretEnc string
 	SolanaHotWalletEncKey    string        // master key that decrypts SecretEnc (never logged)
 	WithdrawConfirmInterval  time.Duration // confirmation watcher cadence
+	// TurnProofSecret mints the per-turn tokens that prove a gateway LLM call was
+	// made for a specific decision. Empty disables the proof entirely: calls are
+	// still observed and billed, but none can be counted as evidence, so ranked
+	// integrity has nothing to enforce on. Required before ranked enforcement is
+	// switched on.
+	TurnProofSecret string
+
 	// AgentReconnectGrace is how long a turn waits for a briefly-disconnected agent
 	// before the engine plays its fallback. A dropped socket must not cost a move —
 	// in ranked, a run of blips can lose a real stake without the agent deciding
@@ -350,6 +357,7 @@ func Load() (*Config, error) {
 		SolanaHotWalletSecretEnc: l.str("SOLANA_HOT_WALLET_SECRET_ENC", ""),
 		SolanaHotWalletEncKey:    l.str("SOLANA_HOT_WALLET_ENC_KEY", ""),
 		WithdrawConfirmInterval:  l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
+		TurnProofSecret:          l.str("TURN_PROOF_SECRET", ""),
 		AgentReconnectGrace:      l.dur("AGENT_RECONNECT_GRACE", 8*time.Second),
 		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),
 		HotWalletCapCents:        int64(l.intVal("HOT_WALLET_CAP_CENTS", 0)),

@@ -18,7 +18,7 @@ import (
 // socket gateway uses (a login-issued ScopeAgent key resolved to its owning agent
 // id). It only IDENTIFIES the agent — the developer's own provider key rides
 // Authorization and is forwarded to the LLM provider untouched.
-func mountLLMGateway(keys keyResolver, em *telemetry.Client, verified llmgateway.VerifiedHook, log *slog.Logger) httpx.Mount {
+func mountLLMGateway(keys keyResolver, em *telemetry.Client, verified llmgateway.VerifiedHook, turns llmgateway.TurnVerifier, log *slog.Logger) httpx.Mount {
 	authenticate := func(ctx context.Context, rawKey string) (string, bool) {
 		if keys == nil || rawKey == "" {
 			return "", false
@@ -32,6 +32,7 @@ func mountLLMGateway(keys keyResolver, em *telemetry.Client, verified llmgateway
 	proxy := llmgateway.New(em, log,
 		llmgateway.WithAuthenticator(authenticate),
 		llmgateway.WithVerifiedHook(verified),
+		llmgateway.WithTurnVerifier(turns),
 	)
 	return func(r chi.Router) {
 		// Mounted at /gw; strip it so the proxy sees /openai/... or /anthropic/...

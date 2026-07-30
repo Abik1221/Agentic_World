@@ -70,6 +70,7 @@ import (
 	"github.com/agent-arena/arena/internal/subscription"
 	"github.com/agent-arena/arena/internal/telemetrybridge"
 	"github.com/agent-arena/arena/internal/tournament"
+	"github.com/agent-arena/arena/internal/turnproof"
 	"github.com/agent-arena/arena/internal/twofa"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
@@ -1148,7 +1149,16 @@ func run() error {
 		// the "Verified" badge (dual-badge model). Deduped in-process to one event
 		// per agent per instance; the badge award is idempotent anyway.
 		var gwSeen sync.Map
-		gwVerified := func(ctx context.Context, agentID, matchID string, costUSD float64) {
+		gwVerified := func(ctx context.Context, agentID, matchID string, round int, bound bool, costUSD float64) {
+			// bound = this call is provably the one made for (matchID, round). Recorded
+			// so ranked integrity can count decisions that were genuinely LLM-backed;
+			// it does not change how cost is accumulated, since an unbound call is
+			// still a real call the developer really paid for.
+			if bound {
+				if err := pindexRepo.RecordBoundDecision(context.Background(), matchID, agentID, round); err != nil {
+					log.Warn("gateway: could not record bound decision", "agent", agentID, "match", matchID, "round", round, "err", err)
+				}
+			}
 			// Accumulate per-match verified cost on EVERY observed call (unfakeable
 			// input for the P-Index cost-efficiency dimension + verified economics).
 			if err := pindexRepo.RecordVerifiedCost(context.Background(), matchID, agentID, costUSD); err != nil {
@@ -1165,7 +1175,7 @@ func run() error {
 				log.Warn("gateway: could not emit agent.gateway_verified", "agent", agentID, "err", err)
 			}
 		}
-		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, log))
+		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, turnproof.New(cfg.TurnProofSecret), log))
 		log.Info("Pyyol LLM Gateway mounted at /gw/*")
 	}
 	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)

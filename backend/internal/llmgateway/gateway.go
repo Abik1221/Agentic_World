@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,7 +61,15 @@ type upstream struct {
 // the server-measured USD cost. The wiring layer uses it to (a) accumulate per-match
 // verified cost and (b) award the "Verified" badge once. Must be fast/non-blocking or
 // spawn its own goroutine — it runs inline after the response is written.
-type VerifiedHook func(ctx context.Context, agentID, matchID string, costUSD float64)
+type VerifiedHook func(ctx context.Context, agentID, matchID string, round int, bound bool, costUSD float64)
+
+// TurnVerifier reports whether a proof token is the one the platform issued for
+// exactly this (agent, match, round). Satisfied by *turnproof.Signer. Nil ⇒ no call
+// can be proven bound, which is the safe default: unbound calls are still observed
+// and billed, they just do not count as evidence that a decision was LLM-backed.
+type TurnVerifier interface {
+	Verify(agentID, matchID string, round int, token string) bool
+}
 
 type Proxy struct {
 	em         Emitter
@@ -70,6 +79,7 @@ type Proxy struct {
 	now        func() time.Time
 	upstreams  map[string]upstream
 	onVerified VerifiedHook
+	turns      TurnVerifier
 }
 
 // Option configures a Proxy.
@@ -92,6 +102,10 @@ func WithClock(now func() time.Time) Option { return func(p *Proxy) { p.now = no
 // WithVerifiedHook sets the callback fired when a verified call is observed (used to
 // award the "Verified" badge).
 func WithVerifiedHook(h VerifiedHook) Option { return func(p *Proxy) { p.onVerified = h } }
+
+// WithTurnVerifier enables per-decision proof. Without it, calls are observed but
+// none is provably tied to a specific turn.
+func WithTurnVerifier(v TurnVerifier) Option { return func(p *Proxy) { p.turns = v } }
 
 func defaultAuth(_ context.Context, key string) (string, bool) {
 	if key == "" {
@@ -220,11 +234,28 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 	}
 	cost := pricing.EstimateCost(u.Model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)
 	match := reqHeader.Get("X-Pyyol-Match")
+	round, _ := strconv.Atoi(reqHeader.Get("X-Pyyol-Turn"))
+
+	// Is this call PROVABLY the one made for this decision?
+	//
+	// X-Pyyol-Match and X-Pyyol-Turn are set by the agent, so on their own they claim
+	// a binding rather than establish one — an agent could make a single cheap call
+	// and label it with any match and round. X-Pyyol-Proof is a token only the
+	// platform can mint, issued with that specific turn view, so a call carrying a
+	// valid one could not have been fabricated and a token replayed from an earlier
+	// round verifies as that earlier round.
+	//
+	// An unbound call is NOT an accusation: batching, retries and warm-up calls are
+	// all legitimate and simply carry no proof. It only means this call cannot be
+	// counted as evidence for a particular decision.
+	bound := p.turns != nil && agentID != "" && match != "" &&
+		p.turns.Verify(agentID, match, round, reqHeader.Get("X-Pyyol-Proof"))
+
 	// The agent produced a real, gateway-observed LLM call: accumulate its verified
 	// cost (per match) and let the wiring award the "Verified" badge. Fires regardless
 	// of whether Lens is enabled.
 	if p.onVerified != nil && agentID != "" {
-		p.onVerified(context.Background(), agentID, match, cost)
+		p.onVerified(context.Background(), agentID, match, round, bound, cost)
 	}
 	if p.em == nil || !p.em.Enabled() {
 		return
@@ -259,6 +290,9 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 		Priority:    telemetry.PriorityHigh,
 		PayloadJSON: map[string]any{
 			"turn": reqHeader.Get("X-Pyyol-Turn"),
+			// Whether this call is provably the one made for that turn. The ranked
+			// integrity check counts bound calls only.
+			"turn_bound": bound,
 		},
 	})
 }

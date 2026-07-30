@@ -2,6 +2,7 @@ package llmgateway
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/turnproof"
 	"io"
 	"log/slog"
 	"net/http"
@@ -223,7 +224,7 @@ func TestProxy_VerifiedHookFires(t *testing.T) {
 	}
 	var got []obs
 	// em=nil (Lens disabled) to prove the hook is independent of telemetry.
-	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, agentID, matchID string, cost float64) {
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, agentID, matchID string, _ int, _ bool, cost float64) {
 		got = append(got, obs{agentID, matchID, cost})
 	}))
 	rec := do(t, p, "POST", "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{
@@ -245,7 +246,7 @@ func TestProxy_VerifiedHookNotFiredOnError(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 	fired := false
-	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _, _ string, _ float64) { fired = true }))
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _, _ string, _ int, _ bool, _ float64) { fired = true }))
 	do(t, p, "POST", "/openai/v1/chat/completions", `{}`, map[string]string{"X-Pyyol-Key": "a"})
 	if fired {
 		t.Error("verified hook must not fire on a non-2xx response")
@@ -266,4 +267,81 @@ func abs(f float64) float64 {
 		return -f
 	}
 	return f
+}
+
+// A call carrying a valid proof token is BOUND to that decision; one without is not.
+// This is the line between "an LLM call happened somewhere" and "this decision was
+// made by an LLM", and it is the whole basis of ranked integrity.
+func TestVerifiedHookReportsWhetherTheCallIsBound(t *testing.T) {
+	sig := turnproof.New("test-secret")
+
+	type got struct {
+		match string
+		round int
+		bound bool
+	}
+	var seen []got
+	hook := func(_ context.Context, _, matchID string, round int, bound bool, _ float64) {
+		seen = append(seen, got{matchID, round, bound})
+	}
+
+	p := New(nil, slog.Default(), WithVerifiedHook(hook), WithTurnVerifier(sig))
+
+	body := []byte(`{"model":"gpt-4o","usage":{"prompt_tokens":10,"completion_tokens":5}}`)
+
+	// Genuine: the platform issued this token for (ag_1, m_1, round 4).
+	h := http.Header{}
+	h.Set("X-Pyyol-Match", "m_1")
+	h.Set("X-Pyyol-Turn", "4")
+	h.Set("X-Pyyol-Proof", sig.Mint("ag_1", "m_1", 4))
+	p.observe("openai", "ag_1", h, 12, body)
+
+	// Forged: the agent claims round 9 with round 4's token — the cheap trick this
+	// exists to stop, since otherwise one call could cover a whole match.
+	h2 := http.Header{}
+	h2.Set("X-Pyyol-Match", "m_1")
+	h2.Set("X-Pyyol-Turn", "9")
+	h2.Set("X-Pyyol-Proof", sig.Mint("ag_1", "m_1", 4))
+	p.observe("openai", "ag_1", h2, 12, body)
+
+	// No proof at all — a legitimate batching/warm-up call. Observed, not counted.
+	h3 := http.Header{}
+	h3.Set("X-Pyyol-Match", "m_1")
+	h3.Set("X-Pyyol-Turn", "5")
+	p.observe("openai", "ag_1", h3, 12, body)
+
+	if len(seen) != 3 {
+		t.Fatalf("hook fired %d times, want 3 — every observed call must still report", len(seen))
+	}
+	if !seen[0].bound || seen[0].round != 4 {
+		t.Fatalf("a genuine proof was not counted: %+v", seen[0])
+	}
+	if seen[1].bound {
+		t.Fatal("a token replayed onto another round was accepted")
+	}
+	if seen[2].bound {
+		t.Fatal("a call with no proof was counted as bound")
+	}
+}
+
+// With no verifier configured nothing is bound, but calls must still be observed and
+// billed — disabling the proof must not silently stop metering.
+func TestWithoutAVerifierNothingIsBoundButCallsStillReport(t *testing.T) {
+	var fired int
+	var bound bool
+	p := New(nil, slog.Default(), WithVerifiedHook(
+		func(_ context.Context, _, _ string, _ int, b bool, _ float64) { fired++; bound = bound || b }))
+
+	h := http.Header{}
+	h.Set("X-Pyyol-Match", "m_1")
+	h.Set("X-Pyyol-Turn", "1")
+	h.Set("X-Pyyol-Proof", "anything")
+	p.observe("openai", "ag_1", h, 5, []byte(`{"model":"gpt-4o","usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+
+	if fired != 1 {
+		t.Fatalf("call was not observed: fired=%d", fired)
+	}
+	if bound {
+		t.Fatal("bound reported true with no verifier — must fail closed")
+	}
 }
