@@ -62,11 +62,28 @@ func TestMainnetOnATestRPCIsRefused(t *testing.T) {
 
 // The inverse, and the expensive one: a devnet-labelled build whose RPC is actually
 // mainnet spends real funds during testing.
-func TestDevnetOnANonTestRPCIsRefused(t *testing.T) {
+// A devnet cluster on an RPC that does not LOOK like devnet warns but still boots.
+// You cannot infer a cluster from a URL — a private Helius/QuickNode/self-hosted
+// devnet endpoint may contain no recognisable substring — and refusing to start on a
+// string match would reject correct deployments. The mint check below is the
+// authoritative guard for this direction.
+func TestDevnetOnANonTestRPCWarnsButBoots(t *testing.T) {
 	c := base()
-	c.SolanaRPCURL = "https://api.mainnet-beta.solana.com"
-	if errs := c.validateSolanaCluster(); !errsContain(errs, "REAL funds") {
-		t.Fatalf("devnet on a non-devnet RPC must be refused, got: %v", errs)
+	c.SolanaRPCURL = "https://my-private-node.example.com/rpc"
+	errs := c.validateSolanaCluster()
+	if len(errs) != 0 {
+		t.Fatalf("an unrecognised RPC host must not block boot, got: %v", errs)
+	}
+	if len(c.Warnings) != 1 || !contains(c.Warnings[0], "REAL funds") {
+		t.Fatalf("it must still warn loudly, got: %v", c.Warnings)
+	}
+}
+
+// A recognisably-devnet RPC produces no warning at all.
+func TestDevnetOnADevnetRPCIsSilent(t *testing.T) {
+	c := base()
+	if errs := c.validateSolanaCluster(); len(errs) != 0 || len(c.Warnings) != 0 {
+		t.Fatalf("a coherent devnet config must be silent: errs=%v warns=%v", errs, c.Warnings)
 	}
 }
 

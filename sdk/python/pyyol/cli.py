@@ -49,6 +49,7 @@ def queue_path_for(game: str) -> str:
     """
     return "/v1/group-queue" if game in GROUP_GAMES else "/v1/queue"
 
+
 # Agent API keys look like "sk_arena_<lookup>_<secret>" — the long-lived, revocable
 # connection credential (mirrors backend platform.PrefixKey).
 _AGENT_KEY_PREFIX = "sk_arena_"
@@ -592,8 +593,6 @@ def cmd_logout(_args: argparse.Namespace) -> int:
 def cmd_wallet(args: argparse.Namespace) -> int:
     """Show the owner's coin balance + per-agent playing wallets, so a developer can
     see why ranked play was refused ("not enough coins") without leaving the CLI."""
-    from . import credentials
-
     creds = _ensure_login(args)
     if creds is None or not creds.access_token:
         return 2
@@ -632,8 +631,6 @@ def cmd_wallet(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     import urllib.error
     import urllib.request
-
-    from . import credentials
 
     creds = _ensure_login(args)
     if creds is None or not creds.access_token:
@@ -1112,9 +1109,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # An explicit --url/PYYOL_URL means the caller is wiring transport themselves
     # (CI, self-host); otherwise sign in rather than erroring out.
     creds = (
-        credentials.load()
-        if (args.url or os.environ.get("PYYOL_URL", ""))
-        else _ensure_login(args)
+        credentials.load() if (args.url or os.environ.get("PYYOL_URL", "")) else _ensure_login(args)
     )
     url = args.url or os.environ.get("PYYOL_URL", "") or (creds.connect_url if creds else "")
     if not url:
@@ -1683,7 +1678,9 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         for i in range(matches):
             if stop.is_set():
                 return
-            _start_sandbox(base, token, arena, console, attempt_label=f"{i + 1}/{matches}", args=args)
+            _start_sandbox(
+                base, token, arena, console, attempt_label=f"{i + 1}/{matches}", args=args
+            )
             time.sleep(2.0)
 
     threading.Thread(target=kicker, daemon=True, name="pyyol-kicker").start()

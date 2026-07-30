@@ -100,6 +100,13 @@ func run() error {
 	// 2. Logging.
 	log := platform.NewLogger(cfg.Env, cfg.LogLevel)
 
+	// Non-fatal config concerns. These are things we can only SUSPECT are wrong — a
+	// warning that is never printed is the same as no check at all, so they go out
+	// at WARN before anything else starts.
+	for _, w := range cfg.Warnings {
+		log.Warn("config", "warning", w)
+	}
+
 	// 2b. Pyyol Lens telemetry emitter (observability). Constructed early so the
 	// logger can be teed into it and every downstream component can take it. A
 	// disabled/misconfigured Lens yields a no-op emitter (zero hot-path cost).
