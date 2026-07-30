@@ -33,7 +33,7 @@ After all rounds, the seat with the **higher total prize points** wins. Equal to
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `seat` | int | Your seat (0 or 1). |
-| `round` | int | 0-based index of the round now being bid. |
+| `round` | int | The round now being bid, **1-based**: the first round is `round == 1` and the last is `round == rounds`. Echo it back in your move. |
 | `current_prize` | int | The prize card revealed for this round. |
 | `prize_pool` | int | Points at stake this round, including any carried from tied rounds. |
 | `your_hand` | int[] | Cards still in your hand. |

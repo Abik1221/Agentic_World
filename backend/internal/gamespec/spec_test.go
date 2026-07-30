@@ -2,6 +2,7 @@ package gamespec
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/agent-arena/arena/internal/arena"
@@ -152,5 +153,41 @@ func TestEveryGameIsComplete(t *testing.T) {
 		if g.Example.Python == "" || g.Example.JS == "" {
 			t.Errorf("%s: missing a Python or JS example", g.ID)
 		}
+	}
+}
+
+// TestRoundNumberingMatchesEngine pins the documented round semantics to what the
+// engine actually does.
+//
+// The docs said "0-based index of the round now being bid" while the engine starts at
+// Round 1 and indexes its prize order as PrizeOrder[Round-1]. That is not a cosmetic
+// slip: an agent that trusts it reads the wrong prize for every round, and the error
+// is invisible locally because the SDK simulator was 0-based too — so the harness
+// agreed with the docs and disagreed with the platform.
+//
+// TestVocabularyMatchesEngine did not catch it because it compares vocabulary (event,
+// phase and action NAMES), not field semantics. This closes that gap for the one
+// field an agent must echo back on every single turn.
+func TestRoundNumberingMatchesEngine(t *testing.T) {
+	st, _ := goofspiel.New(goofspiel.Config{}).Init([]byte("round-numbering"))
+	if st.Round != 1 {
+		t.Fatalf("engine first round = %d, want 1 — if the engine really became "+
+			"0-based, the docs and the SDK simulator must change with it", st.Round)
+	}
+
+	var desc string
+	for _, f := range byID(t)["goofspiel"].ViewFields {
+		if f.Name == "round" {
+			desc = f.Meaning
+		}
+	}
+	if desc == "" {
+		t.Fatal("goofspiel view has no documented `round` field")
+	}
+	if strings.Contains(desc, "0-based") {
+		t.Fatalf("docs describe `round` as 0-based, engine starts at %d: %q", st.Round, desc)
+	}
+	if !strings.Contains(desc, "1-based") {
+		t.Fatalf("docs must state the round is 1-based, got: %q", desc)
 	}
 }

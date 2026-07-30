@@ -19,7 +19,7 @@
         {
           "name": "round",
           "type": "int",
-          "meaning": "0-based index of the round now being bid."
+          "meaning": "The round now being bid, **1-based**: the first round is `round == 1` and the last is `round == rounds`. Echo it back in your move."
         },
         {
           "name": "current_prize",

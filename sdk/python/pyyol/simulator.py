@@ -71,7 +71,7 @@ def simulate_goofspiel(
     *,
     hand_size: int = 13,
     seed: int = 1,
-    shuffle_prizes: bool = False,
+    shuffle_prizes: bool = True,
     turn_path: str = "/turn",
 ) -> Dict[str, Any]:
     """Play one Goofspiel match: your agent (seat 0) vs a baseline (seat 1).
@@ -110,18 +110,29 @@ def simulate_goofspiel(
     )
     seq += 1
 
-    for rnd, prize in enumerate(prizes):
+    # Every resolved round, in the shape the platform sends. The turn view is
+    # documented as self-contained — an agent is told it can reason over the whole
+    # match from one payload — and this harness used to omit `history` entirely. A
+    # strategy written exactly as the rules instruct then read an empty list here,
+    # played badly, and sent its author hunting a strategy bug that did not exist.
+    history: List[Dict[str, Any]] = []
+
+    for rnd, prize in enumerate(prizes, start=1):
         pool = prize + carried
         view = {
             "game": GOOFSPIEL,
             "match_id": "sim-goofspiel",
             "seat": 0,
+            # 1-based, matching the engine (its first round is 1 and it indexes
+            # prize_order[round-1]). This used to be 0-based, so an agent tuned here
+            # was off by one against the real platform in a way nothing surfaced.
             "round": rnd,
             "current_prize": prize,
             "prize_pool": pool,
             "your_hand": list(dev_hand),
             "scores": list(scores),
             "legal_actions": list(dev_hand),
+            "history": [dict(h) for h in history],
         }
         resp = _post(agent, secret, turn_path, view, seq)
         seq += 1
@@ -137,12 +148,30 @@ def simulate_goofspiel(
 
         if dev_card > opp_card:
             scores[0] += pool
+            round_winner = 0
             carried = 0
         elif opp_card > dev_card:
             scores[1] += pool
+            round_winner = 1
             carried = 0
         else:
+            round_winner = -1
             carried = pool  # tie — the pool carries into the next round
+
+        # Field names are the documented ones (round/prize/prize_pool/your_card/
+        # opp_card/winner/scores), not this module's internal shorthand — an agent
+        # reading `history` here must not have to write different code for live play.
+        history.append(
+            {
+                "round": rnd,
+                "prize": prize,
+                "prize_pool": pool,
+                "your_card": dev_card,
+                "opp_card": opp_card,
+                "winner": round_winner,
+                "scores": list(scores),
+            }
+        )
 
         # Lifecycle: async event that the round resolved.
         _post(

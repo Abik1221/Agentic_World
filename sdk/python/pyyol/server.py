@@ -308,7 +308,19 @@ class Adapter:
     secret: str = ""
 
     def initialize(self, ctx: "InitializeRequest") -> Any:  # noqa: D401
-        """Called once at match start. Return a dict ack or None. Optional."""
+        """Called at match start — but NOT guaranteed, and NOT once per match.
+
+        You may be handed a match already in progress (after a reconnect, or when the
+        platform attaches you to a running table), in which case your first callback
+        is ``step`` and this never fires. One connection also serves many matches.
+
+        So do NOT build per-match state here. Key it on ``view.match_id`` and create
+        it lazily in ``step``. State initialised here and reused leaks across matches:
+        the agent plays match two with match one's memory, which looks like a strategy
+        bug and is not one.
+
+        Return a dict ack or None. Optional.
+        """
         return None
 
     def step(self, view: Any) -> Any:
@@ -316,7 +328,18 @@ class Adapter:
         raise NotImplementedError("implement step(self, view) -> move")
 
     def shutdown(self, result: "GameEndNotification") -> None:
-        """Called once when the match ends. Optional."""
+        """Called when a match ends. Optional. Like ``initialize``, not guaranteed —
+        a dropped connection ends the match without it."""
+        return None
+
+    def on_event(self, event: "EventNotification") -> None:
+        """Async match events (round results, opponent actions). Optional.
+
+        This used to be unreachable: ``to_agent`` wired the transport's event hook to
+        a no-op, so an Adapter silently received nothing no matter what it defined.
+        For a game where reading the opponent IS the strategy, that quietly removed
+        the information the agent needed and gave no indication it had.
+        """
         return None
 
     def to_agent(self) -> "Agent":
@@ -329,7 +352,8 @@ class Adapter:
         a.on_turn()(self.step)
         a.on_initialize(self.initialize)
         a.on_game_end(self.shutdown)
-        a.on_event(lambda _e: None)
+        # Dispatch to the subclass hook rather than dropping the event on the floor.
+        a.on_event(self.on_event)
         return a
 
 
