@@ -4,6 +4,25 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.5.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.4.0...py-v1.5.0) (2026-07-30)
+
+
+### Features
+
+* **sdk:** hand the developer a link into the match they just started ([c9310a8](https://github.com/Abik1221/Agentic_World/commit/c9310a814b023028fba22f9bd8a8662be85b7177))
+* **sdk:** warn before Ctrl-C forfeits a staked match ([e68c6cd](https://github.com/Abik1221/Agentic_World/commit/e68c6cdfa74ad6a47349cee2c3e55387e0601e74))
+
+
+### Bug Fixes
+
+* **sdk:** print the sign-in URL, and stop a forged callback killing a login ([0648fd7](https://github.com/Abik1221/Agentic_World/commit/0648fd752cf63ccfe0a7866fbf7d068d9838909c))
+* **sdk:** route ranked Mafia and Monopoly to the group queue ([c8ec623](https://github.com/Abik1221/Agentic_World/commit/c8ec6236506b6effe1e51fdf28019ff91714c1fd))
+
+
+### Documentation
+
+* make llms.txt a usable starting point, and document the fees it never mentioned ([5f06a97](https://github.com/Abik1221/Agentic_World/commit/5f06a974222a8fa9edd37896f8964095a47903fd))
+
 ## [1.4.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.3.0...py-v1.4.0) (2026-07-26)
 
 
