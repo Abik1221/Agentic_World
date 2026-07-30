@@ -25,8 +25,51 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .credentials import Credentials
 
-_OK_PAGE = b"<!doctype html><meta charset=utf-8><h2>pyyol: login complete \xe2\x9c\x93</h2><p>You can close this tab and return to your terminal.</p>"
-_BAD_PAGE = b"<!doctype html><meta charset=utf-8><h2>pyyol: login failed</h2><p>State mismatch or missing token. Try again.</p>"
+# The loopback pages are the LAST thing a developer sees in the sign-in flow, right
+# after a branded dashboard. Served as unstyled default-serif HTML they read as a
+# broken redirect or a phishing intercept rather than as the product — so they carry
+# the platform palette (see Pyyol_client/app/globals.css) and say plainly what to do
+# next. Self-contained by necessity: this is a throwaway loopback server with no
+# static assets and no network the page can rely on.
+def _page(title: str, body: str, accent: str) -> bytes:
+    return (
+        "<!doctype html><html lang=en><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>{title} · pyyol</title>"
+        "<style>"
+        ":root{color-scheme:dark}"
+        "*{box-sizing:border-box}"
+        "body{margin:0;min-height:100vh;display:flex;align-items:center;"
+        "justify-content:center;padding:24px;background:#0b0b0f;color:#e2e2ea;"
+        "font:15px/1.6 ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif}"
+        ".card{width:100%;max-width:420px;background:#111118;border:1px solid #2a2a37;"
+        "border-radius:16px;padding:32px;text-align:center}"
+        ".dot{width:44px;height:44px;margin:0 auto 20px;border-radius:50%;"
+        f"display:flex;align-items:center;justify-content:center;background:{accent}22;"
+        f"border:1px solid {accent}55;font-size:20px;color:{accent}}}"
+        "h1{margin:0 0 8px;font-size:18px;font-weight:600;letter-spacing:-.01em}"
+        "p{margin:0;color:#8d8da1;font-size:13.5px}"
+        ".mark{margin-top:24px;padding-top:18px;border-top:1px solid #2a2a37;"
+        "font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;"
+        "text-transform:uppercase;color:#5a5a70}"
+        "</style>"
+        f"<body><main class=card>{body}<div class=mark>pyyol</div></main>"
+    ).encode("utf-8")
+
+
+_OK_PAGE = _page(
+    "Signed in",
+    "<div class=dot>&#10003;</div><h1>You&rsquo;re signed in</h1>"
+    "<p>You can close this tab and return to your terminal.</p>",
+    "#34d399",
+)
+_BAD_PAGE = _page(
+    "Sign-in failed",
+    "<div class=dot>&#33;</div><h1>Sign-in didn&rsquo;t complete</h1>"
+    "<p>The request couldn&rsquo;t be verified, so nothing was signed in. "
+    "Return to your terminal and run the command again.</p>",
+    "#f59e0b",
+)
 
 
 def derive_connect_url(api_url: str) -> str:
@@ -131,6 +174,14 @@ def run_login_flow(
             file=sys.stderr,
         )
         print(f"  if it didn't open, visit:\n  {auth_url}\n", file=sys.stderr)
+        # Without this the terminal sits silent for up to three minutes and a user who
+        # missed the browser tab cannot tell whether the CLI is working, hung, or done.
+        # Naming the wait — and its limit — is the difference between "it's waiting on
+        # me" and "it's broken". Same reason gh/vercel/stripe all print it.
+        print(
+            f"waiting for you to finish signing in… (up to {int(timeout)}s; Ctrl-C to cancel)",
+            file=sys.stderr,
+        )
 
         if not done.wait(timeout):
             raise TimeoutError(
