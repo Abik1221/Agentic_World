@@ -126,6 +126,9 @@ jobs:
           # Solana withdrawals (encrypted hot-wallet secret + its master key)
           SOLANA_HOT_WALLET_SECRET_ENC: ${{ secrets.SOLANA_HOT_WALLET_SECRET_ENC }}
           SOLANA_HOT_WALLET_ENC_KEY: ${{ secrets.SOLANA_HOT_WALLET_ENC_KEY }}
+          # Ceiling on how much we leave in the signing wallet. Unset ⇒ 0 ⇒ the alert
+          # is off, which is right for devnet. Set it before mainnet.
+          HOT_WALLET_CAP_CENTS: ${{ secrets.HOT_WALLET_CAP_CENTS }}
           # Coin economy / withdrawal policy (optional tuning)
           COIN_CENTS: ${{ secrets.COIN_CENTS }}
           WITHDRAW_SELL_FEE_PCT: ${{ secrets.WITHDRAW_SELL_FEE_PCT }}
@@ -210,6 +213,7 @@ jobs:
           SOLANA_PLATFORM_OWNER=${SOLANA_PLATFORM_OWNER:-}
           SOLANA_PLATFORM_ATA=${SOLANA_PLATFORM_ATA:-}
           SOLANA_COMMITMENT=${SOLANA_COMMITMENT:-finalized}
+          HOT_WALLET_CAP_CENTS=${HOT_WALLET_CAP_CENTS:-0}
 
           # ── Solana withdrawals (encrypted hot-wallet secret; deposits must be on) ──
           SOLANA_HOT_WALLET_SECRET_ENC=${SOLANA_HOT_WALLET_SECRET_ENC:-}
