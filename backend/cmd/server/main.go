@@ -1115,7 +1115,21 @@ func run() error {
 		manifestHandler.Register,
 		agentGateway.Register,
 		mountAgentStatus(authn, agentGateway),
-		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd()),
+		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd(), func() economics {
+			// Live from the admin snapshot when one is published, falling back to the
+			// boot config so the price list is never blank.
+			e := economics{
+				RakePct: cfg.RakePct, DepositFeePct: cfg.DepositFeePct,
+				WithdrawFeePct: cfg.WithdrawSellFeePct, CoinCents: cfg.CoinCents,
+				MinStakeUSDCents: cfg.MinStakeUSDCents,
+			}
+			if platformCfg != nil {
+				ec := platformCfg.Get().Economy
+				e.RakePct, e.DepositFeePct = ec.PlatformCommissionPct, ec.DepositFeePct
+				e.WithdrawFeePct, e.MinStakeUSDCents = ec.WithdrawFeePct, ec.MinStakeUSDCents
+			}
+			return e
+		}),
 		matchHandler.Register,
 		matchmakingHandler.Register,
 		groupHandler.Register,

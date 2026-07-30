@@ -85,17 +85,46 @@ func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg
 // that are disabled in this environment (X-claim onboarding, Solana deposits)
 // instead of letting the user hit a 503/404. Booleans only — never any secret or
 // key material.
-func mountCapabilities(xClaim, deposits, devMode bool) func(chi.Router) {
+func mountCapabilities(xClaim, deposits, devMode bool, econ func() economics) func(chi.Router) {
 	return func(r chi.Router) {
 		r.Get("/v1/config", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Cache-Control", "public, max-age=30")
-			httpx.JSON(w, http.StatusOK, map[string]any{
+			out := map[string]any{
 				"onboarding_x_claim": xClaim,   // /register + /verify usable
 				"deposits":           deposits, // /v1/deposits usable
 				"dev_mode":           devMode,
-			})
+			}
+			// Publish what a stake actually costs.
+			//
+			// All three charges existed and none was reachable without logging in, so a
+			// developer could not work out their break-even win rate before deciding
+			// whether to play. At a $5 tier that is the whole decision: a 10% rake means
+			// you need roughly 55% to come out level, and nothing on the platform said
+			// so. Percentages and a peg are not secrets — they are the price list.
+			if econ != nil {
+				e := econ()
+				out["economics"] = map[string]any{
+					"rake_pct":            e.RakePct,
+					"deposit_fee_pct":     e.DepositFeePct,
+					"withdrawal_fee_pct":  e.WithdrawFeePct,
+					"coin_cents":          e.CoinCents,
+					"min_stake_usd_cents": e.MinStakeUSDCents,
+				}
+			}
+			httpx.JSON(w, http.StatusOK, out)
 		})
 	}
+}
+
+// economics is the public price list: what the platform takes, and what a coin is
+// worth. Read live from the admin config snapshot so the published figures are the
+// ones actually charged, not the boot-time defaults.
+type economics struct {
+	RakePct          int
+	DepositFeePct    int
+	WithdrawFeePct   int
+	CoinCents        int64
+	MinStakeUSDCents int64
 }
 
 // mountAgentStatus serves GET /v1/agent/status?agent_id=… — is my agent connected
