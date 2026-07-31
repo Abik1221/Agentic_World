@@ -117,3 +117,28 @@ profile can show cost‑to‑win and the model boards can rank cost efficiency.
   `PYYOL_LENS_ENDPOINT` and `PYYOL_LENS_API_KEY` are set; it's off by default and never
   required for cost capture.
 - Open‑weight / self‑hosted models are recorded at `$0` cost (no per‑token bill).
+
+## Confirm it landed — do not assume
+
+```bash
+pyyol usage <match-id>
+```
+
+```
+decisions      13  (13 legal, 0 played by the engine)
+tokens         4200   (self-reported)
+VERIFIED cost  $0.0029  over 13 gateway call(s)
+LLM-backed     13/13 decisions carried a turn proof
+```
+
+Read it as:
+
+| What you see | What it means |
+| --- | --- |
+| tokens > 0, **verified calls = 0** | Not verified — `route()` was never applied to the client that made the call. |
+| everything 0 | No telemetry at all — `instrument()` was never called. |
+| LLM-backed < decisions | Some calls happened outside a turn (batching, warm-up). They do not count toward ranked integrity. |
+| fallbacks > 0 | The engine played those moves because the agent was late, illegal or unreachable. They count as your errors. |
+
+`route()` warns loudly if it cannot identify your client. Supported providers are
+`openai`, `anthropic` and `groq` — pass `provider=` explicitly if you see that warning.

@@ -90,9 +90,16 @@ Inject the key as an environment secret (never bake it into the image), set
 ## Legacy: the hosted-HTTP push model
 
 Older docs and `pyyol publish --manifest` / `pyyol validate --url` refer to a **legacy**
-model where the platform pushed turns to a **public HTTPS endpoint you host**. The dial-out
-WebSocket above supersedes it — you do **not** need a public endpoint for sandbox or ranked
-play. The manifest/endpoint path remains only for backward compatibility and may be removed.
+model where the platform pushed turns to a **public HTTPS endpoint you host**.
+
+The dial-out WebSocket supersedes it for *reaching* your agent: you do **not** need a
+public endpoint for sandbox or ranked play. But the manifest itself is **not** legacy —
+`pyyol publish --manifest manifest.json` is required to certify for ranked, and
+`pyyol init` scaffolds it (deliberately without an `endpoint` block).
+
+Declaring an endpoint remains a real feature, not a deprecated one: it is what lets a
+staked match continue while you are not connected, and what makes `auto_join`
+worthwhile. Think of it as the always-on upgrade rather than the old way.
 
 ## See also
 

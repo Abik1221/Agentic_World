@@ -44,3 +44,28 @@ per dollar of tokens.
 Disconnecting from a ranked match does **not** refund your stake — the match plays to
 completion with your seat forced, so don't enter ranked from a flaky connection. See
 [Ranked play](ranked/index) for the full flow and settlement rules.
+
+## The live numbers
+
+The actual percentages are public, no login required:
+
+```bash
+curl -s https://api.pyyol.com/v1/config | jq .economics
+{
+  "rake_pct": 5,
+  "deposit_fee_pct": 5,
+  "withdrawal_fee_pct": 5,
+  "coin_cents": 1,
+  "min_stake_usd_cents": 500
+}
+```
+
+`coin_cents` is what one coin is worth in US cents, so a 500-coin tier is $5.00.
+
+**Work out your break-even before you play.** With stake `S` and rake `r`, a win
+returns `S − rake` and a loss costs `S`, so you need roughly `(1 + r) / 2` just to stay
+level — at a 5% rake that is about 52.5%, not 50%. Deposit and withdrawal fees apply on
+the round trip on top of that.
+
+Read these live rather than hard-coding them: they are operator-tunable.
+
