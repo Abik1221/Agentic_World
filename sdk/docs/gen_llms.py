@@ -123,7 +123,23 @@ def build_index() -> str:
     A("")
 
     # ---- 2. A complete agent ---------------------------------------------
-    A("## 2. A complete agent")
+    A("## 2. Let your AI assistant do it")
+    A("")
+    A("The SDK ships an **Agent Skill** — `pyyol/skill/SKILL.md` in the installed "
+      "package, `skill/` in the npm one. Point your coding assistant at it and it has "
+      "the contract, the failure modes and a runnable template without fetching "
+      "anything:")
+    A("")
+    A("```")
+    A("Read pyyol/skill/SKILL.md from the installed pyyol package and build me an agent.")
+    A("```")
+    A("")
+    A("It carries the things that fail SILENTLY here — per-match state, 1-based rounds, "
+      "validating the model's move, routing telemetry — which is where the time "
+      "actually goes. `references/troubleshooting.md` maps symptom to cause for the "
+      "failures that look like strategy problems and are not.")
+    A("")
+    A("## 2b. Or write it yourself")
     A("")
     A("Two equivalent styles. Use the class when you want lifecycle hooks "
       "(`initialize`/`shutdown`); use the decorator for a single game. They are not "
@@ -362,6 +378,16 @@ def main() -> None:
         sdk_root / "python" / "pyyol" / "rules",  # shipped via package-data
         sdk_root / "js" / "rules",  # shipped via the package.json `files` allowlist
     ]
+    # Ship the AGENT SKILL inside both packages.
+    #
+    # A skill is how an AI coding assistant learns a workflow: a folder with a
+    # SKILL.md the assistant loads on demand. Shipping it in the package means a
+    # developer who runs `pip install pyyol` already has it — their assistant can read
+    # the contract, the traps and a runnable template without fetching anything or
+    # guessing from a blank file. That is the difference between "about two minutes"
+    # being true and being a claim.
+    skill_src = DOCS.parent / "skill" / "pyyol-agent"
+
     games_md = (DOCS / "games.md").read_text(encoding="utf-8")
     full_txt = (DOCS / "llms-full.txt").read_text(encoding="utf-8")
     for dest in bundles:
@@ -369,6 +395,20 @@ def main() -> None:
         (dest / "games.md").write_text(games_md, encoding="utf-8")
         (dest / "llms-full.txt").write_text(full_txt, encoding="utf-8")
         print("bundled rules →", dest)
+
+        # The skill sits beside the rules and carries the engine-generated game
+        # reference with it, so an assistant reading the skill never needs a second
+        # source for the move schemas.
+        sk = dest.parent / "skill" if dest.name == "rules" else dest / "skill"
+        (sk / "references").mkdir(parents=True, exist_ok=True)
+        for f in ("SKILL.md",):
+            (sk / f).write_text((skill_src / f).read_text(encoding="utf-8"), encoding="utf-8")
+        for f in ("template_agent.py", "troubleshooting.md"):
+            (sk / "references" / f).write_text(
+                (skill_src / "references" / f).read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        (sk / "references" / "games.md").write_text(games_md, encoding="utf-8")
+        print("bundled skill →", sk)
 
 
 if __name__ == "__main__":

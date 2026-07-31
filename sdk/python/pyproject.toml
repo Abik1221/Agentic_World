@@ -60,7 +60,7 @@ include = ["pyyol*"]
 # Ship the PEP 561 marker so downstream type checkers see our annotations, plus the
 # engine-generated game rules (rules/games.md + llms-full.txt) so an LLM/agent that
 # only has the installed package still gets the full, current rules for all 3 games.
-pyyol = ["py.typed", "rules/*.md", "rules/*.txt"]
+pyyol = ["py.typed", "rules/*.md", "rules/*.txt", "skill/*.md", "skill/references/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
