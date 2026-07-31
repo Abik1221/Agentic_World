@@ -142,20 +142,25 @@ func (s *Service) EnableRankedDrive(gw mover, resolver RemoteResolver, client Pu
 // shot clock, and the fairness commit — not just the current prize. Older SDKs
 // that only read the original fields keep working (added fields are ignored).
 type goofspielTurnView struct {
-	Game             string           `json:"game"`
-	MatchID          string           `json:"match_id"`
-	Seat             int              `json:"seat"`
-	Round            int              `json:"round"`
-	TotalRounds      int              `json:"total_rounds"`
-	CurrentPrize     int              `json:"current_prize"`
-	PrizePool        int              `json:"prize_pool"`
-	YourHand         []int            `json:"your_hand"`
-	OpponentHand     []int            `json:"opponent_hand"`
-	LegalActions     []int            `json:"legal_actions"`
-	YourScore        int              `json:"your_score"`
-	OppScore         int              `json:"opponent_score"`
-	History          []goofspielRound `json:"history"`
-	PrizeOrderCommit string           `json:"prize_order_commit"`
+	Game         string           `json:"game"`
+	MatchID      string           `json:"match_id"`
+	Seat         int              `json:"seat"`
+	Round        int              `json:"round"`
+	TotalRounds  int              `json:"total_rounds"`
+	CurrentPrize int              `json:"current_prize"`
+	PrizePool    int              `json:"prize_pool"`
+	YourHand     []int            `json:"your_hand"`
+	OpponentHand []int            `json:"opponent_hand"`
+	LegalActions []int            `json:"legal_actions"`
+	YourScore    int              `json:"your_score"`
+	OppScore     int              `json:"opponent_score"`
+	History      []goofspielRound `json:"history"`
+	// PrizeOrderCommit is the fairness commitment — CONSTANT for the whole match, so
+	// it ships on round 1 and is omitted afterwards. It is a 64-char hash that means
+	// nothing to a model but costs ~90 bytes on every single turn; over a 13-round
+	// match that was ~9% of everything we send, spent re-stating a value that never
+	// changes. Verification is done against the replay, which always carries it.
+	PrizeOrderCommit string `json:"prize_order_commit,omitempty"`
 	// TurnProof binds a gateway LLM call to THIS decision. Attach it as
 	// X-Pyyol-Proof on the model call you make while deciding this turn (the SDK's
 	// route()/instrument() does it for you). Only a call carrying it counts as
@@ -353,7 +358,7 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, agentID, m
 		LegalActions: v.LegalActions.PlayCardFrom,
 		YourScore:    v.You.Score, OppScore: v.Opponent.Score,
 		History:          hist,
-		PrizeOrderCommit: v.PrizeOrderCommit,
+		PrizeOrderCommit: commitOnFirstRound(v.Round, v.PrizeOrderCommit),
 		TurnProof:        d.mintProof(agentID, matchID, v.Round),
 		MoveWindowMs:     v.MoveWindowMs,
 		DeadlineMs:       v.DeadlineMs,
@@ -372,6 +377,18 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, agentID, m
 	default:
 		return move.Card, benchmark.OutcomeOK, latencyMS, move.Rationale, move.Usage
 	}
+}
+
+// commitOnFirstRound returns the fairness commit only on the opening turn.
+//
+// It is the same value for every round of the match, so repeating it 13 times is
+// ~9% of the whole payload spent on a constant. An agent that wants it later reads
+// the replay, where it always appears.
+func commitOnFirstRound(round int, commit string) string {
+	if round <= 1 {
+		return commit
+	}
+	return ""
 }
 
 // mintProof returns the turn's proof token, or "" when no minter is configured.

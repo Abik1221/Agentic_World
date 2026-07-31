@@ -368,6 +368,12 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 // client exercises the real wire contract. The house plays automatically (see
 // commit). Returns the new match's public id.
 func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, houseAgent, houseOwner, policy string) (string, error) {
+	// Sandbox stakes nothing, so the money limits are skipped — but concurrency is a
+	// THROUGHPUT limit, not a money one, and ignoring it multiplied an LLM agent's
+	// inference bill by however many tables happened to be open. See CheckConcurrency.
+	if err := s.limits.CheckConcurrency(ctx, humanAgent); err != nil {
+		return "", err
+	}
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		return "", err

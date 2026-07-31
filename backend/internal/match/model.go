@@ -127,6 +127,9 @@ func (m *Match) playerByAgent(agentPublicID string) *Player {
 // Real implementation: Stage 4 (wallet). No-op admits everyone.
 type Limits interface {
 	CheckJoin(ctx context.Context, agentPublicID string, bid int64) error
+	// CheckConcurrency enforces max_concurrent_matches ONLY, for zero-stake tables
+	// where the money limits do not apply but throughput still does.
+	CheckConcurrency(ctx context.Context, agentPublicID string) error
 }
 
 // Wallet escrows stakes and settles winnings. Real implementation: Stage 4.
@@ -219,6 +222,7 @@ type FinishHook interface {
 type NoopLimits struct{}
 
 func (NoopLimits) CheckJoin(context.Context, string, int64) error { return nil }
+func (NoopLimits) CheckConcurrency(context.Context, string) error { return nil }
 
 type NoopWallet struct{}
 

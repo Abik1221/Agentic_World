@@ -69,3 +69,32 @@ func TestMinterMustBeInstalledBeforeEnablingDrive(t *testing.T) {
 		t.Fatal("minter set before drive was enabled but no proof is issued")
 	}
 }
+
+// The fairness commit is constant for a match, so repeating it on all 13 turns spent
+// ~9% of the payload re-stating a value that never changes — a 64-char hash that
+// means nothing to a model. It ships once and is omitted after.
+func TestFairnessCommitShipsOnlyOnTheFirstRound(t *testing.T) {
+	const commit = "9f2a1c7e4b8d3f06a5e91c2d7b4f8a30e6c15d29b7f43a8c0e2d6b19f5a7c3e84"
+
+	if got := commitOnFirstRound(1, commit); got != commit {
+		t.Fatalf("round 1 must carry the commit, got %q", got)
+	}
+	for _, r := range []int{2, 7, 13} {
+		if got := commitOnFirstRound(r, commit); got != "" {
+			t.Fatalf("round %d should omit the commit, got %q", r, got)
+		}
+	}
+
+	// And it must vanish from the JSON entirely rather than ship as "".
+	b, err := json.Marshal(goofspielTurnView{Round: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := m["prize_order_commit"]; present {
+		t.Fatal("an empty commit should be omitted, not sent as an empty string")
+	}
+}

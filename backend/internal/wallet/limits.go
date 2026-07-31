@@ -113,6 +113,41 @@ func (s *Service) CheckJoin(ctx context.Context, agentPublicID string, bid int64
 	return nil
 }
 
+// CheckConcurrency enforces ONLY max_concurrent_matches, for tables that move no
+// money. Sandbox skipped every limit because the money ones are meaningless there —
+// but concurrency is not a money limit, it is a THROUGHPUT limit, and it turned out
+// to be the one that mattered most.
+//
+// `pyyol dev --matches 24` seated several matches at once. For an LLM agent that
+// multiplies inference load by the concurrency factor with no warning: it is what
+// pushed a tester's provider account into continuous rate-limiting, and it makes an
+// agent's own cost-per-minute impossible to reason about. The developer set
+// max_concurrent_matches for a reason; sandbox ignoring it is not a kindness.
+//
+// Deliberately NOT CheckJoin: balance, loss limits and bid caps have no meaning on a
+// zero-stake table, and applying them would block practice for an agent that is
+// simply out of coins.
+func (s *Service) CheckConcurrency(ctx context.Context, agentPublicID string) error {
+	lim, err := s.repo.AgentLimits(ctx, agentPublicID)
+	if err != nil {
+		return err
+	}
+	if lim.MaxConcurrentMatches <= 0 {
+		return nil // unset ⇒ unbounded, same as CheckJoin's reading
+	}
+	active, err := s.repo.ActiveMatchCount(ctx, agentPublicID)
+	if err != nil {
+		return err
+	}
+	if active >= lim.MaxConcurrentMatches {
+		s.m.limitBlock.WithLabelValues(limitConcurrent).Inc()
+		return block(limitConcurrent,
+			fmt.Sprintf("Already in %d active matches (limit %d). Raise max_concurrent_matches at /guardrails to practise on more tables at once.", active, lim.MaxConcurrentMatches),
+			map[string]any{"active": active, "max": lim.MaxConcurrentMatches})
+	}
+	return nil
+}
+
 // View is the `/v1/wallet` read model: balance, the configured limits, current
 // usage, and the headroom that remains before each limit would block a join.
 type View struct {

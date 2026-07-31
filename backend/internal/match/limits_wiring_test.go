@@ -14,10 +14,15 @@ import (
 var errLimit = errors.New("limit_daily_loss_limit: daily loss reached")
 
 // blockingLimits refuses every join and records that it was consulted at all.
-type blockingLimits struct{ asked int }
+type blockingLimits struct{ asked, concurrencyAsked int }
 
 func (b *blockingLimits) CheckJoin(context.Context, string, int64) error {
 	b.asked++
+	return errLimit
+}
+
+func (b *blockingLimits) CheckConcurrency(context.Context, string) error {
+	b.concurrencyAsked++
 	return errLimit
 }
 
@@ -66,5 +71,26 @@ func TestGuardrailIsCheckedBeforeAnyCoinsMove(t *testing.T) {
 func TestAllowedJoinStillWorks(t *testing.T) {
 	if _, err := svcWithLimits(match.NoopLimits{}).CreateOpen(context.Background(), "ag_a", "usr_a", 100); err != nil {
 		t.Fatalf("a permitted join was refused: %v", err)
+	}
+}
+
+// Sandbox stakes nothing, so it skips the money limits — but it must still honour
+// max_concurrent_matches. Ignoring it seated several tables at once, multiplying an
+// LLM agent's inference bill by the concurrency factor with no warning and pushing a
+// tester's provider account into continuous rate-limiting.
+func TestSandboxHonoursTheConcurrencyLimit(t *testing.T) {
+	lim := &blockingLimits{}
+	_, err := svcWithLimits(lim).CreateSandbox(context.Background(), "ag_a", "usr_a", "ag_house", "usr_house", "balanced")
+
+	if lim.concurrencyAsked == 0 {
+		t.Fatal("starting a sandbox match never consulted max_concurrent_matches")
+	}
+	if !errors.Is(err, errLimit) {
+		t.Fatalf("a concurrency block did not stop the sandbox match: err=%v", err)
+	}
+	// And it must NOT have applied the money limits — balance and loss caps are
+	// meaningless on a zero-stake table and would block practice for a broke agent.
+	if lim.asked != 0 {
+		t.Fatalf("sandbox applied the money limits (CheckJoin called %d times)", lim.asked)
 	}
 }
