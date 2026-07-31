@@ -416,6 +416,12 @@ def main() -> None:
         # script — the skill's own layout is the source of truth.
         if sk.exists():
             shutil.rmtree(sk)
+        # NOTE: the copies land INSIDE the Python package, so sdk/python's ruff
+        # config lints them — and that config (line-length 100, py39) is stricter than
+        # the defaults applied where the source lives. Keep the source formatted to the
+        # PACKAGE's settings, or `ruff format --check` fails in CI on files nobody
+        # edited:
+        #   ruff format --line-length 100 --target-version py39 sdk/skill/**/templates
         shutil.copytree(skill_src, sk, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache"))
         # The engine-generated game reference rides along, so a skill can never
         # describe a game the engine no longer plays.

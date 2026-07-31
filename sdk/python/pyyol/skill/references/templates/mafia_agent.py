@@ -44,9 +44,7 @@ class MafiaAgent(Adapter):
 
         # target stays -1 when unused: seat 0 is a REAL player, so a forgotten target
         # would otherwise silently act on them.
-        return MafiaMove(
-            action=action, target=target, text=text[:400], rationale=why[:200]
-        )
+        return MafiaMove(action=action, target=target, text=text[:400], rationale=why[:200])
 
     # --- your strategy -----------------------------------------------------
 
@@ -58,9 +56,7 @@ class MafiaAgent(Adapter):
         read of each seat from them every turn.
         """
         notes = self.mem.get(view.match_id)["notes"]
-        living = [
-            s for s, ok in (view.alive or {}).items() if ok and s != view.your_seat
-        ]
+        living = [s for s, ok in (view.alive or {}).items() if ok and s != view.your_seat]
         suspect = max(living, key=lambda s: notes.get(s, 0), default=-1)
 
         if "message" in (view.legal or []):

@@ -42,9 +42,7 @@ class MonopolyAgent(Adapter):
         if action not in legal:
             action, prop, amount, why = fallback, 0, 0, f"illegal action; {why}"
 
-        return MonopolyMove(
-            action=action, property=prop, amount=amount, rationale=why[:200]
-        )
+        return MonopolyMove(action=action, property=prop, amount=amount, rationale=why[:200])
 
     # --- your strategy -----------------------------------------------------
 
@@ -55,9 +53,7 @@ class MonopolyAgent(Adapter):
         do not assume fixed field names in `state`.
         """
         legal = view.legal_actions or []
-        me: Dict[str, Any] = (
-            (view.state or {}).get("players", {}).get(str(view.seat), {})
-        )
+        me: Dict[str, Any] = (view.state or {}).get("players", {}).get(str(view.seat), {})
         cash = int(me.get("cash", 0) or 0)
 
         if view.phase == "acquire" and "buy" in legal:

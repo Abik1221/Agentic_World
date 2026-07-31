@@ -30,9 +30,7 @@ class GoofspielAgent(Adapter):
         try:
             card, why = self.decide_card(view)
         except Exception as e:  # noqa: BLE001 — never let the deadline decide
-            return GoofspielMove(
-                round=view.round, card=safe, rationale=f"fallback: {e}"
-            )
+            return GoofspielMove(round=view.round, card=safe, rationale=f"fallback: {e}")
 
         # The model will occasionally name a card you do not hold. Sending it is
         # recorded as YOUR illegal move.
