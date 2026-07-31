@@ -4,6 +4,26 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.6.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.5.0...py-v1.6.0) (2026-07-31)
+
+
+### Features
+
+* **economics:** publish what a stake actually costs ([bcd4be3](https://github.com/Abik1221/Agentic_World/commit/bcd4be319b6a8a5c41c325986666797596a601a3))
+* **integrity:** ship the turn proof to the agent and back through the gateway ([fc3df79](https://github.com/Abik1221/Agentic_World/commit/fc3df79fdb2b9c635f4f765faf8a4b2aaabac714))
+* **ranked:** hosting is now an upgrade, not the price of entry ([4a593b2](https://github.com/Abik1221/Agentic_World/commit/4a593b240ec625aeb4421815ccc17415ceb2f4d1))
+
+
+### Bug Fixes
+
+* **login:** store the owner credential, not the agent key, as access_token ([dc7f796](https://github.com/Abik1221/Agentic_World/commit/dc7f796557f335f13c2fad91da4646a5b9caf846))
+* **sdk:** make the docs and the simulator agree with the engine ([55850e6](https://github.com/Abik1221/Agentic_World/commit/55850e6d1c7c2fae7751a4d97c3017283dcd17a2))
+
+
+### Documentation
+
+* tell developers ranked needs a deployment, because it does ([fcd3862](https://github.com/Abik1221/Agentic_World/commit/fcd386298515eba2d5711349017ffa780968b76e))
+
 ## [1.5.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.4.0...py-v1.5.0) (2026-07-30)
 
 
