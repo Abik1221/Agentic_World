@@ -207,9 +207,20 @@ def parse_view(d: Dict[str, Any]):
 class GoofspielMove:
     card: int
     round: int = 0
+    # Why you played it. Published to spectators and stored in the trace, which is
+    # what makes a replay readable instead of a list of numbers.
+    #
+    # This field did not exist, so every agent using the typed dataclass — the shape
+    # `pyyol init` scaffolds — silently discarded its rationale with no error. Only
+    # the plain-dict path carried it through, which meant the documented example was
+    # the one that did not work.
+    rationale: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"round": self.round, "card": self.card}
+        d: Dict[str, Any] = {"round": self.round, "card": self.card}
+        if self.rationale:
+            d["rationale"] = self.rationale
+        return d
 
 
 @dataclass
@@ -217,9 +228,17 @@ class MonopolyMove:
     action: str
     property: int = 0
     amount: int = 0
+    rationale: str = ""  # see GoofspielMove.rationale
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"action": self.action, "property": self.property, "amount": self.amount}
+        d: Dict[str, Any] = {
+            "action": self.action,
+            "property": self.property,
+            "amount": self.amount,
+        }
+        if self.rationale:
+            d["rationale"] = self.rationale
+        return d
 
 
 @dataclass
@@ -233,9 +252,18 @@ class MafiaMove:
     target: int = -1
     tone: str = ""
     text: str = ""
+    rationale: str = ""  # see GoofspielMove.rationale
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"action": self.action, "target": self.target, "tone": self.tone, "text": self.text}
+        d: Dict[str, Any] = {
+            "action": self.action,
+            "target": self.target,
+            "tone": self.tone,
+            "text": self.text,
+        }
+        if self.rationale:
+            d["rationale"] = self.rationale
+        return d
 
 
 def move_to_dict(move: Any) -> Dict[str, Any]:

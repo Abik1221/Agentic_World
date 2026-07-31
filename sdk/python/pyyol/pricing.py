@@ -19,7 +19,7 @@ from typing import Dict, NamedTuple, Optional, Tuple
 
 # Bump this whenever any rate below changes. Stamped onto every estimate so a cost
 # is always reproducible from the exact table that produced it.
-PRICING_VERSION = "2026-07-24"
+PRICING_VERSION = "2026-07-31"
 
 
 class Rate(NamedTuple):
@@ -54,6 +54,15 @@ _TABLE: Dict[str, Rate] = {
     # --- Google (Gemini) ---
     "gemini-flash": Rate(0.15, 0.60, 0.0375),
     "gemini-pro": Rate(1.25, 5.00, 0.3125),
+    # --- Open-weight served by a HOSTED provider (there IS a per-token bill) ---
+    #
+    # "open weight" does not mean "free". Groq bills per token like anyone else, and
+    # recording $0 for it meant a Groq-backed agent reported no cost at all — on a
+    # platform that advertises verified LLM cost tracking. These are Groq's published
+    # rates per 1M tokens; they are ESTIMATES for the unverified tier, and the gateway
+    # remains authoritative for real spend.
+    "groq-llama-8b": Rate(0.05, 0.08),
+    "groq-llama-70b": Rate(0.59, 0.79),
     # --- Open-weight / self-hosted (no per-token bill; recorded as $0) ---
     "llama": Rate(0.0, 0.0),
     "mistral": Rate(0.0, 0.0),
@@ -103,12 +112,33 @@ _RULES: Tuple[Tuple[str, str], ...] = (
 )
 
 
-def _canonical(model: str) -> Optional[str]:
+# Provider-scoped rates. An open-weight model is $0 when you run it yourself and very
+# much not $0 when a hosted provider serves it — and the MODEL ID cannot tell you
+# which, since "llama-3.3-70b" is the same string either way. Pricing it by name alone
+# would have billed self-hosted users for compute they never bought; the test suite
+# caught exactly that. So the provider scopes the lookup, and only an explicitly
+# provider-attributed call gets a hosted rate.
+_PROVIDER_RULES: Dict[str, list] = {
+    "groq": [
+        ("llama-3.1-8b", "groq-llama-8b"),
+        ("llama-3.1-70b", "groq-llama-70b"),
+        ("llama-3.3-70b", "groq-llama-70b"),
+        ("llama-4", "groq-llama-70b"),
+    ],
+}
+
+
+def _canonical(model: str, provider: str = "") -> Optional[str]:
     """Map a raw model string ("us.anthropic.claude-opus-4-1-20250805", "gpt-4o-2024-08-06")
     to a canonical table key, or None if unknown."""
     m = (model or "").strip().lower()
     if not m:
         return None
+    # Provider-specific rules win: they are the only ones that know a hosted bill
+    # exists for a model that would otherwise be free.
+    for needle, key in _PROVIDER_RULES.get((provider or "").strip().lower(), []):
+        if needle in m:
+            return key
     if m in _TABLE:
         return m
     for needle, key in _RULES:
@@ -117,15 +147,19 @@ def _canonical(model: str) -> Optional[str]:
     return None
 
 
-def rate_for(model: str) -> Rate:
-    """The Rate used for `model` (falls back to a mid-tier rate for unknown models)."""
-    key = _canonical(model)
+def rate_for(model: str, provider: str = "") -> Rate:
+    """The Rate used for `model` (falls back to a mid-tier rate for unknown models).
+
+    `provider` scopes the lookup so a hosted open-weight model is priced while the
+    same model self-hosted stays at $0.
+    """
+    key = _canonical(model, provider)
     return _TABLE[key] if key is not None else _FALLBACK
 
 
-def is_known(model: str) -> bool:
+def is_known(model: str, provider: str = "") -> bool:
     """True if the model maps to an explicit table entry (not the fallback)."""
-    return _canonical(model) is not None
+    return _canonical(model, provider) is not None
 
 
 def estimate_cost(
@@ -135,6 +169,7 @@ def estimate_cost(
     *,
     cached_tokens: int = 0,
     reasoning_tokens: int = 0,
+    provider: str = "",
 ) -> float:
     """USD cost estimate for one model call.
 
@@ -143,7 +178,7 @@ def estimate_cost(
     rate). `reasoning_tokens` are billed at the output rate (they are output tokens the
     provider bills for) and are treated as a subset of `completion_tokens`.
     """
-    rate = rate_for(model)
+    rate = rate_for(model, provider)
     cached = max(0, min(cached_tokens, prompt_tokens))
     full_input = max(0, prompt_tokens - cached)
     cached_rate = rate.cached_input if rate.cached_input is not None else rate.input

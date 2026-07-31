@@ -251,6 +251,11 @@ def record_response(
         info["completion_tokens"],
         cached_tokens=info["cached_tokens"],
         reasoning_tokens=info["reasoning_tokens"],
+        # WHO served it, not just what was served. An open-weight model is free when
+        # you run it yourself and billed when a hosted provider serves it, and the
+        # model id is identical either way — so without this a Groq-backed agent
+        # reported $0 on a platform that advertises verified cost tracking.
+        provider=prov,
     )
     acc = current_usage()
     if acc is not None:

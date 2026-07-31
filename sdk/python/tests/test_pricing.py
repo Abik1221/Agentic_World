@@ -80,3 +80,31 @@ def test_zero_tokens_zero_cost():
 
 def test_pricing_version_is_stamped():
     assert isinstance(pricing.PRICING_VERSION, str) and pricing.PRICING_VERSION
+
+
+def test_hosted_open_weight_is_priced_but_self_hosted_is_not():
+    """ "Open weight" does not mean "free" — it means you MIGHT be running it yourself.
+
+    Groq bills per token like anyone else, so a Groq-backed agent was reporting $0 on
+    a platform that advertises verified cost tracking. But the model id is identical
+    whether Groq serves it or you do, so pricing by name alone would have billed
+    self-hosted users for compute they never bought. The provider is what separates
+    the two cases.
+    """
+    from pyyol import estimate_cost
+
+    model = "llama-3.3-70b-versatile"
+
+    assert estimate_cost(model, 1000, 200) == 0.0, "self-hosted open weight must stay free"
+    hosted = estimate_cost(model, 1000, 200, provider="groq")
+    assert hosted > 0, "a Groq-served model must have a non-zero cost"
+
+    # And the small model must be cheaper than the large one, or the table is wrong.
+    small = estimate_cost("llama-3.1-8b-instant", 1000, 200, provider="groq")
+    assert 0 < small < hosted
+
+
+def test_an_unknown_provider_does_not_invent_a_hosted_rate():
+    from pyyol import estimate_cost
+
+    assert estimate_cost("llama-3.3-70b-versatile", 1000, 200, provider="mystery") == 0.0

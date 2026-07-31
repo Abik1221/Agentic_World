@@ -1125,6 +1125,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     _log_file_handler()
 
     # Load the agent module and find the `Agent` instance (var name configurable).
+    _add_agent_dir_to_syspath(args.file)
     spec = importlib.util.spec_from_file_location("_pyyol_user_agent", args.file)
     if spec is None or spec.loader is None:
         print(f"{BAD} cannot load {args.file}", file=sys.stderr)
@@ -1177,11 +1178,28 @@ def cmd_run(args: argparse.Namespace) -> int:
 # --- serve / autoplay (deploy once, plays anytime) -----------------------------
 
 
+def _add_agent_dir_to_syspath(file: str) -> None:
+    """Put the agent's own directory on sys.path before importing it.
+
+    Loading by file path does NOT add the file's directory to sys.path, so any agent
+    split across more than one module failed with ModuleNotFoundError on its own
+    package — and `pyyol doctor` reported a bare "agent loads ✗" with no hint why.
+    That effectively limited developers to single-file agents.
+
+    Inserted at the front so the agent's own modules win over same-named installed
+    packages, which is what a developer running from their project directory expects.
+    """
+    d = os.path.dirname(os.path.abspath(file))
+    if d and d not in sys.path:
+        sys.path.insert(0, d)
+
+
 def _load_agent(file: str, var: str):
     """Import the developer's module and return the exposed Agent object (or None
     after printing why). Shared by `serve`."""
     import importlib.util
 
+    _add_agent_dir_to_syspath(file)
     spec = importlib.util.spec_from_file_location("_pyyol_user_agent", file)
     if spec is None or spec.loader is None:
         print(f"{BAD} cannot load {file}", file=sys.stderr)
@@ -1597,6 +1615,7 @@ def _load_agent_from_config(cfg):
     module_path = resolved
     if not os.path.exists(module_path):
         raise FileNotFoundError(f"entry module {module_path!r} not found (see pyyol.toml `entry`)")
+    _add_agent_dir_to_syspath(module_path)
     spec = importlib.util.spec_from_file_location("_pyyol_user_agent", module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load {module_path}")
@@ -1699,6 +1718,36 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         **({} if _using_key else _refresh_kwargs(creds)),
     )
     stop = threading.Event()
+
+    # Stop after the requested number of matches.
+    #
+    # `--matches N` started N matches and then sat in "waiting for a match…" forever,
+    # because conn.run() blocks serving turns and nothing counted completions. Every
+    # scripted benchmark or CI job needed an external kill plus a game_end-counting
+    # watchdog — which is exactly the bookkeeping the flag exists to do for you.
+    #
+    # Only armed when the developer asked for a specific count. Without --matches the
+    # runner is a long-lived dev loop and must keep waiting, as before.
+    wanted = getattr(args, "matches", None)
+    if m != mode.RANKED and wanted and wanted > 0:
+        finished = {"n": 0}
+        prior = agent._on_game_end  # may be None; the developer's own handler
+
+        def _count_and_forward(result):
+            try:
+                if prior:
+                    return prior(result)
+            finally:
+                finished["n"] += 1
+                if finished["n"] >= wanted:
+                    console.emit("match", f"completed {wanted} match(es) — stopping")
+                    stop.set()
+                    # Close the socket from another thread so the blocking run()
+                    # returns; calling it inline would tear down the connection while
+                    # this very notification is still being handled.
+                    threading.Timer(0.5, conn.stop).start()
+
+        agent.on_game_end(_count_and_forward)
 
     def kicker():
         # Give the socket a moment to register, then start match(es). pushplay/queue
