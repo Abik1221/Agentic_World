@@ -23,8 +23,19 @@ func TestLoad_HappyPath(t *testing.T) {
 	if cfg.DefaultRounds != 13 {
 		t.Errorf("DefaultRounds default = %d, want 13", cfg.DefaultRounds)
 	}
-	if cfg.MoveWindow.Seconds() != 20 {
-		t.Errorf("MoveWindow default = %s, want 20s", cfg.MoveWindow)
+	// 45s, not 20s: a real agent makes an LLM call to decide, and one with any
+	// reasoning routinely takes 10-30s. A 20s budget turned thoughtful agents into
+	// forfeiting ones.
+	if cfg.MoveWindow.Seconds() != 45 {
+		t.Errorf("MoveWindow default = %s, want 45s", cfg.MoveWindow)
+	}
+	if cfg.MonopolyMoveWindow.Seconds() != 60 {
+		t.Errorf("MonopolyMoveWindow default = %s, want 60s", cfg.MonopolyMoveWindow)
+	}
+	// ZERO is the correct default: it selects the engine's per-phase Mafia clock.
+	// Any non-zero value flattens night/discussion/voting to one length.
+	if cfg.MafiaPhaseWindow != 0 {
+		t.Errorf("MafiaPhaseWindow default = %s, want 0 (engine per-phase clock)", cfg.MafiaPhaseWindow)
 	}
 }
 

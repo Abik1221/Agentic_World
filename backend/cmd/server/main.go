@@ -616,7 +616,7 @@ func run() error {
 		// No hardcoded economics here: the stake comes from the admin's tiers (see
 		// SetDefaultStakeSource / SetRakeSource below) and these are only the
 		// fallbacks used when the admin has configured nothing at all.
-		mafia.Config{EntryFee: mafia.DefaultEntryFee, PlatformFeePct: cfg.RakePct, PhaseWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
+		mafia.Config{EntryFee: mafia.DefaultEntryFee, PlatformFeePct: cfg.RakePct, PhaseWindow: cfg.MafiaPhaseWindow, LockTTL: 15 * time.Second},
 	)
 	mafiaSvc.SetRakeSource(liveRake(cfg.RakePct))
 	mafiaSvc.SetDefaultStakeSource(func(ctx context.Context) (int64, bool) {
@@ -642,7 +642,7 @@ func run() error {
 		monopolyHub,
 		nil, // FinishHook
 		clock,
-		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MoveWindow, LockTTL: 15 * time.Second},
+		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MonopolyMoveWindow, LockTTL: 15 * time.Second},
 	)
 	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
 	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))

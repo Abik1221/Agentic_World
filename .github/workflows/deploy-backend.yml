@@ -136,6 +136,14 @@ jobs:
           # Mints the per-turn tokens proving a gateway LLM call was made for a
           # specific decision. Unset ⇒ no proof is offered at all, so ranked
           # integrity has nothing to measure. Required before enforcement.
+          # Per-decision budgets. Defaults suit real LLM agents; override only with
+          # evidence from traces (agents abstaining on timeout = too tight).
+          #   MOVE_WINDOW_SECONDS           Goofspiel, default 45
+          #   MONOPOLY_MOVE_WINDOW_SECONDS  Monopoly,  default 60
+          #   MAFIA_PHASE_WINDOW_SECONDS    0 = engine per-phase clock. LEAVE UNSET.
+          MOVE_WINDOW_SECONDS: ${{ secrets.MOVE_WINDOW_SECONDS }}
+          MONOPOLY_MOVE_WINDOW_SECONDS: ${{ secrets.MONOPOLY_MOVE_WINDOW_SECONDS }}
+          MAFIA_PHASE_WINDOW_SECONDS: ${{ secrets.MAFIA_PHASE_WINDOW_SECONDS }}
           TURN_PROOF_SECRET: ${{ secrets.TURN_PROOF_SECRET }}
           # Share of a ranked match's decisions that must be PROVEN LLM-backed, or the
           # match is voided and both stakes returned. Unset ⇒ 0 ⇒ measurement only.
@@ -228,6 +236,9 @@ jobs:
           SOLANA_PLATFORM_ATA=${SOLANA_PLATFORM_ATA:-}
           SOLANA_COMMITMENT=${SOLANA_COMMITMENT:-finalized}
           HOT_WALLET_CAP_CENTS=${HOT_WALLET_CAP_CENTS:-0}
+          MOVE_WINDOW_SECONDS=${MOVE_WINDOW_SECONDS:-45}
+          MONOPOLY_MOVE_WINDOW_SECONDS=${MONOPOLY_MOVE_WINDOW_SECONDS:-60}
+          MAFIA_PHASE_WINDOW_SECONDS=${MAFIA_PHASE_WINDOW_SECONDS:-0}
           TURN_PROOF_SECRET=${TURN_PROOF_SECRET:-}
           RANKED_INTEGRITY_MIN_PCT=${RANKED_INTEGRITY_MIN_PCT:-0}
 

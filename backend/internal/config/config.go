@@ -139,10 +139,25 @@ type Config struct {
 	WalletReconInterval time.Duration // wallet reconciliation cadence (drift safety net)
 
 	// Game defaults (consumed from Stage 3)
-	MoveWindow    time.Duration
-	RakePct       int
-	DefaultRounds int
-	SSEMaxConns   int // instance-wide SSE spectator connection ceiling (0 = hub default)
+	// MoveWindow is the per-decision budget for GOOFSPIEL. One LLM call with a little
+	// reasoning routinely takes 10-30s, so a tight window turns a thoughtful agent
+	// into a forfeiting one.
+	MoveWindow time.Duration
+	// MonopolyMoveWindow is Monopoly's per-decision budget. Its decisions are larger
+	// than a card bid — reading a board, pricing a trade — so it gets its own dial
+	// rather than inheriting Goofspiel's.
+	MonopolyMoveWindow time.Duration
+	// MafiaPhaseWindow FORCES every Mafia phase to one length. ZERO (the default) is
+	// what you want: it selects the engine's per-phase clock — night short, discussion
+	// long, voting tight — which is the pacing a moderated game actually has.
+	//
+	// This exists as a separate knob because wiring it from MoveWindow silently
+	// flattened all five phases to the Goofspiel budget: a 75s discussion ran for 20s,
+	// and twelve agents each needing one LLM call could not all speak in time.
+	MafiaPhaseWindow time.Duration
+	RakePct          int
+	DefaultRounds    int
+	SSEMaxConns      int // instance-wide SSE spectator connection ceiling (0 = hub default)
 
 	// AutoMigrate applies pending DB migrations in-process on startup (safe for
 	// multi-instance: golang-migrate takes an advisory lock). Default true.
@@ -375,7 +390,9 @@ func Load() (*Config, error) {
 		HotWalletCapCents:        int64(l.intVal("HOT_WALLET_CAP_CENTS", 0)),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
-		MoveWindow:           time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 20)) * time.Second,
+		MoveWindow:           time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
+		MonopolyMoveWindow:   time.Duration(l.intVal("MONOPOLY_MOVE_WINDOW_SECONDS", 60)) * time.Second,
+		MafiaPhaseWindow:     time.Duration(l.intVal("MAFIA_PHASE_WINDOW_SECONDS", 0)) * time.Second,
 		RakePct:              l.intVal("RAKE_PCT", 5),
 		DefaultRounds:        l.intVal("DEFAULT_ROUNDS", 13),
 		SSEMaxConns:          l.intVal("SSE_MAX_CONNS", 20000),
