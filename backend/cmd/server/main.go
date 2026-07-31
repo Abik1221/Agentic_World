@@ -1115,6 +1115,10 @@ func run() error {
 		manifestHandler.Register,
 		agentGateway.Register,
 		mountAgentStatus(authn, agentGateway),
+		func() httpx.Mount {
+			mu := store.NewMatchUsageRepo(st.DB)
+			return mountMatchUsage(authn, mu, mu.OwnedBy)
+		}(),
 		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd(), func() economics {
 			// Live from the admin snapshot when one is published, falling back to the
 			// boot config so the price list is never blank.

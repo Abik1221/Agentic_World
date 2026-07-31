@@ -2219,6 +2219,73 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_usage(args: argparse.Namespace) -> int:
+    """Show what the platform actually recorded for one match.
+
+    The question this answers is "did my telemetry land?", which had no answer before:
+    `pyyol replay` carries the game, not the metering, so an agent author could not
+    confirm their tokens were captured or their decisions counted as LLM-backed — for
+    the features the Verified badge and ranked validity depend on.
+    """
+    creds = _ensure_login(args)
+    if creds is None or not creds.access_token:
+        return 2
+    api = (args.api or creds.url).rstrip("/")
+    agent = args.agent or creds.agent_id
+    if not (api and agent):
+        print(f"{BAD} need an API url and agent id (login, or pass --api/--agent)", file=sys.stderr)
+        return 2
+
+    st, body = _api_get(
+        f"{api}/v1/matches/{urllib.parse.quote(args.match, safe='')}/usage"
+        f"?agent={urllib.parse.quote(agent, safe='')}",
+        creds.access_token,
+    )
+    if st != 200:
+        print(f"{BAD} could not read usage ({st}): {body}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(body, indent=2))
+        return 0
+
+    d = body.get("decisions", 0)
+    fb = body.get("fallbacks", 0)
+    print(f"match {body.get('match_id')}  ·  agent {body.get('agent_id')}")
+    print(f"  decisions      {d}  ({body.get('legal', 0)} legal, {fb} played by the engine)")
+    print(f"  avg latency    {body.get('avg_latency_ms', 0)} ms")
+    print(f"  tokens         {body.get('tokens', 0)}  (self-reported)")
+    print(
+        f"  cost           ${body.get('self_reported_cost_usd', 0):.6f}  (self-reported estimate)"
+    )
+    print(
+        f"  VERIFIED cost  ${body.get('verified_cost_usd', 0):.6f}  over {body.get('verified_calls', 0)} gateway call(s)"
+    )
+    print(f"  LLM-backed     {body.get('bound_decisions', 0)}/{d} decisions carried a turn proof")
+
+    # The diagnosis, not just the numbers — an unrouted agent looks instrumented and
+    # is not, which is the failure that is otherwise invisible until a match is voided.
+    if d and not body.get("verified_calls"):
+        if body.get("tokens"):
+            print(
+                f"\n{BAD} your agent reported tokens but NOTHING reached the gateway — "
+                "it is not verified.\n    Wrap your client: client = pyyol.route(client), "
+                "and call pyyol.instrument() once at startup."
+            )
+        else:
+            print(f"\n{BAD} no telemetry recorded at all. Call pyyol.instrument() once at startup.")
+    elif d and body.get("bound_decisions", 0) < d:
+        print(
+            f"\n! {body.get('bound_decisions', 0)} of {d} decisions carried a turn proof. "
+            "Calls made outside a turn (batching, warm-up) do not count toward ranked integrity."
+        )
+    if fb:
+        print(
+            f"\n! {fb} move(s) were played by the engine because your agent was late, "
+            "illegal or unreachable — those are recorded as your errors."
+        )
+    return 0
+
+
 def cmd_dev(args: argparse.Namespace) -> int:
     """Local development loop — sandbox-locked (never real stakes)."""
     return _orchestrate(args, dev_locked=True)
@@ -2308,6 +2375,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_api(pdev)
     pdev.set_defaults(func=cmd_dev)
+
+    # `pyyol usage` — the answer to "did my telemetry land?", which previously had no
+    # read path anywhere in the CLI or the API.
+    pusage = sub.add_parser(
+        "usage", help="what the platform recorded for one match (tokens, cost, verification)"
+    )
+    pusage.add_argument("match", help="match id, e.g. m_tqp7ze5jzmn7xoxu")
+    pusage.add_argument("--agent", default="", help="agent id (defaults to the logged-in agent)")
+    pusage.add_argument("--json", action="store_true", help="raw JSON")
+    _add_api(pusage)
+    pusage.set_defaults(func=cmd_usage)
 
     # --- compete (explicit; --ranked = real stakes) ---
     pp = sub.add_parser(

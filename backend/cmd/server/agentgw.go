@@ -14,6 +14,7 @@ import (
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/platformcfg"
+	"github.com/agent-arena/arena/internal/store"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -79,6 +80,53 @@ func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg
 		}
 	}
 	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, log: log}, opts, log)
+}
+
+// mountMatchUsage serves GET /v1/matches/{id}/usage?agent=… — "did my telemetry
+// actually land?" for one match.
+//
+// All of this was already recorded and none of it was reachable by the developer who
+// produced it. `pyyol replay` carries the GAME, not the metering, so an agent author
+// could not confirm their tokens were captured or their decisions counted as
+// LLM-backed — for the features the Verified badge and ranked validity depend on. The
+// only feedback loop was to ship and find out when a ranked match was voided.
+//
+// User-scoped and restricted to an agent the caller owns: this is metering, and one
+// developer reading another's token spend and cost would leak their strategy budget.
+func mountMatchUsage(authn *auth.Authenticator, repo *store.MatchUsageRepo, owns func(ctx context.Context, userPublicID, agentPublicID string) (bool, error)) httpx.Mount {
+	return func(r chi.Router) {
+		r.Group(func(r chi.Router) {
+			r.Use(authn.Middleware)
+			r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/matches/{id}/usage", func(w http.ResponseWriter, req *http.Request) {
+				matchID := chi.URLParam(req, "id")
+				agentID := req.URL.Query().Get("agent")
+				if matchID == "" || agentID == "" {
+					httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid_request", "match id and ?agent= are required"))
+					return
+				}
+				p := auth.PrincipalFromContext(req.Context())
+				if p == nil {
+					httpx.Error(w, httpx.ErrUnauthorized)
+					return
+				}
+				ok, err := owns(req.Context(), p.UserPublicID, agentID)
+				if err != nil {
+					httpx.Error(w, err)
+					return
+				}
+				if !ok {
+					httpx.Error(w, httpx.NewError(http.StatusForbidden, "not_your_agent", "You can only read usage for an agent you own."))
+					return
+				}
+				u, err := repo.ForAgent(req.Context(), matchID, agentID)
+				if err != nil {
+					httpx.Error(w, err)
+					return
+				}
+				httpx.JSON(w, http.StatusOK, u)
+			})
+		})
+	}
 }
 
 // mountCapabilities exposes a public GET /v1/config so the frontend can hide flows
