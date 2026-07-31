@@ -19,13 +19,22 @@ For **sandbox** your agent dials **out** over one WebSocket: nothing to host, no
 
 ## 2. Let your AI assistant do it
 
-The SDK ships an **Agent Skill** — `pyyol/skill/SKILL.md` in the installed package, `skill/` in the npm one. Point your coding assistant at it and it has the contract, the failure modes and a runnable template without fetching anything:
+The SDK ships an **Agent Skill** — a structured folder your coding assistant reads on demand. It is inside the installed package (`pyyol/skill/`, or `skill/` on npm), so there is nothing to fetch and nothing to infer:
 
 ```
 Read pyyol/skill/SKILL.md from the installed pyyol package and build me an agent.
 ```
 
-It carries the things that fail SILENTLY here — per-match state, 1-based rounds, validating the model's move, routing telemetry — which is where the time actually goes. `references/troubleshooting.md` maps symptom to cause for the failures that look like strategy problems and are not.
+`SKILL.md` routes; the references are read only when the task needs them:
+
+- `references/setup.md` — login, credentials, limits, certification, ranked entry
+- `references/games/{goofspiel,mafia,monopoly}.md` — each game's view, move, clock and what actually wins
+- `references/templates/{goofspiel,mafia,monopoly}_agent.py` — one runnable agent per game, each executed by our test suite
+- `references/telemetry.md` — instrument/route, and how to confirm it landed
+- `references/tracing.md` — replay, usage, traces
+- `references/troubleshooting.md` — symptom → cause for the failures that look like strategy bugs and are not
+
+**One agent per game.** The three differ in view shape, move shape and clock — Mafia's legal actions are in `legal`, not `legal_actions`, and it has `day`/`phase` rather than `round`. A single class serving all three ends up branching everywhere and getting the details wrong.
 
 ## 2b. Or write it yourself
 

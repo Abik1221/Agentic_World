@@ -16,6 +16,7 @@ in llms.txt resolve to the published pages.
 from __future__ import annotations
 
 import os
+import shutil
 import pathlib
 
 DOCS = pathlib.Path(__file__).resolve().parent
@@ -125,19 +126,30 @@ def build_index() -> str:
     # ---- 2. A complete agent ---------------------------------------------
     A("## 2. Let your AI assistant do it")
     A("")
-    A("The SDK ships an **Agent Skill** — `pyyol/skill/SKILL.md` in the installed "
-      "package, `skill/` in the npm one. Point your coding assistant at it and it has "
-      "the contract, the failure modes and a runnable template without fetching "
-      "anything:")
+    A("The SDK ships an **Agent Skill** — a structured folder your coding assistant "
+      "reads on demand. It is inside the installed package (`pyyol/skill/`, or "
+      "`skill/` on npm), so there is nothing to fetch and nothing to infer:")
     A("")
     A("```")
     A("Read pyyol/skill/SKILL.md from the installed pyyol package and build me an agent.")
     A("```")
     A("")
-    A("It carries the things that fail SILENTLY here — per-match state, 1-based rounds, "
-      "validating the model's move, routing telemetry — which is where the time "
-      "actually goes. `references/troubleshooting.md` maps symptom to cause for the "
-      "failures that look like strategy problems and are not.")
+    A("`SKILL.md` routes; the references are read only when the task needs them:")
+    A("")
+    A("- `references/setup.md` — login, credentials, limits, certification, ranked entry")
+    A("- `references/games/{goofspiel,mafia,monopoly}.md` — each game's view, move, "
+      "clock and what actually wins")
+    A("- `references/templates/{goofspiel,mafia,monopoly}_agent.py` — one runnable "
+      "agent per game, each executed by our test suite")
+    A("- `references/telemetry.md` — instrument/route, and how to confirm it landed")
+    A("- `references/tracing.md` — replay, usage, traces")
+    A("- `references/troubleshooting.md` — symptom → cause for the failures that look "
+      "like strategy bugs and are not")
+    A("")
+    A("**One agent per game.** The three differ in view shape, move shape and clock — "
+      "Mafia's legal actions are in `legal`, not `legal_actions`, and it has "
+      "`day`/`phase` rather than `round`. A single class serving all three ends up "
+      "branching everywhere and getting the details wrong.")
     A("")
     A("## 2b. Or write it yourself")
     A("")
@@ -400,15 +412,15 @@ def main() -> None:
         # reference with it, so an assistant reading the skill never needs a second
         # source for the move schemas.
         sk = dest.parent / "skill" if dest.name == "rules" else dest / "skill"
-        (sk / "references").mkdir(parents=True, exist_ok=True)
-        for f in ("SKILL.md",):
-            (sk / f).write_text((skill_src / f).read_text(encoding="utf-8"), encoding="utf-8")
-        for f in ("template_agent.py", "troubleshooting.md"):
-            (sk / "references" / f).write_text(
-                (skill_src / "references" / f).read_text(encoding="utf-8"), encoding="utf-8"
-            )
-        (sk / "references" / "games.md").write_text(games_md, encoding="utf-8")
-        print("bundled skill →", sk)
+        # Copy the whole tree, so adding a reference does not require touching this
+        # script — the skill's own layout is the source of truth.
+        if sk.exists():
+            shutil.rmtree(sk)
+        shutil.copytree(skill_src, sk, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache"))
+        # The engine-generated game reference rides along, so a skill can never
+        # describe a game the engine no longer plays.
+        (sk / "references" / "games" / "_engine_reference.md").write_text(games_md, encoding="utf-8")
+        print("bundled skill →", sk, f"({sum(1 for _ in sk.rglob('*') if _.is_file())} files)")
 
 
 if __name__ == "__main__":
