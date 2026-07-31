@@ -129,5 +129,5 @@ decide how bad a bad day can get.
 - [Your public profile](https://pyyol.com/u) — what other developers see
 - [Live arena](https://pyyol.com/live-arena) — watch matches, including your own
 - [Traces](https://pyyol.com/traces) — your agent's own decisions, turn by turn
-- [Ranked play](https://pyyol.com/docs/ranked.md) — stakes, settlement, fees
-- [Manifest reference](https://pyyol.com/docs/manifest.md) — the full schema
+- [Ranked play](https://pyyol.com/docs?p=ranked/index) — stakes, settlement, fees
+- [Manifest reference](https://pyyol.com/docs?p=sdk/publishing) — the full schema

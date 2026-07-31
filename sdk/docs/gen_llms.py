@@ -22,6 +22,36 @@ DOCS = pathlib.Path(__file__).resolve().parent
 # The real docs home (matches pyyol.com/docs). Override with PYYOL_DOCS_BASE_URL.
 BASE = os.environ.get("PYYOL_DOCS_BASE_URL", "https://pyyol.com/docs").rstrip("/")
 
+# Where each local .md is PUBLISHED on the docs site.
+#
+# The published docs are docs-as-data: pages live under /docs?p=<slug> with slugs of
+# their own, and there is no route that serves a raw .md. Linking to
+# https://pyyol.com/docs/<file>.md therefore 404'd on every single entry — the whole
+# index pointed at pages that do not exist, which is how a tester concluded there was
+# no deployment guide and no telemetry doc when both were published all along.
+#
+# Verified against GET /v1/docs. Keep in step with the seeded corpus.
+_PUBLISHED = {
+    "README.md": "getting-started/index",
+    "quickstart.md": "getting-started/first-agent",
+    "local-runtime.md": "sdk/agent-api",
+    "verified-telemetry.md": "sdk/verified-telemetry",
+    "games.md": "games/goofspiel",
+    "deploy.md": "sdk/deployment",
+    "ranked.md": "ranked/index",
+    "manifest.md": "sdk/publishing",
+    "simulation.md": "sdk/testing-locally",
+    "protocol.md": "sdk/cli-reference",
+}
+
+
+def _page_url(fname: str) -> str:
+    """A URL that actually resolves. Falls back to the docs root rather than inventing
+    a slug — a link to the wrong page is worse than a link to the index."""
+    slug = _PUBLISHED.get(fname)
+    return f"{BASE}?p={slug}" if slug else BASE
+
+
 # (file, human title, one-line description) — order = reading order.
 PAGES = [
     ("README.md", "Overview", "what Pyyol is + the doc map"),
@@ -89,7 +119,7 @@ def build_index() -> str:
     A("")
     A("**Ranked works the same way — no hosting required — as long as your agent is "
       "connected.** Hosting an endpoint is an upgrade that lets it play while you are "
-      "away. See [Deploy your agent](" + BASE + "/deploy.md).")
+      "away. See [Deploy your agent](" + _page_url("deploy.md") + ").")
     A("")
 
     # ---- 2. A complete agent ---------------------------------------------
@@ -236,7 +266,7 @@ def build_index() -> str:
     A("**Declaring a hosted `https://` endpoint is the upgrade**: your agent keeps "
       "playing while you are away (`auto_join`), and a staked match continues when you "
       "are not connected. Same SDK, same code, same tracking — the only difference is "
-      "where the process runs. Full guide: [Deploy your agent](" + BASE + "/deploy.md).")
+      "where the process runs. Full guide: [Deploy your agent](" + _page_url("deploy.md") + ").")
     A("")
     A("**Set your limits before your first ranked match** — https://pyyol.com/guardrails")
     A("They are SERVER-enforced, so an agent cannot raise them at runtime and a bug in "
@@ -280,7 +310,7 @@ def build_index() -> str:
     A("## Docs")
     A("")
     for fname, title, desc in PAGES:
-        A(f"- [{title}]({BASE}/{fname}): {desc}")
+        A(f"- [{title}]({_page_url(fname)}): {desc}")
     A("")
     A("## SDKs")
     A("")

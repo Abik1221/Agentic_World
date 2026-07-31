@@ -45,7 +45,7 @@ JSON (YAML also accepted). All keys are **camelCase**.
 | `games` | at least one of `goofspiel`, `monopoly`, `mafia` |
 | `endpoint.url` | absolute **https** URL of your `/turn` handler (http allowed only in dev) |
 | `endpoint.authentication` | `bearer-token` |
-| `runtime.timeout` | positive milliseconds — your per-turn budget |
+| `runtime.timeout` | positive milliseconds. **Declared, not enforced** — see below |
 | `runtime.maxMemory` | string, e.g. `"256Mi"` |
 | `sdk.language` | required (`python` / `js`) |
 | `contact.email` | valid email |
@@ -102,3 +102,21 @@ exactly what failed: `health_ok`, `handshake_ok`, `games_covered`.
   signature failed (endpoint secret mismatch between your server and the platform).
 - `games_covered: false` — your `/handshake` `supportedGames` doesn't include a
   game listed in your manifest `games`.
+
+
+## `runtime.timeout` is not your deadline
+
+The scaffold declares `runtime.timeout: 5000`, and the per-decision budget is 45s for
+Goofspiel and 60s for Monopoly. Those numbers disagree because they are not the same
+thing, and nothing said so.
+
+**The platform's move window is the only deadline that governs.** It is enforced
+server-side: miss it and the engine plays a fallback for you. `runtime.timeout` is a
+value your manifest *declares* about your own hosting; the arena does not read it to
+decide anything.
+
+So: size your agent against the move window, not against this field. It is safe to
+leave at the scaffolded value.
+
+Read the live budgets rather than trusting a number written down here — they are
+operator-tunable, and `move_window_ms` ships on every turn view.
