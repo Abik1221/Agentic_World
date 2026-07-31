@@ -87,15 +87,15 @@ _LAZY = {
     "Tracer": "telemetry",
     "current_span": "telemetry",
     "current_usage": "telemetry",
-    "instrument": "instrument",
-    "uninstrument": "instrument",
-    "record_response": "instrument",
-    "route": "instrument",
-    "enable_gateway": "instrument",
-    "disable_gateway": "instrument",
-    "gateway_base_url": "instrument",
-    "gateway_headers": "instrument",
-    "extract_usage": "instrument",
+    "instrument": "_instrument",
+    "uninstrument": "_instrument",
+    "record_response": "_instrument",
+    "route": "_instrument",
+    "enable_gateway": "_instrument",
+    "disable_gateway": "_instrument",
+    "gateway_base_url": "_instrument",
+    "gateway_headers": "_instrument",
+    "extract_usage": "_instrument",
     "estimate_cost": "pricing",
     "rate_for": "pricing",
     "is_known": "pricing",
@@ -143,5 +143,21 @@ def __getattr__(name):
     if mod is not None:
         from importlib import import_module
 
-        return getattr(import_module(f".{mod}", __name__), name)
+        resolved = getattr(import_module(f".{mod}", __name__), name)
+        # BIND THE RESOLVED OBJECT INTO THIS MODULE.
+        #
+        # Without this, `pyyol.instrument` worked exactly once and then raised
+        # "'module' object is not callable" on every later call.
+        #
+        # The function and its submodule share a name (pyyol/instrument.py exports
+        # instrument()). Importing the submodule to resolve the function ALSO binds
+        # the submodule as an attribute of this package — and real attributes win over
+        # __getattr__, which is only consulted when normal lookup fails. So the first
+        # access returned the function and every access afterwards returned the module.
+        #
+        # Binding the resolved object here wins that race: the name now points at the
+        # function permanently, and __getattr__ is not consulted again. It also makes
+        # lazy loading lazy ONCE rather than on every attribute access.
+        globals()[name] = resolved
+        return resolved
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyyol import instrument as instr
-from pyyol.instrument import extract_usage, instrument, record_response, uninstrument
+from pyyol import _instrument as instr
+from pyyol._instrument import extract_usage, instrument, record_response, uninstrument
 from pyyol.telemetry import turn_usage
 
 

@@ -4,7 +4,7 @@ If any link breaks, an honest agent looks 0% LLM-backed and ranked enforcement w
 void real matches. These pin each hop.
 """
 
-from pyyol import instrument as instr
+from pyyol import _instrument as instr
 from pyyol.telemetry import turn_usage
 
 

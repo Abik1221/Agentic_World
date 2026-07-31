@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyyol import instrument as instr
-from pyyol.instrument import (
+from pyyol import _instrument as instr
+from pyyol._instrument import (
     disable_gateway,
     enable_gateway,
     gateway_base_url,

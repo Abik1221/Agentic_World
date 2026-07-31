@@ -129,6 +129,11 @@ func New(em Emitter, log *slog.Logger, opts ...Option) *Proxy {
 		upstreams: map[string]upstream{
 			"openai":    {name: "openai", baseURL: "https://api.openai.com"},
 			"anthropic": {name: "anthropic", baseURL: "https://api.anthropic.com"},
+			// Groq speaks the OpenAI wire format, so the same proxy path and the same
+			// usage extraction work unchanged. It needs its own upstream because a
+			// Groq model name sent to api.openai.com is simply an unknown model —
+			// without this entry an SDK routing a Groq client had nowhere valid to go.
+			"groq": {name: "groq", baseURL: "https://api.groq.com/openai"},
 		},
 	}
 	for _, o := range opts {

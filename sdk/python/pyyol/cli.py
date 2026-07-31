@@ -1663,7 +1663,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     # session can't authenticate to the gateway, so routing stays off there.
     if m == mode.RANKED:
         if _using_key and token:
-            from . import instrument as _instrument
+            from . import _instrument
 
             _instrument.enable_gateway(token, DEFAULT_GATEWAY)
             print(

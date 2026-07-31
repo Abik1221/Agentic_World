@@ -62,7 +62,14 @@ def disable_gateway() -> None:
 
 
 # Per-provider path on the gateway (see internal/llmgateway routing).
-_PROVIDER_PATH = {"openai": "/gw/openai/v1", "anthropic": "/gw/anthropic"}
+# Groq speaks the OpenAI wire format, so it uses the same /v1 suffix — but it needs
+# its own gateway path: a Groq model name sent to the OpenAI upstream is just an
+# unknown model.
+_PROVIDER_PATH = {
+    "openai": "/gw/openai/v1",
+    "anthropic": "/gw/anthropic",
+    "groq": "/gw/groq/v1",
+}
 
 
 def gateway_base_url(provider: str) -> str:
@@ -99,17 +106,68 @@ def route(client: Any, provider: Optional[str] = None) -> Any:
     depend on provider-internal layout. Returns the same client for chaining. A no-op
     when routing is disabled or the provider can't be determined."""
     prov = provider or _detect_provider(client)
-    url = gateway_base_url(prov) if prov else ""
-    if url:
-        try:
-            client.base_url = url
-        except Exception:  # noqa: BLE001
-            pass
+    if not prov:
+        # LOUD, not silent.
+        #
+        # This used to return the client untouched, so an agent using an
+        # unrecognised client looked instrumented, reported zero tokens, and could
+        # never earn Verified — and in ranked, decisions that carry no proof can have
+        # the match voided. The developer had no way to discover any of that until it
+        # cost them. A warning is the difference between a five-minute fix and a
+        # silently unverifiable agent.
+        _warn(
+            "pyyol.route(): could not identify the provider behind "
+            f"{type(client).__module__}.{type(client).__name__}, so this client is "
+            "NOT routed through the Pyyol Gateway. Its usage will not be verified. "
+            'Pass provider= explicitly ("openai", "anthropic", "groq") if you '
+            "know which wire format it speaks."
+        )
+        return client
+
+    url = gateway_base_url(prov)
+    if not url:
+        # Routing simply not enabled (no gateway configured) — the normal state in
+        # local and sandbox play, where usage is self-reported and that is fine.
+        # DELIBERATELY SILENT: warning here would fire on every run for every
+        # developer, and a warning that always fires is one people learn to ignore —
+        # including the one below that actually means something.
+        return client
+
+    try:
+        client.base_url = url
+    except Exception as e:  # noqa: BLE001
+        _warn(
+            f"pyyol.route(): could not set base_url on this {prov} client ({e!r}), so "
+            "it is NOT routed and its usage will not be verified."
+        )
     return client
 
 
+def _warn(msg: str) -> None:
+    """Surface a routing problem on stderr AND through warnings.
+
+    stderr because agents run in a terminal where a warnings-module message is easy
+    to filter away or never see; warnings so a test suite can assert on it.
+    """
+    import sys
+    import warnings
+
+    warnings.warn(msg, RuntimeWarning, stacklevel=3)
+    print(f"pyyol: {msg}", file=sys.stderr)
+
+
 def _detect_provider(client: Any) -> str:
+    """Identify the provider behind a client, or "" when we cannot tell.
+
+    Detection is by module name, so a client is recognised by what it IS rather than
+    what it is configured to talk to. Note the Groq case has TWO shapes: the native
+    `groq` package, and the far more common one of pointing the OpenAI SDK at Groq's
+    OpenAI-compatible endpoint. The second correctly reports "openai" — it IS an
+    OpenAI client — and the gateway routes by path, so that keeps working.
+    """
     mod = type(client).__module__.lower()
+    if "groq" in mod:
+        return "groq"
     if "openai" in mod:
         return "openai"
     if "anthropic" in mod:
