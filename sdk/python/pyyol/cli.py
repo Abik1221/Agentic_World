@@ -1627,6 +1627,12 @@ def _load_agent_from_config(cfg):
     return as_agent(obj)
 
 
+# How long a counted run (`--matches N`) waits with nothing finishing before it gives
+# up. Generous enough to cover a slow model plus a reconnect, short enough that a
+# scripted benchmark cannot hang a CI job.
+_COUNTED_RUN_IDLE_TIMEOUT_S = 300.0
+
+
 def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     """Shared engine behind `pyyol dev` (develop) and `pyyol play` (compete): resolve
     mode, connect the agent over WSS, and drive matches — hiding all transport."""
@@ -1730,7 +1736,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     # runner is a long-lived dev loop and must keep waiting, as before.
     wanted = getattr(args, "matches", None)
     if m != mode.RANKED and wanted and wanted > 0:
-        finished = {"n": 0}
+        finished = {"n": 0, "last": time.time()}
         prior = agent._on_game_end  # may be None; the developer's own handler
 
         def _count_and_forward(result):
@@ -1739,6 +1745,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
                     return prior(result)
             finally:
                 finished["n"] += 1
+                finished["last"] = time.time()
                 if finished["n"] >= wanted:
                     console.emit("match", f"completed {wanted} match(es) — stopping")
                     stop.set()
@@ -1763,6 +1770,28 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
                 base, token, arena, console, attempt_label=f"{i + 1}/{matches}", args=args
             )
             time.sleep(2.0)
+
+        # Watchdog for the counted run.
+        #
+        # A game_end frame only arrives if the agent is CONNECTED when the match ends.
+        # A reconnect can therefore lose one, and counting completions alone would then
+        # wait forever for a match that already finished — the exact hang --matches
+        # exists to remove, reintroduced by a dropped frame. So once everything has
+        # been started, stop after a stretch of silence instead of trusting the count.
+        if wanted:
+            idle = 0.0
+            while not stop.is_set() and idle < _COUNTED_RUN_IDLE_TIMEOUT_S:
+                time.sleep(2.0)
+                idle += 2.0
+            if not stop.is_set():
+                console.emit(
+                    "match",
+                    "stopping: no match finished in the last "
+                    f"{int(_COUNTED_RUN_IDLE_TIMEOUT_S)}s — some results may have been "
+                    "missed while disconnected. `pyyol replay` is authoritative.",
+                )
+                stop.set()
+                threading.Timer(0.5, conn.stop).start()
 
     threading.Thread(target=kicker, daemon=True, name="pyyol-kicker").start()
     try:

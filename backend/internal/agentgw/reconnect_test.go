@@ -76,3 +76,30 @@ func TestCallerDeadlineBeatsTheGrace(t *testing.T) {
 		t.Fatalf("ignored the caller's 300ms deadline, waited %v", elapsed)
 	}
 }
+
+// A thinking agent sends nothing. The liveness timeout must therefore be governed by
+// how long a MODEL takes, not by the ping cadence — at 3x15s it was 45s, the same
+// order as the Goofspiel move budget and shorter than Monopoly's, so a healthy agent
+// that took 40s to decide was closed as dead. That produced repeated mid-match
+// "no close frame received or sent" reconnects.
+func TestLivenessOutlastsTheLongestDecision(t *testing.T) {
+	o := Options{}.withDefaults()
+
+	const longestMoveWindow = 60 * time.Second // Monopoly
+	if o.LivenessTimeout <= longestMoveWindow {
+		t.Fatalf("liveness %v does not outlast a %v decision — a thinking agent would be "+
+			"closed as dead", o.LivenessTimeout, longestMoveWindow)
+	}
+	if o.LivenessTimeout < 2*longestMoveWindow {
+		t.Fatalf("liveness %v leaves no margin over a %v decision", o.LivenessTimeout, longestMoveWindow)
+	}
+}
+
+// An explicitly configured value is still honoured, but never below 3 heartbeats —
+// otherwise the socket could be reaped before a single ping had a chance to land.
+func TestLivenessNeverDropsBelowThreeHeartbeats(t *testing.T) {
+	o := Options{HeartbeatInterval: 30 * time.Second, LivenessTimeout: 10 * time.Second}.withDefaults()
+	if o.LivenessTimeout < 90*time.Second {
+		t.Fatalf("liveness %v is under 3 heartbeats (%v)", o.LivenessTimeout, 90*time.Second)
+	}
+}

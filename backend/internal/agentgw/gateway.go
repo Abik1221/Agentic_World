@@ -59,7 +59,17 @@ type Options struct {
 	// HeartbeatInterval is how often the gateway probes an idle socket. Defaults 15s.
 	HeartbeatInterval time.Duration
 	// LivenessTimeout marks a socket offline after this long with no frame at all.
-	// Defaults to 3× HeartbeatInterval.
+	//
+	// MUST comfortably exceed the longest a decision can take. An agent thinking is an
+	// agent sending nothing: while a developer's LLM call runs, no frame arrives, and
+	// at 3×15s this timeout was 45s — the same order as the Goofspiel move budget and
+	// SHORTER than Monopoly's. A perfectly healthy agent that took 40s to decide was
+	// closed as dead, which is what produced repeated "no close frame received or
+	// sent" reconnects mid-match.
+	//
+	// Defaults to 120s: roughly twice the longest decision window, so a slow model is
+	// never mistaken for a dropped link, while a genuinely dead socket is still
+	// reaped in about two minutes.
 	LivenessTimeout time.Duration
 	// WriteTimeout bounds a single frame write. Defaults 10s.
 	WriteTimeout time.Duration
@@ -98,7 +108,14 @@ func (o Options) withDefaults() Options {
 		o.HeartbeatInterval = 15 * time.Second
 	}
 	if o.LivenessTimeout <= 0 {
-		o.LivenessTimeout = 3 * o.HeartbeatInterval
+		// Deliberately a fixed floor rather than a multiple of the heartbeat: tying it
+		// to the ping cadence coupled "how often we check" to "how long we tolerate
+		// silence", and the second must be governed by how long a MODEL takes, not by
+		// how chatty the socket is.
+		o.LivenessTimeout = 120 * time.Second
+	}
+	if min := 3 * o.HeartbeatInterval; o.LivenessTimeout < min {
+		o.LivenessTimeout = min
 	}
 	if o.WriteTimeout <= 0 {
 		o.WriteTimeout = 10 * time.Second

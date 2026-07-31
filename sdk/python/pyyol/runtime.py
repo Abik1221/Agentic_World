@@ -232,8 +232,14 @@ class RuntimeConnector:
 
             # Protocol-level keepalive so a half-open (silently dropped) TCP link is
             # detected and closed — the blocked recv then raises and run() reconnects.
-            # Tuned for flaky/low-bandwidth links; the app-level heartbeat is separate.
-            ws = _ws_connect(self.url, open_timeout=10, ping_interval=15, ping_timeout=15)
+            #
+            # ping_timeout must OUTLAST a decision. Your handler runs inline on this
+            # loop, so while a model is thinking nothing here is being serviced; at 15s
+            # a perfectly healthy agent that took 20s to answer tore down its own
+            # connection mid-match and lost the turns it missed. 90s comfortably
+            # outlasts the longest move window (Monopoly, 60s) while still catching a
+            # genuinely dead link inside two minutes.
+            ws = _ws_connect(self.url, open_timeout=10, ping_interval=20, ping_timeout=90)
         else:
             ws = connect(self.url, open_timeout=10)
         send_lock = threading.Lock()
