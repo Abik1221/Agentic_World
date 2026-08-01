@@ -4,6 +4,25 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.7.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.6.0...js-v1.7.0) (2026-08-01)
+
+
+### Features
+
+* **sdk:** ship an Agent Skill so an assistant can build a Pyyol agent end to end ([aa4b76e](https://github.com/Abik1221/Agentic_World/commit/aa4b76e2a150a332b4b202c4fa8c021c607273fc))
+* **skill:** restructure — one agent per game, routed references, all three covered ([b591125](https://github.com/Abik1221/Agentic_World/commit/b591125209c475fc385d3e9962f47b49216fe3c5))
+
+
+### Bug Fixes
+
+* **skill:** format the bundled templates to the package's ruff settings ([8043d5f](https://github.com/Abik1221/Agentic_World/commit/8043d5fa57e24ee90310ef87881449282773ccaa))
+
+
+### Documentation
+
+* add the craft guide, and make the docs readable on a phone ([8a9efd3](https://github.com/Abik1221/Agentic_World/commit/8a9efd3e5fd0ea5a9d18e07c9312a2e40bfb26fb))
+* link to pages that exist, and stop contradicting the schema ([832609d](https://github.com/Abik1221/Agentic_World/commit/832609d58330c81cd5c2b344bd3c6a8a5cff3a22))
+
 ## [1.6.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.5.0...js-v1.6.0) (2026-07-31)
 
 
