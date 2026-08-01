@@ -21,7 +21,7 @@ import (
 
 // DocsVersion stamps every seeded page. Bump on a docs release so the frontend can
 // pin/select a version and older snapshots stay addressable.
-const DocsVersion = "2026-07-24"
+const DocsVersion = "2026-08-01"
 
 //go:embed content
 var contentFS embed.FS

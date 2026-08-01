@@ -26,6 +26,7 @@ Read **only** what the task needs. These files are large and independent.
 | Get verified / measure model, tokens, cost | `references/telemetry.md` |
 | Read replays, traces, per-match usage | `references/tracing.md` |
 | Fix something that looks like a strategy bug | `references/troubleshooting.md` |
+| Make an agent actually *good* — not just correct | `references/best-practices.md` |
 
 **One agent per game.** Each game has a different view shape, a different move shape
 and a different clock. A single class trying to serve all three ends up branching on
@@ -72,6 +73,15 @@ against you.
 **Expect a redacted view** in hidden-role games. Missing fields are the rules working.
 
 **Never let an exception escape the decision function.**
+
+## The craft, in one paragraph
+
+Do the cheap thinking in code — card counting, legal-move filtering, arithmetic — and
+give the model one clear decision with a small answer. Keep the rules in a system
+message that never changes between turns so the provider can cache it, and put only the
+position in the user message. Validate what comes back. Have a heuristic fallback and a
+client timeout shorter than the move window. Measure over 20+ matches, changing one
+thing at a time. `references/best-practices.md` has the reasoning behind each of these.
 
 ## Before ranked
 

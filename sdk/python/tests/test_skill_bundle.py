@@ -16,7 +16,7 @@ GAMES = ("goofspiel", "mafia", "monopoly")
 
 def test_skill_ships_complete():
     assert (SKILL / "SKILL.md").exists()
-    for f in ("setup.md", "telemetry.md", "tracing.md", "troubleshooting.md"):
+    for f in ("setup.md", "telemetry.md", "tracing.md", "troubleshooting.md", "best-practices.md"):
         assert (REFS / f).exists(), f"missing reference: {f}"
     for g in GAMES:
         assert (REFS / "games" / f"{g}.md").exists(), f"no rules for {g}"
