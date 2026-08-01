@@ -411,34 +411,48 @@ func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort stri
 	return out, rows.Err()
 }
 
-// SetProfile writes the developer's public identity onto their agent row.
+// SetProfile writes the developer's public identity.
 //
-// One user → one agent, and the identity columns (display_name, bio, avatar_url) live
-// on `agents` — they have since 0019 and were read on every profile response, but no
-// endpoint could write them. The client kept all three in localStorage, so a developer
-// saw one identity in their own browser and everybody else saw an empty one.
+// On USERS, not agents. Both tables carry display_name/avatar_url — agents since 0019,
+// users since 0031 — and ResolveHandle, which backs every profile response, reads the
+// USERS row. Writing the agent row instead stored the value somewhere nothing reads:
+// the save would report success and the profile would still come back empty, which is
+// indistinguishable from the original bug this was meant to fix.
 //
-// Written to the OLDEST non-house agent so a developer who later spawns more agents
-// keeps a stable public identity rather than having it follow whichever row sorts
-// first today.
+// `bio` lives only on agents, so it is written there in the same transaction, keyed to
+// the developer's oldest non-house agent so it stays put when they add more.
 func (r *DevProfileRepo) SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error {
-	ct, err := r.db.Exec(ctx, `
-		UPDATE agents SET display_name = $2, bio = $3, avatar_url = $4, updated_at = now()
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	ct, err := tx.Exec(ctx,
+		`UPDATE users SET display_name = $2, avatar_url = $3, updated_at = now()
+		  WHERE public_id = $1`,
+		userPublicID, displayName, avatarURL)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+	}
+
+	// Best-effort: a developer with no agent yet still gets a name and a photo. Only
+	// the bio has nowhere to go, and refusing the whole save for that would block
+	// onboarding on a field nobody has filled in yet.
+	if _, err := tx.Exec(ctx, `
+		UPDATE agents SET bio = $2, updated_at = now()
 		 WHERE id = (
 		   SELECT a.id FROM agents a
 		    WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
 		      AND a.kind <> 'house'
 		    ORDER BY a.id ASC LIMIT 1
-		 )`,
-		userPublicID, displayName, bio, avatarURL)
-	if err != nil {
+		 )`, userPublicID, bio); err != nil {
 		return err
 	}
-	if ct.RowsAffected() == 0 {
-		return httpx.NewError(http.StatusNotFound, "no_agent",
-			"You do not have an agent yet — create one before setting a public profile.")
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (r *DevProfileRepo) SetUsername(ctx context.Context, userPublicID, username string) error {
