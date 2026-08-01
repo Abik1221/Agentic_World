@@ -16,7 +16,7 @@ your decision logic. It contains no AI/strategy and no provider lock-in.
     agent.serve(port=9099)
 """
 
-__version__ = "1.6.0"  # x-release-please-version
+__version__ = "1.7.0"  # x-release-please-version
 
 # Everything below is imported LAZILY (PEP 562). Importing `pyyol` — which the CLI
 # does on every invocation for `__version__` — must stay cheap: no `http.server`
