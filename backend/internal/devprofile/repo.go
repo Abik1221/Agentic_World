@@ -156,6 +156,13 @@ type Repo interface {
 	// (newest signups first).
 	Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]DirectoryRow, error)
 	SetUsername(ctx context.Context, userPublicID, username string) error
+	// SetProfile writes the developer's PUBLIC identity — the name, bio and avatar
+	// other developers see on their profile. These columns existed since 0019 and were
+	// read on every profile response, but nothing could ever write them: the client
+	// kept all three in localStorage, so a developer's own browser showed one identity
+	// and everyone else saw an empty one. Clearing site data, or simply opening the
+	// site on a second machine, lost it entirely.
+	SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error
 	Follow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
 	Unfollow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
 }

@@ -3,6 +3,7 @@ package devprofile
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -39,6 +40,10 @@ func (h *Handler) Register(r chi.Router) {
 		gr.Use(h.authn.Middleware)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/me", h.me)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/developer/username", h.setUsername)
+		// The developer's public identity. These columns were readable since 0019 and
+		// had no writer, so the client kept them in localStorage — one identity in your
+		// own browser, an empty one for everybody else.
+		gr.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/developer/profile", h.setProfile)
 		// A handle derived from who they already are, so the field is never empty and
 		// "skipping" still produces a real @handle rather than a database id.
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/username-suggestion", h.usernameSuggestion)
@@ -215,6 +220,30 @@ func (h *Handler) setUsername(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"username": body.Username})
+}
+
+func (h *Handler) setProfile(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var body struct {
+		DisplayName string `json:"display_name"`
+		Bio         string `json:"bio"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.SetProfile(r.Context(), p.UserPublicID, body.DisplayName, body.Bio, body.AvatarURL); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Echo what was STORED, not what was sent: the service trims, so a client that
+	// redisplays the response shows the value that actually persisted.
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"display_name": strings.TrimSpace(body.DisplayName),
+		"bio":          strings.TrimSpace(body.Bio),
+		"avatar_url":   strings.TrimSpace(body.AvatarURL),
+	})
 }
 
 func (h *Handler) follow(w http.ResponseWriter, r *http.Request) {

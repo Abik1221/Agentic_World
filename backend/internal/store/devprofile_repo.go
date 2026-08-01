@@ -411,6 +411,36 @@ func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort stri
 	return out, rows.Err()
 }
 
+// SetProfile writes the developer's public identity onto their agent row.
+//
+// One user → one agent, and the identity columns (display_name, bio, avatar_url) live
+// on `agents` — they have since 0019 and were read on every profile response, but no
+// endpoint could write them. The client kept all three in localStorage, so a developer
+// saw one identity in their own browser and everybody else saw an empty one.
+//
+// Written to the OLDEST non-house agent so a developer who later spawns more agents
+// keeps a stable public identity rather than having it follow whichever row sorts
+// first today.
+func (r *DevProfileRepo) SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error {
+	ct, err := r.db.Exec(ctx, `
+		UPDATE agents SET display_name = $2, bio = $3, avatar_url = $4, updated_at = now()
+		 WHERE id = (
+		   SELECT a.id FROM agents a
+		    WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
+		      AND a.kind <> 'house'
+		    ORDER BY a.id ASC LIMIT 1
+		 )`,
+		userPublicID, displayName, bio, avatarURL)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return httpx.NewError(http.StatusNotFound, "no_agent",
+			"You do not have an agent yet — create one before setting a public profile.")
+	}
+	return nil
+}
+
 func (r *DevProfileRepo) SetUsername(ctx context.Context, userPublicID, username string) error {
 	ct, err := r.db.Exec(ctx,
 		`UPDATE users SET username = $2, updated_at = now() WHERE public_id = $1`, userPublicID, username)

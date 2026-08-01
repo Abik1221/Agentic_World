@@ -8,6 +8,7 @@ package devprofile
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"net/http"
 	"regexp"
@@ -353,6 +354,46 @@ func (s *Service) SetUsername(ctx context.Context, userPublicID, username string
 		return err
 	}
 	return nil
+}
+
+// Profile limits. Generous enough for a real name and a paragraph, bounded so a
+// public field cannot be used as free storage or to break a layout.
+const (
+	maxDisplayName = 40
+	maxBio         = 280
+	maxAvatarURL   = 2048
+)
+
+// SetProfile writes the developer's PUBLIC identity.
+//
+// Trimmed and length-bounded here rather than at the database, so the caller gets a
+// specific error instead of a driver one. Empty values are allowed and mean "clear it"
+// — a developer must be able to remove a name or a photo, not just replace it.
+func (s *Service) SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error {
+	displayName = strings.TrimSpace(displayName)
+	bio = strings.TrimSpace(bio)
+	avatarURL = strings.TrimSpace(avatarURL)
+
+	if len([]rune(displayName)) > maxDisplayName {
+		return httpx.NewError(http.StatusBadRequest, "invalid_display_name",
+			fmt.Sprintf("display name must be %d characters or fewer", maxDisplayName))
+	}
+	if len([]rune(bio)) > maxBio {
+		return httpx.NewError(http.StatusBadRequest, "invalid_bio",
+			fmt.Sprintf("bio must be %d characters or fewer", maxBio))
+	}
+	if len(avatarURL) > maxAvatarURL {
+		return httpx.NewError(http.StatusBadRequest, "invalid_avatar",
+			"avatar URL is too long")
+	}
+	// An avatar is rendered in other developers' browsers, so the scheme is
+	// allow-listed: javascript: and data: URLs in an <img src> are an XSS and an
+	// exfiltration vector respectively, and neither has a legitimate use here.
+	if avatarURL != "" && !strings.HasPrefix(avatarURL, "https://") {
+		return httpx.NewError(http.StatusBadRequest, "invalid_avatar",
+			"avatar must be an https:// URL")
+	}
+	return s.repo.SetProfile(ctx, userPublicID, displayName, bio, avatarURL)
 }
 
 // Follow / Unfollow manage the developer↔developer graph. handle is the target.
