@@ -314,10 +314,35 @@ jobs:
         run: |
           set -euo pipefail
           PORT="${SSH_PORT:-22}"
-          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
-          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
+
+          # Retry the transport, not the deploy. "ssh: connect to host ... Connection
+          # timed out" has failed real deploys here twice with the box perfectly
+          # healthy (the API kept serving 200s throughout) — a runner IP tripping
+          # fail2ban, or a blip between GitHub and the VPS. Each attempt is a fresh
+          # TCP connect, and ConnectTimeout keeps a black-holed port from burning
+          # two minutes per try instead of failing fast and retrying.
+          #
+          # Only connection setup is retried. Every command below is idempotent
+          # (mkdir -p, overwriting scp), so a retry after a partial transfer just
+          # rewrites the file.
+          retry_ssh() {
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge 4 ]; then
+                echo "::error::ssh/scp failed after $n attempts — check the VPS is reachable on port $PORT (sshd up? firewall? fail2ban ban on the runner IP?)"
+                return 1
+              fi
+              echo "attempt $n failed; retrying in $((n * 15))s..."
+              sleep $((n * 15))
+              n=$((n + 1))
+            done
+          }
+          SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=15"
+
+          retry_ssh ssh -i ~/.ssh/id_deploy -p "$PORT" $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
+          retry_ssh scp -i ~/.ssh/id_deploy -P "$PORT" $SSH_OPTS \
             backend/deploy/docker-compose.prod.yml "$SSH_USER@$SSH_HOST:$REMOTE_DIR/docker-compose.prod.yml"
-          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
+          retry_ssh scp -i ~/.ssh/id_deploy -P "$PORT" $SSH_OPTS \
             /tmp/arena.env "$SSH_USER@$SSH_HOST:$REMOTE_DIR/.env"
 
       - name: Deploy (pull image from registry + compose up + migrate-on-boot)
@@ -332,7 +357,13 @@ jobs:
           PORT="${SSH_PORT:-22}"
           # Docker Hub creds are passed into the remote shell env (masked in CI logs)
           # so the server can pull the private image, then it logs out immediately.
+          # No retry wrapper here on purpose: this step runs the actual deploy, and a
+          # blanket retry would re-run a genuinely failed deploy up to four times.
+          # ConnectTimeout only makes an unreachable host fail fast instead of
+          # hanging for two minutes; ServerAliveInterval keeps a long compose pull
+          # from being dropped as idle.
           ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
             "$SSH_USER@$SSH_HOST" \
             "REMOTE_DIR='$REMOTE_DIR' DHUSER='$DOCKERHUB_USERNAME' DHTOKEN='$DOCKERHUB_TOKEN' bash -s" <<'ENDSSH'
           set -euo pipefail
