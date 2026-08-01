@@ -48,6 +48,62 @@ services:
       timeout: 3s
       retries: 20
 
+  # Object storage for user-uploaded media (avatars today). Same shape as postgres
+  # and redis above: a pinned image, a NAMED volume, restart unless-stopped. The
+  # named volume is the whole point — `docker compose down` and every redeploy
+  # recreate the container, and anything written inside the container filesystem
+  # would go with it. miniodata is never removed by the deploy workflow.
+  #
+  # Deliberately NOT published to the host. Browsers never talk to MinIO directly;
+  # the arena server reads objects out and serves them, so we keep control of the
+  # cache headers and never expose the admin console or the raw bucket. That also
+  # means no credentials are reachable from outside the pyyol network.
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: arena-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER missing in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD missing in .env}
+      # Object storage should not be the reason a deploy fails to come up.
+      MINIO_BROWSER: "off"
+    volumes:
+      - miniodata:/data
+    networks: [default, pyyol]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  # One-shot: create the bucket if absent, then exit. Idempotent, so it is safe to
+  # run on every single deploy. The bucket stays PRIVATE — objects are served
+  # through the arena server, not read anonymously off MinIO.
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    container_name: arena-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MEDIA_BUCKET: ${MEDIA_BUCKET:-pyyol-media}
+    networks: [default]
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+      (mc ls local/$$MEDIA_BUCKET >/dev/null 2>&1 || mc mb local/$$MEDIA_BUCKET) &&
+      mc anonymous set none local/$$MEDIA_BUCKET &&
+      echo 'media bucket ready'
+      "
+    restart: "no"
+
   server:
     # Built + pushed by CI; pulled here, never built on the server.
     image: ${ARENA_IMAGE:-agent-arena-server:latest}
@@ -64,6 +120,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # Storage being down must never keep the arena from serving matches, so this
+      # waits for the container to be healthy but the server treats S3 as optional
+      # at runtime (uploads degrade, everything else works).
+      minio:
+        condition: service_healthy
     networks: [default, pyyol]
     # Host port is configurable (80 = Mega Hub, 8090 = arena UI already in use).
     ports:
@@ -75,6 +136,10 @@ services:
 volumes:
   pgdata:
   redisdata:
+  # User-uploaded media. Named (not anonymous, not a bind mount) so it outlives
+  # every `compose down`/`up` cycle the deploy workflow performs. Nothing in CI
+  # ever runs `down -v` or `volume rm` — that would delete every avatar.
+  miniodata:
 
 # Shared cross-repo network. external:true ⇒ the deploy workflow creates it once
 # (`docker network create pyyol`). Admin + tracing projects attach to the same
