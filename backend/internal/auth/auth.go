@@ -108,6 +108,27 @@ func (a *Authenticator) resolve(ctx context.Context, raw string) (*Principal, er
 // RequireScope returns a guard that admits only callers holding exactly the given
 // scope. Missing principal → 401; wrong scope → 403 (the limit-firewall response
 // for an agent key hitting a user-only route).
+// denySharedCaching marks a response as belonging to ONE caller.
+//
+// A credential-scoped response must never sit in a shared cache. Without an explicit
+// directive an intermediary is permitted to cache heuristically, and a CDN or
+// corporate proxy that did so would serve one developer's profile, wallet or match
+// telemetry to the next person who asked for the same URL. That is not a theoretical
+// failure — it is the standard way this leaks, and it leaks silently.
+//
+// Applied at the SCOPE GUARD rather than in each handler on purpose: a new authed
+// endpoint is now safe by default, and cannot be shipped insecure by someone who
+// simply did not think about caching. A handler that genuinely wants private
+// client-side caching can still override this after calling through.
+//
+// Vary: Authorization keeps a cache that ignores no-store from keying on URL alone.
+func denySharedCaching(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store, private")
+	h.Add("Vary", "Authorization")
+	h.Add("Vary", "Cookie")
+}
+
 func RequireScope(scope Scope) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +146,7 @@ func RequireScope(scope Scope) func(http.Handler) http.Handler {
 				httpx.Error(w, httpx.NewError(http.StatusForbidden, code, msg))
 				return
 			}
+			denySharedCaching(w)
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -151,6 +173,7 @@ func RequireScopeAny(scopes ...Scope) func(http.Handler) http.Handler {
 				httpx.Error(w, httpx.NewError(http.StatusForbidden, "forbidden_scope", "This credential is not allowed to access this resource."))
 				return
 			}
+			denySharedCaching(w)
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -185,6 +208,7 @@ func RequirePlatformOrAdmin(allowlist map[string]bool) func(http.Handler) http.H
 				httpx.Error(w, httpx.ErrForbidden)
 				return
 			}
+			denySharedCaching(w)
 			next.ServeHTTP(w, r)
 		})
 	}
