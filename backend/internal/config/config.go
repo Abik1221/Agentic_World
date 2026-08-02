@@ -114,6 +114,15 @@ type Config struct {
 	// switched on.
 	TurnProofSecret string
 
+	// MetricsToken guards GET /metrics. Prometheus exposition is not harmless
+	// output: it publishes the full internal route table (every admin path
+	// included) alongside business counters like coins staked, chargeback debt and
+	// fraud flags. On a real-money platform that is competitive intelligence and a
+	// recon aid, so in prod the endpoint is closed unless a token is configured.
+	// Empty in prod ⇒ /metrics 404s exactly like an unknown path, revealing
+	// nothing. Empty outside prod ⇒ open, because local debugging needs it.
+	MetricsToken string
+
 	// RankedIntegrityMinPct is the share of a ranked match's decisions that must be
 	// PROVEN LLM-backed (a gateway call carrying that turn's proof token) or the
 	// match is voided and both stakes returned. Inclusive, so a majority is 51 and
@@ -384,6 +393,7 @@ func Load() (*Config, error) {
 		SolanaHotWalletEncKey:    l.str("SOLANA_HOT_WALLET_ENC_KEY", ""),
 		WithdrawConfirmInterval:  l.dur("WITHDRAW_CONFIRM_INTERVAL", 15*time.Second),
 		TurnProofSecret:          l.str("TURN_PROOF_SECRET", ""),
+		MetricsToken:             l.str("METRICS_TOKEN", ""),
 		RankedIntegrityMinPct:    l.intVal("RANKED_INTEGRITY_MIN_PCT", 0),
 		AgentReconnectGrace:      l.dur("AGENT_RECONNECT_GRACE", 8*time.Second),
 		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),

@@ -156,6 +156,9 @@ jobs:
           WITHDRAW_MIN_COINS: ${{ secrets.WITHDRAW_MIN_COINS }}
           # Object storage (MinIO, runs in this compose). All optional: absent
           # secrets fall back to a derived root credential and the default bucket.
+          # Guards GET /metrics. Unset in prod ⇒ the endpoint 404s, which is the
+          # safe default — set it only when something needs to scrape.
+          METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
           MINIO_ROOT_USER: ${{ secrets.MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD: ${{ secrets.MINIO_ROOT_PASSWORD }}
           MEDIA_BUCKET: ${{ secrets.MEDIA_BUCKET }}
@@ -227,6 +230,7 @@ jobs:
           JWT_SIGNING_KEY=${JWT_SIGNING_KEY}
           API_KEY_PEPPER=${API_KEY_PEPPER}
           AGENT_ENDPOINT_SECRET_KEY=${AGENT_ENDPOINT_SECRET_KEY:-}
+          METRICS_TOKEN=${METRICS_TOKEN:-}
           ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
           # Short access JWT; the BFF silently rotates the refresh token so active
           # users stay signed in, and only true absence (past the refresh TTL) logs out.

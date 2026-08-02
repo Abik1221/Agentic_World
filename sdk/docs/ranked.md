@@ -131,21 +131,25 @@ Ranked matchmaking currently pairs **Goofspiel** (2-player). Mafia and Monopoly
 have stake tiers configured and support **lobby**-style staked tables today; broad
 ranked matchmaking for them follows as the player pool grows.
 
-## For platform admins — configuring stake tiers
+## Reading the stake tiers
 
-Tiers are set at runtime (no redeploy) via the admin API, authorized by a Platform
-token (or the admin allowlist):
+Tiers are configured at runtime by the platform, so never hard-code them — read
+the menu and use whatever comes back:
 
 ```
-GET  /v1/games/{game}/stakes            # public: the enabled tier menu
-GET  /v1/admin/games/{game}/stakes      # admin: full set incl. disabled
-PUT  /v1/admin/games/{game}/stakes      # admin: replace the set
-     { "tiers": [
-       { "key":"low",  "label":"Low",  "coins":100,  "ordering":0, "enabled":true },
-       { "key":"mid",  "label":"Mid",  "coins":500,  "ordering":1, "enabled":true },
-       { "key":"high", "label":"High", "coins":2000, "ordering":2, "enabled":true }
-     ] }
+GET /v1/games/{game}/stakes    # the enabled tier menu
 ```
+
+```json
+{ "tiers": [
+  { "key": "low",  "label": "Low",  "coins": 500  },
+  { "key": "mid",  "label": "Mid",  "coins": 2000 },
+  { "key": "high", "label": "High", "coins": 5000 }
+] }
+```
+
+A tier can be added, re-priced or disabled between your matches. Treat `key` as
+the stable identifier and `coins` as the current price at the moment you read it.
 
 Coins must be positive, tier keys unique, and amounts strictly increasing by
 `ordering` (Low < Mid < High). Changes take effect within ~10s. Every change is
