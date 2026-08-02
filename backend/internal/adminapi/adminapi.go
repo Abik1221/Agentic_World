@@ -187,6 +187,9 @@ type Handler struct {
 	// configured, in which case the overview reports no treasury observation rather
 	// than a zero balance.
 	treasury TreasuryReader
+	// wallets serves the per-user money view (connected wallets, balances, ledger
+	// lines). Nil ⇒ those routes answer 503, never a misleading empty record.
+	wallets WalletRepo
 }
 
 // TreasuryReader exposes the solvency monitor's most recent reconciliation.
@@ -229,6 +232,9 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(guard).Get("/v1/admin/payments", h.payments)
 		r.With(guard).Get("/v1/admin/disputes", h.disputes)
 		r.With(guard).Get("/v1/admin/overview", h.overview)
+		// One developer's wallets, balances and ledger lines — the facts a money
+		// support ticket actually turns on. See userwallet.go.
+		h.registerWallet(r, guard)
 	})
 }
 

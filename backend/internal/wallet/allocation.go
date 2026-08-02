@@ -39,7 +39,7 @@ func (s *Service) Allocate(ctx context.Context, ownerUserPublicID, agentPublicID
 	if clientKey != "" {
 		key = fmt.Sprintf("allocate:%s:%s", agentPublicID, clientKey)
 	}
-	_, err = s.ledger.Post(ctx, ledger.Txn{
+	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindAllocate,
 		Key:      key,
 		Metadata: map[string]any{"user": ownerUserPublicID, "agent": agentPublicID, "coins": coins},
@@ -48,5 +48,15 @@ func (s *Service) Allocate(ctx context.Context, ownerUserPublicID, agentPublicID
 			{Wallet: ledger.AgentWallet(agentPublicID), Amount: coins},
 		},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Treasury just fell by `coins`. Push it so every open tab's balance moves, not
+	// just the one that happened to submit the form. Only on Applied — a dedupe of a
+	// retried request moved nothing.
+	if res.Applied {
+		s.signalUser(ownerUserPublicID, eventCoinsAllocated, key,
+			map[string]any{"agent": agentPublicID, "coins": coins})
+	}
+	return nil
 }

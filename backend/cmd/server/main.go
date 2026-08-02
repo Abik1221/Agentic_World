@@ -42,6 +42,7 @@ import (
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
+	"github.com/agent-arena/arena/internal/invoices"
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/mafia"
@@ -52,6 +53,7 @@ import (
 	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
+	"github.com/agent-arena/arena/internal/paymenttrace"
 	"github.com/agent-arena/arena/internal/payout"
 	"github.com/agent-arena/arena/internal/pindex"
 	"github.com/agent-arena/arena/internal/platform"
@@ -72,6 +74,7 @@ import (
 	"github.com/agent-arena/arena/internal/tournament"
 	"github.com/agent-arena/arena/internal/turnproof"
 	"github.com/agent-arena/arena/internal/twofa"
+	"github.com/agent-arena/arena/internal/userevents"
 	"github.com/agent-arena/arena/internal/verification"
 	"github.com/agent-arena/arena/internal/wallet"
 	"github.com/agent-arena/arena/internal/walletadmin"
@@ -573,8 +576,47 @@ func run() error {
 	socialRepo := store.NewSocialRepo(st.DB)
 	socialSvc := social.New(socialRepo, social.Config{}, log, metrics.Registry())
 	socialHandler := social.NewHandler(socialSvc, authn)
+
+	// Realtime user event rail. Every money event already produced a durable
+	// notifications row and then stopped there — the browser learned about it on its
+	// next 60-second bell poll or on a full reload, which is why a successful deposit
+	// showed no confirmation and no balance change. The bus pushes the SAME event to
+	// the user's open tabs immediately; the row remains the source of truth.
+	//
+	// Redis pub/sub, so it is cross-instance. Best-effort throughout: no money path
+	// blocks on it and none of them fail if it is unavailable.
+	userBus := userevents.NewBus(st.Redis, log)
+	userSignals := userevents.NewSignaller(2, 256, log)
+	launch("user-event-signals", userSignals.Run)
+	userEventsHandler := userevents.NewHandler(userBus, authn)
+
 	// Notification writer shared by the deposit + withdrawal flows (idempotent).
-	notifier := notifierAdapter{socialRepo}
+	// It now writes the row AND pushes it live, in that order, and pushes only when
+	// the insert actually inserted — so a redelivered webhook or a re-observed
+	// on-chain transfer cannot re-toast an event the user already acknowledged.
+	notifier := notifierAdapter{repo: socialRepo, bus: userBus}
+	socialSvc.SetPusher(notifier) // match results reach the tab that is watching
+	walletSvc.SetEventSink(walletEvents{bus: userBus, sig: userSignals, notifier: notifier, log: log})
+
+	// The payment log. Every money flow records which stage it reached, so
+	// "my payment did not work" is answerable from the product instead of from
+	// server logs joined by hand. Diagnostic only: the ledger stays the authority,
+	// and a failed write here can never fail a payment (see paymenttrace.Record).
+	paymentTrace := paymenttrace.New(store.NewPaymentTraceRepo(st.DB), log)
+	paymentTraceHandler := paymenttrace.NewHandler(paymentTrace, authn, adminIDSet(cfg.AdminUserIDs))
+	walletSvc.SetTracer(paymentTrace)
+
+	// Receipts. Derived on read from the deposits/top-ups/withdrawals that already
+	// happened — there is no invoices table, so a document can never disagree with
+	// the money it describes.
+	invoicesHandler := invoices.NewHandler(
+		invoices.New(store.NewInvoicesRepo(st.DB, cfg.CoinCents), invoices.Config{
+			CoinCents:  cfg.CoinCents,
+			ExplorerTx: cfg.SolanaExplorerTx,
+			Issuer:     "Pyyol",
+		}),
+		authn,
+	)
 
 	// The live platform commission, read fresh for each new match from the config
 	// bus. Until now this value was published by the Super Admin, seeded into the
@@ -741,6 +783,7 @@ func run() error {
 	}
 	payoutSvc.SetGate(walletAdminSvc) // Super Admin withdrawal gate (settings/freeze)
 	payoutSvc.SetNotifier(notifier)   // notify owner on paid/failed
+	payoutSvc.SetTracer(paymentTrace) // record which stage each cash-out reached
 	payoutHandler := payout.NewHandler(payoutSvc, authn, cfg.AdminUserIDs)
 	payoutHandler.SetRateLimit(withdrawRL)
 	payoutHandler.SetStepUp(twofaSvc) // require the 2FA code on cash-out when enabled
@@ -775,6 +818,7 @@ func run() error {
 			return platformCfg.Get().DepositFeePct(cfg.DepositFeePct)
 		})
 		depositSvc.SetNotifier(notifier) // notify user when a deposit is credited
+		depositSvc.SetTracer(paymentTrace)
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
 		depositHandler.SetRateLimit(depositRL)
 		launch("solana-deposit-listener", solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run)
@@ -786,6 +830,25 @@ func run() error {
 		solvency.SetExposureCap(cfg.HotWalletCapCents)
 		solvencyMonitor = solvency
 		launch("solvency-monitor", solvency.Run(cfg.SolvencyInterval))
+
+		// Prove the destination we advertise is the account we watch. A mismatch
+		// between SOLANA_PLATFORM_OWNER (where payers are told to send) and
+		// SOLANA_PLATFORM_ATA (the only account crediting counts) makes every
+		// deposit land on-chain and credit nothing — the payer loses the money and
+		// the platform never sees it, silently. Off the boot path so a slow RPC does
+		// not delay startup, and advisory: it shouts, it does not disable the rail.
+		go func() {
+			vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if ok, detail := depositSvc.VerifyRails(vctx, chain); !ok {
+				log.Error("DEPOSIT RAILS MISCONFIGURED — deposits will not credit",
+					"detail", detail, "owner", cfg.SolanaPlatformOwner, "ata", cfg.SolanaPlatformATA,
+					"mint", cfg.SolanaUSDCMint)
+			} else {
+				log.Info("deposit rails verified", "detail", detail)
+			}
+		}()
+
 		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
 	} else {
 		log.Info("solana deposits disabled (set SOLANA_RPC_URL + SOLANA_PLATFORM_OWNER + SOLANA_PLATFORM_ATA to enable)")
@@ -806,6 +869,11 @@ func run() error {
 	// number: the first is what the ledger says was earned, the second is what the
 	// hot wallet actually holds.
 	adminReadHandler.SetCoinCents(cfg.CoinCents)
+	// The operator's per-user money view: connected wallets (login hint vs the
+	// PROVEN payout destination), where the coins are sitting, and the ledger lines
+	// behind them. Without it a money support ticket ends in someone with database
+	// access pasting a screenshot.
+	adminReadHandler.SetWalletRepo(store.NewAdminWalletRepo(st.DB))
 	if solvencyMonitor != nil {
 		adminReadHandler.SetTreasury(solvencyMonitor)
 	}
@@ -1163,6 +1231,9 @@ func run() error {
 		gameStakesHandler.Register,
 		walletVerifyHandler.Register,
 		twofaHandler.Register,
+		userEventsHandler.Register,   // GET /v1/events/stream — the caller's own live feed
+		paymentTraceHandler.Register, // payment flow models + per-user timelines
+		invoicesHandler.Register,     // GET /v1/user/invoices — receipts
 	}
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
@@ -1225,14 +1296,85 @@ func parseLensLogLevel(s string) slog.Level {
 	}
 }
 
+// adminIDSet turns the ADMIN_USER_IDS slice into the lookup shape the auth
+// guards take. Several handlers build this independently; it is here so a future
+// one cannot get the conversion subtly wrong (an empty entry admitting everyone,
+// say) in its own copy.
+func adminIDSet(ids []string) map[string]bool {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			set[id] = true
+		}
+	}
+	return set
+}
+
 // notifierAdapter lets the deposit + withdrawal services write user notifications
 // through the shared, idempotent notifications table (store.SocialRepo) without
-// importing store. Satisfies solanadeposit.Notifier and payout.Notifier.
-type notifierAdapter struct{ repo *store.SocialRepo }
+// importing store. Satisfies solanadeposit.Notifier, payout.Notifier and
+// social.Pusher.
+//
+// Durable row first, live push second, and the push happens ONLY when the insert
+// actually inserted. That ordering is what makes the two views agree: the bell's
+// persisted feed is the record, the stream is an accelerator, and a redelivered
+// event (a re-observed on-chain transfer, a replayed match finalize) is a no-op in
+// both — it neither duplicates a row nor re-toasts a confirmation.
+type notifierAdapter struct {
+	repo *store.SocialRepo
+	bus  *userevents.Bus
+}
 
 func (n notifierAdapter) Notify(ctx context.Context, userPublicID, kind, ref string, payload []byte) error {
-	_, err := n.repo.InsertNotification(ctx, userPublicID, kind, ref, payload)
-	return err
+	inserted, err := n.repo.InsertNotification(ctx, userPublicID, kind, ref, payload)
+	if err != nil {
+		return err
+	}
+	if inserted {
+		n.bus.Publish(ctx, userPublicID, kind, ref, payload)
+	}
+	return nil
+}
+
+// Push satisfies social.Pusher: the social worker has already written (and
+// deduped) the row, so this is the live half only.
+func (n notifierAdapter) Push(ctx context.Context, userPublicID, kind, ref string, payload []byte) {
+	n.bus.Publish(ctx, userPublicID, kind, ref, payload)
+}
+
+// walletEvents satisfies wallet.EventSink: it lets the wallet service announce a
+// balance move (a stake leaving an agent, a treasury allocation, a card top-up
+// settling) without importing the event package's dispatch policy. The Signaller
+// keeps the owner lookup a stake needs, and the notification write a top-up needs,
+// off the ledger transaction's critical path.
+type walletEvents struct {
+	bus      *userevents.Bus
+	sig      *userevents.Signaller
+	notifier notifierAdapter
+	log      *slog.Logger
+}
+
+func (w walletEvents) Go(fn func(ctx context.Context)) { w.sig.Go(fn) }
+
+// Publish is the transient half: straight to the user's open streams, no record.
+func (w walletEvents) Publish(ctx context.Context, userPublicID, kind, ref string, payload map[string]any) {
+	w.bus.PublishJSON(ctx, userPublicID, kind, ref, payload)
+}
+
+// Notify is the durable half: the same idempotent row every other money event
+// writes, then the live push (only when the row was genuinely new). The error is
+// returned, not just logged, because the payment trace records whether the user
+// was actually told.
+func (w walletEvents) Notify(ctx context.Context, userPublicID, kind, ref string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := w.notifier.Notify(ctx, userPublicID, kind, ref, body); err != nil {
+		w.log.Warn("wallet notify failed", "user", userPublicID, "kind", kind, "error", err)
+		return err
+	}
+	return nil
 }
 
 // matchPairer bridges matchmaking.Pairer to match.Service.CreatePaired, so the

@@ -127,6 +127,10 @@ jobs:
           SOLANA_PLATFORM_OWNER: ${{ secrets.SOLANA_PLATFORM_OWNER }}
           SOLANA_PLATFORM_ATA: ${{ secrets.SOLANA_PLATFORM_ATA }}
           SOLANA_COMMITMENT: ${{ secrets.SOLANA_COMMITMENT }}
+          # Block-explorer template for the transaction link printed on every
+          # receipt. Unset falls back to solscan in config.go; set it to point at a
+          # different explorer, or to the devnet variant while testing.
+          SOLANA_EXPLORER_TX: ${{ secrets.SOLANA_EXPLORER_TX }}
           # Solana withdrawals (encrypted hot-wallet secret + its master key)
           SOLANA_HOT_WALLET_SECRET_ENC: ${{ secrets.SOLANA_HOT_WALLET_SECRET_ENC }}
           SOLANA_HOT_WALLET_ENC_KEY: ${{ secrets.SOLANA_HOT_WALLET_ENC_KEY }}
@@ -277,6 +281,7 @@ jobs:
           SOLANA_PLATFORM_OWNER=${SOLANA_PLATFORM_OWNER:-}
           SOLANA_PLATFORM_ATA=${SOLANA_PLATFORM_ATA:-}
           SOLANA_COMMITMENT=${SOLANA_COMMITMENT:-finalized}
+          SOLANA_EXPLORER_TX=${SOLANA_EXPLORER_TX:-}
           HOT_WALLET_CAP_CENTS=${HOT_WALLET_CAP_CENTS:-0}
           MOVE_WINDOW_SECONDS=${MOVE_WINDOW_SECONDS:-45}
           MONOPOLY_MOVE_WINDOW_SECONDS=${MONOPOLY_MOVE_WINDOW_SECONDS:-60}

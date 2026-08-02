@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/agent-arena/arena/internal/paymenttrace"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -35,7 +36,9 @@ type Service struct {
 	confirmer Confirmer // Solana on-chain confirmation; nil in Stripe mode
 	gate      Gate      // Super Admin withdrawal gate; nil ⇒ no dynamic gate
 	notifier  Notifier  // user notifications; nil ⇒ none
-	clock     platform.Clock
+	// trace records which stage of the cash-out each request reached. Nil-safe.
+	trace *paymenttrace.Service
+	clock platform.Clock
 	cfg       Config
 	// economy supplies the LIVE admin-configured fee/minimum. Nil ⇒ static config.
 	economy func() (feePct int, minCoins int64)
@@ -95,12 +98,32 @@ func (s *Service) checkBreaker(ctx context.Context, pendingCents int64) error {
 // SetNotifier wires the user-notification writer. Optional.
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
 
+// SetTracer wires the payment-flow log — which stage of the cash-out each request
+// reached. Optional and purely diagnostic; nil-safe, and no payout may fail
+// because of it.
+func (s *Service) SetTracer(t *paymenttrace.Service) { s.trace = t }
+
+// traceStage is the withdrawal-side shorthand: every call already knows the flow
+// and the ref, so keeping them out of the call sites keeps the money code readable.
+func (s *Service) traceOK(ctx context.Context, w Withdrawal, stage string, meta map[string]any) {
+	s.trace.OK(ctx, w.Owner, paymenttrace.FlowWithdrawal, w.PublicID, stage, meta)
+}
+
+func (s *Service) traceFailed(ctx context.Context, w Withdrawal, stage, detail string, meta map[string]any) {
+	s.trace.Failed(ctx, w.Owner, paymenttrace.FlowWithdrawal, w.PublicID, stage, detail, meta)
+}
+
 // notify writes a withdrawal notification (best-effort; never blocks the flow).
-func (s *Service) notify(ctx context.Context, owner, kind, withdrawalID string, netCents int64) {
+//
+// `coins` is carried alongside the cash figure because the two answer different
+// questions: net_cents is what lands in the wallet, coins is what left the balance.
+// A "requested" notice that states only the dollars cannot explain the number the
+// user is actually watching change.
+func (s *Service) notify(ctx context.Context, owner, kind, withdrawalID string, netCents, coins int64) {
 	if s.notifier == nil || owner == "" {
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"withdrawal_id": withdrawalID, "net_cents": netCents})
+	payload, _ := json.Marshal(map[string]any{"withdrawal_id": withdrawalID, "net_cents": netCents, "coins": coins})
 	if err := s.notifier.Notify(ctx, owner, kind, "withdrawal:"+withdrawalID, payload); err != nil {
 		s.log.Warn("payout: notify failed", "id", withdrawalID, "kind", kind, "error", err)
 	}
@@ -371,6 +394,21 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 	}
 	s.m.requested.Inc()
 	s.audit(ctx, callerUserPublicID, "withdrawal_request", w.PublicID, map[string]any{"agent": agentPublicID, "coins": coins, "net_cents": w.NetCents})
+	// The request is the moment the coins ACTUALLY LEAVE the spendable balance (the
+	// Hold above), yet it was the one withdrawal transition that told the user
+	// nothing — paid and failed both notified, requested did not. So the balance
+	// dropped with no explanation attached to it, which reads as coins going missing
+	// rather than coins being reserved for a payout in progress.
+	s.notify(ctx, owner, "withdrawal_requested", w.PublicID, w.NetCents, w.Coins)
+	// Two stages from one call, because they are two different facts: the request
+	// was accepted, AND the coins actually left the spendable balance. When a user
+	// asks "where did my credits go", the second is the answer.
+	s.traceOK(ctx, w, paymenttrace.StageRequested, map[string]any{
+		"agent": agentPublicID, "coins": w.Coins, "fee_coins": w.FeeCoins,
+		"gross_cents": w.GrossCents, "net_cents": w.NetCents,
+		"chain": w.Chain, "dest_wallet": w.DestWallet,
+	})
+	s.traceOK(ctx, w, paymenttrace.StageCoinsHeld, map[string]any{"coins": w.Coins})
 	return w, nil
 }
 
@@ -444,6 +482,11 @@ func (s *Service) approveStripe(ctx context.Context, adminUserID string, w Withd
 		_ = s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins)
 		_, _ = s.repo.SetStatus(ctx, w.PublicID, "requested", "failed", "", err.Error())
 		s.audit(ctx, adminUserID, "withdrawal_failed", w.PublicID, map[string]any{"error": err.Error()})
+		// Nothing was sent and the hold was returned — say both, because "failed" on
+		// its own reads as money lost rather than money given back.
+		s.traceFailed(ctx, w, paymenttrace.StageBroadcastFailed,
+			"the payout could not be sent; your credits were returned to your balance",
+			map[string]any{"error": err.Error(), "coins_returned": w.Coins})
 		return err
 	}
 	if err := s.bank.Payout(ctx, w.PublicID, w.Agent, w.Coins, w.FeeCoins); err != nil {
@@ -455,7 +498,14 @@ func (s *Service) approveStripe(ctx context.Context, adminUserID string, w Withd
 	s.m.paid.Inc()
 	s.m.paidCents.Add(float64(w.NetCents))
 	s.audit(ctx, adminUserID, "withdrawal_paid", w.PublicID, map[string]any{"transfer": transferID, "net_cents": w.NetCents})
-	s.notify(ctx, w.Owner, "withdrawal_paid", w.PublicID, w.NetCents)
+	s.notify(ctx, w.Owner, "withdrawal_paid", w.PublicID, w.NetCents, w.Coins)
+	// Stripe settles at the API call, so approval, broadcast and payment are one
+	// instant. All three are still recorded: the diagram is the same shape on both
+	// rails, and a reader should not have to know which rail ran to read it.
+	s.traceOK(ctx, w, paymenttrace.StageApproved, map[string]any{"admin": adminUserID})
+	s.traceOK(ctx, w, paymenttrace.StageBroadcast, map[string]any{"transfer": transferID})
+	s.traceOK(ctx, w, paymenttrace.StagePaid, map[string]any{"transfer": transferID, "net_cents": w.NetCents})
+	s.traceOK(ctx, w, paymenttrace.StageWithdrawNotified, nil)
 	return nil
 }
 
@@ -477,6 +527,7 @@ func (s *Service) approveSolana(ctx context.Context, adminUserID string, w Withd
 	if !claimed {
 		return nil // another approver claimed it, or it advanced — idempotent
 	}
+	s.traceOK(ctx, w, paymenttrace.StageApproved, map[string]any{"admin": adminUserID})
 	// Record the signature and move 'processing' → 'broadcasted' via a pre-broadcast
 	// hook, BEFORE the tx is actually sent (M10). This closes the crash window where a
 	// send happened but the signature wasn't recorded yet: after the hook runs, the
@@ -521,6 +572,13 @@ func (s *Service) approveSolana(ctx context.Context, adminUserID string, w Withd
 			s.log.Warn("payout: solana send errored after signature recorded; holding 'broadcasted' for on-chain confirmation",
 				"id", w.PublicID, "error", sendErr)
 			s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID, map[string]any{"ambiguous": true})
+			// Deliberately PENDING, not failed. The signature is recorded and the
+			// transfer may well have landed; calling this a failure would tell the
+			// user their payout died while their USDC was in flight.
+			s.trace.Pending(ctx, w.Owner, paymenttrace.FlowWithdrawal, w.PublicID,
+				paymenttrace.StageBroadcast,
+				"the send returned an error after the transaction was signed — the chain is being checked",
+				map[string]any{"ambiguous": true, "error": sendErr.Error()})
 			return sendErr
 		}
 		// Failure BEFORE the signature was recorded ⇒ nothing was ever broadcast ⇒
@@ -528,12 +586,21 @@ func (s *Service) approveSolana(ctx context.Context, adminUserID string, w Withd
 		_ = s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins)
 		_, _ = s.repo.SetStatus(ctx, w.PublicID, "processing", "failed", "", sendErr.Error())
 		s.audit(ctx, adminUserID, "withdrawal_failed", w.PublicID, map[string]any{"error": sendErr.Error()})
+		s.traceFailed(ctx, w, paymenttrace.StageBroadcastFailed,
+			"nothing was broadcast and your credits were returned to your balance",
+			map[string]any{"error": sendErr.Error(), "coins_returned": w.Coins})
 		return sendErr
 	}
 	// Sent, and the row was already moved to 'broadcasted' by the hook. Coins stay
 	// held until ConfirmBroadcasted sees the tx finalize.
 	s.audit(ctx, adminUserID, "withdrawal_broadcasted", w.PublicID,
 		map[string]any{"net_cents": w.NetCents, "wallet": w.DestWallet})
+	s.traceOK(ctx, w, paymenttrace.StageBroadcast,
+		map[string]any{"net_cents": w.NetCents, "dest_wallet": w.DestWallet})
+	// The coins are still HELD at this point — finality is what burns them. Saying so
+	// explicitly stops the next stage reading as an unexplained delay.
+	s.trace.Pending(ctx, w.Owner, paymenttrace.FlowWithdrawal, w.PublicID,
+		paymenttrace.StagePaid, "waiting for Solana to finalize the payout", nil)
 	return nil
 }
 
@@ -582,6 +649,12 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 				s.log.Warn("payout: released a withdrawal whose broadcast never confirmed (blockhash expired)",
 					"id", w.PublicID, "sig", w.TransferID, "coins", w.Coins)
 				s.audit(ctx, "solana:confirm", "withdrawal_failed", w.PublicID, map[string]any{"signature": w.TransferID, "reason": "broadcast_expired"})
+				// The user watched a payout sit "sent" for an hour and then revert.
+				// Without a recorded reason that is indistinguishable from us losing
+				// their money, so the reason is stated in their own timeline.
+				s.traceFailed(ctx, w, paymenttrace.StageOnchainFailed,
+					"the payout was broadcast but never confirmed and has now expired; your credits were returned",
+					map[string]any{"signature": w.TransferID, "coins_returned": w.Coins})
 				settled++
 			}
 			continue
@@ -598,7 +671,10 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 			s.m.paid.Inc()
 			s.m.paidCents.Add(float64(w.NetCents))
 			s.audit(ctx, "solana:confirm", "withdrawal_paid", w.PublicID, map[string]any{"signature": w.TransferID, "net_cents": w.NetCents})
-			s.notify(ctx, w.Owner, "withdrawal_paid", w.PublicID, w.NetCents)
+			s.notify(ctx, w.Owner, "withdrawal_paid", w.PublicID, w.NetCents, w.Coins)
+			s.traceOK(ctx, w, paymenttrace.StagePaid,
+				map[string]any{"signature": w.TransferID, "net_cents": w.NetCents})
+			s.traceOK(ctx, w, paymenttrace.StageWithdrawNotified, nil)
 		} else {
 			// Finalized but the transaction failed on-chain: give the coins back.
 			if err := s.bank.Release(ctx, w.PublicID, w.Agent, w.Coins); err != nil {
@@ -610,7 +686,10 @@ func (s *Service) ConfirmBroadcasted(ctx context.Context) (int, error) {
 				continue
 			}
 			s.audit(ctx, "solana:confirm", "withdrawal_failed", w.PublicID, map[string]any{"signature": w.TransferID, "reason": "on-chain failure"})
-			s.notify(ctx, w.Owner, "withdrawal_failed", w.PublicID, w.NetCents)
+			s.notify(ctx, w.Owner, "withdrawal_failed", w.PublicID, w.NetCents, w.Coins)
+			s.traceFailed(ctx, w, paymenttrace.StageOnchainFailed,
+				"the transfer failed on Solana; your credits were returned to your balance",
+				map[string]any{"signature": w.TransferID, "coins_returned": w.Coins})
 		}
 		settled++
 	}
@@ -732,6 +811,9 @@ func (s *Service) Reject(ctx context.Context, adminUserID, publicID, reason stri
 		return err
 	}
 	s.audit(ctx, adminUserID, "withdrawal_reject", w.PublicID, map[string]any{"reason": reason})
+	s.traceFailed(ctx, w, paymenttrace.StageRejected,
+		"a reviewer declined this payout; your credits were returned to your balance",
+		map[string]any{"reason": reason, "coins_returned": w.Coins})
 	return nil
 }
 

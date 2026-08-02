@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/agent-arena/arena/internal/ledger"
+	"github.com/agent-arena/arena/internal/paymenttrace"
 )
 
 // disburseKey is the SHARED idempotency key for EVERY escrow-OUT of a match —
@@ -37,6 +38,10 @@ func (s *Service) StakeMatch(ctx context.Context, matchPublicID, agentA, agentB 
 	}
 	if res.Applied {
 		s.m.staked.Add(float64(2 * bid))
+		// Only on Applied: a re-stake of the same match is a ledger no-op, so pushing
+		// again would tell the owner their coins left twice.
+		s.signalAgentOwners(eventCoinsStaked, "stake:"+matchPublicID,
+			map[string]any{"match": matchPublicID, "coins": bid}, agentA, agentB)
 	}
 	return nil
 }
@@ -205,18 +210,44 @@ func (s *Service) CreditDeposit(ctx context.Context, userPublicID string, userCo
 }
 
 // creditUser applies incoming coins to the owner's treasury wallet.
+//
+// This is the single choke point for every treasury credit that is NOT the Solana
+// deposit rail: a settled card top-up, a subscription grant. Both arrive by
+// webhook, minutes after the user finished paying and possibly on a different
+// page — the textbook "I paid and nothing happened" case. Neither service wrote a
+// notification, so the confirmation is raised here, where all of them pass,
+// rather than being added to each caller and forgotten by the next one.
 func (s *Service) creditUser(ctx context.Context, userPublicID string, coins int64, idemKey, source string) error {
 	postings := []ledger.Posting{
 		{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: -coins},
 		{Wallet: ledger.UserWallet(userPublicID), Amount: coins},
 	}
-	_, err := s.ledger.Post(ctx, ledger.Txn{
+	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindTopup,
 		Key:      idemKey,
 		Metadata: map[string]any{"user": userPublicID, "coins": coins, "source": source},
 		Postings: postings,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Applied only: webhook redelivery is a ledger no-op and must be a UI no-op too.
+	// The idempotency key doubles as the notification ref, so even a push that
+	// somehow escapes this guard cannot create a second row.
+	if res.Applied {
+		// The provider settling is the only "before" this flow has — everything
+		// earlier happened inside Stripe. Recording it explicitly gives the diagram a
+		// first node, so a top-up that credited can be told apart from one whose
+		// webhook never arrived.
+		s.trace.OK(ctx, userPublicID, paymenttrace.FlowTopup, idemKey,
+			paymenttrace.StagePaymentReceived, map[string]any{"source": source})
+		s.trace.OK(ctx, userPublicID, paymenttrace.FlowTopup, idemKey,
+			paymenttrace.StageTopupCredited, map[string]any{"coins": coins, "source": source})
+		s.notifyUser(userPublicID, eventCoinsToppedUp, idemKey,
+			paymenttrace.FlowTopup, paymenttrace.StageTopupNotified,
+			map[string]any{"coins": coins, "source": source})
+	}
+	return nil
 }
 
 // AdminAdjust applies a Super Admin manual balance adjustment to the owner's
@@ -229,13 +260,26 @@ func (s *Service) AdminAdjust(ctx context.Context, userPublicID string, coins in
 		{Wallet: ledger.SystemWallet(ledger.SysStripeClearing), Amount: -coins},
 		{Wallet: ledger.UserWallet(userPublicID), Amount: coins},
 	}
-	_, err := s.ledger.Post(ctx, ledger.Txn{
+	res, err := s.ledger.Post(ctx, ledger.Txn{
 		Kind:     ledger.KindAdjust,
 		Key:      idemKey,
 		Metadata: map[string]any{"user": userPublicID, "coins": coins, "reason": reason, "source": "admin"},
 		Postings: postings,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// An operator moving someone's balance is the one change a user has no way to
+	// explain to themselves. Silent, it is indistinguishable from money going
+	// missing. It gets a durable notice carrying the amount and the stated reason.
+	if res.Applied {
+		// No trace flow: an adjustment is a single instantaneous act by an operator,
+		// not a multi-stage journey, and inventing a one-node diagram for it would
+		// only dilute the ones that mean something.
+		s.notifyUser(userPublicID, eventBalanceAdjusted, idemKey, "", "",
+			map[string]any{"coins": coins, "reason": reason})
+	}
+	return nil
 }
 
 // credit applies incoming coins, repaying any outstanding chargeback debt FIRST:

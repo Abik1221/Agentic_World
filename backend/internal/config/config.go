@@ -90,6 +90,12 @@ type Config struct {
 	SolanaUSDCMint      string        // SPL mint accepted for deposits (defaults to mainnet USDC)
 	SolanaPlatformOwner string        // platform wallet (Solana Pay recipient)
 	SolanaPlatformATA   string        // platform USDC token account (deposits must land here)
+	// SolanaExplorerTx is a printf template (one %s) resolving a transaction
+	// signature to a public block explorer. It is what makes a receipt verifiable
+	// by someone who does not trust us. Empty omits the link rather than emitting a
+	// broken one — a verification link that 404s is worse than none, because it
+	// looks like the verification failed.
+	SolanaExplorerTx    string
 	DepositSessionTTL   time.Duration // how long a deposit session stays open
 	DepositMinUSDC      int64         // minimum deposit in whole USDC (0 = no minimum)
 	DepositFeePct       int           // platform cut on money coming IN (default 5)
@@ -383,6 +389,7 @@ func Load() (*Config, error) {
 		SolanaUSDCMint:      l.str("SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		SolanaPlatformOwner: l.str("SOLANA_PLATFORM_OWNER", ""),
 		SolanaPlatformATA:   l.str("SOLANA_PLATFORM_ATA", ""),
+		SolanaExplorerTx:    l.str("SOLANA_EXPLORER_TX", "https://solscan.io/tx/%s"),
 		DepositSessionTTL:   l.dur("DEPOSIT_SESSION_TTL", 30*time.Minute),
 		DepositMinUSDC:      int64(l.intVal("DEPOSIT_MIN_USDC", 1)),
 		DepositFeePct:       l.intVal("DEPOSIT_FEE_PCT", 5),

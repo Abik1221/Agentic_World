@@ -3,6 +3,7 @@ package solanadeposit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/blockchain"
+	"github.com/agent-arena/arena/internal/paymenttrace"
 	"github.com/agent-arena/arena/internal/platform"
 )
 
@@ -21,7 +23,11 @@ type Service struct {
 	crediter Crediter
 	gate     Gate     // Super Admin deposit gate; nil ⇒ no dynamic gate
 	notifier Notifier // user notifications; nil ⇒ none
-	clock    platform.Clock
+	// trace records which stage of the deposit flow each attempt reached, so
+	// "I paid and nothing happened" has an answer. Nil-safe: every method on a nil
+	// *Service is a no-op, and nothing here may fail a credit.
+	trace *paymenttrace.Service
+	clock platform.Clock
 	cfg      Config
 	log      *slog.Logger
 	// minDeposit supplies the LIVE admin-configured minimum, in CENTS. Nil ⇒ the
@@ -55,6 +61,9 @@ func (s *Service) SetGate(g Gate) { s.gate = g }
 // SetNotifier wires the user-notification writer. Optional.
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
 
+// SetTracer wires the payment-flow log. Optional; purely diagnostic.
+func (s *Service) SetTracer(t *paymenttrace.Service) { s.trace = t }
+
 // New builds the deposit service, applying peg/decimal/TTL defaults.
 func New(repo Repo, chain Chain, crediter Crediter, clock platform.Clock, cfg Config, log *slog.Logger) *Service {
 	if cfg.DepositFeePct <= 0 {
@@ -73,6 +82,48 @@ func New(repo Repo, chain Chain, crediter Crediter, clock platform.Clock, cfg Co
 		cfg.SessionTTL = 30 * time.Minute
 	}
 	return &Service{repo: repo, chain: chain, crediter: crediter, clock: clock, cfg: cfg, log: log}
+}
+
+// VerifyRails checks, once at startup, that the deposit destination we advertise
+// is the account we actually watch.
+//
+// Every payer is told to send to PlatformOwner (Solana Pay URL / QR) or to that
+// owner's associated token account (the one-click wallet path). Crediting, by
+// contrast, only counts USDC that lands in the configured PlatformATA. If those
+// two disagree — a copy-pasted address, an ATA for the wrong mint, a devnet value
+// left in a mainnet deploy — then every deposit succeeds on-chain and none is ever
+// credited. The payer's money is gone and the platform's ledger shows nothing,
+// with no error raised anywhere in the system. That is the worst failure this rail
+// can have, and it is invisible without a check like this one.
+//
+// It reports rather than refuses. Returning an error here would let a transient
+// RPC failure at boot take the entire deposit rail offline, which is a worse
+// outcome than a loud log; the caller logs at ERROR and keeps serving. `ok` is
+// false only when the RPC answered clearly and the answer was wrong.
+func (s *Service) VerifyRails(ctx context.Context, chain interface {
+	TokenAccount(ctx context.Context, tokenAccount string) (blockchain.TokenAccountInfo, error)
+}) (ok bool, detail string) {
+	if s.cfg.PlatformATA == "" || s.cfg.PlatformOwner == "" || s.cfg.USDCMint == "" {
+		return false, "deposit rails incomplete (mint/owner/ATA)"
+	}
+	info, err := chain.TokenAccount(ctx, s.cfg.PlatformATA)
+	if errors.Is(err, blockchain.ErrNotToken) {
+		return false, fmt.Sprintf("SOLANA_PLATFORM_ATA %s is not an SPL token account", s.cfg.PlatformATA)
+	}
+	if err != nil {
+		// Could not reach the RPC. Unknown, not wrong.
+		s.log.Warn("deposit rails not verified (rpc unavailable)", "error", err)
+		return true, "unverified: " + err.Error()
+	}
+	if info.Mint != s.cfg.USDCMint {
+		return false, fmt.Sprintf("SOLANA_PLATFORM_ATA holds mint %s but deposits accept %s — deposits will never credit",
+			info.Mint, s.cfg.USDCMint)
+	}
+	if info.Owner != s.cfg.PlatformOwner {
+		return false, fmt.Sprintf("SOLANA_PLATFORM_ATA is owned by %s but payers are directed to %s — deposits will never credit",
+			info.Owner, s.cfg.PlatformOwner)
+	}
+	return true, "ok"
 }
 
 // pow10 returns 10^n for small n (token decimals).
@@ -157,6 +208,11 @@ func (s *Service) Create(ctx context.Context, userPublicID string, amountBase in
 	if err := s.repo.CreateSession(ctx, sess); err != nil {
 		return Session{}, err
 	}
+	s.trace.OK(ctx, userPublicID, paymenttrace.FlowDeposit, sess.PublicID, paymenttrace.StageSessionCreated,
+		map[string]any{
+			"amount_base": amountBase, "coins_expected": coins, "asset": sess.Asset,
+			"reference": ref, "recipient": s.cfg.PlatformOwner, "expires_at": sess.ExpiresAt,
+		})
 	return sess, nil
 }
 
@@ -235,6 +291,13 @@ func (s *Service) Poll(ctx context.Context) (int, error) {
 			if err := s.repo.ExpireSession(ctx, sess.PublicID); err != nil {
 				s.log.Warn("deposit expire", "deposit", sess.PublicID, "error", err)
 			}
+			// Record WHICH state it expired from. "Expired without ever seeing a
+			// transfer" means the user never paid; "expired while detected" means we
+			// saw their money and dropped it, and those need opposite responses.
+			s.trace.Failed(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+				paymenttrace.StageSessionExpired,
+				"the payment window closed with the deposit still "+sess.Status,
+				map[string]any{"status_at_expiry": sess.Status, "expires_at": sess.ExpiresAt})
 			continue
 		}
 		if s.processSession(ctx, sess) {
@@ -307,10 +370,32 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 		if !tx.HasAccount(sess.Reference) {
 			s.log.Warn("deposit reference not present in tx accounts — rejecting",
 				"deposit", sess.PublicID, "sig", si.Signature)
+			s.trace.Failed(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+				paymenttrace.StageChainRejected,
+				"the transaction the RPC offered does not carry this deposit's reference",
+				map[string]any{"signature": si.Signature})
 			continue
 		}
+		// The transfer exists and genuinely belongs to this session. Record detection
+		// HERE rather than only in the not-yet-finalized branch below: a deposit that
+		// finalizes before the first poll never passes through "detected", and a
+		// diagram missing a step it already completed reads as a hole in the flow.
+		s.trace.OK(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+			paymenttrace.StagePaymentDetected, map[string]any{"signature": si.Signature})
+
 		received := s.receivedToPlatform(tx)
 		if received < sess.AmountExpected {
+			// Underpaid is the single most common self-inflicted deposit failure, and
+			// it is invisible on-chain: the transfer succeeded, it just does not satisfy
+			// this request. Record both numbers so the UI can say exactly how short it
+			// was instead of leaving the deposit silently pending until it expires.
+			s.trace.Pending(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+				paymenttrace.StageChainFinalized,
+				"a transfer arrived but it is short of the requested amount",
+				map[string]any{
+					"signature": si.Signature, "received_base": received,
+					"expected_base": sess.AmountExpected, "shortfall_base": sess.AmountExpected - received,
+				})
 			continue // underpaid (or unrelated credit) — keep waiting
 		}
 		// Absolute sanity cap: a credit above this is a malformed/malicious RPC amount,
@@ -319,8 +404,16 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 		if received > maxCreditBase {
 			s.log.Error("deposit amount exceeds sanity cap — rejecting",
 				"deposit", sess.PublicID, "sig", si.Signature, "received", received)
+			s.trace.Failed(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+				paymenttrace.StageChainRejected,
+				"the reported transfer amount is impossibly large and was refused",
+				map[string]any{"signature": si.Signature, "received_base": received})
 			continue
 		}
+		// The transfer is final, addressed to us, and sufficient.
+		s.trace.OK(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+			paymenttrace.StageChainFinalized,
+			map[string]any{"signature": si.Signature, "received_base": received, "slot": tx.Slot})
 		coins := s.coinsFor(received)
 		// Platform deposit fee: the user is credited (100−fee)% of the pegged coins,
 		// the platform keeps the rest. Floored so escrow accounting stays whole.
@@ -332,6 +425,13 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 		// insert is idempotent on the tx signature.
 		if err := s.crediter.CreditDeposit(ctx, sess.UserPublicID, userCoins, feeCoins, "solana:"+si.Signature); err != nil {
 			s.log.Error("deposit credit", "deposit", sess.PublicID, "sig", si.Signature, "error", err)
+			// The worst state a deposit can be in: the money is irreversibly ours and
+			// the user has nothing. It must be visible to them and to an operator
+			// immediately, not discoverable only by reading server logs.
+			s.trace.Failed(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+				paymenttrace.StageCoinsCredited,
+				"your transfer confirmed but the credit did not post",
+				map[string]any{"signature": si.Signature, "coins": userCoins, "error": err.Error()})
 			return false
 		}
 		already, err := s.repo.CompleteCredit(ctx, CreditRecord{
@@ -349,10 +449,22 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 		}
 		if !already {
 			s.log.Info("deposit credited", "deposit", sess.PublicID, "user", sess.UserPublicID, "coins", coins, "sig", si.Signature)
+			s.trace.OK(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+				paymenttrace.StageCoinsCredited, map[string]any{
+					"signature": si.Signature, "coins_gross": coins, "coins_credited": userCoins,
+					"fee_coins": feeCoins, "fee_pct": s.depositFeePct(),
+				})
 			if s.notifier != nil {
 				payload, _ := json.Marshal(map[string]any{"deposit_id": sess.PublicID, "coins": coins, "amount_base": received, "signature": si.Signature})
 				if err := s.notifier.Notify(ctx, sess.UserPublicID, "deposit_completed", "deposit:"+si.Signature, payload); err != nil {
 					s.log.Warn("deposit notify failed", "deposit", sess.PublicID, "error", err)
+					s.trace.Failed(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+						paymenttrace.StageUserNotified,
+						"the credits landed but the confirmation could not be delivered",
+						map[string]any{"error": err.Error()})
+				} else {
+					s.trace.OK(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+						paymenttrace.StageUserNotified, nil)
 				}
 			}
 			return true
@@ -362,6 +474,30 @@ func (s *Service) processSession(ctx context.Context, sess Session) bool {
 	if detected {
 		if err := s.repo.MarkDetected(ctx, sess.PublicID, ""); err != nil {
 			s.log.Warn("deposit mark detected", "deposit", sess.PublicID, "error", err)
+		}
+		// Two stages, deliberately: the transfer HAS been seen (ok), and finality is
+		// still outstanding (pending). Collapsing them into one would lose the
+		// distinction the user most needs — "we have your payment" versus "the chain
+		// has not confirmed it yet" — and make a slow network look like a lost deposit.
+		s.trace.OK(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+			paymenttrace.StagePaymentDetected, nil)
+		s.trace.Pending(ctx, sess.UserPublicID, paymenttrace.FlowDeposit, sess.PublicID,
+			paymenttrace.StageChainFinalized, "waiting for Solana to finalize the transfer", nil)
+		// Tell the payer their transfer has been SEEN, on the first transition only
+		// (sess.Status is the value read at the start of this pass, so a session
+		// already `detected` does not re-notify — and the notification write is
+		// idempotent on kind+ref regardless).
+		//
+		// This is the difference between "I paid and the site said nothing" and "the
+		// site saw it and is waiting for finality". Finality can take a while; silence
+		// during it is what makes a working deposit feel like a lost one.
+		if sess.Status == StatusPending && s.notifier != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"deposit_id": sess.PublicID, "coins": sess.CoinsExpected, "amount_base": sess.AmountExpected,
+			})
+			if err := s.notifier.Notify(ctx, sess.UserPublicID, "deposit_detected", "deposit:"+sess.PublicID, payload); err != nil {
+				s.log.Warn("deposit detected notify failed", "deposit", sess.PublicID, "error", err)
+			}
 		}
 	}
 	return false

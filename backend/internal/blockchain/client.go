@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -140,6 +141,54 @@ func (c *Client) TokenAccountBalance(ctx context.Context, tokenAccount string) (
 	}
 	return n, nil
 }
+
+// TokenAccountInfo is the identity of an SPL token account: which mint it holds
+// and whose authority controls it.
+type TokenAccountInfo struct {
+	Mint  string
+	Owner string
+}
+
+// TokenAccount returns the mint + owner of an SPL token account, via
+// getAccountInfo with jsonParsed encoding.
+//
+// It exists to answer one question at startup: is the token account we tell every
+// depositor to pay actually the platform's account for the mint we accept? Get
+// that wrong and deposits still land on-chain and are never credited — the money
+// is gone from the payer and absent from the platform, with no error anywhere.
+// ErrNotToken distinguishes "that address is not a token account at all" from a
+// transport failure, so the caller can tell a misconfiguration from an outage.
+func (c *Client) TokenAccount(ctx context.Context, tokenAccount string) (TokenAccountInfo, error) {
+	var out struct {
+		Value *struct {
+			Data struct {
+				Parsed struct {
+					Type string `json:"type"`
+					Info struct {
+						Mint  string `json:"mint"`
+						Owner string `json:"owner"`
+					} `json:"info"`
+				} `json:"parsed"`
+			} `json:"data"`
+		} `json:"value"`
+	}
+	params := []any{tokenAccount, map[string]any{"encoding": "jsonParsed", "commitment": c.cfg.Commitment}}
+	if err := c.call(ctx, "getAccountInfo", params, &out); err != nil {
+		return TokenAccountInfo{}, err
+	}
+	if out.Value == nil {
+		return TokenAccountInfo{}, ErrNotToken
+	}
+	p := out.Value.Data.Parsed
+	if p.Type != "account" || p.Info.Mint == "" {
+		return TokenAccountInfo{}, ErrNotToken
+	}
+	return TokenAccountInfo{Mint: p.Info.Mint, Owner: p.Info.Owner}, nil
+}
+
+// ErrNotToken means the queried address does not exist, or exists but is not a
+// parsed SPL token account.
+var ErrNotToken = errors.New("not an spl token account")
 
 // TokenCredit is a positive SPL-token balance change on one token account within
 // a transaction (post − pre, in base units).

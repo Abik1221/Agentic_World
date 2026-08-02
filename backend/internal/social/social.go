@@ -23,7 +23,18 @@ type Service struct {
 	m     *metrics
 	queue chan string
 	cfg   Config
+	push  Pusher // realtime fan-out alongside the persisted row; nil ⇒ none
 }
+
+// Pusher mirrors a freshly written notification onto the recipient's live stream.
+// Optional: without it the row is still persisted and still reaches the bell on
+// its next poll — this only removes the wait.
+type Pusher interface {
+	Push(ctx context.Context, userPublicID, kind, ref string, payload []byte)
+}
+
+// SetPusher installs the realtime mirror. Optional; see Pusher.
+func (s *Service) SetPusher(p Pusher) { s.push = p }
 
 func New(repo Repo, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Service {
 	if cfg.Workers <= 0 {
@@ -105,6 +116,10 @@ func (s *Service) process(ctx context.Context, matchPublicID string) {
 			s.log.Error("notify: owner insert failed", "match", matchPublicID, "error", err)
 		} else if ins {
 			s.m.sent.Inc()
+			// Push ONLY on a genuine insert. The row is idempotent per (recipient,
+			// kind, ref), so a re-processed match returns ins=false — pushing there
+			// would re-toast a result the user already saw.
+			s.pushLive(ctx, p.OwnerPublicID, "match_result", ref, payload)
 		}
 
 		// Followers of this agent get an agent-match notification.
@@ -118,9 +133,18 @@ func (s *Service) process(ctx context.Context, matchPublicID string) {
 				s.log.Error("notify: follower insert failed", "recipient", f, "error", err)
 			} else if ins {
 				s.m.sent.Inc()
+				s.pushLive(ctx, f, "agent_match", ref, payload)
 			}
 		}
 	}
+}
+
+// pushLive mirrors one persisted notification onto the recipient's live stream.
+func (s *Service) pushLive(ctx context.Context, userPublicID, kind, ref string, payload []byte) {
+	if s.push == nil {
+		return
+	}
+	s.push.Push(ctx, userPublicID, kind, ref, payload)
 }
 
 func resultOf(coinsDelta int64) string {
