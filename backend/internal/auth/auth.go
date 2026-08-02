@@ -76,6 +76,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 				httpx.Error(w, httpx.ErrUnauthorized)
 				return
 			}
+			denySharedCaching(w)
 			ctx := context.WithValue(r.Context(), principalKey, p)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -91,6 +92,7 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			httpx.Error(w, httpx.ErrUnauthorized)
 			return
 		}
+		denySharedCaching(w)
 		ctx := context.WithValue(r.Context(), principalKey, p)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -116,10 +118,20 @@ func (a *Authenticator) resolve(ctx context.Context, raw string) (*Principal, er
 // telemetry to the next person who asked for the same URL. That is not a theoretical
 // failure — it is the standard way this leaks, and it leaks silently.
 //
-// Applied at the SCOPE GUARD rather than in each handler on purpose: a new authed
-// endpoint is now safe by default, and cannot be shipped insecure by someone who
-// simply did not think about caching. A handler that genuinely wants private
-// client-side caching can still override this after calling through.
+// Applied the moment a CREDENTIAL IS ACCEPTED — in Middleware itself, not only in
+// the scope guards. The scope guards alone were not enough and the "safe by
+// default" claim this comment used to make was false: every wallet route
+// (/v1/wallet, /v1/wallet/history, /v1/user/wallet, /v1/user/wallet/history)
+// mounts bare authn.Middleware with no RequireScope, so balances and ledger
+// history were served with no cache directive at all. Anchoring it to
+// authentication instead of authorization means a route cannot opt out by simply
+// not using a scope guard.
+//
+// Unauthenticated requests passing through this middleware are deliberately left
+// alone — public responses may legitimately be cacheable.
+//
+// A handler that genuinely wants private client-side caching can still override
+// this after calling through.
 //
 // Vary: Authorization keeps a cache that ignores no-store from keying on URL alone.
 func denySharedCaching(w http.ResponseWriter) {
