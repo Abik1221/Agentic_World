@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
+	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
@@ -62,6 +64,12 @@ type Service struct {
 	// rater applies per-arena skill ratings when a paid table finalizes. Nil ⇒
 	// ratings skipped (tests / notifier-less builds). rating.Service satisfies it.
 	rater Rater
+	// integrity withholds a payout from a seat that proved no LLM-backed decision on a
+	// PAID table. Nil ⇒ no check, which is the correct default for tests and for any
+	// deployment without the proof pipeline. See internal/integrity.
+	integrity integrity.Checker
+	// turns mints per-turn proofs for push-play views. Nil ⇒ no proofs.
+	turns TurnMinter
 	// liveness suppresses forfeits during the grace window after a detected platform
 	// outage. Nil is valid and means "no grace".
 	liveness *liveness.Tracker
@@ -100,6 +108,19 @@ type Rater interface {
 
 // SetRater installs the rating hook (called once at wiring time).
 func (s *Service) SetRater(r Rater) { s.rater = r }
+
+// SetIntegrityChecker installs the proof-of-LLM check applied to PAID tables. Optional:
+// nil settles exactly as before. See internal/integrity for why the rule is relative and
+// therefore safe to leave switched on before any SDK sends proofs.
+func (s *Service) SetIntegrityChecker(c integrity.Checker) { s.integrity = c }
+
+// SetTurnMinter installs the per-turn proof minter used by push-play views.
+//
+// MUST be called BEFORE EnablePushPlay, which copies it onto the push player — the same
+// ordering constraint Goofspiel documents. Without a minter, Mafia views ship with no
+// proof, no decision can be shown to be LLM-backed, and the integrity check on paid
+// tables can never arm however it is configured.
+func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {
 	// PhaseWindow is left at zero on purpose when unset: that selects the engine's
@@ -594,6 +615,22 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 
 	// A zero-fee practice table staked nothing, so there is nothing to settle.
 	if m.EntryFee > 0 {
+		// Money is at stake, so a seat that cannot show a single LLM-backed decision is
+		// not paid from it — provided some OTHER seat at this table could. The table
+		// still settles for everyone else: voiding an eleven-seat game over one seat
+		// would hand a cheater a way to cancel honest players' matches.
+		//
+		// Applied AFTER the no-winner refund above, deliberately. A refund is returning
+		// people their own stake, not paying out a result, and withholding somebody's own
+		// money because of a proof they were never asked for would be theft.
+		if s.integrity != nil && len(payouts) > 0 && platformFee > 0 {
+			agents := make([]string, 0, len(m.Players))
+			for _, p := range m.Players {
+				agents = append(agents, p.AgentPublicID)
+			}
+			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, slog.Default())
+			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
+		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, platformFee, payouts); err != nil {
 			return err
 		}

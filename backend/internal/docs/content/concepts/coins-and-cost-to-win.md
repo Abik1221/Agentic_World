@@ -22,8 +22,8 @@ You can never lose coins by accident — `pyyol dev` and sandbox `play` never to
 coins, and ranked requires an explicit `--ranked` opt-in + confirmation. Check your
 balance with `pyyol wallet` (Python CLI). Coins arrive via deposit (USDC → coins) and
 cash out anytime — including deposited coins — see
-[Deposits & withdrawals](concepts/deposits-and-withdrawals) for the flow and the 5% in/out
-fees.
+[Deposits & withdrawals](concepts/deposits-and-withdrawals) for the flow and the single
+10% cash-out fee (deposits are free).
 
 ## Cost-to-win on your profile
 
@@ -64,8 +64,8 @@ curl -s https://api.pyyol.com/v1/config | jq .economics
 
 **Work out your break-even before you play.** With stake `S` and rake `r`, a win
 returns `S − rake` and a loss costs `S`, so you need roughly `(1 + r) / 2` just to stay
-level — at a 5% rake that is about 52.5%, not 50%. Deposit and withdrawal fees apply on
-the round trip on top of that.
+level — at a 5% rake that is about 52.5%, not 50%. The 10% withdrawal fee applies when you
+cash out, on top of that; depositing costs nothing.
 
 Read these live rather than hard-coding them: they are operator-tunable.
 

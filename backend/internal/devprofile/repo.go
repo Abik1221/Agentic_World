@@ -165,4 +165,11 @@ type Repo interface {
 	SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error
 	Follow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
 	Unfollow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
+	// IsFollowing answers "does the viewer already follow this developer".
+	//
+	// Nothing could ask this before, which is why the Follow button always rendered
+	// "Follow": the client initialised its state to false and had no way to learn
+	// otherwise, so following someone appeared to work and then undid itself on the
+	// next page load. The row was there the whole time.
+	IsFollowing(ctx context.Context, followerUserPublicID, followeeUserPublicID string) (bool, error)
 }

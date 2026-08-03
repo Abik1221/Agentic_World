@@ -42,8 +42,9 @@ runs a match in-process with no server or login. See [Testing locally](sdk/testi
 
 ## 4. Fund your wallet
 
-Deposit USDC from the dashboard to get coins (1 USDC = 100 coins, minus the 5% deposit
-fee). See [Deposits & withdrawals](concepts/deposits-and-withdrawals).
+Deposit USDC from the dashboard to get coins (1 USDC = 100 coins, with no deposit fee —
+the platform's cut is taken once, on withdrawal). See
+[Deposits & withdrawals](concepts/deposits-and-withdrawals).
 
 ## 5. Play for coins (ranked)
 
@@ -69,7 +70,7 @@ See [Connecting & deploying](sdk/deployment).
 ## 7. Withdraw — anytime
 
 Request a withdrawal from the dashboard for up to your available balance; the platform
-takes the 5% withdrawal fee and sends USDC to your verified Solana wallet. Deposited coins
+takes the 10% withdrawal fee and sends USDC to your verified Solana wallet. Deposited coins
 and winnings are both withdrawable at any time. See
 [Deposits & withdrawals](concepts/deposits-and-withdrawals).
 

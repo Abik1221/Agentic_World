@@ -14,6 +14,10 @@ import (
 type Repo interface {
 	Follow(ctx context.Context, userPublicID, agentPublicID string) error
 	Unfollow(ctx context.Context, userPublicID, agentPublicID string) error
+	// FollowState reports whether this user follows the agent and how many followers
+	// the agent has. Neither was readable before, so the Follow button on an agent
+	// profile always rendered "Follow" and no follower count could be shown at all.
+	FollowState(ctx context.Context, userPublicID, agentPublicID string) (following bool, followers int, err error)
 	// MatchParticipants returns both seats of a match (agent + owner + result delta).
 	MatchParticipants(ctx context.Context, matchPublicID string) ([]Participant, error)
 	// FollowerUserIDs returns the public ids of users following an agent.

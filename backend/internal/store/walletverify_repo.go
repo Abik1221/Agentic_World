@@ -74,3 +74,50 @@ func (r *WalletVerifyRepo) ClearChallenge(ctx context.Context, userPublicID stri
 	_, err := r.db.Exec(ctx, `DELETE FROM wallet_verify_challenges WHERE user_public_id = $1`, userPublicID)
 	return err
 }
+
+// LinkedWallet reads the destination hint, the PROVEN address, and the wallet brand.
+func (r *WalletVerifyRepo) LinkedWallet(ctx context.Context, userPublicID string) (hint, verified, provider string, err error) {
+	err = r.db.QueryRow(ctx,
+		`SELECT COALESCE(wallet_address, ''), COALESCE(verified_wallet_address, ''),
+		        COALESCE(wallet_provider, '')
+		   FROM users WHERE public_id = $1`, userPublicID).
+		Scan(&hint, &verified, &provider)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", nil
+	}
+	return hint, verified, provider, err
+}
+
+// SetWalletProvider records the wallet brand (phantom, solflare, backpack…).
+//
+// Free to overwrite because NO money path reads it: it exists so an operator looking at
+// an account can see which wallet app is on it, which was previously blank for everyone
+// who did not sign in through Privy.
+func (r *WalletVerifyRepo) SetWalletProvider(ctx context.Context, userPublicID, provider string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE users SET wallet_provider = $2, updated_at = now() WHERE public_id = $1`,
+		userPublicID, provider)
+	return err
+}
+
+// SetWalletHintIfEmpty fills users.wallet_address only when it is currently unset.
+//
+// The null-or-blank guard in the WHERE clause is a MONEY control, not a
+// micro-optimisation, and it lives in the SQL so no future caller can bypass it by
+// forgetting the check. Payout refuses to pay unless wallet_address equals
+// verified_wallet_address; repointing the hint from a casual browser connect would
+// therefore break withdrawals for someone whose only mistake was connecting a second
+// wallet to look at something. Filling an EMPTY hint is safe — there is no pairing yet
+// to break — and it is the case that lets a non-Privy developer's profile register that
+// they have connected a wallet at all.
+func (r *WalletVerifyRepo) SetWalletHintIfEmpty(ctx context.Context, userPublicID, walletAddress string) (bool, error) {
+	ct, err := r.db.Exec(ctx,
+		`UPDATE users SET wallet_address = $2, updated_at = now()
+		  WHERE public_id = $1
+		    AND (wallet_address IS NULL OR wallet_address = '')`,
+		userPublicID, walletAddress)
+	if err != nil {
+		return false, err
+	}
+	return ct.RowsAffected() > 0, nil
+}

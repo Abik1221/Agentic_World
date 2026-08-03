@@ -63,6 +63,12 @@ type Service struct {
 	pindex    *pindex.Service
 	season    func() int
 	coinCents int64 // face value of one coin in cents (peg); defaults to 1
+	// wallets reads the developer's connected wallet for profile completion.
+	// Optional — see SetWalletReader.
+	wallets WalletReader
+	// follows tells a developer they have a new follower (row + live push).
+	// Optional and best-effort — see follownotify.go.
+	follows FollowAnnouncer
 }
 
 // New builds the service.
@@ -396,28 +402,104 @@ func (s *Service) SetProfile(ctx context.Context, userPublicID, displayName, bio
 	return s.repo.SetProfile(ctx, userPublicID, displayName, bio, avatarURL)
 }
 
-// Follow / Unfollow manage the developer↔developer graph. handle is the target.
-func (s *Service) Follow(ctx context.Context, followerUserPublicID, handle string) error {
-	id, found, err := s.repo.ResolveHandle(ctx, handle)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
-	}
-	if id.UserPublicID == followerUserPublicID {
-		return httpx.NewError(http.StatusBadRequest, "self_follow", "you cannot follow yourself")
-	}
-	return s.repo.Follow(ctx, followerUserPublicID, id.UserPublicID)
+// FollowState is what the client needs to render a follow control correctly: whether
+// the viewer follows this developer, and the counts as they stand NOW.
+//
+// Returned by the read AND by both mutations, on purpose. The button and the number
+// beside it come from one response, so they cannot disagree — the pattern that goes
+// wrong is a POST that returns only `{following:true}` and leaves the client to guess
+// the new count, which drifts the moment two tabs are open.
+type FollowState struct {
+	Following bool `json:"following"`
+	Followers int  `json:"followers"`
+	// Following count of the TARGET developer, so the same shape serves a profile
+	// header without a second call.
+	FollowingCount int `json:"following_count"`
+	// IsSelf: the viewer IS this developer. Answered here because the client cannot work
+	// it out — the session cookie carries no handle, and a public profile page is
+	// cacheable so the server render cannot say either. Without it a developer is shown a
+	// Follow button on their own profile, and their own new-follower events are ignored
+	// as belonging to somebody else's page.
+	IsSelf bool `json:"is_self"`
 }
 
-func (s *Service) Unfollow(ctx context.Context, followerUserPublicID, handle string) error {
+// FollowState reads the viewer's relationship to a developer plus their counts.
+// viewerUserPublicID may be empty (signed out) — the counts are public, the
+// relationship is then simply false.
+func (s *Service) FollowState(ctx context.Context, viewerUserPublicID, handle string) (FollowState, error) {
 	id, found, err := s.repo.ResolveHandle(ctx, handle)
 	if err != nil {
-		return err
+		return FollowState{}, err
 	}
 	if !found {
-		return httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+		return FollowState{}, httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
 	}
-	return s.repo.Unfollow(ctx, followerUserPublicID, id.UserPublicID)
+	return s.followState(ctx, viewerUserPublicID, id.UserPublicID)
+}
+
+func (s *Service) followState(ctx context.Context, viewer, target string) (FollowState, error) {
+	followers, following, err := s.repo.FollowCounts(ctx, target)
+	if err != nil {
+		return FollowState{}, err
+	}
+	out := FollowState{Followers: followers, FollowingCount: following, IsSelf: viewer != "" && viewer == target}
+	if viewer != "" && !out.IsSelf {
+		if out.Following, err = s.repo.IsFollowing(ctx, viewer, target); err != nil {
+			return FollowState{}, err
+		}
+	}
+	return out, nil
+}
+
+// Follow / Unfollow manage the developer↔developer graph. handle is the target.
+//
+// Both are IDEMPOTENT and both return the resulting state. Idempotency matters for a
+// button: a double-tap on a phone, or a retry after a dropped response, must not error
+// or toggle twice — the second call simply confirms what is already true.
+func (s *Service) Follow(ctx context.Context, followerUserPublicID, handle string) (FollowState, error) {
+	id, found, err := s.repo.ResolveHandle(ctx, handle)
+	if err != nil {
+		return FollowState{}, err
+	}
+	if !found {
+		return FollowState{}, httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+	}
+	if id.UserPublicID == followerUserPublicID {
+		return FollowState{}, httpx.NewError(http.StatusBadRequest, "self_follow", "you cannot follow yourself")
+	}
+	// Was this already a follow? Read BEFORE the write, so a repeat call does not
+	// notify the followee a second time. Without this, mashing the button would send a
+	// notification per tap.
+	already, err := s.repo.IsFollowing(ctx, followerUserPublicID, id.UserPublicID)
+	if err != nil {
+		return FollowState{}, err
+	}
+	if err := s.repo.Follow(ctx, followerUserPublicID, id.UserPublicID); err != nil {
+		return FollowState{}, err
+	}
+	state, err := s.followState(ctx, followerUserPublicID, id.UserPublicID)
+	if err != nil {
+		return FollowState{}, err
+	}
+	if !already {
+		s.announceFollow(ctx, followerUserPublicID, id.UserPublicID, state.Followers)
+	}
+	return state, nil
+}
+
+func (s *Service) Unfollow(ctx context.Context, followerUserPublicID, handle string) (FollowState, error) {
+	id, found, err := s.repo.ResolveHandle(ctx, handle)
+	if err != nil {
+		return FollowState{}, err
+	}
+	if !found {
+		return FollowState{}, httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+	}
+	if err := s.repo.Unfollow(ctx, followerUserPublicID, id.UserPublicID); err != nil {
+		return FollowState{}, err
+	}
+	// No event on unfollow, deliberately. "X stopped following you" is a notification
+	// no platform sends, because it is information the recipient can do nothing with
+	// and would rather not have.
+	return s.followState(ctx, followerUserPublicID, id.UserPublicID)
 }

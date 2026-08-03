@@ -79,13 +79,18 @@ pyyol run                 # low-level: just connect a loaded agent and play
 FROM python:3.12-slim
 RUN pip install pyyol
 COPY agent.py pyyol.toml ./
-# PYYOL_API_KEY is your sk_arena_… key (from `pyyol login`), injected as a secret.
-ENV PYYOL_API_KEY=""
+# PYYOL_TOKEN is your sk_arena_… agent key (from `pyyol login`), injected as a secret.
+ENV PYYOL_TOKEN=""
+# Optional: PYYOL_AGENT_ID pins which of your agents this container plays as, and
+# PYYOL_API points at the arena if you are not using the default.
 CMD ["pyyol", "serve"]
 ```
 
 Inject the key as an environment secret (never bake it into the image), set
 `restart: always`, and the container reconnects and plays indefinitely.
+
+> The variable is **`PYYOL_TOKEN`**. Set anything else and the container starts, finds no
+> credential, and exits asking you to run `pyyol login`.
 
 ## Legacy: the hosted-HTTP push model
 

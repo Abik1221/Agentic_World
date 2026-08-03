@@ -93,6 +93,66 @@ func NewSolanaTransferrer(rpcURL, hotWalletSecret, usdcMint, platformATA string,
 	}, nil
 }
 
+// TokenAccountIdentity is the mint + owning authority of an SPL token account. Mirrors
+// blockchain.TokenAccountInfo structurally so the RPC client satisfies the reader below
+// through a thin adapter, without payout depending on that package.
+//
+// A zero value means "that address is not an SPL token account at all", which the
+// adapter must distinguish from an RPC failure — see VerifyRails.
+type TokenAccountIdentity struct {
+	Mint  string
+	Owner string
+}
+
+// TokenAccountReader reads a token account's identity.
+type TokenAccountReader interface {
+	TokenAccount(ctx context.Context, tokenAccount string) (TokenAccountIdentity, error)
+}
+
+// VerifyRails checks, once at startup, that this signer can actually spend from the
+// account it has been pointed at.
+//
+// The deposit side already proves that the account payers are told to fund is the
+// account we watch. Nothing proved the equivalent for the way OUT, and the failure has
+// a different shape: a TransferChecked whose authority does not own the source account
+// is rejected by the token program, so every cash-out fails at broadcast. That is loud
+// per-withdrawal and silent at deploy time — and a mainnet cutover is exactly when it
+// happens, because it pairs a fresh hot-wallet key with a fresh ATA. Get either from
+// the wrong deployment and payouts are dead on arrival.
+//
+// Reports rather than refuses, matching the deposit rails check: a transient RPC failure
+// at boot must not take the payout rail down, which would be worse than the
+// misconfiguration being looked for. ok is false only when the RPC answered clearly and
+// the answer was wrong.
+func (t *SolanaTransferrer) VerifyRails(ctx context.Context, chain TokenAccountReader) (ok bool, detail string) {
+	info, err := chain.TokenAccount(ctx, t.sourceATA.String())
+	if err != nil {
+		return true, "unverified: " + err.Error()
+	}
+	if info.Mint == "" && info.Owner == "" {
+		return false, fmt.Sprintf("payout source %s is not an SPL token account", t.sourceATA)
+	}
+	if info.Mint != t.mint.String() {
+		return false, fmt.Sprintf(
+			"payout source %s holds mint %s but payouts are denominated in %s — cash-outs would move the wrong asset or fail outright",
+			t.sourceATA, info.Mint, t.mint)
+	}
+	if info.Owner != t.hotPub.String() {
+		return false, fmt.Sprintf(
+			"payout source %s is owned by %s but the hot wallet is %s — the signer has no authority over it, so every cash-out will fail to broadcast",
+			t.sourceATA, info.Owner, t.hotPub)
+	}
+	return true, "ok"
+}
+
+// HotPublicKey returns the signing wallet's public key (base58). Safe to log: it is a
+// public address, and it is the one thing about the hot wallet an operator needs in
+// order to fund it with SOL or look it up on an explorer.
+func (t *SolanaTransferrer) HotPublicKey() string { return t.hotPub.String() }
+
+// SourceATA returns the token account payouts are signed from (base58).
+func (t *SolanaTransferrer) SourceATA() string { return t.sourceATA.String() }
+
 // PayoutsEnabled reports whether the destination is a usable Solana wallet.
 func (t *SolanaTransferrer) PayoutsEnabled(_ context.Context, destination string) (bool, error) {
 	if destination == "" {

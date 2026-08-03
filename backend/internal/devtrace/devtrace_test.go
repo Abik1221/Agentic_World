@@ -3,12 +3,17 @@ package devtrace
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agent-arena/arena/internal/httpx"
 )
 
 type fakeRepo struct{ owned []string }
@@ -36,7 +41,7 @@ func TestQueryIsScopedToOwnedAgentsAndAllowlist(t *testing.T) {
 	srv := stub.server(t)
 	defer srv.Close()
 
-	svc := New(fakeRepo{owned: []string{"ag_mine", "ag_also_mine"}}, srv.URL, "k", "org")
+	svc := New(fakeRepo{owned: []string{"ag_mine", "ag_also_mine"}}, srv.URL, "k", "org", nil)
 	if _, err := svc.Activity(context.Background(), "usr_1", "", time.Now().Add(-time.Hour), 50); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +67,7 @@ func TestForeignAgentIsRejectedBeforeQuerying(t *testing.T) {
 	srv := stub.server(t)
 	defer srv.Close()
 
-	svc := New(fakeRepo{owned: []string{"ag_mine"}}, srv.URL, "k", "org")
+	svc := New(fakeRepo{owned: []string{"ag_mine"}}, srv.URL, "k", "org", nil)
 	_, err := svc.Activity(context.Background(), "usr_1", "ag_someone_else", time.Now().Add(-time.Hour), 50)
 	if err == nil {
 		t.Fatal("reading another developer's agent must fail")
@@ -85,7 +90,7 @@ func TestRemoteRowsAreRefilteredOnTheWayOut(t *testing.T) {
 	srv := stub.server(t)
 	defer srv.Close()
 
-	svc := New(fakeRepo{owned: []string{"ag_mine"}}, srv.URL, "k", "org")
+	svc := New(fakeRepo{owned: []string{"ag_mine"}}, srv.URL, "k", "org", nil)
 	got, err := svc.Activity(context.Background(), "usr_1", "", time.Now().Add(-time.Hour), 50)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +110,7 @@ func TestNoAgentsIssuesNoQuery(t *testing.T) {
 	srv := stub.server(t)
 	defer srv.Close()
 
-	svc := New(fakeRepo{owned: nil}, srv.URL, "k", "org")
+	svc := New(fakeRepo{owned: nil}, srv.URL, "k", "org", nil)
 	got, err := svc.Activity(context.Background(), "usr_new", "", time.Now().Add(-time.Hour), 50)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("got %v, %v; want empty, nil", got, err)
@@ -118,11 +123,110 @@ func TestNoAgentsIssuesNoQuery(t *testing.T) {
 // An unconfigured Lens degrades to an error on this route only; it must not be
 // mistaken for "no activity", which would read as a bug in the developer's agent.
 func TestUnconfiguredLensReportsUnavailable(t *testing.T) {
-	svc := New(fakeRepo{owned: []string{"ag_mine"}}, "", "", "")
+	svc := New(fakeRepo{owned: []string{"ag_mine"}}, "", "", "", nil)
 	if svc.Enabled() {
 		t.Fatal("service claims enabled with no endpoint")
 	}
-	if _, err := svc.Activity(context.Background(), "usr_1", "", time.Now(), 10); err == nil {
+	_, err := svc.Activity(context.Background(), "usr_1", "", time.Now(), 10)
+	if err == nil {
 		t.Fatal("want an explicit unavailable error, not a silent empty list")
 	}
+	if code(err) != "traces_unconfigured" {
+		t.Fatalf("code = %q, want traces_unconfigured — an environment with no trace store is "+
+			"not the same as one that is down, and telling a developer to retry is a lie", code(err))
+	}
+}
+
+// The three ways this view can be empty-through-no-fault-of-the-developer must stay
+// three DIFFERENT codes on the wire, because the client picks its sentence from the
+// code and each sentence implies a different next step (wait / nothing to wait for /
+// we are already fixing it).
+//
+// The 401 case is the one that actually happened: the Lens gates ingest and query on
+// separate secrets, the arena was handed the ingest key, and every read came back
+// refused — reported to developers as "the trace store is unreachable", which sent
+// them looking for a bug in an agent that was working.
+func TestRefusedReadIsReportedAsMisconfiguredNotUnreachable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"unauthorized", http.StatusUnauthorized, "traces_misconfigured"},
+		{"forbidden", http.StatusForbidden, "traces_misconfigured"},
+		{"server error", http.StatusInternalServerError, "traces_unreachable"},
+		{"bad request", http.StatusBadRequest, "traces_unreachable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"error":"nope"}`))
+			}))
+			defer srv.Close()
+
+			svc := New(fakeRepo{owned: []string{"ag_mine"}}, srv.URL, "k", "org", quietLogger())
+			_, err := svc.Activity(context.Background(), "usr_1", "", time.Now().Add(-time.Hour), 50)
+			if err == nil {
+				t.Fatal("a refused read must not look like an empty timeline")
+			}
+			if got := code(err); got != tc.want {
+				t.Fatalf("code = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A store that cannot be dialled at all is the one case where "try again" is honest.
+func TestUnreachableStoreIsReportedAsUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	addr := srv.URL
+	srv.Close() // nothing is listening now
+
+	svc := New(fakeRepo{owned: []string{"ag_mine"}}, addr, "k", "org", quietLogger())
+	_, err := svc.Activity(context.Background(), "usr_1", "", time.Now().Add(-time.Hour), 50)
+	if err == nil {
+		t.Fatal("want an error when the store cannot be reached")
+	}
+	if got := code(err); got != "traces_unreachable" {
+		t.Fatalf("code = %q, want traces_unreachable", got)
+	}
+}
+
+// The read plane is authenticated with the key it was constructed with, on the header
+// the Lens actually checks. A test for a header value looks trivial; the bug it guards
+// is not — it is a whole feature silently returning nothing in production.
+func TestReadSendsTheQueryKeyOnTheLensHeader(t *testing.T) {
+	var gotKey, gotOrg string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotOrg = r.Header.Get("X-Pyyol-Key"), r.Header.Get("x-organization-id")
+		_ = json.NewEncoder(w).Encode(map[string]any{"events": []any{}})
+	}))
+	defer srv.Close()
+
+	svc := New(fakeRepo{owned: []string{"ag_mine"}}, srv.URL, "query-plane-key", "pyyol", nil)
+	if _, err := svc.Activity(context.Background(), "usr_1", "", time.Now().Add(-time.Hour), 50); err != nil {
+		t.Fatal(err)
+	}
+	if gotKey != "query-plane-key" {
+		t.Fatalf("X-Pyyol-Key = %q, want the read-plane key", gotKey)
+	}
+	if gotOrg != "pyyol" {
+		t.Fatalf("x-organization-id = %q, want pyyol", gotOrg)
+	}
+}
+
+// --- helpers -----------------------------------------------------------------
+
+// quietLogger keeps the expected operator-facing WARN/ERROR lines out of test output.
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+}
+
+// code extracts the machine-readable error code the client switches on.
+func code(err error) string {
+	var e *httpx.APIError
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return ""
 }

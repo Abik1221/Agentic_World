@@ -129,10 +129,18 @@ func (c *fakeCrediter) CreditDeposit(_ context.Context, user string, userCoins, 
 
 // --- helpers ---------------------------------------------------------------
 
+// newSvc builds a service with the DEFAULT fee config — which is now free deposits,
+// so an unset DepositFeePct here means exactly that. It used to mean 5%, because New
+// coerced 0 up to 5; feePct exercises the charging path deliberately instead.
 func newSvc(repo Repo, chain Chain, cred Crediter, now time.Time) *Service {
+	return newSvcFee(repo, chain, cred, now, 0)
+}
+
+func newSvcFee(repo Repo, chain Chain, cred Crediter, now time.Time, feePct int) *Service {
 	return New(repo, chain, cred, platform.FixedClock{T: now}, Config{
 		USDCMint: usdcMint, PlatformOwner: platOwn, PlatformATA: platATA,
 		CoinsPerUSDC: 100, USDCDecimals: 6, SessionTTL: 30 * time.Minute, MinDepositBase: 1_000_000,
+		DepositFeePct: feePct,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -185,11 +193,14 @@ func TestPollCreditsFinalizedDeposit(t *testing.T) {
 	if got.Status != StatusCompleted || got.CoinsCredited != 500 {
 		t.Fatalf("session not completed correctly: %+v", got)
 	}
-	if cred.total["usr_a"] != 475 {
-		t.Fatalf("credited %d coins net, want 475 (500 gross − 5%% deposit fee)", cred.total["usr_a"])
+	// Deposits are FREE by default: the whole pegged amount reaches the user and the
+	// platform keeps nothing on the way in. A 0 that silently became 5% is the bug
+	// this asserts against — it made the entry fee impossible to switch off.
+	if cred.total["usr_a"] != 500 {
+		t.Fatalf("credited %d coins, want the full 500 (deposits are free by default)", cred.total["usr_a"])
 	}
-	if cred.fees["usr_a"] != 25 {
-		t.Fatalf("platform deposit fee %d, want 25 (5%% of 500)", cred.fees["usr_a"])
+	if cred.fees["usr_a"] != 0 {
+		t.Fatalf("platform took %d coins on a free deposit, want 0", cred.fees["usr_a"])
 	}
 
 	// Idempotency: a second poll must not double-credit (session already completed,
@@ -199,8 +210,46 @@ func TestPollCreditsFinalizedDeposit(t *testing.T) {
 	if _, err := svc.Poll(context.Background()); err != nil {
 		t.Fatalf("second poll: %v", err)
 	}
+	if cred.total["usr_a"] != 500 {
+		t.Fatalf("double-credited: total = %d, want 500", cred.total["usr_a"])
+	}
+}
+
+// The entry fee is off by default but still real: an operator who turns it on must get
+// a net credit and a platform cut that sum to the gross. Free-by-default is a policy
+// choice, so the charging path needs its own test rather than riding on the default.
+func TestConfiguredDepositFeeIsDeductedFromTheCredit(t *testing.T) {
+	repo, chain, cred := newFakeRepo(), &fakeChain{sigs: map[string][]blockchain.SignatureInfo{}, txs: map[string]*blockchain.Transaction{}}, newFakeCrediter()
+	svc := newSvcFee(repo, chain, cred, time.Unix(1_700_000_000, 0), 5)
+	s, _ := svc.Create(context.Background(), "usr_a", 5_000_000)
+
+	sig := "SoLsIgNaTuRe222"
+	chain.sigs[s.Reference] = []blockchain.SignatureInfo{{Signature: sig, ConfirmationStatus: "finalized"}}
+	chain.txs[sig] = creditTx(sig, s.Reference, 5_000_000)
+
+	if n, err := svc.Poll(context.Background()); err != nil || n != 1 {
+		t.Fatalf("poll = (%d,%v), want (1,nil)", n, err)
+	}
 	if cred.total["usr_a"] != 475 {
-		t.Fatalf("double-credited: total = %d, want 475", cred.total["usr_a"])
+		t.Fatalf("credited %d coins net, want 475 (500 gross − 5%% fee)", cred.total["usr_a"])
+	}
+	if cred.fees["usr_a"] != 25 {
+		t.Fatalf("platform fee %d coins, want 25 (5%% of 500)", cred.fees["usr_a"])
+	}
+	if cred.total["usr_a"]+cred.fees["usr_a"] != 500 {
+		t.Fatalf("net + fee = %d, want the 500 gross — coins went missing between the two",
+			cred.total["usr_a"]+cred.fees["usr_a"])
+	}
+}
+
+// A negative fee is nonsense; it must clamp to FREE and never to a charge, and an
+// out-of-band value must clamp to the same 0..50 band the config bus enforces.
+func TestDepositFeeClampsToFreeAndToFifty(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{{-5, 0}, {0, 0}, {7, 7}, {90, 50}} {
+		svc := newSvcFee(newFakeRepo(), &fakeChain{}, newFakeCrediter(), time.Unix(1_700_000_000, 0), tc.in)
+		if got := svc.depositFeePct(); got != tc.want {
+			t.Fatalf("configured %d%% ⇒ %d%%, want %d%%", tc.in, got, tc.want)
+		}
 	}
 }
 

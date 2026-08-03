@@ -259,6 +259,21 @@ func (r *DevProfileRepo) FollowCounts(ctx context.Context, userPublicID string) 
 	return followers, following, err
 }
 
+// IsFollowing reports whether follower already follows followee.
+func (r *DevProfileRepo) IsFollowing(ctx context.Context, followerUserPublicID, followeeUserPublicID string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM developer_follows df
+		    WHERE df.follower_user_id = (SELECT id FROM users WHERE public_id = $1)
+		      AND df.followee_user_id = (SELECT id FROM users WHERE public_id = $2)
+		 )`, followerUserPublicID, followeeUserPublicID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return exists, err
+}
+
 func (r *DevProfileRepo) Badges(ctx context.Context, userPublicID string) ([]devprofile.Badge, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT code, awarded_at FROM developer_badges
@@ -453,6 +468,52 @@ func (r *DevProfileRepo) SetProfile(ctx context.Context, userPublicID, displayNa
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// ConnectedWallet returns the developer's connected wallet address, or "" when they
+// have none. Backs the "connect your wallet" step of profile completion.
+//
+// Takes EITHER the hint or the proven address, whichever is present. Two reasons:
+//
+//   - Completion asks "have you linked a wallet", while a PROVEN wallet is the stricter
+//     thing that gates a payout. Requiring proof would leave a developer who connected
+//     Phantom stuck below 100% until they had also signed a challenge for money they
+//     have not tried to withdraw.
+//   - wallet_address alone was not enough. Until the connect-recording endpoint existed
+//     it was written ONLY by the Privy login path, so a developer who connected Phantom
+//     directly had both columns empty and this step could never tick no matter what they
+//     did. Reading both closes that for accounts that verified a wallet before the
+//     endpoint shipped.
+func (r *DevProfileRepo) ConnectedWallet(ctx context.Context, userPublicID string) (string, error) {
+	var addr string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(wallet_address, ''), NULLIF(verified_wallet_address, ''), '')
+		   FROM users WHERE public_id = $1`,
+		userPublicID).Scan(&addr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return addr, err
+}
+
+// SetAvatarURL points the developer at a stored image, touching ONLY avatar_url.
+//
+// Separate from SetProfile on purpose. SetProfile writes name + bio + avatar as one
+// value, so reusing it for an upload would need the caller to send the current name
+// and bio back — and an upload that arrives while the developer is mid-edit would then
+// overwrite their unsaved text with a stale copy. Uploading a photo should change the
+// photo and nothing else.
+func (r *DevProfileRepo) SetAvatarURL(ctx context.Context, userPublicID, avatarURL string) error {
+	ct, err := r.db.Exec(ctx,
+		`UPDATE users SET avatar_url = $2, updated_at = now() WHERE public_id = $1`,
+		userPublicID, avatarURL)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+	}
+	return nil
 }
 
 func (r *DevProfileRepo) SetUsername(ctx context.Context, userPublicID, username string) error {

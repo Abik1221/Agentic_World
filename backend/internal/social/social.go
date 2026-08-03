@@ -46,13 +46,36 @@ func New(repo Repo, cfg Config, log *slog.Logger, reg *prometheus.Registry) *Ser
 	return &Service{repo: repo, log: log, m: newMetrics(reg), queue: make(chan string, cfg.QueueSize), cfg: cfg}
 }
 
-// Follow / Unfollow are the user-facing follow operations.
-func (s *Service) Follow(ctx context.Context, userPublicID, agentPublicID string) error {
-	return s.repo.Follow(ctx, userPublicID, agentPublicID)
+// FollowState is the viewer's relationship to an agent plus the agent's follower
+// count. Returned by the read AND by both mutations so the button and the number come
+// from one response and cannot drift apart.
+type FollowState struct {
+	Following bool `json:"following"`
+	Followers int  `json:"followers"`
 }
 
-func (s *Service) Unfollow(ctx context.Context, userPublicID, agentPublicID string) error {
-	return s.repo.Unfollow(ctx, userPublicID, agentPublicID)
+// FollowState reads the relationship without changing it. userPublicID may be empty
+// (signed out): the count is public, the relationship is then false.
+func (s *Service) FollowState(ctx context.Context, userPublicID, agentPublicID string) (FollowState, error) {
+	following, followers, err := s.repo.FollowState(ctx, userPublicID, agentPublicID)
+	return FollowState{Following: following, Followers: followers}, err
+}
+
+// Follow / Unfollow are the user-facing follow operations. Both are IDEMPOTENT and both
+// return the resulting state: a double-tap on a phone, or a retry after a dropped
+// response, must confirm rather than toggle twice.
+func (s *Service) Follow(ctx context.Context, userPublicID, agentPublicID string) (FollowState, error) {
+	if err := s.repo.Follow(ctx, userPublicID, agentPublicID); err != nil {
+		return FollowState{}, err
+	}
+	return s.FollowState(ctx, userPublicID, agentPublicID)
+}
+
+func (s *Service) Unfollow(ctx context.Context, userPublicID, agentPublicID string) (FollowState, error) {
+	if err := s.repo.Unfollow(ctx, userPublicID, agentPublicID); err != nil {
+		return FollowState{}, err
+	}
+	return s.FollowState(ctx, userPublicID, agentPublicID)
 }
 
 // Notifications returns a user's recent notification feed (newest first).

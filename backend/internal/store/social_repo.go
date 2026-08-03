@@ -42,6 +42,37 @@ func (r *SocialRepo) Unfollow(ctx context.Context, userPublicID, agentPublicID s
 	return err
 }
 
+// FollowState answers both halves in ONE round trip: does this user follow the agent,
+// and how many followers does the agent have.
+//
+// One query rather than two because the button and the count are rendered together — two
+// queries can straddle a concurrent follow and produce "Following" beside a count that
+// does not include you, which reads as a bug in the count.
+//
+// userPublicID may be empty (a signed-out viewer): the count is still public, and the
+// relationship is simply false.
+func (r *SocialRepo) FollowState(ctx context.Context, userPublicID, agentPublicID string) (bool, int, error) {
+	var following bool
+	var followers int
+	err := r.db.QueryRow(ctx,
+		`SELECT
+		   EXISTS (
+		     SELECT 1 FROM follows f
+		      WHERE f.agent_id = a.id
+		        AND f.user_id = (SELECT id FROM users WHERE public_id = $2)
+		   ),
+		   (SELECT COUNT(*) FROM follows f2 WHERE f2.agent_id = a.id)
+		 FROM agents a WHERE a.public_id = $1`,
+		agentPublicID, userPublicID).Scan(&following, &followers)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No such agent. Not an error for a read of this shape — the caller renders an
+		// empty state, and 404-ing a follower count would break a profile page that is
+		// otherwise fine.
+		return false, 0, nil
+	}
+	return following, followers, err
+}
+
 func (r *SocialRepo) MatchParticipants(ctx context.Context, matchPublicID string) ([]social.Participant, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT ag.public_id, u.public_id, COALESCE(mp.coins_delta, 0)

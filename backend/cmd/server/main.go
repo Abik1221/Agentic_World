@@ -49,6 +49,7 @@ import (
 	"github.com/agent-arena/arena/internal/manifest"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/matchmaking"
+	"github.com/agent-arena/arena/internal/media"
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/openapi"
@@ -304,6 +305,24 @@ func run() error {
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
 	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
 	idHandler.SetKeysRateLimit(keysRL)
+	// Per-ACCOUNT credential throttle, alongside the per-IP loginRL above. Per-IP is
+	// blind to a password list spread one-guess-per-host across a botnet, which never
+	// trips any single IP bucket; keying on the identity under attack bounds what one
+	// account can absorb regardless of how many sources the attempts come from.
+	//
+	// Failover to the local limiter for the same reason the IP buckets do: a Redis blip
+	// must not open a brute-force window. Only a failure of BOTH serves unthrottled.
+	idHandler.SetAccountRateLimit(func(ctx context.Context, identifier string) (bool, time.Duration) {
+		key := "rl:login-account:" + identifier
+		ok, retry, err := limiter.Allow(ctx, key, cfg.AuthAccountLimit, time.Hour)
+		if err != nil {
+			ok, retry, err = localRL.Allow(ctx, key, cfg.AuthAccountLimit, time.Hour)
+			if err != nil {
+				return true, 0
+			}
+		}
+		return ok, retry
+	})
 	// Rotating refresh tokens: short-lived access JWT (above) + a long-lived,
 	// single-use refresh token with a sliding idle window, so active users stay
 	// signed in and idle ones are logged out after RefreshTokenTTL.
@@ -466,7 +485,14 @@ func run() error {
 
 	// Wallet-ownership verification: prove control of the payout wallet (sign a
 	// nonce) before a withdrawal can be sent there (payout gates on the result).
-	walletVerifyHandler := walletverify.NewHandler(walletverify.New(store.NewWalletVerifyRepo(st.DB), clock), authn)
+	walletVerifyRepo := store.NewWalletVerifyRepo(st.DB)
+	walletVerifySvc := walletverify.New(walletVerifyRepo, clock)
+	// Recording WHICH wallet the browser connected. Display hints only — the address is
+	// self-reported, so it can never be a payout destination on its own, and the hint is
+	// filled rather than repointed so a casual connect cannot break an established
+	// payout pairing. See walletverify/connected.go.
+	walletVerifySvc.SetConnectedRepo(walletVerifyRepo)
+	walletVerifyHandler := walletverify.NewHandler(walletVerifySvc, authn)
 
 	// Free, self-hosted TOTP two-factor: enrollment + step-up on money movement. The
 	// secret is encrypted at rest with a cipher keyed on the always-present API-key
@@ -550,16 +576,55 @@ func run() error {
 
 	// Public developer reputation surface (@handle profile, P-Index transparency,
 	// match history, developer follow graph), aggregated across a developer's agents.
-	devProfileSvc := devprofile.New(store.NewDevProfileRepo(st.DB), pindexSvc, ratingSvc.CurrentSeason)
+	devProfileRepo := store.NewDevProfileRepo(st.DB)
+	devProfileSvc := devprofile.New(devProfileRepo, pindexSvc, ratingSvc.CurrentSeason)
 	devProfileSvc.SetCoinCents(cfg.CoinCents) // price lifetime earnings in USD
+	// Profile completion is derived from account state, and one of its steps is "have
+	// you connected a wallet" — so the checklist needs to be able to read that.
+	devProfileSvc.SetWalletReader(devProfileRepo)
 	devProfileHandler := devprofile.NewHandler(devProfileSvc, authn)
+
+	// User-uploaded media (avatars) on S3/MinIO. The prod stack has shipped the bucket
+	// and the credentials for a while; this is the first thing that writes to it, which
+	// is why a profile photo used to exist only in the browser that uploaded it.
+	//
+	// An unconfigured store does NOT stop the arena: uploads answer 503 and everything
+	// else runs, because a platform that will not boot without object storage is worse
+	// than one that cannot take a photo.
+	mediaStore := media.New(media.Config{
+		Endpoint:   cfg.S3Endpoint,
+		Bucket:     cfg.S3Bucket,
+		AccessKey:  cfg.S3AccessKey,
+		SecretKey:  cfg.S3SecretKey,
+		Region:     cfg.S3Region,
+		PublicBase: cfg.MediaPublicBase,
+	})
+	if mediaStore.Enabled() {
+		// Create the bucket if a fresh volume has none. Advisory: logged, never fatal.
+		bctx, bcancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := mediaStore.EnsureBucket(bctx); err != nil {
+			log.Error("media: object storage unusable — avatar uploads will fail",
+				"endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket, "error", err)
+		} else {
+			log.Info("media: object storage ready", "endpoint", cfg.S3Endpoint, "bucket", cfg.S3Bucket)
+		}
+		bcancel()
+	} else {
+		log.Warn("media: object storage not configured — avatar uploads disabled " +
+			"(set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY, S3_SECRET_KEY)")
+	}
+	mediaHandler := media.NewHandler(mediaStore, devProfileRepo, authn, cfg.BaseURL, log)
 
 	// A developer's read-back of their OWN agent's traces. Ownership is resolved
 	// here (Postgres is the only place that knows it) and the visibility allowlist
 	// is applied twice — see internal/devtrace. Unconfigured Lens = the routes
 	// answer 503 rather than the arena failing to start.
+	//
+	// The READ key is PyyolLensQueryAPIKey, not the ingest key: the Lens gates its two
+	// planes on separate secrets, so sending the ingest key here 401s every read.
 	devTraceHandler := devtrace.NewHandler(
-		devtrace.New(store.NewDevTraceRepo(st.DB), cfg.PyyolLensQueryEndpoint, cfg.PyyolLensAPIKey, cfg.PyyolLensOrg),
+		devtrace.New(store.NewDevTraceRepo(st.DB), cfg.PyyolLensQueryEndpoint,
+			cfg.PyyolLensQueryAPIKey, cfg.PyyolLensOrg, log),
 		authn,
 	)
 
@@ -596,6 +661,9 @@ func run() error {
 	// on-chain transfer cannot re-toast an event the user already acknowledged.
 	notifier := notifierAdapter{repo: socialRepo, bus: userBus}
 	socialSvc.SetPusher(notifier) // match results reach the tab that is watching
+	// A new follower is a notification like any other: persisted for the bell, mirrored
+	// onto the open tab so the count moves without a refresh.
+	devProfileSvc.SetFollowAnnouncer(notifier)
 	walletSvc.SetEventSink(walletEvents{bus: userBus, sig: userSignals, notifier: notifier, log: log})
 
 	// The payment log. Every money flow records which stage it reached, so
@@ -665,6 +733,14 @@ func run() error {
 		return gameStakesSvc.LowestEnabledCoins(ctx, "mafia")
 	})
 	mafiaSvc.SetRater(ratingSvc) // paid tables update the per-arena Mafia rating (TrueSkill)
+	// A seat that proved no LLM-backed decision is not paid from a STAKED table. Inert
+	// until proofs actually exist (see internal/integrity), so it is safe on by default.
+	mafiaSvc.SetIntegrityChecker(store.NewPIndexRepo(st.DB))
+	// The proof minter must be installed BEFORE EnablePushPlay copies it onto the push
+	// player. Without it Mafia views carry no turn_proof, so no decision can be counted as
+	// LLM-backed and the check above can never arm — which is exactly the state Mafia and
+	// Monopoly were in: the check installed, the evidence never produced.
+	mafiaSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
@@ -699,6 +775,8 @@ func run() error {
 	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
 	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
 	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
+	monopolySvc.SetIntegrityChecker(store.NewPIndexRepo(st.DB))
+	monopolySvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 
 	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
 	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
@@ -745,12 +823,17 @@ func run() error {
 		if cfg.IsProd() && cfg.SolanaHotWalletSecretEnc == "" {
 			log.Warn("hot-wallet key is a PLAINTEXT env var in prod — set SOLANA_HOT_WALLET_SECRET_ENC (see cmd/wallet-secret-encrypt)")
 		}
-		sx, err := payout.NewSolanaTransferrer(cfg.SolanaRPCURL, hotSecret, cfg.SolanaUSDCMint, cfg.SolanaPlatformATA, 6)
+		// Payouts are signed FROM cfg.PayoutATA(): the deposit account unless
+		// SOLANA_PAYOUT_ATA splits custody, in which case user deposits accumulate in an
+		// account this process holds no key for and this wallet carries only a float.
+		sx, err := payout.NewSolanaTransferrer(cfg.SolanaRPCURL, hotSecret, cfg.SolanaUSDCMint, cfg.PayoutATA(), 6)
 		if err != nil {
 			return err
 		}
 		transferrer, solanaXfer, payoutChain = sx, sx, payout.ChainSolana
-		log.Info("withdrawals: solana USDC rail enabled", "mint", cfg.SolanaUSDCMint)
+		log.Info("withdrawals: solana USDC rail enabled",
+			"mint", cfg.SolanaUSDCMint, "payout_ata", cfg.PayoutATA(),
+			"hot_wallet", sx.HotPublicKey(), "custody_split", cfg.CustodySplit())
 	case cfg.StripeSecretKey != "":
 		transferrer = payout.NewStripeTransferrer(cfg.StripeSecretKey)
 	}
@@ -822,12 +905,27 @@ func run() error {
 		depositHandler = solanadeposit.NewHandler(depositSvc, authn)
 		depositHandler.SetRateLimit(depositRL)
 		launch("solana-deposit-listener", solanadeposit.NewListener(depositSvc, log, cfg.DepositPollInterval).Run)
-		// Read-only solvency monitor: reconcile the hot-wallet on-chain USDC against
-		// outstanding withdrawal liability and alert on any shortfall (never moves funds).
-		solvency := payout.NewSolvencyMonitor(store.NewPayoutRepo(st.DB), chain, cfg.SolanaPlatformATA, log, metrics.Registry())
+		// Read-only solvency monitor: reconcile the on-chain USDC against outstanding
+		// withdrawal liability and alert on any shortfall (never moves funds). Watches the
+		// PAYOUT account, because that is the balance a cash-out actually draws on.
+		solvency := payout.NewSolvencyMonitor(store.NewPayoutRepo(st.DB), chain, cfg.PayoutATA(), log, metrics.Registry())
 		// Cap the float. Anything above this should live at a cold address this process
 		// holds no key for; the monitor alerts, a human sweeps.
 		solvency.SetExposureCap(cfg.HotWalletCapCents)
+		solvency.SetColdAddress(cfg.SolanaColdWalletAddress)
+		// Under split custody the deposit account is a second place the platform holds
+		// user money; leaving it out would report a solvent platform as insolvent every
+		// time the float dipped below the queue. A no-op when both are one account.
+		solvency.SetVault(cfg.SolanaPlatformATA)
+		// The SOL that pays for every payout transaction. Only meaningful once a signer
+		// exists — with no hot wallet there is nothing to run out of.
+		if solanaXfer != nil {
+			solvency.SetFeeWatch(chain, solanaXfer.HotPublicKey(), cfg.HotWalletMinSOLLamports)
+			// Let approval refuse a cash-out the wallet cannot settle, instead of
+			// approving it and letting the broadcast fail — which would notify the user
+			// their withdrawal FAILED for an operational shortfall on our side.
+			payoutSvc.SetFunding(solvency)
+		}
 		solvencyMonitor = solvency
 		launch("solvency-monitor", solvency.Run(cfg.SolvencyInterval))
 
@@ -849,7 +947,27 @@ func run() error {
 			}
 		}()
 
-		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA)
+		// The same proof for the way OUT: the hot wallet must hold authority over the
+		// account it signs transfers from, or every cash-out fails at broadcast with
+		// nothing wrong at deploy time. Off the boot path and advisory, for the same
+		// reasons as the deposit check above.
+		if solanaXfer != nil {
+			go func() {
+				vctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+				defer cancel()
+				if ok, detail := solanaXfer.VerifyRails(vctx, payoutRails{chain}); !ok {
+					log.Error("PAYOUT RAILS MISCONFIGURED — cash-outs will fail to broadcast",
+						"detail", detail, "payout_ata", cfg.PayoutATA(),
+						"hot_wallet", solanaXfer.HotPublicKey(), "mint", cfg.SolanaUSDCMint)
+				} else {
+					log.Info("payout rails verified", "detail", detail,
+						"payout_ata", cfg.PayoutATA(), "hot_wallet", solanaXfer.HotPublicKey())
+				}
+			}()
+		}
+
+		log.Info("solana deposits enabled", "mint", cfg.SolanaUSDCMint, "ata", cfg.SolanaPlatformATA,
+			"custody_split", cfg.CustodySplit(), "cold_wallet_configured", cfg.SolanaColdWalletAddress != "")
 	} else {
 		log.Info("solana deposits disabled (set SOLANA_RPC_URL + SOLANA_PLATFORM_OWNER + SOLANA_PLATFORM_ATA to enable)")
 	}
@@ -1187,7 +1305,7 @@ func run() error {
 			mu := store.NewMatchUsageRepo(st.DB)
 			return mountMatchUsage(authn, mu, mu.OwnedBy)
 		}(),
-		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd(), func() economics {
+		mountCapabilities(xClaimEnabled, cfg.DepositsEnabled(), !cfg.IsProd(), cfg.SolanaCluster, func() economics {
 			// Live from the admin snapshot when one is published, falling back to the
 			// boot config so the price list is never blank.
 			e := economics{
@@ -1217,6 +1335,7 @@ func run() error {
 		profilesHandler.Register,
 		devProfileHandler.Register,
 		devTraceHandler.Register,
+		mediaHandler.Register,       // avatar upload (user scope) + public object read-back
 		arena.NewHandler().Register, // public GET /v1/arenas (SDK discovery)
 		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
 		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)
@@ -1660,6 +1779,26 @@ func (b tourneyBank) PayWinner(ctx context.Context, tournamentPublicID, agentPub
 		},
 	})
 	return err
+}
+
+// payoutRails adapts the Solana RPC client to payout.TokenAccountReader, so the payout
+// package can verify its own rails without importing the blockchain package.
+//
+// ErrNotToken becomes a ZERO identity rather than an error, because the payout check has
+// to tell "that address is not a token account" (a real misconfiguration, report it)
+// from "the RPC did not answer" (unknown, stay quiet). Collapsing both into an error
+// would make a flaky endpoint look like a broken deployment.
+type payoutRails struct{ c *blockchain.Client }
+
+func (p payoutRails) TokenAccount(ctx context.Context, tokenAccount string) (payout.TokenAccountIdentity, error) {
+	info, err := p.c.TokenAccount(ctx, tokenAccount)
+	if errors.Is(err, blockchain.ErrNotToken) {
+		return payout.TokenAccountIdentity{}, nil
+	}
+	if err != nil {
+		return payout.TokenAccountIdentity{}, err
+	}
+	return payout.TokenAccountIdentity{Mint: info.Mint, Owner: info.Owner}, nil
 }
 
 // payoutBank moves coins for the cash-out flow through the ledger. Hold locks the

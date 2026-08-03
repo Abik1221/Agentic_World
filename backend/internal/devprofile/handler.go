@@ -39,6 +39,9 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(gr chi.Router) {
 		gr.Use(h.authn.Middleware)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/me", h.me)
+		// Profile completion, derived from the database. See completion.go for why it
+		// cannot live in the browser.
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/completion", h.completion)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/developer/username", h.setUsername)
 		// The developer's public identity. These columns were readable since 0019 and
 		// had no writer, so the client kept them in localStorage — one identity in your
@@ -47,6 +50,9 @@ func (h *Handler) Register(r chi.Router) {
 		// A handle derived from who they already are, so the field is never empty and
 		// "skipping" still produces a real @handle rather than a database id.
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/username-suggestion", h.usernameSuggestion)
+		// Read the relationship + counts. Authenticated so `following` is answerable;
+		// the counts alone are also on the public profile.
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developers/{handle}/follow", h.followState)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/developers/{handle}/follow", h.follow)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/developers/{handle}/follow", h.unfollow)
 	})
@@ -158,6 +164,20 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, id)
 }
 
+// completion serves GET /v1/developer/completion — the onboarding checklist, derived
+// from account state so it is identical on every device the developer signs in from.
+func (h *Handler) completion(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	c, err := h.svc.Completion(r.Context(), p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Per-user and changes the moment they upload or connect: never cached.
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, c)
+}
+
 func (h *Handler) profile(w http.ResponseWriter, r *http.Request) {
 	p, found, err := h.svc.Profile(r.Context(), chi.URLParam(r, "handle"))
 	if err != nil {
@@ -246,20 +266,49 @@ func (h *Handler) setProfile(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) follow(w http.ResponseWriter, r *http.Request) {
+// followState serves GET /v1/developers/{handle}/follow — "do I follow them, and how
+// many followers do they have".
+//
+// This route did not exist, and its absence is the whole bug: with no way to READ the
+// relationship, the client initialised its button to "Follow" every time, so following
+// somebody worked and then appeared to undo itself on the next page load.
+func (h *Handler) followState(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	if err := h.svc.Follow(r.Context(), p.UserPublicID, chi.URLParam(r, "handle")); err != nil {
+	viewer := ""
+	if p != nil {
+		viewer = p.UserPublicID
+	}
+	st, err := h.svc.FollowState(r.Context(), viewer, chi.URLParam(r, "handle"))
+	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"following": true})
+	// Per-viewer, so never shared-cacheable: `following` differs for every caller and a
+	// shared cache would hand one developer another's relationship.
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, st)
+}
+
+func (h *Handler) follow(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	st, err := h.svc.Follow(r.Context(), p.UserPublicID, chi.URLParam(r, "handle"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// The new count travels with the new state, so the button and the number beside it
+	// update from one response and cannot drift apart.
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, st)
 }
 
 func (h *Handler) unfollow(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	if err := h.svc.Unfollow(r.Context(), p.UserPublicID, chi.URLParam(r, "handle")); err != nil {
+	st, err := h.svc.Unfollow(r.Context(), p.UserPublicID, chi.URLParam(r, "handle"))
+	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]any{"following": false})
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, st)
 }

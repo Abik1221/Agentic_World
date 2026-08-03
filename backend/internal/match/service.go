@@ -70,9 +70,11 @@ type Service struct {
 	// setting — a strictly-greater rule could never be satisfied by 13 of 13. A
 	// MAJORITY is therefore configured as 51, not 50.
 	//
-	// 0 DISABLES enforcement, which is the correct default until the proof has
-	// actually shipped to developers: an SDK that sends no proof makes every honest
-	// agent look deterministic, and enforcing then would void real matches wholesale.
+	// 0 DISABLES the share rule, which is the correct default until someone has looked at
+	// what honest agents actually score: an agent that does not route through the gateway
+	// produces no proofs and would look deterministic, so enforcing a share before that is
+	// understood would void real matches wholesale. The zero-proof gate (rule 1) is
+	// independent of this and stays on.
 	integrityMinPct int
 	// chatTracer records table talk to Lens. Nil ⇒ telemetry off.
 	chatTracer ChatTracer
@@ -107,11 +109,14 @@ func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
 // a token and no decision can be proven LLM-backed.
 func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
 
-// SetIntegrityCheck enables the ranked LLM-backing check. minPct is the share of a
-// match's decisions that must be PROVEN LLM-backed; 0 leaves enforcement off and only
-// the measurement (recorded by the gateway) accumulates.
+// SetIntegrityCheck installs the ranked LLM-backing check.
 //
-// Turn this on only after looking at what honest agents actually score. Batching,
+// minPct is the SHARE rule (see rankedIntegrityFailed rule 2) and 0 leaves it off.
+// Passing 0 no longer means "no enforcement at all": the zero-proof gate (rule 1) is
+// always active once a checker is installed, because it is self-calibrating and
+// therefore safe to run before anyone has tuned a threshold.
+//
+// Turn minPct on only after looking at what honest agents actually score. Batching,
 // caching and retry patterns are all legitimate and produce fewer proofs than
 // decisions, so the right threshold is an observation, not a guess.
 func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
@@ -130,18 +135,65 @@ func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
 // bulk during an outage. A cheat that slips through is still recorded and reviewable;
 // a wrongly voided match is a broken product for everyone playing at that moment.
 func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions int) (bool, string) {
-	if s.integrity == nil || s.integrityMinPct <= 0 || decisions <= 0 {
+	if s.integrity == nil || decisions <= 0 {
 		return false, ""
 	}
+
+	// Read every seat's proof count once. Both rules below are decided from the same
+	// snapshot, so a seat cannot be judged against a different set of facts than its
+	// opponent — and an unreadable count still fails open for the whole match.
+	bound := make(map[string]int, len(m.Players))
+	total := 0
 	for _, p := range m.Players {
-		bound, err := s.integrity.BoundDecisions(ctx, m.PublicID, p.AgentPublicID)
+		n, err := s.integrity.BoundDecisions(ctx, m.PublicID, p.AgentPublicID)
 		if err != nil {
 			slog.Warn("match: integrity check unavailable; settling normally",
 				"match", m.PublicID, "agent", p.AgentPublicID, "error", err)
 			return false, ""
 		}
-		if bound*100 < decisions*s.integrityMinPct {
-			return true, p.AgentPublicID
+		bound[p.AgentPublicID] = n
+		total += n
+	}
+
+	// RULE 1 — the zero-proof gate. Always on, and safe to have always on.
+	//
+	// "Stakes must not flow to a seat that proved nothing" is the cheap version of
+	// ranked integrity: it needs no threshold to tune, so it does not depend on
+	// knowing what an honest agent scores. But applied literally it would void a match
+	// whenever the proof pipeline was not running — the gateway is off by default, and an
+	// agent that calls its provider directly rather than through pyyol.route() is
+	// unverified without being dishonest. Every honest seat then measures zero, and the
+	// gate would cancel real matches for reasons the developer did not choose.
+	//
+	// So the rule is RELATIVE: a zero-proof seat is only voided when SOME OTHER seat
+	// in the SAME MATCH did prove its decisions. One proof anywhere on the table is
+	// evidence the pipeline was live and reachable for that match; against that, a
+	// seat with none is an outlier rather than a victim of an unshipped feature.
+	//
+	// The property this buys: the gate is inert until proofs actually exist, then
+	// starts protecting automatically with no deploy and no threshold to pick. What it
+	// deliberately does NOT catch is a table where nobody proves anything (two
+	// deterministic scripts playing each other, or the gateway being off) — and it
+	// cannot, without voiding honest play. That gap closes when the gateway is
+	// enabled (PYYOL_LLM_GATEWAY_ENABLED) and routing through the gateway is the norm for
+	// staked play; only then is "zero proofs" unambiguous.
+	if total > 0 {
+		for _, p := range m.Players {
+			if bound[p.AgentPublicID] == 0 {
+				return true, p.AgentPublicID
+			}
+		}
+	}
+
+	// RULE 2 — the share threshold. Off by default (0) and still an observation
+	// rather than a guess: batching, caching and retries all legitimately produce
+	// fewer proofs than decisions, so the right number comes from looking at what
+	// honest agents score once proofs are flowing.
+	if s.integrityMinPct > 0 {
+		for _, p := range m.Players {
+			if bound[p.AgentPublicID]*100 < decisions*s.integrityMinPct {
+				return true, p.AgentPublicID
+			}
 		}
 	}
 	return false, ""

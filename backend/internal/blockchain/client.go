@@ -142,6 +142,26 @@ func (c *Client) TokenAccountBalance(ctx context.Context, tokenAccount string) (
 	return n, nil
 }
 
+// LamportBalance returns the native SOL balance of an address, in lamports
+// (1 SOL = 1e9 lamports), at the configured commitment.
+//
+// USDC solvency is not the only way the payout rail dies. Every withdrawal is a
+// Solana transaction and the hot wallet pays its own fee in SOL, so a wallet holding
+// plenty of USDC and no SOL cannot pay anybody. On devnet that never surfaces because
+// SOL is free and airdropped; on mainnet the balance only goes down, and the failure
+// arrives as every cash-out failing to broadcast at once with every USDC-denominated
+// check still green.
+func (c *Client) LamportBalance(ctx context.Context, address string) (int64, error) {
+	var out struct {
+		Value int64 `json:"value"`
+	}
+	params := []any{address, map[string]any{"commitment": c.cfg.Commitment}}
+	if err := c.call(ctx, "getBalance", params, &out); err != nil {
+		return 0, err
+	}
+	return out.Value, nil
+}
+
 // TokenAccountInfo is the identity of an SPL token account: which mint it holds
 // and whose authority controls it.
 type TokenAccountInfo struct {

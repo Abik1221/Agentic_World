@@ -28,8 +28,8 @@ type Service struct {
 	// *Service is a no-op, and nothing here may fail a credit.
 	trace *paymenttrace.Service
 	clock platform.Clock
-	cfg      Config
-	log      *slog.Logger
+	cfg   Config
+	log   *slog.Logger
 	// minDeposit supplies the LIVE admin-configured minimum, in CENTS. Nil ⇒ the
 	// static config value.
 	minDeposit func() int64
@@ -66,11 +66,18 @@ func (s *Service) SetTracer(t *paymenttrace.Service) { s.trace = t }
 
 // New builds the deposit service, applying peg/decimal/TTL defaults.
 func New(repo Repo, chain Chain, crediter Crediter, clock platform.Clock, cfg Config, log *slog.Logger) *Service {
-	if cfg.DepositFeePct <= 0 {
-		cfg.DepositFeePct = 5 // platform takes 5% of every deposit (beta default)
+	// Zero is a REAL setting, not "unset": deposits are free by default and the
+	// platform's take is charged once, on the way out. This used to coerce 0 to 5,
+	// which meant the entry fee could not actually be turned off — an operator (or
+	// this default) setting it to 0 still got charged 5%. Only a negative value is
+	// nonsense, and it clamps to free rather than to a charge.
+	if cfg.DepositFeePct < 0 {
+		cfg.DepositFeePct = 0
 	}
-	if cfg.DepositFeePct > 100 {
-		cfg.DepositFeePct = 100
+	// Bounded 0..50, matching the live accessor and every other fee crossing the
+	// config bus: above half the deposit is indistinguishable from confiscation.
+	if cfg.DepositFeePct > 50 {
+		cfg.DepositFeePct = 50
 	}
 	if cfg.CoinsPerUSDC <= 0 {
 		cfg.CoinsPerUSDC = 100 // 1 USDC = 100 coins (1 coin = 1¢)

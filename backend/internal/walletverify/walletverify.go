@@ -69,6 +69,9 @@ type Service struct {
 	repo  Repo
 	clock platform.Clock
 	ttl   time.Duration
+	// connected records which wallet the browser connected (display hints only).
+	// Optional — see connected.go.
+	connected ConnectedRepo
 }
 
 func New(repo Repo, clock platform.Clock) *Service {

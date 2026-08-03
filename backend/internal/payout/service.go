@@ -39,15 +39,29 @@ type Service struct {
 	// trace records which stage of the cash-out each request reached. Nil-safe.
 	trace *paymenttrace.Service
 	clock platform.Clock
-	cfg       Config
+	cfg   Config
 	// economy supplies the LIVE admin-configured fee/minimum. Nil ⇒ static config.
 	economy func() (feePct int, minCoins int64)
 	// breaker halts ALL payouts when total outflow spikes. Nil disables it.
 	breaker *Breaker
 	// totals feeds the breaker platform-wide volume. Satisfied by the payout repo.
 	totals PayoutTotals
-	log    *slog.Logger
-	m      *metrics
+	// funding reports whether the payout wallet can settle an amount right now.
+	// Nil ⇒ no funding pre-check (the Stripe/Dev rails, which have no hot wallet).
+	funding FundingSource
+	log     *slog.Logger
+	m       *metrics
+}
+
+// FundingSource answers, without I/O, whether the payout rail can settle amountCents
+// right now — and if not, one sentence naming what an operator must do. Satisfied by
+// *SolvencyMonitor.
+//
+// Synchronous and I/O-free on purpose: this is consulted on an interactive admin click,
+// where waiting on an RPC round trip would be a real latency cost for a marginally
+// fresher number. It reads the monitor's most recent reconciliation instead.
+type FundingSource interface {
+	CanPay(amountCents int64) (ok bool, reason string)
 }
 
 // SetGate wires the Super Admin withdrawal gate (walletadmin). Optional.
@@ -93,6 +107,39 @@ func (s *Service) checkBreaker(ctx context.Context, pendingCents int64) error {
 		return err
 	}
 	return nil
+}
+
+// SetFunding wires the payout-wallet funding pre-check used at approval. Optional:
+// unset (or a nil source) leaves approval exactly as it was, which is what the
+// Stripe/Dev rails want — they have no hot wallet whose balance could be short.
+func (s *Service) SetFunding(f FundingSource) { s.funding = f }
+
+// checkFunding refuses an approval the payout wallet demonstrably cannot settle.
+//
+// Evaluated at APPROVAL only, not at request. At request time the money does not move
+// and the float may well be topped up before the clearing window expires, so refusing
+// there would reject cash-outs that are going to be perfectly payable — and would leak
+// the platform's treasury state to the user, who can do nothing about it. Approval is
+// the moment the transfer is actually built, and the operator is someone who CAN act on
+// the answer.
+//
+// Fails open by construction: the source itself returns ok when it does not know (see
+// SolvencyMonitor.CanPay). A pre-check that halted payouts because its own RPC was down
+// would turn an observability outage into a money outage.
+func (s *Service) checkFunding(w Withdrawal) error {
+	if s.funding == nil {
+		return nil
+	}
+	ok, reason := s.funding.CanPay(w.NetCents)
+	if ok {
+		return nil
+	}
+	// WARN not ERROR: this is a treasury-operations task, not a fault. It is the signal
+	// to move funds, and it is expected periodically on a split-custody deployment where
+	// the hot wallet is deliberately a small float.
+	s.log.Warn("payout: approval refused — payout wallet cannot settle this cash-out",
+		"withdrawal", w.PublicID, "net_cents", w.NetCents, "reason", reason)
+	return unfundedError(reason)
 }
 
 // SetNotifier wires the user-notification writer. Optional.
@@ -457,6 +504,13 @@ func (s *Service) Approve(ctx context.Context, adminUserID, publicID string) err
 		return err
 	} else if flagged {
 		return ErrFlagged
+	}
+	// LAST gate before the transfer is built: can the payout wallet actually settle
+	// this? Deliberately after every policy check, so an approval that would have been
+	// refused on policy grounds is still refused on those grounds — "we won't pay this"
+	// and "we can't pay this yet" are different answers and the first is the truer one.
+	if err := s.checkFunding(w); err != nil {
+		return err
 	}
 	if w.Chain == ChainSolana {
 		return s.approveSolana(ctx, adminUserID, w)

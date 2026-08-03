@@ -106,7 +106,10 @@ works without any of them; these enable **real-money** rails + Privy login.
   `SOLANA_HOT_WALLET_SECRET_ENC` + `SOLANA_HOT_WALLET_ENC_KEY` — produce the
   encrypted form with `cd backend && go run ./cmd/wallet-secret-encrypt` (never
   store the raw base58 key). Fund the hot wallet with USDC (payouts) + SOL (fees).
-- **Economy (optional):** `COIN_CENTS` (default 1), `WITHDRAW_SELL_FEE_PCT`, `WITHDRAW_MIN_COINS`.
+- **Economy (optional):** `COIN_CENTS` (default 1), `WITHDRAW_SELL_FEE_PCT` (default 10 —
+  the only fee on the coin round trip), `DEPOSIT_FEE_PCT` (default 0 — deposits are
+  free), `WITHDRAW_MIN_COINS`. All are fallbacks: the Super Admin economy screen
+  overrides them live over the config bus.
 
 Operational prereqs (not just secrets): a reachable Solana RPC, a platform wallet +
 its USDC ATA created on-chain, and a funded hot wallet. Until all deposit vars are

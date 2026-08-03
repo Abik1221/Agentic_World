@@ -13,6 +13,7 @@ import (
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
+	"github.com/agent-arena/arena/internal/turnproof"
 	"github.com/agent-arena/arena/internal/webhook"
 )
 
@@ -53,6 +54,18 @@ type pushPlayer struct {
 	meta     benchmark.AgentMetaResolver
 	log      *slog.Logger
 	maxMatch time.Duration
+	// turns mints the per-turn proof that binds a gateway LLM call to ONE decision.
+	// Nil ⇒ views ship without a proof and no decision here can be counted as
+	// LLM-backed, which is what left paid Mafia tables unprotected by the integrity
+	// check even though the check itself was installed.
+	turns TurnMinter
+}
+
+// TurnMinter issues the token that binds a gateway LLM call to one decision.
+// Satisfied by *turnproof.Signer — the same signer Goofspiel uses, so one secret covers
+// every game and the gateway verifies them all identically.
+type TurnMinter interface {
+	Mint(agentID, matchID string, round int) string
 }
 
 // EnablePushPlay wires POST /v1/mafia/pushplay. bots must have at least
@@ -61,7 +74,7 @@ func (s *Service) EnablePushPlay(remote RemoteResolver, client PushClient, bots 
 	if log == nil {
 		log = slog.Default()
 	}
-	s.pusher = &pushPlayer{remote: remote, client: client, bots: bots, log: log, maxMatch: 5 * time.Minute}
+	s.pusher = &pushPlayer{remote: remote, client: client, bots: bots, log: log, maxMatch: 5 * time.Minute, turns: s.turns}
 }
 
 // SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
@@ -120,6 +133,21 @@ type MafiaPushView struct {
 	Votes      map[int]int `json:"votes,omitempty"`       // voter seat -> target seat
 	VoteTally  map[int]int `json:"vote_tally,omitempty"`  // target seat -> vote count
 	DeadlineMs int64       `json:"deadline_ms,omitempty"` // ms left on the shot clock
+	// Round is the decision's turn number, and it exists so BOTH SIDES AGREE on it.
+	//
+	// The SDK derives what it reports as X-Pyyol-Turn from `round` first and `day` only as
+	// a fallback. Several Mafia decisions happen inside one day, so `day` alone cannot
+	// identify a decision — and if the proof is minted for a phase-folded turn while the
+	// agent reports the bare day, the gateway compares two different numbers and every
+	// verification fails silently. Publishing the number explicitly removes the guess.
+	Round int `json:"round"`
+	// TurnProof binds a gateway LLM call to THIS decision. The SDK attaches it as
+	// X-Pyyol-Proof on every model call it routes, which is what makes "this agent
+	// really used an LLM for this turn" provable rather than self-reported.
+	//
+	// Mafia shipped no proof at all, so no seat could ever be shown to be LLM-backed and
+	// the integrity check on paid tables could never arm.
+	TurnProof string `json:"turn_proof,omitempty"`
 }
 
 // MafiaPushMove is the action the agent returns. Rationale is optional private
@@ -252,7 +280,7 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 				var latencyMS int64
 				var rationale string
 				var usage *benchmark.TokenUsage
-				act, outcome, latencyMS, rationale, usage = p.decideRemote(ctx, tr, matchID, v)
+				act, outcome, latencyMS, rationale, usage = p.decideRemote(ctx, tr, matchID, id, v)
 				rec.Record(benchmark.Decision{
 					Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 					Round: v.Day, Action: act.Kind, Rationale: rationale, Usage: usage,
@@ -347,12 +375,25 @@ func mafiaResult(r *EconomyResult, seat int) benchmark.Result {
 	return ""
 }
 
-func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mf.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+// mintProof returns this turn's proof token, or "" when no minter is wired.
+func (p *pushPlayer) mintProof(agentID, matchID string, turn int) string {
+	if p.turns == nil {
+		return ""
+	}
+	return p.turns.Mint(agentID, matchID, turn)
+}
+
+func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID, agentID string, v AgentView) (mf.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	req := MafiaPushView{
 		Game: "mafia", MatchID: matchID, YourSeat: v.YourSeat, YourRole: v.YourRole,
 		Day: v.Day, Phase: v.Phase, Alive: v.Alive, Allies: v.Allies, Legal: v.Legal,
 		Public: v.Public, Private: v.Private,
 		Votes: v.Votes, VoteTally: v.VoteTally, DeadlineMs: v.DeadlineMs,
+		// One proof per DECISION, not per day: several decisions happen inside one Mafia
+		// day, so the turn number folds the phase in (see turnproof.MafiaTurn). The SAME
+		// number is published as Round above, which is what the agent reports back.
+		Round:     turnproof.MafiaTurn(v.Day, v.Phase),
+		TurnProof: p.mintProof(agentID, matchID, turnproof.MafiaTurn(v.Day, v.Phase)),
 	}
 	var move MafiaPushMove
 	start := time.Now()

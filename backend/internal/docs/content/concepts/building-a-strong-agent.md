@@ -125,7 +125,7 @@ strategically" is not.
 ## 10. Know your break-even before you stake
 
 With rake `r`, you need roughly `(1 + r) / 2` to stay level — at 5% that is about
-52.5%, not 50%. Add deposit and withdrawal fees on the round trip.
+52.5%, not 50%. Add the 10% withdrawal fee when you cash out; depositing is free.
 
 Beat that in sandbox, over a real sample, before ranked. And set your limits at
 [/guardrails](https://pyyol.com/guardrails) first — they are server-enforced precisely

@@ -90,9 +90,10 @@ func TestAHundredPercentThresholdIsAchievable(t *testing.T) {
 	}
 }
 
-// Disabled by default. Until the proof ships to developers, every honest agent scores
-// zero — enforcing then would void real matches wholesale.
-func TestDisabledByDefaultAndWhenPctIsZero(t *testing.T) {
+// The SHARE rule is off by default; the zero-proof gate is not. With no checker at
+// all nothing is enforced, and with minPct=0 a table where nobody proved anything
+// still settles — see TestZeroProofGate for why that second case must hold.
+func TestShareRuleDisabledByDefaultAndWhenPctIsZero(t *testing.T) {
 	none := &Service{}
 	if failed, _ := none.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 13); failed {
 		t.Fatal("enforced with no checker configured")
@@ -101,8 +102,85 @@ func TestDisabledByDefaultAndWhenPctIsZero(t *testing.T) {
 	off := &Service{}
 	off.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 0}}, 0)
 	if failed, _ := off.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 13); failed {
-		t.Fatal("minPct=0 must leave enforcement off")
+		t.Fatal("minPct=0 must leave the share rule off")
 	}
+
+	// minPct=0 does not switch off the zero-proof gate: a seat that proved nothing
+	// beside one that proved plenty is still refused, with no threshold configured.
+	gate := &Service{}
+	gate.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_llm": 13, "ag_script": 0}}, 0)
+	if failed, agent := gate.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13); !failed {
+		t.Fatal("with minPct=0, a zero-proof seat was still paid — the gate is not active")
+	} else if agent != "ag_script" {
+		t.Fatalf("blamed the wrong seat: %q", agent)
+	}
+}
+
+// The zero-proof gate, and the exact reason it is RELATIVE rather than absolute.
+//
+// Read together, these two cases are the whole design. The proof pipeline is real, but it
+// only produces evidence where the LLM gateway is enabled AND the agent routed its client
+// through pyyol.route() — and the gateway is off by default. Where neither holds, every
+// honest seat measures zero, so an absolute "zero proofs ⇒ void" rule would cancel real
+// matches for reasons the developer did not choose. Requiring that some OTHER seat proved
+// its work makes the gate inert wherever the pipeline is not running, then self-arming
+// wherever it is, with no threshold to tune and no deploy.
+func TestZeroProofGate(t *testing.T) {
+	t.Run("inert when nobody in the match proved anything", func(t *testing.T) {
+		s := &Service{}
+		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 0, "ag_b": 0}}, 0)
+
+		if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+			t.Fatalf("voided a match where NO seat proved anything, blaming %q. Before a "+
+				"proof-carrying SDK exists that is every honest match on the platform", agent)
+		}
+	})
+
+	t.Run("arms itself as soon as one seat proves its work", func(t *testing.T) {
+		s := &Service{}
+		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_llm": 1, "ag_script": 0}}, 0)
+
+		// ONE proof on the table is enough evidence the pipeline was reachable.
+		failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13)
+		if !failed {
+			t.Fatal("a zero-proof seat settled against an opponent that did prove its calls")
+		}
+		if agent != "ag_script" {
+			t.Fatalf("blamed the wrong seat: %q", agent)
+		}
+	})
+
+	t.Run("a proving seat is never blamed for its opponent", func(t *testing.T) {
+		s := &Service{}
+		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 2, "ag_b": 11}}, 0)
+
+		if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+			t.Fatalf("voided a match where both seats proved something, blaming %q. Few "+
+				"proofs is legitimate (batching, caching, retries) — zero is the signal", agent)
+		}
+	})
+
+	t.Run("still fails open when the count cannot be read", func(t *testing.T) {
+		s := &Service{}
+		s.SetIntegrityCheck(fakeIntegrity{err: errors.New("db down")}, 0)
+
+		if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+			t.Fatal("the zero-proof gate voided a match because the store was unreachable")
+		}
+	})
+
+	t.Run("multi-seat: the one silent seat is the one named", func(t *testing.T) {
+		s := &Service{}
+		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{
+			"ag_a": 9, "ag_b": 4, "ag_quiet": 0, "ag_d": 12,
+		}}, 0)
+
+		failed, agent := s.rankedIntegrityFailed(context.Background(),
+			matchWith("ag_a", "ag_b", "ag_quiet", "ag_d"), 13)
+		if !failed || agent != "ag_quiet" {
+			t.Fatalf("failed=%v agent=%q; want the zero-proof seat named", failed, agent)
+		}
+	})
 }
 
 // FAIL OPEN. Voiding on a database hiccup would cancel legitimate matches in bulk

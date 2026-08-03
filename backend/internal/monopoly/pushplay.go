@@ -48,6 +48,17 @@ type pushPlayer struct {
 	meta     benchmark.AgentMetaResolver
 	log      *slog.Logger
 	maxMatch time.Duration
+	// turns mints the per-turn proof that binds a gateway LLM call to ONE decision.
+	// Nil ⇒ views ship without a proof, so no decision here can be counted as
+	// LLM-backed and the integrity check on paid tables can never arm.
+	turns TurnMinter
+}
+
+// TurnMinter issues the token that binds a gateway LLM call to one decision. Satisfied by
+// *turnproof.Signer — the same signer every game uses, so one secret covers all of them
+// and the gateway verifies them identically.
+type TurnMinter interface {
+	Mint(agentID, matchID string, round int) string
 }
 
 // EnablePushPlay wires the optional POST /v1/monopoly/pushplay capability.
@@ -55,7 +66,7 @@ func (s *Service) EnablePushPlay(remote RemoteResolver, client PushClient, log *
 	if log == nil {
 		log = slog.Default()
 	}
-	s.pusher = &pushPlayer{remote: remote, client: client, log: log, maxMatch: 5 * time.Minute}
+	s.pusher = &pushPlayer{remote: remote, client: client, log: log, maxMatch: 5 * time.Minute, turns: s.turns}
 }
 
 // SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
@@ -117,6 +128,17 @@ type MonopolyPushView struct {
 	Phase        string      `json:"phase"`
 	LegalActions []string    `json:"legal_actions"`
 	State        *mono.State `json:"state"`
+	// Round is the decision's turn number, published so both sides agree on it.
+	//
+	// Monopoly's view carried NO numeric turn field, so the SDK fell back to its own
+	// per-match counter for X-Pyyol-Turn — a number the server cannot predict, which means
+	// a proof minted server-side could never verify against it. Publishing TurnCount here
+	// makes the agent report the same number the proof was minted for.
+	Round int `json:"round"`
+	// TurnProof binds a gateway LLM call to THIS decision; the SDK attaches it as
+	// X-Pyyol-Proof on every model call it routes. Monopoly shipped no proof, so no seat
+	// could be shown to be LLM-backed on a paid table.
+	TurnProof string `json:"turn_proof,omitempty"`
 }
 
 // MonopolyPushMove is the action the agent returns.
@@ -241,7 +263,7 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 			continue
 		}
 
-		act, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, matchID, v)
+		act, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, matchID, agentID, v)
 		round := 0
 		if v.State != nil {
 			round = v.State.TurnCount
@@ -327,10 +349,27 @@ func monopolyResult(winnerSeat, yourSeat int) benchmark.Result {
 	}
 }
 
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v AgentView) (mono.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+// mintProof returns this turn's proof token, or "" when no minter is wired.
+func (p *pushPlayer) mintProof(agentID, matchID string, turn int) string {
+	if p.turns == nil {
+		return ""
+	}
+	return p.turns.Mint(agentID, matchID, turn)
+}
+
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID, agentID string, v AgentView) (mono.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+	// Monopoly has a real monotonic turn counter on the state, so the proof binds to it
+	// directly — no derivation needed (contrast Mafia, whose day+phase clock needs
+	// turnproof.MafiaTurn).
+	turn := 0
+	if v.State != nil {
+		turn = v.State.TurnCount
+	}
 	req := MonopolyPushView{
 		Game: "monopoly", MatchID: matchID, Seat: v.YourSeat,
 		Phase: v.Phase, LegalActions: v.Legal, State: v.State,
+		Round:     turn,
+		TurnProof: p.mintProof(agentID, matchID, turn),
 	}
 	var move MonopolyPushMove
 	start := time.Now()

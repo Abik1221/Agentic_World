@@ -184,10 +184,31 @@ var canonicalEventTypes = map[string]struct{}{
 	// Structured application logs mirrored from producers (logs+traces unified).
 	"log_record": {},
 	// Per-match, per-seat agent benchmark fact (decision quality + latency).
-	"benchmark_recorded":  {},
-	"field_redacted":      {},
-	"payload_quarantined": {},
-	"access_denied":       {},
+	"benchmark_recorded": {},
+	// Arena agent events — the behaviour of a competing agent, which is what the
+	// developer-facing trace view (/v1/agent-activity) reads and what the arena has
+	// been emitting all along.
+	//
+	// These were MISSING from this list, and the consequence was total: ingest
+	// answered 400 "unsupported event_type" for every one of them, the arena's
+	// emitter retried three times and dropped the batch, and so not a single agent
+	// decision, chat line or connect/disconnect ever reached events_raw. The read
+	// path was correct, the query was correct, the ownership gates were correct —
+	// and the table was empty, which surfaced to developers as a broken telemetry
+	// view they could do nothing about. An allowlist that rejects the platform's own
+	// primary producer is the failure mode to watch for here: adding an emitter and
+	// adding its type to this map are ONE change, not two.
+	"agent_decision":          {},
+	"agent_said":              {},
+	"agent_say_rejected":      {},
+	"agent_connected":         {},
+	"agent_disconnected":      {},
+	"agent_registered":        {},
+	"agent_endpoint_verified": {},
+	"agent_endpoint_failed":   {},
+	"field_redacted":          {},
+	"payload_quarantined":     {},
+	"access_denied":           {},
 	// Phase 10 — lead loop
 	"plan_emitted":        {},
 	"synthesis_started":   {},

@@ -39,6 +39,12 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(user).Post("/v1/wallet/verify/challenge", h.challenge)
 		r.With(user).Post("/v1/wallet/verify", h.verify)
 		r.With(user).Post("/v1/wallet/verify/unlink", h.unlink)
+		// Which wallet is connected in the browser. Display hints only: recording a
+		// connection can never make an address payable — that needs the signed
+		// challenge above. See connected.go for why the hint is filled and never
+		// repointed.
+		r.With(user).Post("/v1/wallet/connected", h.recordConnected)
+		r.With(user).Get("/v1/wallet/connected", h.connected)
 	})
 }
 
@@ -110,4 +116,40 @@ func (h *Handler) unlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"unlinked": true})
+}
+
+// recordConnected saves the wallet the browser just connected, so the dashboard can
+// name it after a reload and an operator can see it in the admin panel.
+func (h *Handler) recordConnected(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		WalletAddress string `json:"wallet_address"`
+		Provider      string `json:"wallet_provider"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Deliberately NO 2FA step-up here, unlike verify/unlink. This writes display hints
+	// and cannot move or redirect money, so demanding a code would train people to enter
+	// one for a harmless action — which is how a step-up prompt stops meaning anything.
+	out, err := h.svc.RecordConnected(r.Context(), p.UserPublicID, in.WalletAddress, in.Provider)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// connected reads the wallet on file for this developer.
+func (h *Handler) connected(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	out, err := h.svc.Connected(r.Context(), p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, out)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github.com/agent-arena/pyyol-lens/backend/internal/auth"
 	"github.com/agent-arena/pyyol-lens/backend/internal/config"
 	"github.com/agent-arena/pyyol-lens/backend/internal/query"
 	"github.com/agent-arena/pyyol-lens/backend/internal/store"
@@ -27,15 +28,24 @@ func main() {
 	h := query.Handler{Config: cfg, Store: s}
 
 	app := fiber.New()
+	// Rate limit FIRST, before the key check, so an unauthenticated caller cannot guess
+	// the key at line speed. Skips /health internally.
+	if cfg.RateLimitPerMinute > 0 {
+		app.Use(auth.RateLimit(cfg.RateLimitPerMinute, cfg.TrustedProxyCount))
+	}
 	app.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"ok": true, "service": "query-api", "environment": cfg.Environment})
 	})
 	app.Get("/health/ready", h.HealthReady)
 	app.Use("/v1", func(c *fiber.Ctx) error {
-		// Shared-secret gate (fail-closed when configured): applies to EVERY /v1
-		// route including projections, so no endpoint leaks cross-org/ops data to
-		// an unauthenticated caller.
-		if cfg.QueryAPIKey != "" && c.Get("X-Pyyol-Key") != cfg.QueryAPIKey {
+		// Shared-secret gate: applies to EVERY /v1 route including projections, so no
+		// endpoint leaks cross-org/ops data to an unauthenticated caller. Production
+		// cannot reach here with an empty key — main refuses to boot above.
+		//
+		// auth.Match is constant-time. A plain != returns as soon as it hits a differing
+		// byte, so response latency reveals how much of a guessed prefix was right, which
+		// turns key brute-forcing from infeasible into linear in the key's length.
+		if cfg.QueryAPIKey != "" && !auth.Match(cfg.QueryAPIKey, c.Get("X-Pyyol-Key")) {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 		}
 		// Projections/ops endpoints don't need an org header (platform diagnostics),

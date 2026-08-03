@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,17 +47,33 @@ type Service struct {
 	apiKey   string
 	org      string
 	client   *http.Client
+	log      *slog.Logger
 }
 
-func New(repo Repo, queryEndpoint, apiKey, org string) *Service {
+// New builds the reader.
+//
+// queryAPIKey is the Lens READ secret (its QUERY_API_KEY), which is NOT the ingest
+// key the telemetry emitter uses — the Lens gates the two planes on separate
+// secrets. Passing the ingest key here earns a 401 on every read, and the only thing
+// a developer could see for it was "the trace store is unreachable".
+//
+// log may be nil (falls back to the default logger). It is not optional in spirit:
+// every failure below is invisible to the developer by design — they are told the
+// view is degraded, not why — so the operator's only account of what went wrong is
+// what gets logged here.
+func New(repo Repo, queryEndpoint, queryAPIKey, org string, log *slog.Logger) *Service {
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Service{
 		repo:     repo,
 		endpoint: strings.TrimRight(queryEndpoint, "/"),
-		apiKey:   apiKey,
+		apiKey:   queryAPIKey,
 		org:      org,
 		// A short timeout on purpose: this is a convenience view, and a slow
 		// telemetry backend must not hold an arena request open.
 		client: &http.Client{Timeout: 8 * time.Second},
+		log:    log,
 	}
 }
 
@@ -83,8 +101,11 @@ type Entry struct {
 // an explicit list of owned ids — it is never translated into an unfiltered query.
 func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID string, since time.Time, limit int) ([]Entry, error) {
 	if !s.Enabled() {
-		return nil, httpx.NewError(http.StatusServiceUnavailable, "traces_unavailable",
-			"Agent traces are not available in this environment.")
+		// Not a fault: this deployment has no trace store wired. Distinct from both
+		// "down" and "refusing us", because the honest answer to a developer is
+		// "not here", and no amount of waiting changes it.
+		return nil, httpx.NewError(http.StatusServiceUnavailable, "traces_unconfigured",
+			"Agent traces are not enabled in this environment.")
 	}
 
 	owned, err := s.repo.OwnedAgentIDs(ctx, userPublicID)
@@ -132,12 +153,32 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, httpx.NewError(http.StatusBadGateway, "traces_unavailable",
+		// Genuinely could not talk to it: DNS, refused, timed out. Retrying is the
+		// right advice, and this is the ONLY case where it is.
+		s.log.Warn("devtrace: trace store unreachable", "endpoint", s.endpoint, "error", err)
+		return nil, httpx.NewError(http.StatusBadGateway, "traces_unreachable",
 			"Could not reach the trace store. Try again shortly.")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, httpx.NewError(http.StatusBadGateway, "traces_unavailable",
+		// A reachable store that refuses us is a DEPLOYMENT fault, not a blip, and
+		// telling a developer to "try again shortly" wastes their afternoon on
+		// something no amount of retrying will fix. 401/403 means this arena is
+		// holding the wrong read key (classically: the ingest key, because the Lens
+		// gates ingest and query on separate secrets) or the wrong organization.
+		//
+		// The message stays free of internals — endpoints and key names are the
+		// operator's business, and they go to the log, not to the tenant.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		s.log.Error("devtrace: trace store refused the read",
+			"status", resp.StatusCode, "endpoint", s.endpoint, "org", s.org,
+			"body", strings.TrimSpace(string(body)),
+			"hint", "PYYOL_LENS_QUERY_API_KEY must equal the Lens QUERY_API_KEY (not INGEST_API_KEY), and PYYOL_LENS_ORG its organization id")
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, httpx.NewError(http.StatusBadGateway, "traces_misconfigured",
+				"Traces are not readable in this environment — the arena is not authorized against the trace store. This is ours to fix, not yours.")
+		}
+		return nil, httpx.NewError(http.StatusBadGateway, "traces_unreachable",
 			"Could not read traces. Try again shortly.")
 	}
 
@@ -156,7 +197,11 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 		} `json:"events"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, err
+		// A 200 whose body we cannot parse is a schema disagreement between two
+		// services, which is an operator problem wearing a developer-problem costume.
+		s.log.Error("devtrace: trace store returned an unreadable body", "endpoint", s.endpoint, "error", err)
+		return nil, httpx.NewError(http.StatusBadGateway, "traces_unreachable",
+			"Could not read traces. Try again shortly.")
 	}
 
 	out := make([]Entry, 0, len(body.Events))

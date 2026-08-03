@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/agent-arena/pyyol-lens/backend/internal/auth"
 	"github.com/agent-arena/pyyol-lens/backend/internal/config"
 	"github.com/agent-arena/pyyol-lens/backend/internal/schema"
 	"github.com/agent-arena/pyyol-lens/backend/internal/store"
@@ -99,7 +100,9 @@ func requireAdmin(c *fiber.Ctx, cfg config.Config) error {
 	if cfg.AdminAPIKey == "" {
 		return fiber.NewError(fiber.StatusServiceUnavailable, "admin replay API disabled: set PYYOL_LENS_ADMIN_KEY")
 	}
-	if c.Get("X-Pyyol-Admin-Key") != cfg.AdminAPIKey {
+	// Constant-time: a byte-wise != leaks, through response latency, how long a correct
+	// prefix of the guessed key was.
+	if !auth.Match(cfg.AdminAPIKey, c.Get("X-Pyyol-Admin-Key")) {
 		return fiber.NewError(fiber.StatusUnauthorized, "invalid or missing X-Pyyol-Admin-Key")
 	}
 	return nil

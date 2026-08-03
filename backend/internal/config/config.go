@@ -86,19 +86,45 @@ type Config struct {
 	// we can only suspect it.
 	Warnings            []string
 	SolanaRPCURL        string
-	SolanaCommitment    string        // finalized (default) | confirmed
-	SolanaUSDCMint      string        // SPL mint accepted for deposits (defaults to mainnet USDC)
-	SolanaPlatformOwner string        // platform wallet (Solana Pay recipient)
-	SolanaPlatformATA   string        // platform USDC token account (deposits must land here)
+	SolanaCommitment    string // finalized (default) | confirmed
+	SolanaUSDCMint      string // SPL mint accepted for deposits (defaults to mainnet USDC)
+	SolanaPlatformOwner string // platform wallet (Solana Pay recipient)
+	SolanaPlatformATA   string // platform USDC token account (deposits must land here)
+	// SolanaPayoutATA is the token account withdrawals are signed FROM. Empty means
+	// "the same account deposits land in" — the single-wallet setup, and the default,
+	// so an existing devnet deployment behaves exactly as before.
+	//
+	// Setting it to a DIFFERENT account splits custody: user deposits accumulate in
+	// SolanaPlatformATA, whose owning key this process does not hold, and payouts are
+	// signed from a separately funded float. The split is what makes HotWalletCapCents
+	// mean anything — with one account, deposits push the signing wallet over the cap
+	// through ordinary business, which teaches an operator to ignore the one alert that
+	// bounds blast radius.
+	//
+	// It costs a manual cold→hot top-up when the float runs low. Affordable here
+	// because cash-outs already wait on admin approval and a clearing window, so a
+	// human is in the loop regardless and the top-up adds no user-visible latency.
+	SolanaPayoutATA string
+	// SolanaColdWalletAddress is where excess float should be swept. Advisory: nothing
+	// in this process ever signs a sweep, because a sweep key held here would recreate
+	// on the sweep path the exact exposure the cap exists to limit. It is configured so
+	// the alert can NAME the destination rather than leaving the operator to look it up
+	// mid-incident, which is when the wrong address gets pasted.
+	SolanaColdWalletAddress string
 	// SolanaExplorerTx is a printf template (one %s) resolving a transaction
 	// signature to a public block explorer. It is what makes a receipt verifiable
 	// by someone who does not trust us. Empty omits the link rather than emitting a
 	// broken one — a verification link that 404s is worse than none, because it
 	// looks like the verification failed.
-	SolanaExplorerTx    string
-	DepositSessionTTL   time.Duration // how long a deposit session stays open
-	DepositMinUSDC      int64         // minimum deposit in whole USDC (0 = no minimum)
-	DepositFeePct       int           // platform cut on money coming IN (default 5)
+	SolanaExplorerTx  string
+	DepositSessionTTL time.Duration // how long a deposit session stays open
+	DepositMinUSDC    int64         // minimum deposit in whole USDC (0 = no minimum)
+	// DepositFeePct is the platform cut on money coming IN. Default 0: the way in is
+	// free, and the platform's take is charged once, on the way out
+	// (WithdrawSellFeePct). Charging both ends taxed a developer for funding an agent
+	// they had not yet won anything with, which is the wrong moment to charge. Still
+	// operator-configurable (0..50) — a deposit fee is a policy, not a constant.
+	DepositFeePct       int
 	DepositPollInterval time.Duration // listener cadence
 
 	// Solana withdrawals (Beta wallet pipeline P3). Setting the hot-wallet secret
@@ -150,8 +176,17 @@ type Config struct {
 	// HotWalletCapCents is the most we accept sitting in the hot wallet before the
 	// monitor asks for a sweep to cold storage. The hot wallet signs payouts, so its
 	// balance is the blast radius of a key compromise. 0 disables the alert.
-	HotWalletCapCents   int64
-	WalletReconInterval time.Duration // wallet reconciliation cadence (drift safety net)
+	HotWalletCapCents int64
+	// HotWalletMinSOLLamports is the native-SOL floor on the signing wallet. Every
+	// payout is a Solana transaction and the hot wallet pays its own fee, so a wallet
+	// full of USDC and empty of SOL cannot pay anybody — and no USDC-denominated check
+	// can see it coming.
+	//
+	// Defaults to 0 (off), matching HotWalletCapCents, because on devnet SOL is
+	// airdropped and free and the alert would be pure noise. Required above zero on
+	// mainnet, where the balance only ever goes down.
+	HotWalletMinSOLLamports int64
+	WalletReconInterval     time.Duration // wallet reconciliation cadence (drift safety net)
 
 	// Game defaults (consumed from Stage 3)
 	// MoveWindow is the per-decision budget for GOOFSPIEL. One LLM call with a little
@@ -218,12 +253,21 @@ type Config struct {
 	// back to APIKeyPepper when unset so a key always exists.
 	AgentEndpointSecretKey string
 
-	// Auth abuse limits (per-IP). Secure production defaults; the e2e harness
-	// raises them because its whole suite signs up many users from one IP.
-	//   AuthRegisterLimit — signups per IP per hour   (default 5)
-	//   AuthLoginLimit    — logins  per IP per minute  (default 10)
+	// Auth abuse limits. Secure production defaults; the e2e harness raises them
+	// because its whole suite signs up many users from one IP.
+	//   AuthRegisterLimit — signups per IP per hour     (default 5)
+	//   AuthLoginLimit    — logins  per IP per minute   (default 10)
+	//   AuthAccountLimit  — credential attempts per ACCOUNT per hour (default 20)
+	//
+	// The last one covers what the per-IP limits cannot see: the same password list
+	// spread one guess per host across a botnet never trips any single IP bucket, so
+	// without a per-account ceiling a targeted account can absorb unlimited attempts.
+	// Counted per hour rather than per minute because the attack it stops is slow and
+	// patient by construction — a per-minute window would reset faster than the attacker
+	// needs it to. Applies to password login and magic-link requests.
 	AuthRegisterLimit int
 	AuthLoginLimit    int
+	AuthAccountLimit  int
 
 	// Ratings (Stage 7)
 	SeasonLength time.Duration // length of one ranked season
@@ -236,8 +280,12 @@ type Config struct {
 	// MinStakeUSDCents is the floor on a paid entry fee, in cents (default $5). The
 	// admin sets stakes in dollars; this is the point below which a table costs more
 	// in inference than its rake returns. 0 removes the floor (sandbox deployments).
-	MinStakeUSDCents         int64
-	WithdrawSellFeePct       int           // platform cut on withdrawal
+	MinStakeUSDCents int64
+	// WithdrawSellFeePct is the platform cut on a cash-out, and now the ONLY fee on the
+	// coin round trip (deposits are free — see DepositFeePct). Default 10: it carries
+	// what the two 5% legs used to raise together, so the platform's total take on a
+	// round trip is unchanged while nothing is charged for putting money in.
+	WithdrawSellFeePct       int
 	StripePayoutFeePct       int           // Stripe payout fee %, passed to the user
 	StripePayoutFeeFlatCents int64         // flat Stripe payout fee, passed to the user
 	WithdrawMinCoins         int64         // minimum withdrawal in coins
@@ -293,6 +341,20 @@ type Config struct {
 	// Demo bots: rule-based agents that fill tables in local/dev (no LLM).
 	DemoBots bool
 
+	// Object storage for user-uploaded media (avatars). The prod compose has shipped
+	// MinIO and passed these in since the storage was added; until now nothing read
+	// them, so an avatar had nowhere durable to live and survived only in the
+	// uploader's own browser. Empty endpoint/bucket ⇒ uploads answer 503 and the rest
+	// of the platform is unaffected.
+	S3Endpoint  string // e.g. http://minio:9000
+	S3Bucket    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Region    string
+	// MediaPublicBase optionally points clients at a CDN in front of the bucket.
+	// Empty ⇒ the arena serves objects itself, which needs no bucket policy.
+	MediaPublicBase string
+
 	// Observability
 	OTLPEndpoint string
 
@@ -316,6 +378,16 @@ type Config struct {
 	// activity. Empty disables the developer trace view rather than failing requests:
 	// telemetry read-back is a convenience, and it must never take the arena down.
 	PyyolLensQueryEndpoint string
+	// PyyolLensQueryAPIKey authenticates the READ plane. It is a DIFFERENT secret from
+	// PyyolLensAPIKey: the Lens gates ingest on INGEST_API_KEY and reads on
+	// QUERY_API_KEY, and its production compose requires the two to be set
+	// independently. Sending the ingest key to the query api earns a 401, which the
+	// developer trace view could only report as "the trace store is unreachable" —
+	// indistinguishable, from the outside, from the service being down.
+	//
+	// Defaults to PyyolLensAPIKey so a single-key deployment (dev, or a stack where the
+	// operator uses one secret for both planes) keeps working with no new variable.
+	PyyolLensQueryAPIKey string
 
 	// LLMGatewayEnabled mounts the Pyyol LLM Gateway (/gw/*): a transparent reverse
 	// proxy that observes ranked agents' real model/token/cost by forwarding their
@@ -346,6 +418,23 @@ func (c *Config) DepositsEnabled() bool {
 // existing Stripe/Dev payout rail is used.
 func (c *Config) WithdrawalsSolana() bool {
 	return c.DepositsEnabled() && (c.SolanaHotWalletSecret != "" || c.SolanaHotWalletSecretEnc != "")
+}
+
+// PayoutATA is the token account payouts are signed from: SolanaPayoutATA when custody
+// is split, otherwise the deposit account. Callers should use this rather than reading
+// either field directly, so single-wallet and split-custody deployments take the same
+// code path and neither is a special case.
+func (c *Config) PayoutATA() string {
+	if c.SolanaPayoutATA != "" {
+		return c.SolanaPayoutATA
+	}
+	return c.SolanaPlatformATA
+}
+
+// CustodySplit reports whether deposits and payouts use different accounts — i.e.
+// whether the bulk of user funds sits somewhere this process cannot sign for.
+func (c *Config) CustodySplit() bool {
+	return c.SolanaPayoutATA != "" && c.SolanaPayoutATA != c.SolanaPlatformATA
 }
 
 // Load reads configuration from the environment, applying defaults, then
@@ -383,17 +472,26 @@ func Load() (*Config, error) {
 		PrivyVerificationKey: l.str("PRIVY_VERIFICATION_KEY", ""),
 		GoogleClientID:       l.str("GOOGLE_CLIENT_ID", ""),
 
-		SolanaCluster:       strings.ToLower(strings.TrimSpace(l.str("SOLANA_CLUSTER", ""))),
+		SolanaCluster: strings.ToLower(strings.TrimSpace(l.str("SOLANA_CLUSTER", ""))),
+		// The next three carry NO literal default: they are properties of the network, so
+		// SOLANA_CLUSTER supplies them (applyClusterDefaults, called below). Setting any of
+		// these env vars still wins — same names as before, so existing CI secrets keep
+		// working untouched — which is what a private RPC or a custom devnet token needs.
 		SolanaRPCURL:        l.str("SOLANA_RPC_URL", ""),
+		SolanaUSDCMint:      l.str("SOLANA_USDC_MINT", ""),
+		SolanaExplorerTx:    l.str("SOLANA_EXPLORER_TX", ""),
 		SolanaCommitment:    l.str("SOLANA_COMMITMENT", "finalized"),
-		SolanaUSDCMint:      l.str("SOLANA_USDC_MINT", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 		SolanaPlatformOwner: l.str("SOLANA_PLATFORM_OWNER", ""),
 		SolanaPlatformATA:   l.str("SOLANA_PLATFORM_ATA", ""),
-		SolanaExplorerTx:    l.str("SOLANA_EXPLORER_TX", "https://solscan.io/tx/%s"),
 		DepositSessionTTL:   l.dur("DEPOSIT_SESSION_TTL", 30*time.Minute),
 		DepositMinUSDC:      int64(l.intVal("DEPOSIT_MIN_USDC", 1)),
-		DepositFeePct:       l.intVal("DEPOSIT_FEE_PCT", 5),
+		DepositFeePct:       l.intVal("DEPOSIT_FEE_PCT", 0),
 		DepositPollInterval: l.dur("DEPOSIT_POLL_INTERVAL", 15*time.Second),
+
+		// Custody topology. Both empty ⇒ one wallet receives deposits and signs
+		// payouts, which is the existing devnet setup and stays the default.
+		SolanaPayoutATA:         strings.TrimSpace(l.str("SOLANA_PAYOUT_ATA", "")),
+		SolanaColdWalletAddress: strings.TrimSpace(l.str("SOLANA_COLD_WALLET_ADDRESS", "")),
 
 		SolanaHotWalletSecret:    l.str("SOLANA_HOT_WALLET_SECRET", ""),
 		SolanaHotWalletSecretEnc: l.str("SOLANA_HOT_WALLET_SECRET_ENC", ""),
@@ -405,6 +503,7 @@ func Load() (*Config, error) {
 		AgentReconnectGrace:      l.dur("AGENT_RECONNECT_GRACE", 8*time.Second),
 		SolvencyInterval:         l.dur("SOLVENCY_INTERVAL", 5*time.Minute),
 		HotWalletCapCents:        int64(l.intVal("HOT_WALLET_CAP_CENTS", 0)),
+		HotWalletMinSOLLamports:  int64(l.intVal("HOT_WALLET_MIN_SOL_LAMPORTS", 0)),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
 		MoveWindow:           time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
@@ -429,6 +528,7 @@ func Load() (*Config, error) {
 		AgentEndpointSecretKey:   l.str("AGENT_ENDPOINT_SECRET_KEY", ""),
 		AuthRegisterLimit:        l.intVal("AUTH_REGISTER_LIMIT", 5),
 		AuthLoginLimit:           l.intVal("AUTH_LOGIN_LIMIT", 10),
+		AuthAccountLimit:         l.intVal("AUTH_ACCOUNT_LIMIT", 20),
 
 		SeasonLength: l.dur("SEASON_LENGTH", 30*24*time.Hour),
 
@@ -436,7 +536,7 @@ func Load() (*Config, error) {
 
 		CoinCents:                int64(l.intVal("COIN_CENTS", 1)),
 		MinStakeUSDCents:         int64(l.intVal("MIN_STAKE_USD_CENTS", 500)),
-		WithdrawSellFeePct:       l.intVal("WITHDRAW_SELL_FEE_PCT", 5),
+		WithdrawSellFeePct:       l.intVal("WITHDRAW_SELL_FEE_PCT", 10),
 		StripePayoutFeePct:       l.intVal("STRIPE_PAYOUT_FEE_PCT", 0),
 		StripePayoutFeeFlatCents: int64(l.intVal("STRIPE_PAYOUT_FEE_FLAT_CENTS", 25)),
 		WithdrawMinCoins:         int64(l.intVal("WITHDRAW_MIN_COINS", 500)),
@@ -477,6 +577,13 @@ func Load() (*Config, error) {
 		ArenaPassMonthlyCoins:     int64(l.intVal("ARENA_PASS_MONTHLY_COINS", 1000)),
 		StripeArenaPassPriceCents: int64(l.intVal("ARENA_PASS_PRICE_CENTS", 999)),
 
+		S3Endpoint:      l.str("S3_ENDPOINT", ""),
+		S3Bucket:        l.str("S3_BUCKET", ""),
+		S3AccessKey:     l.str("S3_ACCESS_KEY", ""),
+		S3SecretKey:     l.str("S3_SECRET_KEY", ""),
+		S3Region:        l.str("S3_REGION", "us-east-1"),
+		MediaPublicBase: l.str("MEDIA_PUBLIC_BASE", ""),
+
 		OTLPEndpoint: l.str("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 
 		PyyolLensEnabled:         l.boolVal("PYYOL_LENS_ENABLED", true),
@@ -493,6 +600,23 @@ func Load() (*Config, error) {
 		PlatformAdminPublicKey:   l.str("PLATFORM_ADMIN_PUBLIC_KEY", ""),
 	}
 
+	// The read plane's key falls back to the ingest key, so a single-key stack needs
+	// no new variable and a two-key stack (the Lens production default) finally has
+	// somewhere to put the read secret.
+	c.PyyolLensQueryAPIKey = l.str("PYYOL_LENS_QUERY_API_KEY", c.PyyolLensAPIKey)
+	// A read endpoint with no read key is the shape that produced a permanently
+	// "unavailable" trace view: the Lens refuses the request, the arena can only
+	// report that it could not read, and nothing in the deployment looks wrong. Say
+	// it at boot instead, where an operator can act on it.
+	if c.PyyolLensQueryEndpoint != "" && c.PyyolLensQueryAPIKey == "" {
+		c.Warnings = append(c.Warnings,
+			"PYYOL_LENS_QUERY_ENDPOINT is set but no read key is configured "+
+				"(PYYOL_LENS_QUERY_API_KEY, falling back to PYYOL_LENS_API_KEY). The Lens query "+
+				"api refuses unauthenticated reads in production, so the developer trace view will "+
+				"report itself unavailable. Set it to the tracing stack's QUERY_API_KEY — which is "+
+				"NOT its INGEST_API_KEY.")
+	}
+
 	// Hosted return pages default to the frontend billing flow.
 	c.CheckoutSuccessURL = l.str("CHECKOUT_SUCCESS_URL", "http://localhost:3000/billing/success")
 	c.CheckoutCancelURL = l.str("CHECKOUT_CANCEL_URL", "http://localhost:3000/billing/cancel")
@@ -507,6 +631,10 @@ func Load() (*Config, error) {
 	if err := l.err(); err != nil {
 		return nil, err
 	}
+	// Fill in the network constants the cluster determines, before anything validates or
+	// reads them. Must run after the env load (it needs SOLANA_CLUSTER) and before
+	// validate (whose cross-checks are what catch a bad override).
+	c.applyClusterDefaults()
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -677,7 +805,70 @@ const (
 const (
 	mainnetUSDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	mainnetUSDTMint = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+	// Circle's USDC on devnet. Not a secret and not a choice — it is the devnet
+	// counterpart of the mint above.
+	devnetUSDCMint = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 )
+
+// clusterDefaults are the PUBLIC, FIXED facts about a Solana network: which USDC mint
+// lives on it, which endpoint serves it, and which explorer URL resolves its
+// transactions. None of them is a secret and none of them is a decision — they are
+// properties of the network, and the cluster name determines them completely.
+//
+// They are derived rather than configured because hand-pasting them is how they drift.
+// SOLANA_USDC_MINT used to default to the REAL mainnet mint on every cluster, so a
+// devnet deploy that forgot to set it would quote and settle devnet play against real
+// USDC while its RPC pointed at devnet, with nothing in the logs saying anything was
+// wrong. That failure cannot happen to a value nobody has to remember to set.
+//
+// Every field is still overridable by its existing environment variable, under the same
+// name, because two of them legitimately vary: a paid or private RPC endpoint (Helius,
+// QuickNode, a self-hosted validator), and a deployment that accepts a different
+// stablecoin or its own devnet test token. The cross-checks in validateSolanaCluster
+// remain the safety net for those overrides.
+type clusterDefaults struct {
+	usdcMint   string
+	rpcURL     string
+	explorerTx string
+}
+
+var solanaClusterDefaults = map[string]clusterDefaults{
+	ClusterMainnet: {
+		usdcMint:   mainnetUSDCMint,
+		rpcURL:     "https://api.mainnet-beta.solana.com",
+		explorerTx: "https://solscan.io/tx/%s",
+	},
+	ClusterDevnet: {
+		usdcMint: devnetUSDCMint,
+		rpcURL:   "https://api.devnet.solana.com",
+		// Solscan needs the cluster in the query string off mainnet. Without it every
+		// devnet receipt links to a mainnet lookup that finds nothing, which reads to the
+		// user as the verification having failed rather than as a wrong link.
+		explorerTx: "https://solscan.io/tx/%s?cluster=devnet",
+	},
+}
+
+// applyClusterDefaults fills in any network constant the operator did not set explicitly.
+//
+// Runs after the env is loaded, because it needs SOLANA_CLUSTER to be known before it can
+// say what the defaults are. An unrecognised or unset cluster leaves everything alone:
+// validateSolanaCluster is what reports that, and guessing a network here would be the
+// one thing more dangerous than leaving a value empty.
+func (c *Config) applyClusterDefaults() {
+	d, ok := solanaClusterDefaults[c.SolanaCluster]
+	if !ok {
+		return
+	}
+	if c.SolanaUSDCMint == "" {
+		c.SolanaUSDCMint = d.usdcMint
+	}
+	if c.SolanaRPCURL == "" {
+		c.SolanaRPCURL = d.rpcURL
+	}
+	if c.SolanaExplorerTx == "" {
+		c.SolanaExplorerTx = d.explorerTx
+	}
+}
 
 // IsMainnet reports whether this deployment is pointed at real money.
 func (c *Config) IsMainnet() bool { return c.SolanaCluster == ClusterMainnet }
@@ -695,9 +886,17 @@ func (c *Config) IsMainnet() bool { return c.SolanaCluster == ClusterMainnet }
 // mixes test and real money does not get noticed until the money is gone.
 func (c *Config) validateSolanaCluster() []string {
 	var errs []string
-	if !c.DepositsEnabled() {
-		// No Solana rail configured at all — nothing to cross-check, and demanding a
-		// cluster from deployments that do not touch chain would be noise.
+	// The trigger is "any Solana config is present", NOT "deposits are fully enabled".
+	//
+	// That distinction matters now that the mint is derived from the cluster: with no
+	// cluster set the mint stays empty, which makes DepositsEnabled() false. Gating on
+	// that would convert a missing SOLANA_CLUSTER from a loud boot failure into deposits
+	// silently switched off — a deployment that looks healthy and quietly cannot take
+	// money. Any partial Solana config is enough to demand a coherent one.
+	solanaConfigured := c.SolanaRPCURL != "" || c.SolanaPlatformOwner != "" ||
+		c.SolanaPlatformATA != "" || c.SolanaUSDCMint != ""
+	if !solanaConfigured {
+		// Nothing touches chain here — demanding a cluster would be noise.
 		return nil
 	}
 
@@ -749,9 +948,10 @@ func (c *Config) validateSolanaCluster() []string {
 	isMainnetMint := c.SolanaUSDCMint == mainnetUSDCMint || c.SolanaUSDCMint == mainnetUSDTMint
 	if c.SolanaCluster == ClusterDevnet && isMainnetMint {
 		errs = append(errs, fmt.Sprintf(
-			"SOLANA_CLUSTER is %q but SOLANA_USDC_MINT is the MAINNET mint (%s). This is the "+
-				"default value, so it is almost certainly unset — set SOLANA_USDC_MINT to your "+
-				"devnet mint. Left as-is, devnet play would be denominated in real USDC",
+			"SOLANA_CLUSTER is %q but SOLANA_USDC_MINT is the MAINNET mint (%s) — that can now "+
+				"only come from an explicit override, so unset SOLANA_USDC_MINT to take the "+
+				"devnet mint for this cluster, or correct it to your own devnet token. Left "+
+				"as-is, devnet play would be denominated in real USDC",
 			ClusterDevnet, c.SolanaUSDCMint))
 	}
 	if c.SolanaCluster == ClusterMainnet && !isMainnetMint {
@@ -775,6 +975,51 @@ func (c *Config) validateSolanaCluster() []string {
 			errs = append(errs, "ALLOW_MINT must be off on "+ClusterMainnet+
 				" (it mints coins with no deposit behind them)")
 		}
+		// The cap says "sweep the excess"; with no destination configured that
+		// instruction is incomplete, and the operator completes it under time pressure
+		// from whatever address they can find. Required rather than warned because on
+		// mainnet the excess is real money and the sweep is the only control that
+		// reduces it.
+		if c.WithdrawalsSolana() && c.SolanaColdWalletAddress == "" {
+			errs = append(errs, "SOLANA_COLD_WALLET_ADDRESS must be set on "+ClusterMainnet+
+				" when Solana withdrawals are enabled — HOT_WALLET_CAP_CENTS asks for a "+
+				"sweep and nothing else says where to sweep to")
+		}
+		// Zero here means nothing ever reports that the signing wallet has run out of
+		// SOL — a failure that stops every cash-out at once while every USDC-denominated
+		// check stays green. 50_000_000 (0.05 SOL) is a sane starting floor: a payout
+		// that must create the recipient's token account costs ~0.00204 SOL in rent, so
+		// that is roughly 24 first-time payouts of headroom.
+		if c.WithdrawalsSolana() && c.HotWalletMinSOLLamports <= 0 {
+			errs = append(errs, "HOT_WALLET_MIN_SOL_LAMPORTS must be > 0 on "+ClusterMainnet+
+				" when Solana withdrawals are enabled (50000000 = 0.05 SOL is a reasonable "+
+				"floor) — a hot wallet out of SOL cannot broadcast a payout, and no USDC "+
+				"balance check can see it coming")
+		}
+	}
+
+	// --- custody topology --------------------------------------------------------
+	// Checked on EVERY cluster. A cold address the server can sign for is not cold on
+	// devnet either, and discovering that after the cutover is discovering it too late.
+	if c.SolanaColdWalletAddress != "" {
+		switch c.SolanaColdWalletAddress {
+		case c.SolanaPlatformOwner:
+			errs = append(errs, "SOLANA_COLD_WALLET_ADDRESS is the same as SOLANA_PLATFORM_OWNER — "+
+				"a sweep to it would move funds to the wallet they are already in. The cold "+
+				"address must be one this server holds no key for")
+		case c.SolanaPlatformATA, c.SolanaPayoutATA:
+			errs = append(errs, "SOLANA_COLD_WALLET_ADDRESS is one of the platform token accounts — "+
+				"it must be a separate wallet address held offline, not an account this "+
+				"deployment already signs for or watches")
+		}
+	}
+	// Not an error: this is precisely the single-wallet setup, just spelled out
+	// redundantly. Worth saying out loud, because an operator who took the trouble to
+	// set both almost certainly believes custody is split when it is not.
+	if c.SolanaPayoutATA != "" && c.SolanaPayoutATA == c.SolanaPlatformATA {
+		c.Warnings = append(c.Warnings, "SOLANA_PAYOUT_ATA equals SOLANA_PLATFORM_ATA — custody is "+
+			"NOT split: deposits land in the same account payouts are signed from, so the "+
+			"hot-wallet cap will be breached by ordinary deposit volume")
 	}
 	return errs
 }

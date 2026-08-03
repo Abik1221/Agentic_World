@@ -109,6 +109,7 @@ jobs:
           PYYOL_LENS_ENDPOINT: ${{ secrets.PYYOL_LENS_ENDPOINT }}
           PYYOL_LENS_QUERY_ENDPOINT: ${{ secrets.PYYOL_LENS_QUERY_ENDPOINT }}
           PYYOL_LENS_API_KEY: ${{ secrets.PYYOL_LENS_API_KEY }}
+          PYYOL_LENS_QUERY_API_KEY: ${{ secrets.PYYOL_LENS_QUERY_API_KEY }}
           PYYOL_LENS_ORG: ${{ secrets.PYYOL_LENS_ORG }}
           # Anti-bot on onboarding — REQUIRED in prod (fail-closed). Get a real key
           # at hcaptcha.com; the frontend uses the matching sitekey.
@@ -127,6 +128,20 @@ jobs:
           SOLANA_PLATFORM_OWNER: ${{ secrets.SOLANA_PLATFORM_OWNER }}
           SOLANA_PLATFORM_ATA: ${{ secrets.SOLANA_PLATFORM_ATA }}
           SOLANA_COMMITMENT: ${{ secrets.SOLANA_COMMITMENT }}
+          # Custody topology. Leave BOTH unset for one wallet that receives deposits and
+          # signs payouts — the existing devnet setup, and the default.
+          #
+          # SOLANA_PAYOUT_ATA splits them: deposits keep landing in SOLANA_PLATFORM_ATA,
+          # whose key this server does not hold, and payouts are signed from this
+          # separately funded float. The split is what makes HOT_WALLET_CAP_CENTS mean
+          # anything — with one account, deposits push the signing wallet past the cap
+          # through ordinary business, which teaches you to ignore the alert.
+          SOLANA_PAYOUT_ATA: ${{ secrets.SOLANA_PAYOUT_ATA }}
+          # Where excess float gets swept. Nothing here ever signs a sweep (a sweep key on
+          # this server would recreate the exposure the cap limits) — it is configured so
+          # the alert can name the destination instead of the operator looking it up
+          # mid-incident. Required on mainnet when Solana withdrawals are enabled.
+          SOLANA_COLD_WALLET_ADDRESS: ${{ secrets.SOLANA_COLD_WALLET_ADDRESS }}
           # Block-explorer template for the transaction link printed on every
           # receipt. Unset falls back to solscan in config.go; set it to point at a
           # different explorer, or to the devnet variant while testing.
@@ -137,6 +152,12 @@ jobs:
           # Ceiling on how much we leave in the signing wallet. Unset ⇒ 0 ⇒ the alert
           # is off, which is right for devnet. Set it before mainnet.
           HOT_WALLET_CAP_CENTS: ${{ secrets.HOT_WALLET_CAP_CENTS }}
+          # Native-SOL floor on the signing wallet. Every payout is a transaction and the
+          # hot wallet pays its own fee, so a wallet full of USDC and empty of SOL cannot
+          # pay anybody — and no USDC balance check can see it coming. Unset ⇒ 0 ⇒ off,
+          # right for devnet where SOL is airdropped. Required > 0 on mainnet;
+          # 50000000 (0.05 SOL) is a reasonable floor.
+          HOT_WALLET_MIN_SOL_LAMPORTS: ${{ secrets.HOT_WALLET_MIN_SOL_LAMPORTS }}
           # Mints the per-turn tokens proving a gateway LLM call was made for a
           # specific decision. Unset ⇒ no proof is offered at all, so ranked
           # integrity has nothing to measure. Required before enforcement.
@@ -266,6 +287,12 @@ jobs:
           # affected, since trace read-back must never be able to block play.
           PYYOL_LENS_QUERY_ENDPOINT=${PYYOL_LENS_QUERY_ENDPOINT:-http://pyyol-lens-query:8082}
           PYYOL_LENS_API_KEY=${PYYOL_LENS_API_KEY:-}
+          # The Lens gates ingest and query on SEPARATE secrets: this must equal the
+          # tracing stack's QUERY_API_KEY (the same value as the admin's LENS_API_KEY),
+          # NOT its INGEST_API_KEY. Unset falls back to PYYOL_LENS_API_KEY, which is
+          # correct only for a single-key stack — on a two-key stack the read 401s and
+          # the developer trace view can only report itself as unavailable.
+          PYYOL_LENS_QUERY_API_KEY=${PYYOL_LENS_QUERY_API_KEY:-}
           PYYOL_LENS_ORG=${PYYOL_LENS_ORG:-pyyol}
           PYYOL_LENS_PROJECT=arena
 
@@ -282,7 +309,11 @@ jobs:
           SOLANA_PLATFORM_ATA=${SOLANA_PLATFORM_ATA:-}
           SOLANA_COMMITMENT=${SOLANA_COMMITMENT:-finalized}
           SOLANA_EXPLORER_TX=${SOLANA_EXPLORER_TX:-}
+          # Both empty ⇒ single-wallet custody (unchanged behaviour).
+          SOLANA_PAYOUT_ATA=${SOLANA_PAYOUT_ATA:-}
+          SOLANA_COLD_WALLET_ADDRESS=${SOLANA_COLD_WALLET_ADDRESS:-}
           HOT_WALLET_CAP_CENTS=${HOT_WALLET_CAP_CENTS:-0}
+          HOT_WALLET_MIN_SOL_LAMPORTS=${HOT_WALLET_MIN_SOL_LAMPORTS:-0}
           MOVE_WINDOW_SECONDS=${MOVE_WINDOW_SECONDS:-45}
           MONOPOLY_MOVE_WINDOW_SECONDS=${MONOPOLY_MOVE_WINDOW_SECONDS:-60}
           MAFIA_PHASE_WINDOW_SECONDS=${MAFIA_PHASE_WINDOW_SECONDS:-0}

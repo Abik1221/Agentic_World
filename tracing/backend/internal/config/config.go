@@ -46,6 +46,17 @@ type Config struct {
 	// the X-Pyyol-Key header.
 	QueryAPIKey string
 
+	// TrustedProxyCount is how many reverse proxies front these services, i.e. how many
+	// X-Forwarded-For entries may be believed, counted from the RIGHT. 1 is correct for
+	// the nginx vhost deployment. Raise only for a real extra hop; setting it too HIGH
+	// is the dangerous direction, because it starts trusting client-supplied entries.
+	TrustedProxyCount int
+	// RateLimitPerMinute caps requests per caller per minute on the ingest and query
+	// planes. Backstop behind the shared key: it bounds how fast an unauthenticated
+	// caller can guess the key, and how much a leaked key can do before anyone notices.
+	// 0 disables.
+	RateLimitPerMinute int
+
 	DefaultProject   string
 	RetentionDays    int
 	MaxBatchSize     int
@@ -94,6 +105,12 @@ func Load() Config {
 		RetentionDays:    getInt("RETENTION_DAYS", 30),
 		MaxBatchSize:     getInt("MAX_BATCH_SIZE", 500),
 		MaxEventsPerRead: getInt("MAX_EVENTS_PER_READ", 500),
+
+		TrustedProxyCount: getInt("TRUSTED_PROXY_COUNT", 1),
+		// 600/min ≈ 10/s per caller. Generous for the arena batching spans and for a
+		// human clicking round the trace UI, while still bounding a leaked key and making
+		// key-guessing hopeless. Raise if a legitimate producer is throttled.
+		RateLimitPerMinute: getInt("RATE_LIMIT_PER_MINUTE", 600),
 
 		TelemetryTextCapRunes: telemetryTextCapRunes(),
 	}

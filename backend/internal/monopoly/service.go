@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
+	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
@@ -64,6 +66,11 @@ type Service struct {
 	// rater applies per-arena skill ratings when a paid table finalizes. Nil ⇒
 	// ratings skipped. rating.Service satisfies it.
 	rater Rater
+	// integrity withholds a payout from a seat that proved no LLM-backed decision on a
+	// PAID table. Nil ⇒ no check. See internal/integrity.
+	integrity integrity.Checker
+	// turns mints per-turn proofs for push-play views. Nil ⇒ no proofs.
+	turns TurnMinter
 	// limits/ver gate a STAKED join (spending budget + certification/suspension).
 	// Nil ⇒ the check is skipped; practice (zero-fee) tables never stake so never
 	// consult them. Set once at wiring via SetLimits/SetVerifier.
@@ -113,6 +120,14 @@ type Rater interface {
 
 // SetRater installs the rating hook (called once at wiring time).
 func (s *Service) SetRater(r Rater) { s.rater = r }
+
+// SetIntegrityChecker installs the proof-of-LLM check applied to PAID tables. Optional:
+// nil settles exactly as before. See internal/integrity.
+func (s *Service) SetIntegrityChecker(c integrity.Checker) { s.integrity = c }
+
+// SetTurnMinter installs the per-turn proof minter used by push-play views. MUST be called
+// BEFORE EnablePushPlay, which copies it onto the push player.
+func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
 
 // Notifier is the low-latency wake-up channel for long-polling State callers.
 // Satisfied by *store.Notifier (structural).
@@ -655,6 +670,18 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 	}
 
 	if s.wallet != nil && m.EntryFee > 0 {
+		// A seat that cannot show one LLM-backed decision is not paid from a staked
+		// table, provided some other seat at this table could. Applied AFTER the draw
+		// refund above: a refund returns a player their own stake, and withholding that
+		// over a proof nobody asked them for would be confiscation.
+		if s.integrity != nil && len(payouts) > 0 && platformFee > 0 {
+			agents := make([]string, 0, len(m.Agents))
+			for _, a := range m.Agents {
+				agents = append(agents, a.AgentPublicID)
+			}
+			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, slog.Default())
+			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
+		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.GrossPool, platformFee, payouts); err != nil {
 			return err
 		}

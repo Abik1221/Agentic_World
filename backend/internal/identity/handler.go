@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -31,6 +33,40 @@ type Handler struct {
 	// identity to the twofa package; nil ⇒ the field is simply omitted.
 	twoFAStatus func(ctx context.Context, userPublicID string) (bool, error)
 	refresh     *auth.RefreshService // nil ⇒ refresh tokens disabled (access-token only)
+	// accountRL throttles password attempts per ACCOUNT, alongside the per-IP loginRL.
+	//
+	// The two catch different attacks and neither substitutes for the other. Per-IP stops
+	// one host working through a password list; it is blind to the same list being spread
+	// one-guess-per-host across a botnet, which never trips any single IP bucket. Keying
+	// on the identity under attack bounds the total attempts a given account can absorb
+	// no matter how many sources they come from.
+	//
+	// Nil ⇒ per-IP only (unchanged behaviour).
+	accountRL func(ctx context.Context, identifier string) (ok bool, retryAfter time.Duration)
+}
+
+// SetAccountRateLimit installs the per-account credential throttle used by password
+// login and the magic-link request. Nil leaves login with per-IP limiting only.
+func (h *Handler) SetAccountRateLimit(fn func(ctx context.Context, identifier string) (bool, time.Duration)) {
+	h.accountRL = fn
+}
+
+// allowAccount reports whether this identifier has credential-attempt budget left.
+//
+// Normalises the identifier so casing and stray whitespace cannot buy a second budget
+// for the same account, and treats an empty one as allowed — a blank email is rejected
+// by the service anyway, and spending budget on it would let anyone exhaust a shared
+// bucket by posting nothing.
+func (h *Handler) allowAccount(ctx context.Context, identifier string) bool {
+	if h.accountRL == nil {
+		return true
+	}
+	id := strings.ToLower(strings.TrimSpace(identifier))
+	if id == "" {
+		return true
+	}
+	ok, _ := h.accountRL(ctx, id)
+	return ok
 }
 
 // SetTwoFAStatus wires the 2FA-enabled lookup surfaced in the profile (GET /v1/me).
@@ -199,6 +235,13 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
+		return
+	}
+	// Checked BEFORE the password is verified. LogIn does a bcrypt comparison, which is
+	// deliberately expensive, so letting unlimited attempts reach it turns the login
+	// endpoint into a CPU-exhaustion lever as well as a guessing oracle.
+	if !h.allowAccount(r.Context(), in.Email) {
+		httpx.Error(w, httpx.ErrRateLimited)
 		return
 	}
 	res, err := h.svc.LogIn(r.Context(), in.Email, in.Password)
@@ -511,6 +554,13 @@ func (h *Handler) requestMagicLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
+		return
+	}
+	// Same per-account budget as password login. Without it a magic-link endpoint is a
+	// mailbox-flooding tool aimed at one address — and because each request mints a fresh
+	// valid token, it also widens the window in which any one of them can be guessed.
+	if !h.allowAccount(r.Context(), in.Email) {
+		httpx.Error(w, httpx.ErrRateLimited)
 		return
 	}
 	token, sent, err := h.svc.RequestMagicLink(r.Context(), in.Email)

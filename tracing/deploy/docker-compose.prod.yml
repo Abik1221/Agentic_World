@@ -25,6 +25,13 @@ services:
     environment:
       PYYOL_LENS_ENV: production
       INGEST_API_KEY: ${INGEST_API_KEY:?set INGEST_API_KEY (must equal the arena PYYOL_LENS_API_KEY)}
+      # Rate limit backstop behind the key: bounds how fast an unauthenticated caller can
+      # guess it, and how much a LEAKED key can bury the trace store in forged spans
+      # before anyone notices. Keyed on the nginx-observed hop (TRUSTED_PROXY_COUNT from
+      # the right), never on the client-settable left-most X-Forwarded-For entry.
+      # Raise RATE_LIMIT_PER_MINUTE if a legitimate producer is ever throttled.
+      TRUSTED_PROXY_COUNT: ${TRUSTED_PROXY_COUNT:-1}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-600}
     networks: [default, pyyol]
     restart: always
 
@@ -35,6 +42,8 @@ services:
     environment:
       PYYOL_LENS_ENV: production
       QUERY_API_KEY: ${QUERY_API_KEY:?set QUERY_API_KEY (must equal admin LENS_API_KEY + web PYYOL_LENS_API_KEY)}
+      TRUSTED_PROXY_COUNT: ${TRUSTED_PROXY_COUNT:-1}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-600}
     networks: [default, pyyol]
     restart: always
 

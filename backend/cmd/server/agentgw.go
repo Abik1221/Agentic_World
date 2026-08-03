@@ -133,7 +133,7 @@ func mountMatchUsage(authn *auth.Authenticator, repo *store.MatchUsageRepo, owns
 // that are disabled in this environment (X-claim onboarding, Solana deposits)
 // instead of letting the user hit a 503/404. Booleans only — never any secret or
 // key material.
-func mountCapabilities(xClaim, deposits, devMode bool, econ func() economics) func(chi.Router) {
+func mountCapabilities(xClaim, deposits, devMode bool, cluster string, econ func() economics) func(chi.Router) {
 	return func(r chi.Router) {
 		r.Get("/v1/config", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Cache-Control", "public, max-age=30")
@@ -141,6 +141,20 @@ func mountCapabilities(xClaim, deposits, devMode bool, econ func() economics) fu
 				"onboarding_x_claim": xClaim,   // /register + /verify usable
 				"deposits":           deposits, // /v1/deposits usable
 				"dev_mode":           devMode,
+			}
+			// Which network this deployment settles on.
+			//
+			// Published because the frontend signs deposits against its OWN RPC endpoint,
+			// configured in a different repository and baked into its image at build time.
+			// The two can therefore disagree with nothing in either process able to notice:
+			// a client on devnet against a mainnet backend builds transfers the deposit
+			// listener never watches, and the wallet error the user sees says nothing about
+			// why. This is the value the client checks its own RPC against.
+			//
+			// Not a secret. The platform's addresses and the network they live on are
+			// public on-chain data by definition.
+			if cluster != "" {
+				out["solana_cluster"] = cluster
 			}
 			// Publish what a stake actually costs.
 			//

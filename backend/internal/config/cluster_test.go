@@ -119,6 +119,10 @@ func TestMainnetRequiresAnExposureCapWhenWithdrawalsAreOn(t *testing.T) {
 	c.SolanaUSDCMint = mainnetUSDCMint
 	c.SolanaRPCURL = "https://api.mainnet-beta.solana.com"
 	c.SolanaHotWalletSecretEnc = "enc" // withdrawals on
+	// The other two mainnet custody requirements, satisfied up front so the cap stays the
+	// only thing under test here (each has its own test in custody_test.go).
+	c.SolanaColdWalletAddress = "ColdWalletPubkey"
+	c.HotWalletMinSOLLamports = 50_000_000
 	if errs := c.validateSolanaCluster(); !errsContain(errs, "HOT_WALLET_CAP_CENTS") {
 		t.Fatalf("mainnet withdrawals with no cap must be refused: %v", errs)
 	}

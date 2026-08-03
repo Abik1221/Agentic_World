@@ -116,6 +116,38 @@ type Overview struct {
 	TreasuryUSDCCents  int64     `json:"treasury_usdc_cents"`
 	LiabilityUSDCCents int64     `json:"liability_usdc_cents"`
 	TreasuryObservedAt time.Time `json:"treasury_observed_at,omitempty"`
+
+	// Custody breakdown. TreasuryUSDCCents above is the TOTAL the platform holds; these
+	// say where it is sitting and whether anything needs a human to move it.
+	//
+	// The distinction that matters: HotUSDCCents is what can be paid out right now
+	// without anyone touching a hardware wallet. When it is below the liability but the
+	// total is not, the platform is solvent and the payout float simply needs a top-up —
+	// a routine treasury task, not an incident. Rendering that as a shortfall would send
+	// an operator hunting a theft that never happened, and on a split-custody deployment
+	// it is the normal resting state.
+	HotUSDCCents   int64 `json:"hot_usdc_cents"`
+	VaultUSDCCents int64 `json:"vault_usdc_cents"`
+	CustodySplit   bool  `json:"custody_split"`
+	// SweepNeededCents is how far the hot wallet sits above its exposure ceiling, i.e.
+	// how much ought to be moved to cold storage. 0 when within the cap or uncapped.
+	SweepNeededCents  int64 `json:"sweep_needed_cents"`
+	HotWalletCapCents int64 `json:"hot_wallet_cap_cents"`
+	// ColdWalletAddress is where a sweep should go — surfaced so the operator does not
+	// have to find it elsewhere at the moment they act on the alert.
+	ColdWalletAddress string `json:"cold_wallet_address,omitempty"`
+	// HotWalletSOL is the fee fuel. Payouts are Solana transactions and the hot wallet
+	// pays their fees, so at zero every cash-out fails to broadcast while every figure
+	// above still looks healthy. Absent when unchecked, which a consumer must render as
+	// "not monitored" rather than as empty.
+	HotWalletSOL    float64 `json:"hot_wallet_sol,omitempty"`
+	HotWalletSOLMin float64 `json:"hot_wallet_sol_min,omitempty"`
+	HotWalletSOLLow bool    `json:"hot_wallet_sol_low"`
+	// PayoutsFundedOK is the single question an operator approving a cash-out wants
+	// answered: can the wallet settle right now? False means approvals will be refused
+	// until the float or the SOL is topped up.
+	PayoutsFundedOK      bool   `json:"payouts_funded_ok"`
+	PayoutsBlockedReason string `json:"payouts_blocked_reason,omitempty"`
 }
 
 // UserDetail is everything an operator needs about ONE developer, in one place.
@@ -198,6 +230,26 @@ type Handler struct {
 type TreasuryReader interface {
 	LastReading() (balanceCents, liabilityCents int64, observedAt time.Time, ok bool)
 }
+
+// TreasuryDetailReader is the custody breakdown behind TreasuryReader: where the money
+// is sitting, whether it needs moving, and whether a cash-out can be settled right now.
+// Also satisfied by *payout.SolvencyMonitor, and also kept flat so this package stays
+// independent of payout.
+//
+// OPTIONAL. A TreasuryReader that does not implement it leaves the breakdown fields at
+// their zero values, which is exactly what a deployment with no Solana rail should
+// report — there is no hot wallet to describe.
+type TreasuryDetailReader interface {
+	CustodyBreakdown() (hotCents, vaultCents int64, split, ok bool)
+	FeeFuel() (lamports, minLamports int64, known bool)
+	SweepNeeded() (excessCents, capCents int64, coldAddress string)
+	CanPay(amountCents int64) (ok bool, reason string)
+}
+
+// lamportsPerSOL converts the fee-fuel figures for display. The API reports SOL because
+// that is the unit an operator funding a wallet actually works in; the monitor keeps
+// lamports internally so no threshold depends on float rounding.
+const lamportsPerSOL = 1_000_000_000
 
 // SetCoinCents wires the coin→USD peg used to price the dashboard's coin totals.
 func (h *Handler) SetCoinCents(cents int64) {
@@ -297,9 +349,42 @@ func (h *Handler) overview(w http.ResponseWriter, r *http.Request) {
 	if h.treasury != nil {
 		if bal, lia, at, ok := h.treasury.LastReading(); ok {
 			ov.TreasuryUSDCCents, ov.LiabilityUSDCCents, ov.TreasuryObservedAt = bal, lia, at
+			// Custody breakdown, when the reader can provide it. Populated only alongside a
+			// real observation: describing where the money sits before we have looked once
+			// would be inventing a layout.
+			if d, okDetail := h.treasury.(TreasuryDetailReader); okDetail {
+				fillCustody(&ov, d, lia)
+			}
 		}
 	}
 	httpx.JSON(w, http.StatusOK, ov)
+}
+
+// fillCustody adds the custody breakdown to an overview that already carries a real
+// treasury observation.
+//
+// liabilityCents is what the platform currently owes on in-flight cash-outs, and it is
+// what PayoutsFundedOK is evaluated against: "can the wallet settle everything already
+// queued" is the question an operator about to work through the approval list actually
+// has. Asking about a zero amount would only ever test the SOL balance.
+func fillCustody(ov *Overview, d TreasuryDetailReader, liabilityCents int64) {
+	hot, vault, split, ok := d.CustodyBreakdown()
+	if !ok {
+		return
+	}
+	ov.HotUSDCCents, ov.VaultUSDCCents, ov.CustodySplit = hot, vault, split
+
+	ov.SweepNeededCents, ov.HotWalletCapCents, ov.ColdWalletAddress = d.SweepNeeded()
+
+	// SOL is reported only when actually measured. Zero-with-a-flag would be
+	// indistinguishable from an empty wallet, which is the opposite conclusion.
+	if lamports, minLamports, known := d.FeeFuel(); known {
+		ov.HotWalletSOL = float64(lamports) / lamportsPerSOL
+		ov.HotWalletSOLMin = float64(minLamports) / lamportsPerSOL
+		ov.HotWalletSOLLow = minLamports > 0 && lamports < minLamports
+	}
+
+	ov.PayoutsFundedOK, ov.PayoutsBlockedReason = d.CanPay(liabilityCents)
 }
 
 // writeList emits {"<key>": [...], "limit": N, "offset": M}. A nil slice becomes
