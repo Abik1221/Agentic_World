@@ -202,10 +202,27 @@ type LoginResult struct {
 // unknown-email path still pays the bcrypt cost so response time does not reveal
 // which emails are registered.
 func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResult, error) {
+	// A login address that fails PUBLIC-SIGNUP validation is still looked up literally.
+	//
+	// normalizeEmail requires a dotted domain, which is the right rule for sign-up — it keeps
+	// "user@localhost" out of a public form. But it was applied as a gate on LOGGING IN too,
+	// with an early return before any lookup, so an account whose address does not satisfy it
+	// could never sign in at all. That is exactly the shape of an internal operator login
+	// (`pyyol@admin`), created by cmd/seed-admin rather than through the form: the row was
+	// perfect and the sign-in was impossible.
+	//
+	// This admits no new account. Sign-up validation is untouched, so an address like that
+	// still cannot be REGISTERED through the API; the only way one exists is if an operator
+	// seeded it deliberately. All this does is let an existing row be found by the exact
+	// string it was stored under, and the password check that follows is unchanged.
+	literal := strings.ToLower(strings.TrimSpace(email))
 	normEmail, ok := normalizeEmail(email)
 	if !ok {
-		equalizeTiming(password, s.pepper)
-		return LoginResult{}, ErrInvalidCredentials
+		if literal == "" || len(literal) > maxEmailLen {
+			equalizeTiming(password, s.pepper)
+			return LoginResult{}, ErrInvalidCredentials
+		}
+		normEmail = literal
 	}
 	rec, err := s.repo.CredentialsByEmail(ctx, normEmail)
 	if err != nil {
@@ -217,7 +234,7 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 		// stop matching their own row — locking them out of an account holding real
 		// coins. Trying the literal form second costs one query on a failed login and
 		// nothing on a successful one.
-		if literal := strings.ToLower(strings.TrimSpace(email)); literal != normEmail {
+		if literal != normEmail {
 			rec, err = s.repo.CredentialsByEmail(ctx, literal)
 		}
 	}
@@ -271,6 +288,12 @@ func (s *Service) UpdateConfig(ctx context.Context, ownerPublicID, agentPublicID
 		return err
 	}
 	return s.repo.UpdateLimits(ctx, agentPublicID, ownerPublicID, l)
+}
+
+// PrimaryAgentOf returns the owner's first agent, or "" when they have none. Used so an
+// authenticated caller can omit agent_id and still address their own agent.
+func (s *Service) PrimaryAgentOf(ctx context.Context, ownerPublicID string) (string, error) {
+	return s.repo.PrimaryAgentOf(ctx, ownerPublicID)
 }
 
 // SetSigningKey registers an agent's Ed25519 public key for per-move authenticity.

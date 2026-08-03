@@ -48,6 +48,16 @@ type Repo interface {
 	// AgentByOwner returns an agent iff owned by ownerPublicID.
 	AgentByOwner(ctx context.Context, agentPublicID, ownerPublicID string) (Agent, error)
 
+	// PrimaryAgentOf returns the owner's first (oldest) non-house agent's public id, or ""
+	// when they have none.
+	//
+	// Lets an authenticated request omit agent_id. The dashboard used to have to supply it
+	// from a cookie written at login, so a developer on a second device — or one who had
+	// cleared cookies, or whose session was restored from a refresh token — could not save
+	// their own guardrails: the request went out with an empty id and came back 400.
+	// Ordered by creation, so "primary" does not move when a second agent is added.
+	PrimaryAgentOf(ctx context.Context, ownerPublicID string) (string, error)
+
 	// SetSigningKey registers the agent's Ed25519 move-signing public key iff
 	// ownerPublicID owns the agent.
 	SetSigningKey(ctx context.Context, agentPublicID, ownerPublicID, pubkey string) error

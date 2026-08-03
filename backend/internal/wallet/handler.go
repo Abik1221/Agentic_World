@@ -158,18 +158,35 @@ func (h *Handler) mint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Per-call ceiling: mint is a non-prod test affordance (the route is only mounted
-	// when ALLOW_MINT is on, which is forced off in prod) and requires owning the
-	// target agent, but cap the amount anyway so a stray/huge value can't create an
-	// absurd balance or approach int64 overflow. Defense in depth.
+	// when ALLOW_MINT is on, which is forced off in prod), but cap the amount anyway so a
+	// stray/huge value can't create an absurd balance or approach int64 overflow.
+	// Defense in depth.
 	const maxMintPerCall int64 = 10_000_000
 	if in.Amount > maxMintPerCall {
 		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid_amount", "Amount exceeds the per-call mint ceiling."))
 		return
 	}
 	p := auth.PrincipalFromContext(r.Context())
-	if err := h.authorizeFor(r, p, in.Agent); err != nil {
-		httpx.Error(w, err)
-		return
+	// An ADMIN or PLATFORM caller does not have to own the agent; anyone else does.
+	//
+	// This route's guard is RequirePlatformOrAdmin, and the handler then also demanded that
+	// the caller personally own the target agent — which a Platform token, being a
+	// service-to-service credential belonging to no developer, never can. So the endpoint
+	// was unreachable by exactly the credential it exists for: every call came back 403.
+	// (The E2E cert-gate test died on it, and the money-flow test skipped on it with a
+	// message blaming the wrong thing, which is how it stayed hidden.)
+	//
+	// Nothing is loosened by this. The protections that matter are both still in force and
+	// both sit in front of this line: the route is not mounted at all unless ALLOW_MINT is
+	// on (forced off in prod by config.Validate), and the guard admits only a verified
+	// Platform token or a user on the ADMIN_USER_IDS allowlist. A self-registered developer
+	// still cannot reach this handler to credit anybody, including themselves — which is
+	// the property the ownership check was reaching for and the guard already guarantees.
+	if !auth.IsAdmin(p, h.admins) {
+		if err := h.authorizeFor(r, p, in.Agent); err != nil {
+			httpx.Error(w, err)
+			return
+		}
 	}
 	if err := h.svc.Mint(r.Context(), in.Agent, in.Amount, platform.NewID("mint")); err != nil {
 		httpx.Error(w, err)
@@ -189,8 +206,26 @@ func (h *Handler) resolveAgent(r *http.Request) (string, error) {
 	if target == "" {
 		target = p.AgentPublicID
 	}
+	// A dashboard token carries no agent id, so a browser had to supply ?agent= — and the
+	// only place the browser got it from was a cookie written at login. Any session that did
+	// not come through that exact path (a cleared cookie, a refresh-token restore, a second
+	// device) sent no agent, got this 400, and the Strategy page rendered every guardrail as
+	// zero and could not save. The owner's own agent is something the server knows; asking
+	// the client to tell us was the mistake.
+	//
+	// Mirrors payout.Service.Available, which has resolved the primary agent this way all
+	// along — the two endpoints backing the same screens should not disagree about whether
+	// the caller has to name their agent.
+	if target == "" && p.UserPublicID != "" {
+		primary, err := h.svc.PrimaryAgent(r.Context(), p.UserPublicID)
+		if err != nil {
+			return "", err
+		}
+		target = primary
+	}
 	if target == "" {
-		return "", httpx.NewError(http.StatusBadRequest, "agent_required", "Specify ?agent= for a user-scoped token.")
+		return "", httpx.NewError(http.StatusBadRequest, "agent_required",
+			"This account has no agent yet. Create one, or pass ?agent= explicitly.")
 	}
 	if err := h.authorizeFor(r, p, target); err != nil {
 		return "", err

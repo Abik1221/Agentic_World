@@ -7,11 +7,36 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// lensIngestPort / lensQueryPort are the tracing stack's own port assignment (see
+// tracing/docker-compose.yml: PORT_INGEST 8081, PORT_QUERY 8082). Named rather than
+// inlined so the relationship between the two endpoints is stated once, where a future
+// port change will be looked for.
+const (
+	lensIngestPort = "8081"
+	lensQueryPort  = "8082"
+)
+
+// deriveLensQueryEndpoint turns a Lens INGEST base URL into its QUERY base URL.
+//
+// Only the port is changed, and only when the host is serving ingest on the port the
+// tracing stack ships. Anything else returns "" — a guess that silently points reads at
+// the wrong service would be worse than the feature staying off, because the arena would
+// then report "unreachable" about a host that is answering perfectly well.
+func deriveLensQueryEndpoint(ingest string) string {
+	u, err := url.Parse(strings.TrimRight(ingest, "/"))
+	if err != nil || u.Host == "" || u.Port() != lensIngestPort {
+		return ""
+	}
+	u.Host = u.Hostname() + ":" + lensQueryPort
+	return u.String()
+}
 
 // Config is the typed, validated configuration for the whole service. It is
 // constructed once in main and injected; nothing reads the environment directly.
@@ -312,6 +337,18 @@ type Config struct {
 
 	// Trust & anti-fraud (Stage 9)
 	AdminUserIDs      []string      // user public ids allowed to use admin endpoints
+	// Operator-account seeding, applied once at boot. Both empty ⇒ disabled.
+	//
+	// This exists because admin rights are granted by ADMIN_USER_IDS (above), which cannot
+	// name an account that does not exist yet — so the first admin on a fresh deployment
+	// otherwise had to be created by hand against the database. The seeded id is
+	// deterministic (seedadmin.DefaultUserID), so the allowlist can be set before the
+	// account is, and CI can run the same deploy every time.
+	//
+	// The password is a real credential: pass it as a CI secret, never a literal in a repo.
+	SeedAdminEmail    string
+	SeedAdminPassword string
+	SeedAdminUserID   string // "" ⇒ seedadmin.DefaultUserID
 	DetectInterval    time.Duration // anti-fraud detection sweep cadence
 	CollusionLookback time.Duration // how far back the collusion sweep looks
 	CollusionMinGames int           // minimum head-to-head games before flagging
@@ -559,6 +596,11 @@ func Load() (*Config, error) {
 		PayoutBreakerMinBaseline: int64(l.intVal("PAYOUT_BREAKER_MIN_BASELINE_CENTS", 20_000)),
 
 		AdminUserIDs:      l.csv("ADMIN_USER_IDS", ""),
+		// Operator account seeding. Both empty ⇒ nothing is seeded (the default), so a
+		// deployment that does not want this is unaffected. See internal/seedadmin.
+		SeedAdminEmail:    l.str("SEED_ADMIN_EMAIL", ""),
+		SeedAdminPassword: l.str("SEED_ADMIN_PASSWORD", ""),
+		SeedAdminUserID:   l.str("SEED_ADMIN_USER_ID", ""),
 		DetectInterval:    l.dur("DETECT_INTERVAL", time.Hour),
 		CollusionLookback: l.dur("COLLUSION_LOOKBACK", 7*24*time.Hour),
 		CollusionMinGames: l.intVal("COLLUSION_MIN_GAMES", 5),
@@ -604,6 +646,34 @@ func Load() (*Config, error) {
 	// no new variable and a two-key stack (the Lens production default) finally has
 	// somewhere to put the read secret.
 	c.PyyolLensQueryAPIKey = l.str("PYYOL_LENS_QUERY_API_KEY", c.PyyolLensAPIKey)
+	// Derive the read endpoint from the ingest one when it is unset.
+	//
+	// The read variable had no fallback while the read KEY did, so the ordinary way to
+	// configure this stack — set PYYOL_LENS_ENDPOINT and PYYOL_LENS_API_KEY, as every
+	// deployment doc says — left the developer trace view switched off. The page then
+	// told developers "traces are not enabled here" on a deployment that was shipping
+	// telemetry the whole time, and nothing about the configuration looked wrong.
+	//
+	// The two services live side by side on the same host in the tracing stack's own
+	// compose (ingest :8081, query :8082), so the ingest endpoint identifies the query
+	// endpoint. Derived, not assumed silently: the result is recorded as a warning so an
+	// operator reading boot output knows where reads are being sent, and an explicit
+	// PYYOL_LENS_QUERY_ENDPOINT always wins.
+	if c.PyyolLensQueryEndpoint == "" && c.PyyolLensEndpoint != "" {
+		if derived := deriveLensQueryEndpoint(c.PyyolLensEndpoint); derived != "" {
+			c.PyyolLensQueryEndpoint = derived
+			c.Warnings = append(c.Warnings,
+				"PYYOL_LENS_QUERY_ENDPOINT is unset; derived "+derived+" from PYYOL_LENS_ENDPOINT ("+
+					c.PyyolLensEndpoint+") so the developer trace view is readable. Set it "+
+					"explicitly if the Lens query api is not on the ingest host's :8082.")
+		} else {
+			c.Warnings = append(c.Warnings,
+				"PYYOL_LENS_ENDPOINT is set but PYYOL_LENS_QUERY_ENDPOINT is not, and it could "+
+					"not be derived. Telemetry is being SHIPPED and cannot be READ, so /traces will "+
+					"report that traces are not enabled in this environment. Set it to the tracing "+
+					"stack's query api (its PORT_QUERY, :8082 in the shipped compose).")
+		}
+	}
 	// A read endpoint with no read key is the shape that produced a permanently
 	// "unavailable" trace view: the Lens refuses the request, the arena can only
 	// report that it could not read, and nothing in the deployment looks wrong. Say

@@ -50,6 +50,12 @@ func (b testBank) Hold(_ context.Context, id, agent string, coins int64) error {
 		{Wallet: ledger.SystemWallet(ledger.SysEscrow), Amount: coins},
 	})
 }
+func (b testBank) SweepFromTreasury(_ context.Context, id, owner, agent string, coins int64) error {
+	return b.post(id, "wh-sweep:", []ledger.Posting{
+		{Wallet: ledger.UserWallet(owner), Amount: -coins},
+		{Wallet: ledger.AgentWallet(agent), Amount: coins},
+	})
+}
 func (b testBank) Release(_ context.Context, id, agent string, coins int64) error {
 	return b.post(id, "wh-release:", []ledger.Posting{
 		{Wallet: ledger.SystemWallet(ledger.SysEscrow), Amount: -coins},

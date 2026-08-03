@@ -26,14 +26,21 @@ var _ devprofile.Repo = (*DevProfileRepo)(nil)
 
 func (r *DevProfileRepo) ResolveHandle(ctx context.Context, handle string) (devprofile.Identity, bool, error) {
 	var id devprofile.Identity
+	// The bio comes from the same row SetProfile writes it to: the developer's oldest
+	// non-house agent. It is a correlated subquery rather than a join so a developer with
+	// no agent yet still resolves (LEFT JOIN would work too; this keeps one row per user
+	// guaranteed by construction rather than by the ORDER BY).
 	err := r.db.QueryRow(ctx,
-		`SELECT public_id, COALESCE(username::text, ''), COALESCE(display_name, ''),
-		        COALESCE(avatar_url, ''), COALESCE(country, ''), segment, created_at
-		 FROM users
-		 WHERE public_id = $1 OR username = $1
-		 ORDER BY (public_id = $1) DESC
+		`SELECT u.public_id, COALESCE(u.username::text, ''), COALESCE(u.display_name, ''),
+		        COALESCE((SELECT a.bio FROM agents a
+		                   WHERE a.owner_user_id = u.id AND a.kind <> 'house'
+		                   ORDER BY a.id ASC LIMIT 1), ''),
+		        COALESCE(u.avatar_url, ''), COALESCE(u.country, ''), u.segment, u.created_at
+		 FROM users u
+		 WHERE u.public_id = $1 OR u.username = $1
+		 ORDER BY (u.public_id = $1) DESC
 		 LIMIT 1`, handle).
-		Scan(&id.UserPublicID, &id.Username, &id.DisplayName, &id.AvatarURL, &id.Country, &id.Segment, &id.DeveloperSince)
+		Scan(&id.UserPublicID, &id.Username, &id.DisplayName, &id.Bio, &id.AvatarURL, &id.Country, &id.Segment, &id.DeveloperSince)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return devprofile.Identity{}, false, nil
 	}
@@ -397,6 +404,21 @@ func likeEscape(s string) string {
 	return rep.Replace(s)
 }
 
+// DirectoryCount is how many developers match, ignoring the page.
+//
+// Needed because the directory could only offer "load more": with no total, the UI cannot
+// say how many results there are, cannot number pages, and cannot tell a visitor whether
+// they are looking at 20 developers or the first 20 of 400. It wraps the same base query so
+// the count and the rows can never disagree about what "matching" means — a count computed
+// from a second, hand-maintained WHERE clause is a number that goes wrong quietly.
+func (r *DevProfileRepo) DirectoryCount(ctx context.Context, season int, q string) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM (`+directoryBaseSQL+`) matched`,
+		season, likeEscape(q)).Scan(&n)
+	return n, err
+}
+
 func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]devprofile.DirectoryRow, error) {
 	// "top": developers who have actually played rank first (that is what the landing
 	// spotlight wants), then by P-Index, then by volume. "recent": newest first.
@@ -436,36 +458,52 @@ func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort stri
 //
 // `bio` lives only on agents, so it is written there in the same transaction, keyed to
 // the developer's oldest non-house agent so it stays put when they add more.
-func (r *DevProfileRepo) SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error {
+//
+// nil fields are left alone. COALESCE($n, column) does that in one statement rather than
+// building SQL per combination of present fields: a nil pointer marshals to NULL, and
+// COALESCE(NULL, display_name) is the value already there.
+func (r *DevProfileRepo) SetProfile(ctx context.Context, userPublicID string, displayName, bio, avatarURL *string) error {
+	// Nothing to do — and importantly not an error: a caller that computed an empty
+	// patch should get a successful no-op, not a failed save to retry.
+	if displayName == nil && bio == nil && avatarURL == nil {
+		return nil
+	}
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	ct, err := tx.Exec(ctx,
-		`UPDATE users SET display_name = $2, avatar_url = $3, updated_at = now()
-		  WHERE public_id = $1`,
-		userPublicID, displayName, avatarURL)
-	if err != nil {
-		return err
-	}
-	if ct.RowsAffected() == 0 {
-		return httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+	if displayName != nil || avatarURL != nil {
+		ct, err := tx.Exec(ctx,
+			`UPDATE users
+			    SET display_name = COALESCE($2, display_name),
+			        avatar_url   = COALESCE($3, avatar_url),
+			        updated_at   = now()
+			  WHERE public_id = $1`,
+			userPublicID, displayName, avatarURL)
+		if err != nil {
+			return err
+		}
+		if ct.RowsAffected() == 0 {
+			return httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+		}
 	}
 
 	// Best-effort: a developer with no agent yet still gets a name and a photo. Only
 	// the bio has nowhere to go, and refusing the whole save for that would block
 	// onboarding on a field nobody has filled in yet.
-	if _, err := tx.Exec(ctx, `
-		UPDATE agents SET bio = $2, updated_at = now()
-		 WHERE id = (
-		   SELECT a.id FROM agents a
-		    WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		      AND a.kind <> 'house'
-		    ORDER BY a.id ASC LIMIT 1
-		 )`, userPublicID, bio); err != nil {
-		return err
+	if bio != nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE agents SET bio = $2, updated_at = now()
+			 WHERE id = (
+			   SELECT a.id FROM agents a
+			    WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
+			      AND a.kind <> 'house'
+			    ORDER BY a.id ASC LIMIT 1
+			 )`, userPublicID, *bio); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -489,6 +527,25 @@ func (r *DevProfileRepo) ConnectedWallet(ctx context.Context, userPublicID strin
 	err := r.db.QueryRow(ctx,
 		`SELECT COALESCE(NULLIF(wallet_address, ''), NULLIF(verified_wallet_address, ''), '')
 		   FROM users WHERE public_id = $1`,
+		userPublicID).Scan(&addr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return addr, err
+}
+
+// VerifiedWallet returns ONLY the ownership-proven payout address — the one the developer
+// signed a challenge for — or "" when they have not proven one.
+//
+// Strictly narrower than ConnectedWallet above, and the two are now separate checklist
+// steps because they are separate pieces of work with separate consequences: connecting
+// shares a public address, while verifying is what makes a payout possible at all. Rolling
+// them into one step meant a developer read 100% complete and then discovered at the
+// moment of cashing out that there was another thing to do.
+func (r *DevProfileRepo) VerifiedWallet(ctx context.Context, userPublicID string) (string, error) {
+	var addr string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(verified_wallet_address, '') FROM users WHERE public_id = $1`,
 		userPublicID).Scan(&addr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil

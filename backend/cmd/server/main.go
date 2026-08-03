@@ -65,6 +65,7 @@ import (
 	"github.com/agent-arena/arena/internal/rating"
 	"github.com/agent-arena/arena/internal/sandbox"
 	"github.com/agent-arena/arena/internal/sdkstats"
+	"github.com/agent-arena/arena/internal/seedadmin"
 	"github.com/agent-arena/arena/internal/secretbox"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/solanadeposit"
@@ -617,16 +618,22 @@ func run() error {
 
 	// A developer's read-back of their OWN agent's traces. Ownership is resolved
 	// here (Postgres is the only place that knows it) and the visibility allowlist
-	// is applied twice — see internal/devtrace. Unconfigured Lens = the routes
-	// answer 503 rather than the arena failing to start.
+	// is applied twice — see internal/devtrace.
 	//
-	// The READ key is PyyolLensQueryAPIKey, not the ingest key: the Lens gates its two
-	// planes on separate secrets, so sending the ingest key here 401s every read.
-	devTraceHandler := devtrace.NewHandler(
-		devtrace.New(store.NewDevTraceRepo(st.DB), cfg.PyyolLensQueryEndpoint,
-			cfg.PyyolLensQueryAPIKey, cfg.PyyolLensOrg, log),
-		authn,
-	)
+	// The PRIMARY source is the arena's own match log, wired via SetLocalRepo. The Lens is
+	// enrichment on top: it adds connection lifecycle and endpoint checks, and when it is
+	// unconfigured, unreachable, or refusing our key the page still shows every decision,
+	// every line of table talk and every result, because those come from Postgres. Before
+	// this, /traces had exactly the availability of a separate service on a separate host
+	// and spent most of its life reporting that the trace store was unreachable.
+	//
+	// The Lens READ key is PyyolLensQueryAPIKey, not the ingest key: it gates its two planes
+	// on separate secrets, so sending the ingest key here 401s every read.
+	devTraceRepo := store.NewDevTraceRepo(st.DB)
+	devTraceSvc := devtrace.New(devTraceRepo, cfg.PyyolLensQueryEndpoint,
+		cfg.PyyolLensQueryAPIKey, cfg.PyyolLensOrg, log)
+	devTraceSvc.SetLocalRepo(devTraceRepo)
+	devTraceHandler := devtrace.NewHandler(devTraceSvc, authn)
 
 	// All event handlers are now registered — start the dispatcher (see the NOTE at
 	// its handler-registration block above).
@@ -992,6 +999,13 @@ func run() error {
 	// behind them. Without it a money support ticket ends in someone with database
 	// access pasting a screenshot.
 	adminReadHandler.SetWalletRepo(store.NewAdminWalletRepo(st.DB))
+	// The operator's per-user AGENT view: each agent's guardrails and how close it is to
+	// hitting them. "Why did my agent stop playing" is almost always a limit doing its job,
+	// and no operator surface could see a single one of those limits — so the only visible
+	// fact was an unspent balance, which points at a fault that does not exist. Read-only:
+	// seeing a developer's risk settings is support, changing them is deciding how much of
+	// someone else's money to stake.
+	adminReadHandler.SetAgentsRepo(store.NewAdminAgentsRepo(st.DB))
 	if solvencyMonitor != nil {
 		adminReadHandler.SetTreasury(solvencyMonitor)
 	}
@@ -1283,6 +1297,42 @@ func run() error {
 	} else {
 		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
 	}
+
+	// THE OPERATOR'S OWN LOGIN, provisioned at boot.
+	//
+	// Admin rights come from ADMIN_USER_IDS, which cannot name an account that does not exist
+	// yet — so the first admin on a fresh deployment had to be created by hand against the
+	// database, and a CI/CD deploy could never produce a usable one. Seeding here closes that
+	// with no extra deploy step and no shell in the distroless image.
+	//
+	// Disabled unless both env vars are set, so any deployment that does not want it is
+	// untouched. Best-effort: a seed failure is logged loudly and does not stop boot, because
+	// refusing to serve the arena over a failed convenience is the wrong trade.
+	if cfg.SeedAdminEmail != "" && cfg.SeedAdminPassword != "" {
+		if res, serr := seedadmin.Run(ctx, st.DB, cfg.SeedAdminEmail, cfg.SeedAdminPassword,
+			cfg.SeedAdminUserID, cfg.APIKeyPepper); serr != nil {
+			log.Error("operator account seed failed", "email", cfg.SeedAdminEmail, "err", serr)
+		} else {
+			// Whether the id is actually trusted is worth stating: seeding the account and
+			// granting it admin are two separate decisions, and getting the second one wrong
+			// produces a login that works and can see nothing.
+			admin := false
+			for _, id := range cfg.AdminUserIDs {
+				if id == res.UserPublicID {
+					admin = true
+					break
+				}
+			}
+			log.Info("operator account seeded", "user", res.UserPublicID, "email", cfg.SeedAdminEmail,
+				"created", res.Created, "in_admin_allowlist", admin)
+			if !admin {
+				log.Warn("operator account is NOT in ADMIN_USER_IDS — it can sign in but has no admin rights",
+					"user", res.UserPublicID,
+					"fix", "add "+res.UserPublicID+" to ADMIN_USER_IDS")
+			}
+		}
+	}
+
 	docsHandler := docs.NewHandler(docsRepo)
 	docsAdminHandler := docs.NewAdminHandler(docsRepo, authn, cfg.AdminUserIDs)
 
@@ -1312,11 +1362,32 @@ func run() error {
 				RakePct: cfg.RakePct, DepositFeePct: cfg.DepositFeePct,
 				WithdrawFeePct: cfg.WithdrawSellFeePct, CoinCents: cfg.CoinCents,
 				MinStakeUSDCents: cfg.MinStakeUSDCents,
+				// The cash-out floor. Published for the same reason the rake is: it is a
+				// price-list fact the user is refused by. Withheld, the withdrawal form
+				// happily accepted 100 coins and the server rejected it as too small with
+				// nothing on the screen ever having mentioned a minimum.
+				MinWithdrawalCoins: cfg.WithdrawMinCoins,
 			}
 			if platformCfg != nil {
-				ec := platformCfg.Get().Economy
+				snap := platformCfg.Get()
+				ec := snap.Economy
 				e.RakePct, e.DepositFeePct = ec.PlatformCommissionPct, ec.DepositFeePct
 				e.WithdrawFeePct, e.MinStakeUSDCents = ec.WithdrawFeePct, ec.MinStakeUSDCents
+				// Bounded accessor. Superseded below when the Super Admin gate is wired.
+				e.MinWithdrawalCoins = snap.MinWithdrawalCoins(cfg.WithdrawMinCoins, cfg.CoinCents)
+			}
+			// PUBLISH THE FIGURE THAT IS ACTUALLY ENFORCED. payout.Service only falls back
+			// to the env floor when no gate is wired (`if s.gate == nil && coins <
+			// s.minCoins()`); with the gate present, walletadmin's MinWithdrawCoins is the
+			// number that refuses a request. Publishing the env value instead would put a
+			// different minimum on the form than the one the server applies — the same
+			// class of bug as publishing none, since the user is still refused by a figure
+			// they were never shown. Read is cached inside walletadmin; an error leaves
+			// the value already set above.
+			if walletAdminSvc != nil {
+				if st, err := walletAdminSvc.Settings(context.Background()); err == nil && st.MinWithdrawCoins > 0 {
+					e.MinWithdrawalCoins = st.MinWithdrawCoins
+				}
 			}
 			return e
 		}),
@@ -1814,6 +1885,25 @@ func (b payoutBank) Hold(ctx context.Context, withdrawalID, agentPublicID string
 		Postings: []ledger.Posting{
 			{Wallet: ledger.AgentWallet(agentPublicID), Amount: -coins},
 			{Wallet: ledger.SystemWallet(ledger.SysEscrow), Amount: coins},
+		},
+	})
+	return err
+}
+
+// SweepFromTreasury moves the owner's treasury coins onto the agent's wallet so the
+// escrow hold below can debit them. Same two postings as wallet.Allocate — this is that
+// move, initiated by the payout path instead of by the owner — but keyed on the
+// withdrawal id so a retried request cannot move the treasury twice.
+func (b payoutBank) SweepFromTreasury(ctx context.Context, withdrawalID, ownerUserPublicID, agentPublicID string, coins int64) error {
+	_, err := b.l.Post(ctx, ledger.Txn{
+		Kind: ledger.KindAllocate, Key: "wh-sweep:" + withdrawalID,
+		Metadata: map[string]any{
+			"withdrawal": withdrawalID, "user": ownerUserPublicID,
+			"agent": agentPublicID, "coins": coins, "reason": "withdrawal_funding",
+		},
+		Postings: []ledger.Posting{
+			{Wallet: ledger.UserWallet(ownerUserPublicID), Amount: -coins},
+			{Wallet: ledger.AgentWallet(agentPublicID), Amount: coins},
 		},
 	})
 	return err

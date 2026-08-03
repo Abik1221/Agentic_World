@@ -75,15 +75,40 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 		t.Fatalf("verify: code=%d verified=%v", code, rep.Verified)
 	}
 
-	// 3. Certified agent → ranked queue is now OPEN (202 accepted). Mint the stake
-	// first: enqueue runs an affordability preflight, so the agent must be able to
-	// cover the chosen tier's coins (Low = 100).
-	// Platform token, not the developer's own — see platformToken().
-	if code := c.do(http.MethodPost, "/v1/admin/mint", platformToken(), map[string]any{"agent": su.AgentID, "amount": 500}, nil); code != http.StatusOK {
-		t.Fatalf("mint stake: got %d", code)
+	// 3. Certified agent → ranked queue is now OPEN (202 accepted).
+	//
+	// Fund it FIRST, because enqueue runs an affordability preflight. The amount is
+	// deliberately far above any tier rather than matched to one: this test is about the
+	// CERTIFICATION gate, and affordability must never be able to be the reason it fails.
+	//
+	// It used to mint exactly 500 with the comment "Low = 100", and both halves were wrong
+	// by the time it ran. Migration 0038 seeds goofspiel Low at 100 coins, but the live $5
+	// minimum-stake floor (gamestakes.DefaultMinStakeUSDCents, 500 cents at a 1¢ peg) lifts
+	// it to 500 — so the stake was 500, the agent's default reserve is 50, and 500 < 550
+	// refused the join. A test that pins its funding to a policy number it does not control
+	// breaks the moment an operator moves that policy; this one cannot.
+	//
+	// Platform token, not the developer's own — see platformToken(). Sent with the PLATFORM
+	// scheme via doPlatform: as a Bearer it is parsed as a user JWT and rejected 401, which
+	// is what was failing this test and the whole E2E job.
+	const fundAmount = 100_000 // >> the highest seeded tier (2,000) + any reserve
+	if code := c.doPlatform(http.MethodPost, "/v1/admin/mint", map[string]any{"agent": su.AgentID, "amount": fundAmount}, nil); code != http.StatusOK {
+		t.Fatalf("mint stake: got %d, want 200", code)
 	}
-	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, nil); code != http.StatusAccepted {
-		t.Fatalf("certified enqueue: expected 202, got %d", code)
+	// The failure body is decoded and reported, not just the status. A bare "expected 202,
+	// got 402" says nothing about WHICH preflight refused — and the enqueue path runs four
+	// of them (certification, affordability, owner limits, reachability), each with its own
+	// code and its own fix.
+	var enqErr struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, &enqErr); code != http.StatusAccepted {
+		t.Fatalf("certified enqueue: expected 202, got %d — code=%q message=%q details=%v",
+			code, enqErr.Error.Code, enqErr.Error.Message, enqErr.Error.Details)
 	}
 	_ = c.do(http.MethodDelete, "/v1/queue", su.APIKey, nil, nil) // cleanup
 	t.Logf("gate OK: uncertified blocked, certified admitted (agent=%s)", su.AgentID)

@@ -7,9 +7,17 @@ import (
 
 // Identity is a developer's public identity card.
 type Identity struct {
-	UserPublicID   string    `json:"developer"`
-	Username       string    `json:"username,omitempty"`
-	DisplayName    string    `json:"display_name,omitempty"`
+	UserPublicID string `json:"developer"`
+	Username     string `json:"username,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	// Bio is the developer's own description of how their agent plays.
+	//
+	// It was WRITEABLE and unreadable: SetProfile persisted it (onto the oldest
+	// non-house agent, the only table with the column) and nothing ever selected it
+	// back. So the profile editor had no way to show what was saved — on a second
+	// device it rendered an empty box over a stored value — and the public profile
+	// could not display a bio at all. Returned here so the write has a matching read.
+	Bio            string    `json:"bio,omitempty"`
 	AvatarURL      string    `json:"avatar_url,omitempty"`
 	Country        string    `json:"country,omitempty"`
 	Segment        string    `json:"segment"`
@@ -155,6 +163,9 @@ type Repo interface {
 	// they have a P-Index yet. sort is "top" (played-first, then P-Index) or "recent"
 	// (newest signups first).
 	Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]DirectoryRow, error)
+	// DirectoryCount is how many developers match `q`, ignoring paging — so the UI can
+	// number pages and say "412 developers" instead of only offering "load more".
+	DirectoryCount(ctx context.Context, season int, q string) (int, error)
 	SetUsername(ctx context.Context, userPublicID, username string) error
 	// SetProfile writes the developer's PUBLIC identity — the name, bio and avatar
 	// other developers see on their profile. These columns existed since 0019 and were
@@ -162,7 +173,11 @@ type Repo interface {
 	// kept all three in localStorage, so a developer's own browser showed one identity
 	// and everyone else saw an empty one. Clearing site data, or simply opening the
 	// site on a second machine, lost it entirely.
-	SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error
+	//
+	// Each field is optional: nil leaves the stored value untouched. Plain strings
+	// here meant an omitted field arrived as "" and cleared the column, so a client
+	// editing one field silently erased the other two.
+	SetProfile(ctx context.Context, userPublicID string, displayName, bio, avatarURL *string) error
 	Follow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
 	Unfollow(ctx context.Context, followerUserPublicID, followeeUserPublicID string) error
 	// IsFollowing answers "does the viewer already follow this developer".

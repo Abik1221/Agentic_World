@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,10 +41,14 @@ type Repo interface {
 	OwnedAgentIDs(ctx context.Context, userPublicID string) ([]string, error)
 }
 
-// Service reads a developer's own agent activity out of the Lens.
+// Service reads a developer's own agent activity.
 type Service struct {
-	repo     Repo
-	endpoint string // Lens query-api base URL; empty disables the feature
+	repo Repo
+	// local is the arena's own match log (Postgres) — the PRIMARY source. See local.go
+	// for why: the page must not have the availability of a separate telemetry service.
+	// Nil ⇒ Lens-only (the original behaviour, and the one that fails when the Lens does).
+	local    LocalRepo
+	endpoint string // Lens query-api base URL; empty disables the enrichment
 	apiKey   string
 	org      string
 	client   *http.Client
@@ -100,10 +105,13 @@ type Entry struct {
 // agentPublicID may be empty, meaning "all of my agents". That case still resolves to
 // an explicit list of owned ids — it is never translated into an unfiltered query.
 func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID string, since time.Time, limit int) ([]Entry, error) {
-	if !s.Enabled() {
-		// Not a fault: this deployment has no trace store wired. Distinct from both
-		// "down" and "refusing us", because the honest answer to a developer is
-		// "not here", and no amount of waiting changes it.
+	// The old first line of this function was a hard `if !s.Enabled() { return 503 }`, so
+	// with no Lens configured — the default, since the read endpoint had no fallback — the
+	// page could only ever say "traces are not enabled in this environment". The arena's own
+	// match log was sitting right there the whole time. Postgres is now the primary source
+	// and the Lens adds to it; a missing or broken Lens degrades the page, it does not
+	// empty it.
+	if s.local == nil && !s.Enabled() {
 		return nil, httpx.NewError(http.StatusServiceUnavailable, "traces_unconfigured",
 			"Agent traces are not enabled in this environment.")
 	}
@@ -134,6 +142,29 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 		return []Entry{}, nil
 	}
 
+	// THE ARENA'S OWN LOG FIRST. Always available, always consistent with the match
+	// results the developer can see, and it needs no external service.
+	var localEntries []Entry
+	if s.local != nil {
+		localEntries, err = s.localActivity(ctx, actors, since, limit)
+		if err != nil {
+			// Log and carry on to the Lens: a failed local read should not take out a page
+			// that a working Lens could still fill.
+			s.log.Error("devtrace: local match-log read failed", "error", err)
+			localEntries = nil
+		}
+	}
+
+	// The Lens is enrichment from here. Not configured is not an error when we already
+	// have the arena's own account of what happened.
+	if !s.Enabled() {
+		if s.local != nil {
+			return localEntries, nil
+		}
+		return nil, httpx.NewError(http.StatusServiceUnavailable, "traces_unconfigured",
+			"Agent traces are not enabled in this environment.")
+	}
+
 	// GATE 2 — visibility. The allowlist is the single source of truth; this package
 	// never enumerates event types itself.
 	visible := telemetry.DevVisibleEventTypes()
@@ -151,13 +182,27 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 	req.Header.Set("X-Pyyol-Key", s.apiKey)
 	req.Header.Set("x-organization-id", s.org)
 
+	// degrade returns the arena's own entries when the Lens cannot be read, and the stated
+	// fault only when there is nothing else to show.
+	//
+	// This is the whole point of the local source. A telemetry service being down is not a
+	// reason to withhold the match log the arena wrote itself — the developer's question
+	// ("what did my agent do") is answerable either way, and answering it while quietly
+	// missing the Lens-only extras is strictly better than an error page.
+	degrade := func(fault error) ([]Entry, error) {
+		if s.local != nil {
+			return localEntries, nil
+		}
+		return nil, fault
+	}
+
 	resp, err := s.client.Do(req)
 	if err != nil {
 		// Genuinely could not talk to it: DNS, refused, timed out. Retrying is the
 		// right advice, and this is the ONLY case where it is.
 		s.log.Warn("devtrace: trace store unreachable", "endpoint", s.endpoint, "error", err)
-		return nil, httpx.NewError(http.StatusBadGateway, "traces_unreachable",
-			"Could not reach the trace store. Try again shortly.")
+		return degrade(httpx.NewError(http.StatusBadGateway, "traces_unreachable",
+			"Could not reach the trace store. Try again shortly."))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -175,11 +220,11 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 			"body", strings.TrimSpace(string(body)),
 			"hint", "PYYOL_LENS_QUERY_API_KEY must equal the Lens QUERY_API_KEY (not INGEST_API_KEY), and PYYOL_LENS_ORG its organization id")
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return nil, httpx.NewError(http.StatusBadGateway, "traces_misconfigured",
-				"Traces are not readable in this environment — the arena is not authorized against the trace store. This is ours to fix, not yours.")
+			return degrade(httpx.NewError(http.StatusBadGateway, "traces_misconfigured",
+				"Traces are not readable in this environment — the arena is not authorized against the trace store. This is ours to fix, not yours."))
 		}
-		return nil, httpx.NewError(http.StatusBadGateway, "traces_unreachable",
-			"Could not read traces. Try again shortly.")
+		return degrade(httpx.NewError(http.StatusBadGateway, "traces_unreachable",
+			"Could not read traces. Try again shortly."))
 	}
 
 	var body struct {
@@ -200,11 +245,11 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 		// A 200 whose body we cannot parse is a schema disagreement between two
 		// services, which is an operator problem wearing a developer-problem costume.
 		s.log.Error("devtrace: trace store returned an unreadable body", "endpoint", s.endpoint, "error", err)
-		return nil, httpx.NewError(http.StatusBadGateway, "traces_unreachable",
-			"Could not read traces. Try again shortly.")
+		return degrade(httpx.NewError(http.StatusBadGateway, "traces_unreachable",
+			"Could not read traces. Try again shortly."))
 	}
 
-	out := make([]Entry, 0, len(body.Events))
+	out := make([]Entry, 0, len(body.Events)+len(localEntries))
 	for _, e := range body.Events {
 		// Re-apply BOTH gates to what actually came back. If the remote filter was
 		// wrong, or the endpoint changes behaviour later, nothing the caller does not
@@ -224,6 +269,21 @@ func (s *Service) Activity(ctx context.Context, userPublicID, agentPublicID stri
 			Error:     e.Error,
 			Detail:    e.Payload,
 		})
+	}
+
+	// Both sources, newest first.
+	//
+	// They describe different things and do not duplicate each other: the arena's log has
+	// the moves, the reasoning and the outcome, while the Lens carries connection lifecycle
+	// and endpoint checks that never touch a match. The overlap that would matter — the same
+	// decision reported twice — cannot arise, because the local source derives decisions
+	// from round reveals (`agent_decision` with a card) while the Lens emits its own
+	// instrumented events; if a future Lens schema starts reporting rounds, dedupe belongs
+	// here, keyed on (match, agent, round).
+	out = append(out, localEntries...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out, nil
 }

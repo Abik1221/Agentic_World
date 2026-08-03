@@ -275,6 +275,24 @@ func (r *IdentityRepo) UpdateLimits(ctx context.Context, agentPublicID, ownerPub
 	return nil
 }
 
+// PrimaryAgentOf returns the owner's oldest non-house agent, or "" when they have none.
+//
+// House agents are excluded for the same reason they are everywhere else: they are
+// platform-run opponents, not the developer's work, and addressing one by default would let
+// an owner's guardrail save land on a bot they do not own.
+func (r *IdentityRepo) PrimaryAgentOf(ctx context.Context, ownerPublicID string) (string, error) {
+	var agent string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE((
+		    SELECT a.public_id FROM agents a
+		     WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
+		       AND a.kind <> 'house'
+		     ORDER BY a.created_at, a.id
+		     LIMIT 1
+		 ), '')`, ownerPublicID).Scan(&agent)
+	return agent, err
+}
+
 func (r *IdentityRepo) AgentByOwner(ctx context.Context, agentPublicID, ownerPublicID string) (identity.Agent, error) {
 	var a identity.Agent
 	var l identity.Limits

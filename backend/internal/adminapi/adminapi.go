@@ -222,6 +222,9 @@ type Handler struct {
 	// wallets serves the per-user money view (connected wallets, balances, ledger
 	// lines). Nil ⇒ those routes answer 503, never a misleading empty record.
 	wallets WalletRepo
+	// agentsRepo serves the per-user AGENT view: each agent's guardrails and how close it
+	// is to hitting them. Nil ⇒ that route answers 503 for the same reason.
+	agentsRepo AgentsRepo
 }
 
 // TreasuryReader exposes the solvency monitor's most recent reconciliation.
@@ -287,6 +290,7 @@ func (h *Handler) Register(r chi.Router) {
 		// One developer's wallets, balances and ledger lines — the facts a money
 		// support ticket actually turns on. See userwallet.go.
 		h.registerWallet(r, guard)
+		h.registerAgents(r, guard)
 	})
 }
 

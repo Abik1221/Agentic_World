@@ -171,6 +171,11 @@ func mountCapabilities(xClaim, deposits, devMode bool, cluster string, econ func
 					"withdrawal_fee_pct":  e.WithdrawFeePct,
 					"coin_cents":          e.CoinCents,
 					"min_stake_usd_cents": e.MinStakeUSDCents,
+					// The smallest cash-out the platform accepts. The withdrawal form needs
+					// this BEFORE the user picks an amount: without it the form validated
+					// only "> 0", let them submit, and the server refused as too small —
+					// a refusal with no number attached and nothing to correct.
+					"min_withdrawal_coins": e.MinWithdrawalCoins,
 				}
 			}
 			httpx.JSON(w, http.StatusOK, out)
@@ -187,6 +192,9 @@ type economics struct {
 	WithdrawFeePct   int
 	CoinCents        int64
 	MinStakeUSDCents int64
+	// MinWithdrawalCoins is the smallest accepted cash-out, in coins. Same figure
+	// payout.Service enforces, so the form and the refusal cannot disagree.
+	MinWithdrawalCoins int64
 }
 
 // mountAgentStatus serves GET /v1/agent/status?agent_id=… — is my agent connected

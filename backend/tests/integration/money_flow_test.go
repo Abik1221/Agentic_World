@@ -39,6 +39,28 @@ func newClient(t *testing.T) *client {
 // do issues a request (optionally authed) and decodes a JSON body into out.
 func (c *client) do(method, path, bearer string, body any, out any) int {
 	c.t.Helper()
+	return c.doAuth(method, path, "Bearer", bearer, body, out)
+}
+
+// doPlatform is do() with the PLATFORM auth scheme.
+//
+// A Platform token is not a Bearer credential. internal/auth reads it from
+// `Authorization: Platform <token>` and deliberately never falls through to the Bearer
+// paths — so sending one as a Bearer had it parsed as a user JWT, which failed, and every
+// call came back 401.
+//
+// That is exactly what was happening, and it broke the E2E job: the cert-gate test needs to
+// mint a stake and died on `mint stake: got 401`. The money-flow test made the same call and
+// SKIPPED on 401 with the message "PLATFORM_ADMIN_PUBLIC_KEY is not the e2e key" — which was
+// not true (the seed and the workflow's public key do match), and the skip is what let the
+// mistake sit here looking like an environment problem.
+func (c *client) doPlatform(method, path string, body any, out any) int {
+	c.t.Helper()
+	return c.doAuth(method, path, "Platform", platformToken(), body, out)
+}
+
+func (c *client) doAuth(method, path, scheme, cred string, body any, out any) int {
+	c.t.Helper()
 	var rdr *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -53,8 +75,8 @@ func (c *client) do(method, path, bearer string, body any, out any) int {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+	if cred != "" {
+		req.Header.Set("Authorization", scheme+" "+cred)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -113,15 +135,19 @@ func TestBuyCreditsWallet(t *testing.T) {
 	// Called with a Platform token, not the developer's dashboard token: mint is
 	// admin-guarded precisely so a self-registered developer cannot credit their own
 	// wallet, so the harness authenticates as the platform would.
-	code := c.do(http.MethodPost, "/v1/admin/mint", platformToken(), map[string]any{"agent": agentID, "amount": 500}, nil)
+	code := c.doPlatform(http.MethodPost, "/v1/admin/mint", map[string]any{"agent": agentID, "amount": 500}, nil)
 	if code == 404 {
 		t.Skip("mint disabled (ALLOW_MINT=false); enable it or wire Stripe test mode to run this")
 	}
-	if code == 401 || code == 403 {
-		t.Skipf("mint rejected the platform token (%d) — PLATFORM_ADMIN_PUBLIC_KEY is not the e2e key", code)
-	}
+	// 401/403 is a FAILURE, not a skip.
+	//
+	// It used to skip with "PLATFORM_ADMIN_PUBLIC_KEY is not the e2e key", and that guess was
+	// wrong — the seed here and the workflow's public key are a matching pair (verified). The
+	// real cause was this call sending a Platform token under the Bearer scheme. Skipping on
+	// an auth rejection turned a broken harness into a green run, so the one test that did
+	// fail on it (cert_gate) looked like the odd one out.
 	if code != 200 {
-		t.Fatalf("mint = %d, want 200", code)
+		t.Fatalf("mint = %d, want 200 (a Platform token must be sent as `Authorization: Platform …`)", code)
 	}
 
 	var w struct {
@@ -132,6 +158,35 @@ func TestBuyCreditsWallet(t *testing.T) {
 	}
 	if w.Balance < 500 {
 		t.Fatalf("balance = %d, want >= 500 after mint", w.Balance)
+	}
+
+	// THE SAME READ WITH A DASHBOARD TOKEN AND NO ?agent=.
+	//
+	// `dash` was captured here and never used, which is why this file did not compile and
+	// the whole E2E job failed at the build step — so nothing in this package had run for
+	// however long that had been true.
+	//
+	// Filling it in with the case that was actually missing: a user-scoped token carries no
+	// agent id, so this used to 400 unless the caller named an agent — and the browser's
+	// only source for that name was a cookie written at login. On a second device, after
+	// clearing cookies, or on a session restored from a refresh token it was absent, so the
+	// Strategy page read no limits (rendering every guardrail as 0) and saving them came
+	// back "Failed to save config". The server resolves the caller's own agent now, and
+	// this is the black-box proof of it.
+	var byUser struct {
+		Agent   string `json:"agent"`
+		Balance int64  `json:"balance"`
+	}
+	if code := c.do(http.MethodGet, "/v1/wallet", dash, nil, &byUser); code != 200 {
+		t.Fatalf("wallet with a dashboard token and no ?agent= = %d, want 200 — a user must be "+
+			"able to read their own wallet without naming the agent", code)
+	}
+	if byUser.Agent != agentID {
+		t.Fatalf("resolved agent = %q, want the caller's own agent %q", byUser.Agent, agentID)
+	}
+	if byUser.Balance != w.Balance {
+		t.Fatalf("balance via dashboard token = %d, via agent key = %d — the same wallet must "+
+			"read the same either way", byUser.Balance, w.Balance)
 	}
 }
 

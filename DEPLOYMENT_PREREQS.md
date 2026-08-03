@@ -61,3 +61,71 @@ auto-apply as before.
 - Admin "send notification" doesn't deliver (no channel/push endpoint yet).
 - Tracing control-api endpoints (Alerts/Settings/etc.) are stubs — their nav
   entries are hidden; routes exist but return empty.
+
+## 8. Operator logins (the admin panel and the tracing dashboard)
+
+Both are provisioned entirely from **GitHub repository secrets**. Nothing here is a
+literal in the repo, deliberately: anything committed is in the history of every
+clone, permanently, on a platform that moves real USDC.
+
+### 8.1 Arena admin
+
+Admin rights are granted by `ADMIN_USER_IDS`, a list of user **public ids** checked
+by `auth.IsAdmin`. That list cannot name an account that does not exist yet, so the
+first admin on a fresh deployment previously had to be created by hand against the
+database — a CI/CD deploy could never produce a usable one.
+
+The server now seeds it at boot (`internal/seedadmin`, called from `cmd/server`)
+when both secrets are present. The account's public id is **deterministic**, so
+`ADMIN_USER_IDS` can name it *before* it exists:
+
+| Secret                | Required | Notes                                                   |
+| --------------------- | -------- | ------------------------------------------------------- |
+| `SEED_ADMIN_EMAIL`    | yes      | what you type to log in                                 |
+| `SEED_ADMIN_PASSWORD` | yes      | ≥ 8 and ≤ 72 bytes (bcrypt truncates past 72)           |
+| `SEED_ADMIN_USER_ID`  | no       | defaults to `usr_pyyoladmin`                            |
+| `ADMIN_USER_IDS`      | no       | defaults to `usr_pyyoladmin`; set it to add more admins |
+
+Both `SEED_ADMIN_*` empty ⇒ nothing is seeded, and the deployment is unchanged.
+
+Properties worth knowing:
+
+- **Idempotent.** Every deploy re-runs it; you get one account. An existing account
+  has its password reset and its status reactivated — which is the point, because
+  the reason you reach for this is usually "I cannot get in".
+- **Seeding ≠ admin.** The account is created either way; it only holds admin
+  rights if its id is in `ADMIN_USER_IDS`. Boot logs `in_admin_allowlist` and warns
+  loudly when it is false, because a login that works and can see nothing is the
+  confusing failure.
+- **No agent is created.** An operator account is for operating, and an admin who
+  also owns a competing agent is a conflict nobody needs.
+- The password is hashed through `identity.HashPassword`, i.e. bcrypt over an HMAC
+  with the server's `API_KEY_PEPPER`. Change the pepper and every seeded password
+  stops verifying — the next deploy re-seeds and fixes it.
+
+An internal-style login without a dotted domain (`pyyol@admin`) works. Public
+**sign-up** still requires a real dotted domain; only the login lookup accepts the
+address exactly as stored, so an address like that can exist only if you seeded it.
+
+### 8.2 Tracing dashboard (Pyyol Lens)
+
+Already wired — it needs secrets, not code. `deploy-tracing.yml` fails closed if
+the password or session secret is missing.
+
+| Secret                      | Required | Notes                          |
+| --------------------------- | -------- | ------------------------------ |
+| `PYYOL_LENS_AUTH_USER`      | no       | defaults to `admin`            |
+| `PYYOL_LENS_AUTH_PASSWORD`  | yes      | **unset ⇒ the dashboard is OPEN** |
+| `PYYOL_LENS_SESSION_SECRET` | yes      | ≥ 16 chars; signs the session  |
+
+⚠️ `PYYOL_LENS_AUTH_PASSWORD` unset means **no login at all** — the panel is a
+documented dev/behind-VPN mode. It shows agent decisions and reasoning, so treat an
+unset password as a disclosure, not a convenience. The workflow's `:?` guards make
+this impossible to do by accident through CI; it is only reachable by running the
+compose file by hand.
+
+### 8.3 Rotating either password
+
+Change the secret and re-run the deploy. The arena re-seeds on boot; the Lens reads
+its password from the environment on every check, and its session cookies rotate
+automatically because the signing fallback is derived from the password.

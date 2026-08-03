@@ -802,9 +802,23 @@ async function cmdProfile(a: Args): Promise<number> {
   const dev = p.developer ?? {};
   const pidx = p.p_index ?? {};
   const stats = p.stats ?? {};
-  console.log(`@${dev.username ?? dev.developer ?? "?"}`);
+
+  // The NAME, then the handle. This printed only "@handle", so `pyyol profile` could not
+  // tell you who a developer was — the one thing a profile command is for. The name is
+  // omitted when it is unset rather than substituting the public id, which is not a name.
+  const name = (dev.display_name ?? "").trim();
+  const handleLine = `@${dev.username ?? dev.developer ?? "?"}`;
+  console.log(name ? `${name}  ${handleLine}` : handleLine);
+
+  // The bio. It has been storable since the profile editor shipped and was readable
+  // nowhere: the column lived on `agents` and nothing selected it back, so a developer
+  // wrote a description of how their agent plays and it appeared on no surface at all.
+  const bio = (dev.bio ?? "").trim();
+  if (bio) console.log(`  ${bio}`);
+
   if (pidx.p_index !== undefined)
     console.log(`  P-Index   ${pidx.p_index}  (rank #${pidx.global_rank}, top ${pidx.percentile}%)`);
+  else console.log("  P-Index   unranked — no ranked matches yet");
   console.log(`  Record    ${stats.wins ?? 0}W-${stats.losses ?? 0}L-${stats.draws ?? 0}D over ${stats.total_matches ?? 0} matches`);
   if (stats.favorite_arena) console.log(`  Favorite  ${stats.favorite_arena}`);
   console.log(`  Agents    ${(p.agents ?? []).length}   Followers ${p.followers ?? 0}`);

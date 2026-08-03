@@ -3,7 +3,6 @@ package devprofile
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -242,28 +241,40 @@ func (h *Handler) setUsername(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"username": body.Username})
 }
 
+// setProfile is a PATCH in POST's clothing: every field is a pointer, and an omitted
+// field is left exactly as it was.
+//
+// This used to take plain strings, where an omitted field decoded as "" and "" meant
+// "clear it". That turned a partial write into a destructive one, and the client made
+// exactly that write: editing only the display name posted the whole identity, with an
+// empty avatar_url whenever the browser had no stored URL to send. So renaming your
+// agent on a laptop deleted the photo you had uploaded from a phone. Ownership of "which
+// fields am I changing" belongs to the caller; ownership of "an absent field changes
+// nothing" belongs here, where no client can get it wrong.
+//
+// Clearing a field is still possible — send it explicitly as "" — because a developer
+// must be able to remove a bio or a photo, not only replace it.
 func (h *Handler) setProfile(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var body struct {
-		DisplayName string `json:"display_name"`
-		Bio         string `json:"bio"`
-		AvatarURL   string `json:"avatar_url"`
+		DisplayName *string `json:"display_name"`
+		Bio         *string `json:"bio"`
+		AvatarURL   *string `json:"avatar_url"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.SetProfile(r.Context(), p.UserPublicID, body.DisplayName, body.Bio, body.AvatarURL); err != nil {
+	id, err := h.svc.SetProfile(r.Context(), p.UserPublicID, body.DisplayName, body.Bio, body.AvatarURL)
+	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	// Echo what was STORED, not what was sent: the service trims, so a client that
-	// redisplays the response shows the value that actually persisted.
-	httpx.JSON(w, http.StatusOK, map[string]any{
-		"display_name": strings.TrimSpace(body.DisplayName),
-		"bio":          strings.TrimSpace(body.Bio),
-		"avatar_url":   strings.TrimSpace(body.AvatarURL),
-	})
+	// Echo the STORED identity — read back after the write, not reflected from the
+	// request. A client that redisplays this response shows the values that actually
+	// persisted, including the ones it did not send.
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, id)
 }
 
 // followState serves GET /v1/developers/{handle}/follow — "do I follow them, and how

@@ -56,8 +56,17 @@ func (s *Service) CheckJoin(ctx context.Context, agentPublicID string, bid int64
 	// 2. bid ≤ coin_limit_per_match
 	if bid > lim.CoinLimitPerMatch {
 		s.m.limitBlock.WithLabelValues(limitPerMatch).Inc()
-		return block(limitPerMatch, fmt.Sprintf("Bid %d exceeds the per-match limit of %d.", bid, lim.CoinLimitPerMatch),
-			map[string]any{"bid": bid, "max": lim.CoinLimitPerMatch})
+		// Says what to DO. "Bid 500 exceeds the per-match limit of 100" is a true sentence
+		// that leaves the reader stuck: it names two numbers and no action, and the number
+		// they can actually change is not identifiable from it. This was the first thing
+		// every new developer hit on their first ranked join (their default per-match limit
+		// was below the cheapest table's stake — see migration 0070), so it is worth the
+		// extra clause.
+		return block(limitPerMatch,
+			fmt.Sprintf("This table stakes %d coins, which is above your per-match limit of %d. "+
+				"Raise \"Coin limit / match\" in Strategy to at least %d to play it.",
+				bid, lim.CoinLimitPerMatch, bid),
+			map[string]any{"bid": bid, "max": lim.CoinLimitPerMatch, "setting": "coin_limit_per_match"})
 	}
 	// 3. today's losses < daily_loss_limit
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
@@ -261,6 +270,23 @@ func toHistoryLines(lines []ledger.Line, offset, lim int) ([]HistoryLine, int, e
 // OwnerOf exposes the agent→owner lookup for read authorization in the handler.
 func (s *Service) OwnerOf(ctx context.Context, agentPublicID string) (string, error) {
 	return s.repo.OwnerOf(ctx, agentPublicID)
+}
+
+// PrimaryAgent is the owner's first agent, or "" when they have none.
+//
+// Lets a user-scoped request omit ?agent=: the server knows which agents an account has, and
+// requiring the browser to supply one meant the answer came from a cookie that any number of
+// ordinary situations leaves unset. OwnerAgents is already ordered by created_at, so
+// "primary" is stable — it does not change when the developer adds a second agent.
+func (s *Service) PrimaryAgent(ctx context.Context, userPublicID string) (string, error) {
+	agents, err := s.repo.OwnerAgents(ctx, userPublicID)
+	if err != nil {
+		return "", err
+	}
+	if len(agents) == 0 {
+		return "", nil
+	}
+	return agents[0].PublicID, nil
 }
 
 func nonNeg(v int64) int64 {

@@ -46,6 +46,20 @@ func hashPassword(password, pepper string) (string, error) {
 	return string(h), nil
 }
 
+// HashPassword is hashPassword, exported for the operator-account seeder
+// (cmd/seed-admin), which has to write users.password_hash outside the service.
+//
+// Exported rather than reimplemented on purpose. A stored password is only usable if it was
+// hashed the way LogIn verifies it, and that is not plain bcrypt — the password is first
+// HMAC-ed with the server's pepper (see pepperedDigest). The seeder's first version used
+// bare bcrypt and produced an account whose password was silently wrong: the row looked
+// perfect, and every login attempt returned "invalid credentials" with nothing to point at.
+// One implementation means that cannot happen again.
+//
+// The `pepper` MUST be the server's API_KEY_PEPPER. A different value hashes to something no
+// running server will ever verify.
+func HashPassword(password, pepper string) (string, error) { return hashPassword(password, pepper) }
+
 // verifyPassword constant-time-checks a candidate password against a stored hash.
 func verifyPassword(hash, password, pepper string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), pepperedDigest(password, pepper)) == nil

@@ -271,11 +271,26 @@ func (r *WalletRepo) PendingWithdrawalCoins(ctx context.Context, agentPublicID s
 	return pending, err
 }
 
-// WithdrawableCoins is the wallet-summary (UI) view of what an agent can cash out. It
-// MUST match payout.Repo.Withdrawable (store/payout_repo.go): the current wallet balance
-// (full balance withdrawable anytime — deposited coins included). No committed
-// subtraction: a withdrawal Request escrows the coins before the row exists, so the
-// balance already excludes in-flight/paid withdrawals.
+// WithdrawableCoins is this AGENT's unstaked balance — what it has free to play with.
+//
+// It deliberately does NOT match payout.Repo.Withdrawable any more, and the difference is
+// the point: they answer two different questions.
+//
+//   - Here (the per-agent row in the wallet summary): how much does THIS agent hold that
+//     is not locked in a match. Summing the owner's treasury into each agent's row would
+//     report the same coins once per agent.
+//   - payout.Repo.Withdrawable (the cash-out flow): how much can the OWNER take out
+//     through this agent — the agent's balance PLUS their treasury, because both are the
+//     same person's spendable coins and payout.Request sweeps the treasury half onto the
+//     agent before escrowing it. Reading only the agent wallet there is what made a
+//     purchased balance un-withdrawable.
+//
+// The UI column this feeds was called "Withdrawable", which was the wrong word for it and
+// is now "Free to play": a user who had just funded an agent found the amount they moved
+// listed under a heading that reads as a cash-out in progress.
+//
+// No committed subtraction: a withdrawal Request escrows the coins before the row exists,
+// so the balance already excludes in-flight/paid withdrawals.
 func (r *WalletRepo) WithdrawableCoins(ctx context.Context, agentPublicID string) (int64, error) {
 	var avail int64
 	err := r.db.QueryRow(ctx,

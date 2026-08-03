@@ -51,13 +51,35 @@ var _ payout.Repo = (*PayoutRepo)(nil)
 // Those are behavioural controls with a human in the loop, which is the right shape:
 // they stop the abuse without punishing the ordinary user who simply changed their
 // mind about playing.
+// WHERE THE COINS ACTUALLY ARE. This used to read the agent's wallet alone, and that
+// single omission is what made cashing out impossible for everyone who had only ever
+// bought coins: a purchase credits the owner's TREASURY wallet (see wallet.Allocate for
+// the treasury→agent move), so a user who deposited USDC and went straight to Withdraw
+// was told they had 0 withdrawable — the amount field clamped every keystroke back to
+// zero and the button never enabled. The money was there the whole time, in the other
+// wallet. Both halves are the same person's spendable balance, so both are reported here
+// and payout.Request sweeps the treasury half into the agent before the escrow hold.
 func (r *PayoutRepo) Withdrawable(ctx context.Context, agentPublicID string) (int64, error) {
 	var avail int64
 	err := r.db.QueryRow(ctx,
 		`SELECT COALESCE((SELECT wl.balance FROM wallets wl
-		   JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1), 0)`,
+		     JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1), 0)
+		      + COALESCE((SELECT wu.balance FROM wallets wu
+		     WHERE wu.user_id = (SELECT a.owner_user_id FROM agents a WHERE a.public_id = $1)), 0)`,
 		agentPublicID).Scan(&avail)
 	return avail, err
+}
+
+// AgentBalance is the agent wallet ALONE — the part of Withdrawable that is already
+// where bank.Hold can escrow it. Request subtracts it from the requested amount to work
+// out how much has to come across from the treasury first.
+func (r *PayoutRepo) AgentBalance(ctx context.Context, agentPublicID string) (int64, error) {
+	var bal int64
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE((SELECT wl.balance FROM wallets wl
+		   JOIN agents a ON a.id = wl.agent_id WHERE a.public_id = $1), 0)`,
+		agentPublicID).Scan(&bal)
+	return bal, err
 }
 
 func (r *PayoutRepo) AgentOwner(ctx context.Context, agentPublicID string) (string, string, error) {

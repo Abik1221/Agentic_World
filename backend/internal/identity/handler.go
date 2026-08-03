@@ -391,9 +391,23 @@ func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	// An omitted agent_id means "my agent", not an error.
+	//
+	// This 400'd, and the browser's only source for the id was a cookie written at login —
+	// so a developer on a second device, or after clearing cookies, or on a session restored
+	// from a refresh token, pressed Save on their guardrails and got "agent_id is required"
+	// surfaced as "Failed to save config". The server knows which agents the account owns.
 	if in.AgentID == "" {
-		httpx.Error(w, errInvalid("agent_id is required"))
-		return
+		primary, err := h.svc.PrimaryAgentOf(r.Context(), p.UserPublicID)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		if primary == "" {
+			httpx.Error(w, errInvalid("this account has no agent yet"))
+			return
+		}
+		in.AgentID = primary
 	}
 	limits := Limits{
 		CoinLimitPerMatch: in.CoinLimitPerMatch, DailyLossLimit: in.DailyLossLimit,

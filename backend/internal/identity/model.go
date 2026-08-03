@@ -19,11 +19,37 @@ type Limits struct {
 	AutoJoin             bool
 }
 
-// DefaultLimits mirror the column defaults in migration 0002.
+// DefaultLimits are what a brand-new agent is created with.
+//
+// THIS is the value that matters, not the column default — every INSERT passes these
+// explicitly, so migration 0070's `ALTER COLUMN … SET DEFAULT` alone changed nothing for a
+// real signup. The two are kept in step because the schema default is the safety net for any
+// future writer that omits a column.
+//
+// A NEW AGENT MUST BE ABLE TO ENTER THE CHEAPEST RANKED TABLE. It could not: the per-match
+// limit was 100 while the cheapest paid stake is 500 coins (migration 0038 seeds Low at 100,
+// and the $5 minimum-stake floor — gamestakes.DefaultMinStakeUSDCents at a 1¢ peg — lifts
+// every paid tier to at least 500). So the very first ranked join every developer attempted
+// was refused with "Bid 500 exceeds the per-match limit of 100". Nobody could compete for
+// real out of the box. The floor is deliberate economic policy; these numbers were simply
+// set before it existed and never revisited.
+//
+// Derived from that floor rather than picked, so the relationship is visible:
+//   - CoinLimitPerMatch 500: exactly one minimum-stake table.
+//   - MaxBid 500: the same, so the two cannot contradict each other.
+//   - DailyLossLimit 2000: four losses at the minimum stake before the day stops.
+//   - SessionLossLimit 1000: two, so a bad session halts sooner than a bad day.
+//
+// MinWalletBalance stays 50 — a reserve is meant to be small, and it is the one guardrail
+// that was never in conflict with anything.
+//
+// See migration 0070 for why EXISTING agents are deliberately left alone: a stored 100
+// cannot be distinguished from a deliberate 100, and widening someone's risk limit without
+// being asked is the one direction that is never safe.
 func DefaultLimits() Limits {
 	return Limits{
-		CoinLimitPerMatch: 100, DailyLossLimit: 500, SessionLossLimit: 1000,
-		MinWalletBalance: 50, MaxBid: 100, MaxConcurrentMatches: 1,
+		CoinLimitPerMatch: 500, DailyLossLimit: 2000, SessionLossLimit: 1000,
+		MinWalletBalance: 50, MaxBid: 500, MaxConcurrentMatches: 1,
 		CooldownLosses: 3, CooldownSeconds: 300, AutoJoin: false,
 	}
 }

@@ -19,10 +19,19 @@ import (
 
 // Repo is the cash-out persistence + read port.
 type Repo interface {
-	// Withdrawable is the coins the agent can cash out right now: current wallet
-	// balance minus coins already committed to live withdrawals (full balance,
+	// Withdrawable is the coins the OWNER can cash out through this agent right now:
+	// the agent's wallet balance PLUS the owner's treasury balance (full balance,
 	// deposited coins included).
+	//
+	// Both wallets, because both hold the same person's spendable coins. Reading only
+	// the agent wallet reported 0 for every user who had bought coins and not yet
+	// allocated them to an agent — which is the default path — and there was no way to
+	// tell from the UI that the money was simply in the other wallet.
 	Withdrawable(ctx context.Context, agentPublicID string) (int64, error)
+	// AgentBalance is the agent's wallet alone: the portion of Withdrawable that is
+	// already positioned for bank.Hold. The difference is what Request must sweep
+	// across from the treasury first.
+	AgentBalance(ctx context.Context, agentPublicID string) (int64, error)
 	// AgentOwner returns the owning user's public id and Stripe Connect account id
 	// ("" if not KYC-onboarded). ErrNotFound if the agent does not exist.
 	AgentOwner(ctx context.Context, agentPublicID string) (ownerUserPublicID, connectAccountID string, err error)
@@ -77,6 +86,27 @@ type Repo interface {
 type Bank interface {
 	Hold(ctx context.Context, withdrawalID, agentPublicID string, coins int64) error    // agent → escrow
 	Release(ctx context.Context, withdrawalID, agentPublicID string, coins int64) error // escrow → agent (reject/fail)
+	// SweepFromTreasury moves the owner's treasury coins onto the agent's wallet so
+	// Hold can escrow them. Called only for the shortfall, only inside the per-owner
+	// lock, and idempotent on the withdrawal id — a retried request re-posts the same
+	// key and moves nothing a second time.
+	//
+	// It exists because the escrow leg is defined agent→escrow while a purchase credits
+	// the treasury. Rather than teach escrow about two source wallets (two code paths
+	// that must stay in balance is how a ledger drifts), the coins are moved to the one
+	// wallet the payout path already understands.
+	//
+	// TWO DIFFERENCES FROM wallet.Allocate, both deliberate:
+	//
+	//   - It does not refuse while the agent is in an active match. That guard exists to
+	//     stop an owner re-balancing a wallet that is mid-stake; here the coins arrive and
+	//     are escrowed for a payout in the same locked section, and an agent's staked coins
+	//     are already out of its wallet, so a live match is not affected either way.
+	//   - Release (on a rejected or failed payout) returns the coins to the AGENT's wallet,
+	//     not to the treasury they came from. Nothing is lost — that balance is still the
+	//     owner's, still playable and still withdrawable — but the coins do not go back
+	//     where they started, and a user watching their treasury will notice.
+	SweepFromTreasury(ctx context.Context, withdrawalID, ownerUserPublicID, agentPublicID string, coins int64) error
 	// Payout burns held coins: escrow → platform_revenue (fee) + stripe_clearing (rest).
 	Payout(ctx context.Context, withdrawalID, agentPublicID string, coins, feeCoins int64) error
 	// ReversePayout is the exact inverse of Payout: the money came back (Stripe

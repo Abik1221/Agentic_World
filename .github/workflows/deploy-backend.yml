@@ -100,6 +100,10 @@ jobs:
           REFRESH_TOKEN_TTL: ${{ secrets.REFRESH_TOKEN_TTL }}
           AGENT_ENDPOINT_SECRET_KEY: ${{ secrets.AGENT_ENDPOINT_SECRET_KEY }}
           ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
+          # The operator login, seeded at boot. Secrets, not literals — see the .env block.
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+          SEED_ADMIN_USER_ID: ${{ secrets.SEED_ADMIN_USER_ID }}
           PLATFORM_ENGINE_PRIVATE_KEY: ${{ secrets.PLATFORM_ENGINE_PRIVATE_KEY }}
           PLATFORM_ADMIN_PUBLIC_KEY: ${{ secrets.PLATFORM_ADMIN_PUBLIC_KEY }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -256,7 +260,23 @@ jobs:
           API_KEY_PEPPER=${API_KEY_PEPPER}
           AGENT_ENDPOINT_SECRET_KEY=${AGENT_ENDPOINT_SECRET_KEY:-}
           METRICS_TOKEN=${METRICS_TOKEN:-}
-          ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
+          # Defaults to the seeded operator id below, so a deployment that sets the two
+          # SEED_ADMIN_* secrets gets a working admin login with no third setting to
+          # remember. An explicit ADMIN_USER_IDS secret still wins and can list more ids.
+          ADMIN_USER_IDS=${ADMIN_USER_IDS:-usr_pyyoladmin}
+
+          # ── Operator login (seeded at boot; see internal/seedadmin) ──
+          # Admin rights come from ADMIN_USER_IDS, which cannot name an account that does
+          # not exist yet — so without this the first admin on a fresh deployment had to be
+          # made by hand against the database. The id is deterministic, so the allowlist
+          # above can name it before it exists.
+          #
+          # Set SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD as repository SECRETS. Both empty
+          # ⇒ nothing is seeded. Never put the password in this file: anything committed
+          # here is in the history of every clone, permanently.
+          SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-}
+          SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:-}
+          SEED_ADMIN_USER_ID=${SEED_ADMIN_USER_ID:-}
           # Short access JWT; the BFF silently rotates the refresh token so active
           # users stay signed in, and only true absence (past the refresh TTL) logs out.
           DASHBOARD_TOKEN_TTL=${DASHBOARD_TOKEN_TTL:-1h}

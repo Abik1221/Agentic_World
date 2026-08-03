@@ -427,6 +427,27 @@ func (s *Service) Request(ctx context.Context, callerUserPublicID, agentPublicID
 			StripeFeeCents: q.StripeFeeCents, NetCents: q.NetCents,
 			ConnectAccount: connect, Chain: s.cfg.Chain, DestWallet: destWallet, Status: "requested",
 		}
+		// Bring the coins to the wallet the escrow leg draws from.
+		//
+		// `avail` above counts the agent's wallet AND the owner's treasury, because
+		// both hold this user's spendable coins: a purchase credits the treasury,
+		// match winnings credit the agent. bank.Hold only ever debits the agent, so
+		// anything sitting in the treasury has to cross over first — otherwise the
+		// hold fails against the ledger's non-negative balance constraint on a
+		// request the entitlement check had just allowed, which is exactly the
+		// "withdrawal refuses every amount" a user with only purchased coins hit.
+		//
+		// Inside the owner lock and before the hold, so it cannot interleave with a
+		// sibling request. Idempotent on the withdrawal id.
+		agentBal, err := s.repo.AgentBalance(ctx, agentPublicID)
+		if err != nil {
+			return err
+		}
+		if short := coins - agentBal; short > 0 {
+			if err := s.bank.SweepFromTreasury(ctx, w.PublicID, owner, agentPublicID, short); err != nil {
+				return err
+			}
+		}
 		// Lock the coins first, then record the request. If recording fails, release.
 		if err := s.bank.Hold(ctx, w.PublicID, agentPublicID, coins); err != nil {
 			return err

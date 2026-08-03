@@ -15,7 +15,10 @@ import (
 var now = time.Unix(1_700_000_000, 0).UTC()
 
 type fakeRepo struct {
-	withdrawable     int64
+	withdrawable int64
+	// agentBalance is the part of `withdrawable` already on the agent's wallet; the
+	// remainder is in the owner's treasury and has to be swept before the escrow hold.
+	agentBalance     int64
 	owner            string
 	connect          string
 	primaryAgent     string
@@ -36,6 +39,14 @@ func newRepo() *fakeRepo {
 }
 
 func (r *fakeRepo) Withdrawable(context.Context, string) (int64, error) { return r.withdrawable, nil }
+
+// AgentBalance defaults to 0: the ordinary state of a new account, which bought coins
+// (they land in the owner's treasury) and never allocated any to an agent. So the
+// default path through these tests is the one that has to sweep, which is the path that
+// was broken.
+func (r *fakeRepo) AgentBalance(context.Context, string) (int64, error) {
+	return r.agentBalance, nil
+}
 func (r *fakeRepo) AgentOwner(context.Context, string) (string, string, error) {
 	return r.owner, r.connect, nil
 }
@@ -117,10 +128,17 @@ func (r *fakeRepo) PendingByConnectAccount(_ context.Context, acct string) ([]pa
 // real serialization); the real serialization is exercised in the live store test.
 func (r *fakeRepo) WithOwnerLock(_ context.Context, _ string, fn func() error) error { return fn() }
 
-type fakeBank struct{ held, released, paid, reversed map[string]int64 }
+type fakeBank struct{ held, released, paid, reversed, swept map[string]int64 }
 
 func newBank() *fakeBank {
-	return &fakeBank{held: map[string]int64{}, released: map[string]int64{}, paid: map[string]int64{}, reversed: map[string]int64{}}
+	return &fakeBank{held: map[string]int64{}, released: map[string]int64{}, paid: map[string]int64{}, reversed: map[string]int64{}, swept: map[string]int64{}}
+}
+
+// SweepFromTreasury records the treasury→agent move the service makes when the
+// requested amount is not already sitting on the agent's wallet.
+func (b *fakeBank) SweepFromTreasury(_ context.Context, id, _, _ string, coins int64) error {
+	b.swept[id] = coins
+	return nil
 }
 func (b *fakeBank) Hold(_ context.Context, id, _ string, coins int64) error {
 	b.held[id] = coins
@@ -223,6 +241,68 @@ func TestAvailableDefaultsToPrimaryAgentForReadOnlyQuote(t *testing.T) {
 	}
 	if avail != 0 || q.Coins != 0 || q.NetCents != 0 {
 		t.Fatalf("no-agent avail/quote = %d/%+v, want zero quote", avail, q)
+	}
+}
+
+// A user who has only ever BOUGHT coins can cash them out.
+//
+// This is the case that did not work: a purchase credits the owner's treasury, and the
+// escrow hold debits the agent's wallet, so with nothing allocated the request had
+// nothing to hold. Withdrawable now spans both wallets and Request sweeps the shortfall
+// across first, so the amount asked for is exactly the amount held — no partial hold, no
+// silent refusal.
+func TestRequestSweepsTreasuryWhenAgentWalletIsEmpty(t *testing.T) {
+	repo := newRepo()
+	repo.withdrawable = 1000 // treasury 1000 + agent 0
+	repo.agentBalance = 0
+	bank := newBank()
+
+	w, err := newSvc(repo, bank, &fakeXfer{}).Request(context.Background(), "usr_a", "ag_a", 800)
+	if err != nil {
+		t.Fatalf("purchased-only withdrawal must be allowed: %v", err)
+	}
+	if bank.swept[w.PublicID] != 800 {
+		t.Fatalf("swept = %d, want the full 800 moved treasury→agent before the hold", bank.swept[w.PublicID])
+	}
+	if bank.held[w.PublicID] != 800 {
+		t.Fatalf("held = %d, want 800", bank.held[w.PublicID])
+	}
+}
+
+// Only the SHORTFALL is swept. Coins already on the agent (match winnings) must not be
+// double-counted into a treasury debit the treasury cannot cover.
+func TestRequestSweepsOnlyTheShortfall(t *testing.T) {
+	repo := newRepo()
+	repo.withdrawable = 1000 // agent 300 + treasury 700
+	repo.agentBalance = 300
+	bank := newBank()
+
+	w, err := newSvc(repo, bank, &fakeXfer{}).Request(context.Background(), "usr_a", "ag_a", 800)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bank.swept[w.PublicID] != 500 {
+		t.Fatalf("swept = %d, want 500 (800 requested − 300 already on the agent)", bank.swept[w.PublicID])
+	}
+	if bank.held[w.PublicID] != 800 {
+		t.Fatalf("held = %d, want 800", bank.held[w.PublicID])
+	}
+}
+
+// An amount the agent can already cover moves nothing: a withdrawal of match winnings
+// must not touch the treasury at all.
+func TestRequestDoesNotSweepWhenAgentWalletCovers(t *testing.T) {
+	repo := newRepo()
+	repo.withdrawable = 1000
+	repo.agentBalance = 1000
+	bank := newBank()
+
+	w, err := newSvc(repo, bank, &fakeXfer{}).Request(context.Background(), "usr_a", "ag_a", 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, swept := bank.swept[w.PublicID]; swept {
+		t.Fatalf("swept %d, want no treasury movement", bank.swept[w.PublicID])
 	}
 }
 

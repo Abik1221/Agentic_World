@@ -2076,11 +2076,29 @@ def cmd_profile(args: argparse.Namespace) -> int:
     dev = p.get("developer", {})
     pidx = p.get("p_index") or {}
     stats = p.get("stats") or {}
-    print(f"@{dev.get('username') or dev.get('developer', '?')}")
+
+    # The NAME, then the handle. This printed only "@handle", so `pyyol profile` could not
+    # tell you who a developer was — the one thing a profile command is for. The name is
+    # omitted when unset rather than substituting the public id, which is not a name.
+    name = (dev.get("display_name") or "").strip()
+    handle_line = f"@{dev.get('username') or dev.get('developer', '?')}"
+    print(f"{name}  {handle_line}" if name else handle_line)
+
+    # The bio. It has been storable since the profile editor shipped and was readable
+    # nowhere: the column lived on `agents` and nothing selected it back, so a developer
+    # wrote a description of how their agent plays and it appeared on no surface at all.
+    bio = (dev.get("bio") or "").strip()
+    if bio:
+        print(f"  {bio}")
+
     if pidx:
         print(
             f"  P-Index   {pidx.get('p_index', '?')}  (rank #{pidx.get('global_rank', '?')}, top {pidx.get('percentile', '?')}%)"
         )
+    else:
+        # Said plainly. An absent P-Index block simply printed nothing, so an unranked
+        # developer's output looked like a truncated response rather than a fact.
+        print("  P-Index   unranked — no ranked matches yet")
     print(
         f"  Record    {stats.get('wins', 0)}W-{stats.get('losses', 0)}L-{stats.get('draws', 0)}D over {stats.get('total_matches', 0)} matches"
     )

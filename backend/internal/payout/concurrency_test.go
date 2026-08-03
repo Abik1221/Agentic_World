@@ -37,6 +37,14 @@ func (r *raceRepo) Withdrawable(context.Context, string) (int64, error) {
 	return avail, nil
 }
 
+// AgentBalance mirrors Withdrawable here: the race being tested is over the
+// entitlement read, not over where the coins physically sit, so modelling a treasury
+// split would only add noise. Returning the whole amount means no sweep is needed and
+// the critical section under test is unchanged.
+func (r *raceRepo) AgentBalance(ctx context.Context, agent string) (int64, error) {
+	return r.Withdrawable(ctx, agent)
+}
+
 func (r *raceRepo) WithOwnerLock(_ context.Context, _ string, fn func() error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

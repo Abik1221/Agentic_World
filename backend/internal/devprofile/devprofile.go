@@ -252,12 +252,19 @@ func (s *Service) Leaderboard(ctx context.Context, window, segment string, seaso
 
 // DirectoryPage is a page of the public developer directory.
 type DirectoryPage struct {
-	Season     int            `json:"season"`
-	Query      string         `json:"q,omitempty"`
-	Sort       string         `json:"sort"`
-	Total      int            `json:"count"`
-	Entries    []DirectoryRow `json:"entries"`
-	NextCursor int            `json:"next_cursor,omitempty"`
+	Season int    `json:"season"`
+	Query  string `json:"q,omitempty"`
+	Sort   string `json:"sort"`
+	// Total was `len(entries)` — the size of the PAGE, under a field called "count".
+	// A client rendering it said "20 developers" when there were four hundred, and could
+	// not number pages at all. It is now the real match count, ignoring paging.
+	Total   int            `json:"count"`
+	Entries []DirectoryRow `json:"entries"`
+	// Limit is echoed so a client can derive the page count without assuming the server
+	// honoured the limit it asked for (it clamps).
+	Limit      int `json:"limit"`
+	Offset     int `json:"offset"`
+	NextCursor int `json:"next_cursor,omitempty"`
 }
 
 // Directory lists public developers, optionally filtered by a free-text query over
@@ -291,13 +298,23 @@ func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, 
 	if rows == nil {
 		rows = []DirectoryRow{} // always marshal as [], never null
 	}
+	// The real total, so the client can number pages. Best-effort: a failed count leaves
+	// Total at the page length, which is what it always was — degrading the pager is far
+	// better than failing the whole directory over a COUNT.
+	total, cerr := s.repo.DirectoryCount(ctx, season, q)
+	if cerr != nil || total < len(rows) {
+		total = offset + len(rows)
+	}
 	next := 0
-	if len(rows) == limit {
+	// Derived from the TOTAL, not from "the page came back full". A page that happens to
+	// land exactly on the last row used to advertise a next cursor pointing at nothing, so
+	// the UI offered one more page and then showed an empty list.
+	if offset+len(rows) < total {
 		next = offset + limit
 	}
 	return DirectoryPage{
 		Season: season, Query: q, Sort: sort,
-		Total: len(rows), Entries: rows, NextCursor: next,
+		Total: total, Entries: rows, Limit: limit, Offset: offset, NextCursor: next,
 	}, nil
 }
 
@@ -370,36 +387,63 @@ const (
 	maxAvatarURL   = 2048
 )
 
-// SetProfile writes the developer's PUBLIC identity.
+// SetProfile writes the developer's PUBLIC identity and returns the stored result.
+//
+// Every field is optional: nil means "leave it alone", a pointer to "" means "clear it".
+// A developer must be able to remove a name or a photo, but a caller editing one field
+// must not be able to erase the other two by omission — which is what happened when
+// these were plain strings (see the handler).
 //
 // Trimmed and length-bounded here rather than at the database, so the caller gets a
-// specific error instead of a driver one. Empty values are allowed and mean "clear it"
-// — a developer must be able to remove a name or a photo, not just replace it.
-func (s *Service) SetProfile(ctx context.Context, userPublicID, displayName, bio, avatarURL string) error {
-	displayName = strings.TrimSpace(displayName)
-	bio = strings.TrimSpace(bio)
-	avatarURL = strings.TrimSpace(avatarURL)
-
-	if len([]rune(displayName)) > maxDisplayName {
-		return httpx.NewError(http.StatusBadRequest, "invalid_display_name",
-			fmt.Sprintf("display name must be %d characters or fewer", maxDisplayName))
+// specific error instead of a driver one.
+func (s *Service) SetProfile(ctx context.Context, userPublicID string, displayName, bio, avatarURL *string) (Identity, error) {
+	if displayName != nil {
+		v := strings.TrimSpace(*displayName)
+		if len([]rune(v)) > maxDisplayName {
+			return Identity{}, httpx.NewError(http.StatusBadRequest, "invalid_display_name",
+				fmt.Sprintf("display name must be %d characters or fewer", maxDisplayName))
+		}
+		displayName = &v
 	}
-	if len([]rune(bio)) > maxBio {
-		return httpx.NewError(http.StatusBadRequest, "invalid_bio",
-			fmt.Sprintf("bio must be %d characters or fewer", maxBio))
+	if bio != nil {
+		v := strings.TrimSpace(*bio)
+		if len([]rune(v)) > maxBio {
+			return Identity{}, httpx.NewError(http.StatusBadRequest, "invalid_bio",
+				fmt.Sprintf("bio must be %d characters or fewer", maxBio))
+		}
+		bio = &v
 	}
-	if len(avatarURL) > maxAvatarURL {
-		return httpx.NewError(http.StatusBadRequest, "invalid_avatar",
-			"avatar URL is too long")
+	if avatarURL != nil {
+		v := strings.TrimSpace(*avatarURL)
+		if len(v) > maxAvatarURL {
+			return Identity{}, httpx.NewError(http.StatusBadRequest, "invalid_avatar",
+				"avatar URL is too long")
+		}
+		// An avatar is rendered in other developers' browsers, so the scheme is
+		// allow-listed: javascript: and data: URLs in an <img src> are an XSS and an
+		// exfiltration vector respectively, and neither has a legitimate use here.
+		// http:// is refused too — a mixed-content avatar is a downgrade an attacker on
+		// the path can rewrite. The upload endpoint writes avatar_url itself (see
+		// DevProfileRepo.SetAvatarURL), so no legitimate flow needs this to be laxer.
+		if v != "" && !strings.HasPrefix(v, "https://") {
+			return Identity{}, httpx.NewError(http.StatusBadRequest, "invalid_avatar",
+				"avatar must be an https:// URL")
+		}
+		avatarURL = &v
 	}
-	// An avatar is rendered in other developers' browsers, so the scheme is
-	// allow-listed: javascript: and data: URLs in an <img src> are an XSS and an
-	// exfiltration vector respectively, and neither has a legitimate use here.
-	if avatarURL != "" && !strings.HasPrefix(avatarURL, "https://") {
-		return httpx.NewError(http.StatusBadRequest, "invalid_avatar",
-			"avatar must be an https:// URL")
+	if err := s.repo.SetProfile(ctx, userPublicID, displayName, bio, avatarURL); err != nil {
+		return Identity{}, err
 	}
-	return s.repo.SetProfile(ctx, userPublicID, displayName, bio, avatarURL)
+	// Read back rather than echo. The caller renders this, and the only account of what
+	// is stored that cannot be wrong is the row itself.
+	id, found, err := s.repo.ResolveHandle(ctx, userPublicID)
+	if err != nil {
+		return Identity{}, err
+	}
+	if !found {
+		return Identity{}, httpx.NewError(http.StatusNotFound, "not_found", "no such developer")
+	}
+	return id, nil
 }
 
 // FollowState is what the client needs to render a follow control correctly: whether
