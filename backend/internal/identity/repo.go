@@ -24,16 +24,30 @@ type Repo interface {
 	// LiveKeyByPrefix returns the live (non-revoked) key record for a lookup prefix.
 	LiveKeyByPrefix(ctx context.Context, prefix string) (KeyRecord, error)
 
+	// RevokedKeyByPrefix returns the most recently revoked key record for a lookup
+	// prefix, or a non-nil error when there is none (the driver's no-rows error, as
+	// with LiveKeyByPrefix — callers only distinguish nil from non-nil). Used ONLY to
+	// tell a caller who still holds the correct secret that their key was revoked
+	// rather than that it never existed.
+	RevokedKeyByPrefix(ctx context.Context, prefix string) (KeyRecord, error)
+
 	// TouchKey best-effort updates last_used_at for a prefix.
 	TouchKey(ctx context.Context, prefix string) error
 
 	// InsertKey adds a new key to an agent owned by ownerPublicID (ownership checked).
 	InsertKey(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error
 
-	// InsertKeyRotating atomically revokes the agent's existing live keys and inserts
-	// a fresh one — so rotation truly REPLACES (at most one active key per agent),
-	// matching the "minting a new key invalidates the previous one" contract.
-	InsertKeyRotating(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error
+	// IssueKey atomically revokes the agent's live key with this label (if any) and
+	// inserts the replacement, refusing with ErrTooManyKeys when the agent would end
+	// up with more than maxLive live keys. Keys with OTHER labels are never touched —
+	// that is the whole point: a laptop and a deployment hold different labels and
+	// coexist. Ownership is re-checked inside the transaction.
+	//
+	// One exception: a NEVER-USED 'initial' key (the one shown once at sign-up, which
+	// most developers do not save) is also revoked, so the first real login reclaims
+	// that slot instead of leaving a live credential nobody holds. An 'initial' key
+	// that HAS authenticated is somebody's deployment and is left alone.
+	IssueKey(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash, label string, maxLive int) error
 
 	// RevokeKey revokes a key by its prefix if it belongs to an agent the user owns.
 	RevokeKey(ctx context.Context, ownerPublicID, prefix string) error

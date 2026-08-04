@@ -4,7 +4,8 @@ Opens the platform login page in the browser and captures the issued token on a
 local loopback callback — the developer never copies a key by hand. The CLI:
 
 1. starts a throwaway HTTP server on ``127.0.0.1:<random port>``,
-2. opens ``{dashboard}/cli-login?callback=<loopback>&state=<nonce>`` in the browser,
+2. opens ``{dashboard}/cli-login?callback=<loopback>&state=<nonce>&label=<hostname>``
+   in the browser,
 3. the dashboard authenticates the user and redirects back to the loopback with
    ``?token=…&agent_id=…&state=…``,
 4. the CLI validates ``state`` (CSRF) and stores the credentials.
@@ -16,7 +17,9 @@ side (loopback capture + secure storage) is complete and lives here.
 from __future__ import annotations
 
 import hmac
+import re
 import secrets
+import socket
 import sys
 import threading
 import urllib.parse
@@ -85,14 +88,39 @@ def derive_connect_url(api_url: str) -> str:
     return urllib.parse.urlunsplit((scheme, u.netloc, "/v1/agent/connect", "", ""))
 
 
+def device_label() -> str:
+    """A stable name for THIS machine, used to label the agent key issued to it.
+
+    Agent keys are one-per-machine and re-issuing for the same label replaces that
+    machine's key (see backend migration 0071). So this must be stable across logins
+    on one machine — otherwise every login would add a key instead of replacing the
+    one it supersedes — and distinct between machines, or logging in on a laptop
+    would revoke a server's key. The hostname is both; a random id would break the
+    first property and a constant would break the second.
+    """
+    name = ""
+    try:
+        name = socket.gethostname()
+    except Exception:  # noqa: BLE001 — no hostname is not a reason to fail login
+        name = ""
+    # Strip the mDNS suffix macOS adds ("mbp.local") so the label matches what the
+    # developer calls the machine.
+    name = re.sub(r"\.local$", "", (name or "").strip(), flags=re.IGNORECASE)
+    return name or "pyyol cli"
+
+
 def run_login_flow(
     dashboard_url: str,
     api_url: str = "",
     timeout: float = 180.0,
     provider: str = "",
+    label: str = "",
     _opener=None,
 ) -> Credentials:
     """Run the loopback browser login and return captured Credentials.
+
+    ``label`` names the key issued to this device (defaults to the hostname); it is
+    what the owner sees — and revokes — in the dashboard key list.
 
     ``_opener(url)`` overrides how the auth URL is opened (tests inject a function
     that simulates the dashboard redirect back to the loopback)."""
@@ -157,6 +185,9 @@ def run_login_flow(
         )
         if provider:  # let the dashboard pre-select GitHub/Google/wallet
             auth_url += f"&provider={urllib.parse.quote(provider, safe='')}"
+        # Name the key after this machine so the dashboard list is readable and one
+        # machine's re-login cannot evict another's key.
+        auth_url += f"&label={urllib.parse.quote(label or device_label(), safe='')}"
 
         # ALWAYS print the URL, then try to open it.
         #

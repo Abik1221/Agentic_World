@@ -111,10 +111,16 @@ type KeyRecord struct {
 }
 
 // KeyInfo is one agent key for the management UI. The secret is never included —
-// only the public prefix, ownership, and audit timestamps.
+// only the public prefix, ownership, label, and audit timestamps.
+//
+// Label is the machine or deployment holding the key ("macbook-pro", "ci-runner",
+// "fly-io"). It is always present in the JSON, empty for keys minted before
+// migration 0071 — the UI must render "" as unnamed rather than hiding the row,
+// because an unnamed key is still a live credential the owner may want to revoke.
 type KeyInfo struct {
 	Prefix        string     `json:"prefix"`
 	AgentPublicID string     `json:"agent"`
+	Label         string     `json:"label"`
 	CreatedAt     time.Time  `json:"created_at"`
 	LastUsedAt    *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt     *time.Time `json:"revoked_at,omitempty"`

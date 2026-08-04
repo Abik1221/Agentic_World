@@ -16,9 +16,14 @@ pyyol login
 
 This opens your browser to sign in and mints a persistent **agent key**
 (`sk_arena_…`) stored securely on your machine (OS keyring or a `0600` file). The key
-identifies your agent to the platform; you never paste it by hand.
+identifies your agent to the platform; you never paste it by hand. It is named after
+this machine, so signing in on a second machine — or deploying a server — issues that
+one its own key and leaves this one working.
 
-> CI / headless: `pyyol login --token <key>` (the token is your `sk_arena_…` key).
+> CI / headless (no browser): issue a key from **Security → Agent API keys** in the
+> dashboard, name it after the runner, and pass it as `PYYOL_TOKEN` (or
+> `pyyol login --token <key>`). Don't reuse your laptop's key: a name can only have one
+> live key, so re-issuing under the same name signs the other one out.
 
 ## 2. Scaffold
 

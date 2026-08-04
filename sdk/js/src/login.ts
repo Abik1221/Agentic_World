@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { hostname } from "node:os";
 import type { Credentials } from "./credentials.js";
 
 /** Constant-time string compare (length-guarded so timingSafeEqual never throws). */
@@ -14,6 +15,25 @@ function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
   return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+/**
+ * A stable name for THIS machine, used to label the agent key issued to it.
+ *
+ * Must be stable across logins on one machine (otherwise each login adds a key
+ * instead of replacing the one it supersedes) and distinct between machines
+ * (otherwise a laptop login revokes a server's key). The hostname is both; a random
+ * id breaks the first property, a constant breaks the second. `.local` is stripped so
+ * the label reads as the machine's name rather than its mDNS form.
+ */
+export function deviceLabel(): string {
+  let name = "";
+  try {
+    name = hostname();
+  } catch {
+    name = "";
+  }
+  return name.trim().replace(/\.local$/i, "") || "pyyol cli";
 }
 
 /** Derive the WSS connect URL from a platform API/base URL. */
@@ -114,6 +134,11 @@ export function runLoginFlow(opts: {
         `${opts.dashboardUrl.replace(/\/$/, "")}/cli-login` +
         `?callback=${encodeURIComponent(callback)}&state=${state}`;
       if (opts.provider) authUrl += `&provider=${encodeURIComponent(opts.provider)}`;
+      // Name the key after this machine. Agent keys are one-per-label and issuing
+      // replaces only the matching label (backend migration 0071), so a stable
+      // per-machine name is what keeps this login from revoking another machine's or
+      // a deployment's key — and it is what the owner reads in the dashboard list.
+      authUrl += `&label=${encodeURIComponent(deviceLabel())}`;
 
       // Print the URL, then try to open it. Browser launching silently fails over
       // SSH, in WSL, and in containers, and without the link on screen the user just

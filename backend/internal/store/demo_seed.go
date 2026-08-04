@@ -83,8 +83,11 @@ func (r *IdentityRepo) insertDevAgent(ctx context.Context, slug, name string, li
 		return "", "", err
 	}
 
+	// Labelled 'house-bot' so these show up as what they are in any key audit, and so
+	// they can never collide with a developer's device label.
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope) VALUES ($1,$2,$3,'agent')`,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1,$2,$3,'agent','house-bot')`,
 		agentID, "demo_"+slug, "dev-no-key"); err != nil {
 		return "", "", err
 	}

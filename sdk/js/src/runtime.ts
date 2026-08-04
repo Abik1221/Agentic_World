@@ -359,8 +359,20 @@ export class RuntimeConnector {
         break;
       case ERROR:
         if (!this.registered) {
-          // Register rejected — almost always an expired access token. If we hold a
-          // refresh token, spend it and reconnect; only terminal when refresh fails.
+          // A revoked agent key must NOT be refreshed around. Refreshing swaps the
+          // long-lived sk_arena_… key for a short-lived dashboard JWT, which registers
+          // fine — so the agent keeps playing, the dead key stays in the credential
+          // store, and every restart silently repeats a failed register forever.
+          // Terminal, carrying the server's sentence, is the honest outcome. (Mirrors
+          // the Python SDK; the gateway sends this code from AuthFailureReason.)
+          if (frame.error === "key_revoked") {
+            throw new ConnectorError(
+              `${frame.reason ?? "this agent key was revoked"} ` +
+                "(the stored key is dead — re-running `pyyol login` replaces it)",
+            );
+          }
+          // Otherwise: almost always an expired access token. If we hold a refresh
+          // token, spend it and reconnect; only terminal when refresh fails.
           if (await this.tryRefresh()) throw new RefreshRetry();
           throw new ConnectorError(`register rejected: ${frame.error} (${frame.reason ?? ""})`);
         }

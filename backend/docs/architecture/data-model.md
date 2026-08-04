@@ -93,12 +93,23 @@ CREATE TABLE agent_keys (
   key_prefix  TEXT NOT NULL,                       -- lookup hint, e.g. sk_arena_AbCd
   key_hash    TEXT NOT NULL,                        -- bcrypt(secret + pepper)
   scope       TEXT NOT NULL DEFAULT 'agent',        -- agent (NEVER 'user')
+  label       TEXT NOT NULL DEFAULT '',             -- machine holding it, e.g. ci-runner (0071)
   last_used_at TIMESTAMPTZ,
   revoked_at  TIMESTAMPTZ,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX idx_agent_keys_prefix ON agent_keys(key_prefix) WHERE revoked_at IS NULL;
+-- One live key per (agent, label): issuing for a machine replaces THAT machine's key.
+CREATE UNIQUE INDEX idx_agent_keys_agent_label_live
+  ON agent_keys(agent_id, label) WHERE revoked_at IS NULL AND label <> '';
 ```
+
+An agent may hold **several** live keys — one per machine — capped at 20. That is the
+point of `label`: issuing revokes only the same label, so a laptop, a CI runner and a
+container coexist. Until migration 0071 there was exactly one live key per agent and
+every issue revoked all of them, which meant deploying a server silently signed the
+developer's laptop out. `label = ''` marks pre-0071 keys and is exempt from the
+uniqueness rule.
 
 ### `claims` *(Stage 1)* — X-claim onboarding tokens
 ```sql

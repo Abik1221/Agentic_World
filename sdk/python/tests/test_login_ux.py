@@ -180,3 +180,53 @@ def test_a_callback_with_neither_credential_is_rejected(home):
 
     with pytest.raises(TimeoutError):
         _run_callback(home, "agent_id=ag_4", timeout=1.0)
+
+
+def test_login_names_the_key_after_this_machine(home, monkeypatch):
+    """The auth URL must carry a device label.
+
+    Agent keys are one-per-label and issuing replaces only the matching label
+    (backend migration 0071). Without a label the dashboard falls back to a shared
+    per-client-kind name, which puts every machine back in one slot — the very
+    behaviour that used to make a second `pyyol login` revoke the first machine's key
+    and knock a running deployment offline.
+    """
+    monkeypatch.setattr(login.socket, "gethostname", lambda: "Studio-Mini.local")
+    seen: dict = {}
+
+    def opener(auth_url: str) -> bool:
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(auth_url).query)
+        seen.update(label=(q.get("label") or [""])[0])
+        cb, state = q["callback"][0], q["state"][0]
+        urllib.request.urlopen(f"{cb}?state={state}&token=t&api_key=sk_arena_x_y", timeout=5).read()
+        return True
+
+    login.run_login_flow("https://pyyol.com", timeout=10, _opener=opener)
+    # The mDNS suffix is stripped so the label reads as the machine's name.
+    assert seen["label"] == "Studio-Mini"
+
+
+def test_device_label_is_stable_and_machine_specific(monkeypatch):
+    """Stability and distinctness are both load-bearing.
+
+    Not stable ⇒ every login ADDS a key instead of replacing its own, until the agent
+    hits the 20-live-key cap. Not distinct ⇒ logging in on a laptop revokes a
+    server's key. A hostname is both; a random id or a constant breaks one of them.
+    """
+    monkeypatch.setattr(login.socket, "gethostname", lambda: "ci-runner-7")
+    assert login.device_label() == login.device_label() == "ci-runner-7"
+    monkeypatch.setattr(login.socket, "gethostname", lambda: "laptop")
+    assert login.device_label() == "laptop"
+
+
+def test_device_label_falls_back_when_the_hostname_is_unavailable(monkeypatch):
+    """No hostname is not a reason to fail a login — but the label must still be a
+    valid, non-empty label the backend will accept."""
+
+    def boom():
+        raise OSError("no hostname")
+
+    monkeypatch.setattr(login.socket, "gethostname", boom)
+    assert login.device_label() == "pyyol cli"
+    monkeypatch.setattr(login.socket, "gethostname", lambda: "   ")
+    assert login.device_label() == "pyyol cli"

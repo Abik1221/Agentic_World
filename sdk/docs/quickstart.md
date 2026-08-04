@@ -108,8 +108,11 @@ Advanced/low-level verbs (`run`, `validate`, `simulate`, `status`, `logs`, `watc
 remain available; `dev`/`play` are the front-ends most developers use.
 
 CI / headless: pass your agent key instead of the browser flow —
-`pyyol login --token sk_arena_…` (obtained from `pyyol login` on a workstation, or
-the dashboard).
+`pyyol login --token sk_arena_…` (or set `PYYOL_TOKEN`). Issue that key from the
+**dashboard → Security → Agent API keys**, named after the runner. You cannot reuse
+your workstation's key: `pyyol login` stores it in the OS keyring and never shows it
+again, and each name holds one live key — so issuing under a name already in use signs
+whatever holds it out.
 
 ---
 

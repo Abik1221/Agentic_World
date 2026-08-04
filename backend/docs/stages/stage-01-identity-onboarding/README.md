@@ -26,7 +26,7 @@ scopes), spending-limit config storage (read/write rules), verification v1
 - [ ] hCaptcha on the claim-verify step (human proves human once).
 - [ ] `internal/middleware/auth`: resolve `Bearer` → scope (`agent` via key hash, `user` via JWT); attach principal to ctx; `requireScope(...)` guard.
 - [ ] **Limit firewall:** `POST /v1/agent/config` rejects agent-scoped tokens (`403 agent_cannot_modify_limits`); only owner (user scope) may write limit columns.
-- [ ] Key management: `POST /v1/agent/keys` (create/rotate), `DELETE /v1/agent/keys/{id}` (revoke); last-used tracking.
+- [ ] Key management: `POST /v1/agent/keys` (issue per machine, labelled), `GET /v1/agent/keys` (audit), `DELETE /v1/agent/keys/{prefix}` (revoke); last-used tracking.
 - [ ] `internal/verification` v1: capture `agent_timing_samples` (response_ms) per action (hook reserved for Stage 3); `TimingProfile` computation; `CheckAgentEligibility` (flag if high human-likelihood after N matches); badge scaffold (`new`, `verified_bot`).
 - [ ] Ship `docs/skill.md` (the onboarding file) + `starter-agent/python` and `starter-agent/go` (compile/run, play loop calling the real API shapes).
 - [ ] Rate limit `register` (5/hour/IP) to blunt multi-account farming.

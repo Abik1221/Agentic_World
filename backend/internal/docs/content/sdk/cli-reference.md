@@ -13,7 +13,7 @@ sandbox; commands marked **(Python only)** are not yet in the JS CLI.
 
 | Command | What it does |
 |---|---|
-| `pyyol login [--token <key>]` | Browser sign‑in; mints your `sk_arena_…` agent key. `--token` for CI/headless. |
+| `pyyol login [--token <key>]` | Browser sign‑in; issues this machine its own `sk_arena_…` agent key (named after your hostname, so it never revokes another machine's). `--token` for CI/headless. |
 | `pyyol logout` | Clear stored credentials. |
 | `pyyol whoami` | Show the signed‑in user / agent / platform. |
 | `pyyol init <dir>` | Scaffold `agent.py`/`agent.mjs` + `pyyol.toml`. |

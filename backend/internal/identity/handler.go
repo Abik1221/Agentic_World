@@ -450,10 +450,21 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"keys": keys})
 }
 
+// createKey issues an agent key for ONE machine, named by `label`. Re-issuing with
+// the same label replaces that machine's key; every other machine keeps working.
+//
+// `label` is optional on the wire on purpose. Older clients (a pinned `pyyol`, a
+// cached dashboard bundle) send only agent_id, and this endpoint used to revoke every
+// live key for the agent — so rejecting them would break upgrades while accepting
+// them silently would put every old client back in one shared slot. Instead an absent
+// label falls back to a per-client-KIND name derived from the User-Agent, which is
+// stable across runs: an old CLI keeps replacing "pyyol cli (unnamed)" and can no
+// longer evict a container's key.
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
 		AgentID string `json:"agent_id"`
+		Label   string `json:"label"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
@@ -463,12 +474,32 @@ func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, errInvalid("agent_id is required"))
 		return
 	}
-	raw, err := h.svc.RotateKey(r.Context(), p.UserPublicID, in.AgentID)
+	label := in.Label
+	if strings.TrimSpace(label) == "" {
+		label = fallbackKeyLabel(r.UserAgent())
+	}
+	raw, err := h.svc.IssueKey(r.Context(), p.UserPublicID, in.AgentID, label)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, map[string]string{"api_key": raw})
+	httpx.JSON(w, http.StatusCreated, map[string]string{"api_key": raw, "label": label})
+}
+
+// fallbackKeyLabel names a key whose issuer did not label it, from the client kind.
+// Deliberately NOT unique per request: the point is that one client kind occupies one
+// slot, so an unlabelled issuer replaces its own key instead of accumulating keys or
+// evicting somebody else's.
+func fallbackKeyLabel(userAgent string) string {
+	ua := strings.ToLower(userAgent)
+	switch {
+	case strings.Contains(ua, "pyyol"):
+		return "pyyol cli (unnamed)"
+	case strings.Contains(ua, "mozilla"), strings.Contains(ua, "safari"), strings.Contains(ua, "chrome"):
+		return "dashboard (unnamed)"
+	default:
+		return "unnamed client"
+	}
 }
 
 func (h *Handler) setSigningKey(w http.ResponseWriter, r *http.Request) {
