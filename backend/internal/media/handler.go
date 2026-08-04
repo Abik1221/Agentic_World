@@ -76,6 +76,12 @@ func (h *Handler) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 	// while streaming instead of after buffering it all, so a 2 GB post cannot occupy
 	// memory even briefly.
 	r.Body = http.MaxBytesReader(w, r.Body, MaxUploadBytes+1<<20) // +1MiB for the multipart envelope
+	// gosec G120 flags ParseMultipartForm in a handler as unbounded. It is bounded here —
+	// by the MaxBytesReader on the line above, which is the fix G120 asks for and which
+	// the rule does not track across statements. The argument below is the in-memory
+	// threshold (parts larger than it spill to a temp file); it is NOT a request cap, so
+	// tuning it would not address the finding and removing the reader would.
+	//nolint:gosec // G120: body is bounded by http.MaxBytesReader immediately above
 	if err := r.ParseMultipartForm(MaxUploadBytes); err != nil {
 		httpx.Error(w, httpx.NewError(http.StatusRequestEntityTooLarge, "image_too_large",
 			"That file is too large. Images must be 8 MB or smaller."))

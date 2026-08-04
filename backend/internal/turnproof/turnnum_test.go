@@ -45,10 +45,17 @@ func TestMafiaTurnIncreasesWithTheDay(t *testing.T) {
 
 // Deterministic: the arena mints at one moment and the gateway verifies at another, in a
 // different process. A value that varied between the two would never verify.
+//
+// Compared against a baseline taken ONCE rather than calling the function twice inside the
+// condition. Two reasons, and the second is the real one: `f(x) != f(x)` is a tautology to
+// staticcheck (SA4000) and it was failing the lint, but it is also the WEAKER assertion —
+// it only catches a value that changes between two adjacent calls, while this catches one
+// that drifts anywhere across the run.
 func TestMafiaTurnIsDeterministic(t *testing.T) {
+	want := MafiaTurn(7, "voting")
 	for i := 0; i < 100; i++ {
-		if MafiaTurn(7, "voting") != MafiaTurn(7, "voting") {
-			t.Fatal("MafiaTurn is not deterministic")
+		if got := MafiaTurn(7, "voting"); got != want {
+			t.Fatalf("MafiaTurn is not deterministic: call %d gave %v, first call gave %v", i, got, want)
 		}
 	}
 }
