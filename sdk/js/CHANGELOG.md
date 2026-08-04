@@ -4,6 +4,20 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.8.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.7.0...js-v1.8.0) (2026-08-04)
+
+
+### Features
+
+* media uploads, realtime follow, LLM-proof settlement gates, docs guards ([13ca0d7](https://github.com/Abik1221/Agentic_World/commit/13ca0d77c2c056aaf385bad099debb7d430c52c4))
+* name agent API keys per machine so one login stops evicting another ([cd948c3](https://github.com/Abik1221/Agentic_World/commit/cd948c3eb8b636ed6c0b543d8e75fb837c491f12))
+
+
+### Bug Fixes
+
+* **security:** close public /metrics and drop admin surface from public docs ([c5ab983](https://github.com/Abik1221/Agentic_World/commit/c5ab983fa3bfc3a58447f7972aba8362cfcc05df))
+* withdrawals, traces, guardrails, profile identity, and the E2E gate ([b190320](https://github.com/Abik1221/Agentic_World/commit/b190320f0eee33953820b053f4c24292a38e16ee))
+
 ## [1.7.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.6.0...js-v1.7.0) (2026-08-01)
 
 
