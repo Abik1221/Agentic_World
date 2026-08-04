@@ -673,7 +673,35 @@ async function cmdWallet(a: Args): Promise<number> {
     console.error(`${BAD} not logged in — run \`pyyol login\` first.`);
     return 2;
   }
+  // AN AGENT KEY CANNOT READ THE OWNER'S TREASURY, and must not be sent here.
+  //
+  // The fallback chain above ends at PYYOL_TOKEN, which the deployment docs define as
+  // the sk_arena_… AGENT key for CI and containers. That key resolves server-side to
+  // its owner's user id, so this command used to work with it — an agent credential
+  // reading its owner's full balance and ledger. The arena now requires user scope on
+  // /v1/user/wallet and answers 403, which would surface here as an opaque
+  // "could not fetch wallet (403)".
+  //
+  // Refusing locally, by shape, is better than relaying that: it names the credential
+  // actually in play (easy to miss when it arrives from the environment rather than a
+  // flag) and says which one the command needs.
+  if (token.startsWith(AGENT_KEY_PREFIX)) {
+    console.error(
+      `${BAD} \`pyyol wallet\` shows the OWNER's treasury, so it needs your dashboard login — ` +
+        `not an agent key.\n` +
+        `    The token in use is an agent key (sk_arena_…), probably from $PYYOL_TOKEN.\n` +
+        `    Run \`pyyol login\` on this machine, or unset PYYOL_TOKEN for this command.`,
+    );
+    return 2;
+  }
   const [st, w] = await apiGet(`${base}/v1/user/wallet`, token);
+  if (st === 403) {
+    console.error(
+      `${BAD} this credential is not allowed to read the owner's treasury. ` +
+        `Sign in with \`pyyol login\` and try again.`,
+    );
+    return 1;
+  }
   if (st !== 200) {
     console.error(`${BAD} could not fetch wallet (${st}): ${JSON.stringify(w)}`);
     return 1;
