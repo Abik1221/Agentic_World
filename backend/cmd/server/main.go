@@ -1067,6 +1067,39 @@ func run() error {
 	matchSvc.SetStyleRecorder(styleRepo) // record aggression/efficiency at match finish (best-effort)
 	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
 	matchSvc.SetBot(bot.NewService())
+	// RANKED INTEGRITY IS NOT ENFORCED WHEN AUTO-DRIVE IS OFF, and that is deliberate —
+	// but it must not be SILENT, which is what this warning is for.
+	//
+	// The mechanism is built and tested (internal/match/integrity_test.go, 16 cases): a
+	// finished ranked match is voided when a seat cannot show its moves were LLM-backed.
+	// It is installed below only under RankedAutoDrive, and RANKED_AUTODRIVE defaults to
+	// false, so on a default deployment no checker exists and rankedIntegrityFailed
+	// returns "did not fail" for every match.
+	//
+	// DO NOT "FIX" THAT BY INSTALLING THE CHECKER HERE. Two things have to be true before
+	// the gate can be turned on, and neither is yet:
+	//
+	//   1. matchSvc's turn minter is also installed only under auto-drive (below), unlike
+	//      mafiaSvc/monopolySvc which get one unconditionally. With no minter, ranked turn
+	//      views carry no proof token at all, so NO seat can bind a decision — and the
+	//      zero-proof gate would then void EVERY ranked match. Strictly worse than no
+	//      enforcement.
+	//   2. A proof only exists if the agent routes its LLM call through the Pyyol gateway
+	//      (`route()`). An honest developer calling their provider directly scores zero
+	//      bound decisions, so enforcing today would void the matches of exactly the
+	//      people who are paying for inference. The proof-carrying path ships with the
+	//      SDK; it has to reach developers first.
+	//
+	// So: MEASURE FIRST. Per-match `bound_decisions` is now surfaced to the developer who
+	// produced it (GET /v1/developer/matches/{id} → "proven LLM turns"), which is the
+	// observation the threshold has to be derived from. Turn the gate on when honest
+	// agents are seen scoring above zero, and set the share rule from what they score —
+	// not from a guess.
+	if !cfg.RankedAutoDrive {
+		log.Warn("ranked integrity NOT enforced: a match whose decisions cannot be shown to be LLM-backed will still settle and pay out",
+			"reason", "checker+minter are installed only under RANKED_AUTODRIVE",
+			"measure_with", "GET /v1/developer/matches/{id} → bound_decisions")
+	}
 	if cfg.RankedAutoDrive {
 		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
 		// default (auto-plays real staked matches) — enable post integration test.
