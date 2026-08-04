@@ -295,7 +295,7 @@ func TestDirectoryEmptyQueryStillMatchesEveryone(t *testing.T) {
 }
 
 // FOLLOWERS vs FOLLOWING must not be swapped. The two directions are one map lookup apart
-// (followEdges), and getting them backwards would show a developer their own followers under
+// (followListQueries), and getting them backwards would show a developer their own followers under
 // "following" — a wrong answer that looks entirely plausible on screen, which is exactly the
 // kind of bug that survives review and only a real edge can catch.
 func TestFollowListDirectionsAreNotSwapped(t *testing.T) {

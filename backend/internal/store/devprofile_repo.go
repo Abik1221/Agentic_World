@@ -718,14 +718,47 @@ SELECT u.public_id AS public_id,
  ORDER BY f.created_at DESC, u.id
  LIMIT $3 OFFSET $4`
 
-// followEdges names the two sides of the edge for each direction. Kept as data rather than
-// two near-identical query strings so the enrichment can never drift between them.
-var followEdges = map[string][2]string{
-	// Who follows this developer: the ROW is the follower, the owner is the followee.
-	"followers": {"f.follower_user_id", "f.followee_user_id"},
-	// Who this developer follows: the reverse.
-	"following": {"f.followee_user_id", "f.follower_user_id"},
-}
+// followCountSQL mirrors followListSQL's joins and predicate exactly. Same shape, same
+// filters, no paging — so the total and the rows can never disagree about who is in the list.
+const followCountSQL = `
+SELECT COUNT(*)
+  FROM developer_follows f
+  JOIN users u   ON u.id = %[1]s
+  JOIN users own ON own.id = %[2]s
+ WHERE own.public_id = $1 AND u.status = 'active'`
+
+// NO SQL IS ASSEMBLED AT REQUEST TIME.
+//
+// The two directions differ only in which side of the edge is the row and which is the
+// subject, and the first version of this passed those column names through fmt.Sprintf on
+// every call. The inputs were a fixed internal map and never reachable from a request, so it
+// was not injectable — but "not injectable because of where the values happen to come from"
+// is a property that has to be re-proved by every reader and can be broken by any future
+// caller who threads a parameter one layer further. A query built from request-time data is
+// also invisible to the driver's statement cache.
+//
+// So the templates are expanded ONCE, at package initialisation, from string constants, into
+// immutable finished queries. Selecting a direction is now a lookup that returns SQL, not
+// column names — there is no code path in which a request value can reach a query string.
+// The single template still guarantees the two directions cannot drift apart in their
+// enrichment, which was the reason for the map in the first place.
+const (
+	// Who follows this developer: the ROW is the follower, the subject is the followee.
+	edgeRowIsFollower  = "f.follower_user_id"
+	edgeSubjIsFollowee = "f.followee_user_id"
+)
+
+// followListQueries and followCountQueries are keyed by direction and hold finished SQL.
+var (
+	followListQueries = map[string]string{
+		"followers": fmt.Sprintf(followListSQL, edgeRowIsFollower, edgeSubjIsFollowee),
+		"following": fmt.Sprintf(followListSQL, edgeSubjIsFollowee, edgeRowIsFollower),
+	}
+	followCountQueries = map[string]string{
+		"followers": fmt.Sprintf(followCountSQL, edgeRowIsFollower, edgeSubjIsFollowee),
+		"following": fmt.Sprintf(followCountSQL, edgeSubjIsFollowee, edgeRowIsFollower),
+	}
+)
 
 // FollowList returns one page of a developer's followers or the developers they follow.
 // direction is "followers" or "following"; anything else is a programming error and yields
@@ -733,13 +766,11 @@ var followEdges = map[string][2]string{
 func (r *DevProfileRepo) FollowList(
 	ctx context.Context, season int, userPublicID, direction string, limit, offset int,
 ) ([]devprofile.DirectoryRow, error) {
-	edge, ok := followEdges[direction]
+	q, ok := followListQueries[direction]
 	if !ok {
 		return nil, nil
 	}
-	rows, err := r.db.Query(ctx,
-		fmt.Sprintf(followListSQL, edge[0], edge[1]),
-		season, userPublicID, limit, offset)
+	rows, err := r.db.Query(ctx, q, season, userPublicID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -818,16 +849,11 @@ SELECT COUNT(*) FROM follows f
 // FollowListCount is the total for a follow list's pager, counted with the SAME joins and
 // predicate as FollowList so the two can never disagree about who is in the list.
 func (r *DevProfileRepo) FollowListCount(ctx context.Context, userPublicID, direction string) (int, error) {
-	edge, ok := followEdges[direction]
+	q, ok := followCountQueries[direction]
 	if !ok {
 		return 0, nil
 	}
 	var n int
-	err := r.db.QueryRow(ctx, fmt.Sprintf(`
-SELECT COUNT(*)
-  FROM developer_follows f
-  JOIN users u   ON u.id = %[1]s
-  JOIN users own ON own.id = %[2]s
- WHERE own.public_id = $1 AND u.status = 'active'`, edge[0], edge[1]), userPublicID).Scan(&n)
+	err := r.db.QueryRow(ctx, q, userPublicID).Scan(&n)
 	return n, err
 }
