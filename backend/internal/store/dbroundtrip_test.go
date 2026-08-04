@@ -31,6 +31,7 @@ import (
 	"testing"
 
 	"github.com/agent-arena/arena/internal/devprofile"
+	"github.com/agent-arena/arena/internal/identity"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -371,5 +372,143 @@ func TestFollowListDirectionsAreNotSwapped(t *testing.T) {
 	// An unknown direction must yield nothing rather than the wrong list.
 	if rows, err := repo.FollowList(ctx, 1, bob, "sideways", 10, 0); err != nil || len(rows) != 0 {
 		t.Errorf("FollowList with a bad direction = (%d rows, %v), want (0, nil)", len(rows), err)
+	}
+}
+
+// THE MIGRATION GUARANTEE: an account created with email+password must survive being signed
+// into with Google on the same address, keeping everything.
+//
+// This is the property the whole Google-only migration rests on. Removing password login is
+// only safe if an existing developer's agents, API keys, wallet and identity come with them
+// the first time they use "Sign in with Google" — otherwise the removal is silent data loss
+// for anyone who already signed up.
+//
+// The fixture is built through the REAL CreateAccount, the same call the removed signup
+// handler used, so this tests the actual production write and not a hand-made row that
+// resembles one.
+func TestEmailAccountIsAdoptedByGoogleOnTheSameAddress(t *testing.T) {
+	pool := testPool(t)
+	repo := NewIdentityRepo(pool)
+	ctx := context.Background()
+
+	email := fmt.Sprintf("legacy+%d@example.com", os.Getpid())
+	userPID := fmt.Sprintf("usr_legacy_%d", os.Getpid())
+	agentPID := fmt.Sprintf("ag_legacy_%d", os.Getpid())
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE public_id = $1)`, agentPID)
+		_, _ = pool.Exec(ctx, `DELETE FROM wallets WHERE agent_id IN (SELECT id FROM agents WHERE public_id = $1)`, agentPID)
+		_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE public_id = $1`, agentPID)
+		_, _ = pool.Exec(ctx, `DELETE FROM wallets WHERE user_id IN (SELECT id FROM users WHERE public_id = $1)`, userPID)
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE public_id = $1`, userPID)
+	})
+
+	// 1. The legacy account, written exactly as email+password signup wrote it.
+	agent, owner, err := repo.CreateAccount(ctx, identity.CreateAccountInput{
+		Email:         email,
+		PasswordHash:  "$2a$10$notarealhashbutthatisfine..........................",
+		UserPublicID:  userPID,
+		AgentPublicID: agentPID,
+		AgentName:     "LegacyAgent",
+		AgentSlug:     "legacyagent",
+		KeyPrefix:     "sk_arena_legacykey",
+		KeyHash:       "legacy-hash",
+		Limits:        identity.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount (the legacy signup path): %v", err)
+	}
+	if owner.PublicID != userPID || agent.PublicID != agentPID {
+		t.Fatalf("fixture ids drifted: owner=%s agent=%s", owner.PublicID, agent.PublicID)
+	}
+
+	// Give the account something that must survive: a second key and a wallet balance.
+	if err := repo.IssueKey(ctx, agentPID, userPID, "sk_arena_legacydev", "h", "laptop", 20); err != nil {
+		t.Fatalf("seed a device key: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE wallets SET balance = 4242 WHERE agent_id = (SELECT id FROM agents WHERE public_id = $1)`,
+		agentPID); err != nil {
+		t.Fatalf("seed a balance: %v", err)
+	}
+
+	// 2. They sign in with Google for the first time, same address, brand-new subject.
+	res, err := repo.UpsertGoogleAccount(ctx, identity.GoogleUpsertInput{
+		GoogleSub: fmt.Sprintf("google-sub-%d", os.Getpid()),
+		Email:     email,
+		// These are only used when a NEW account has to be created. If the adoption path
+		// works, none of them is written — and that is what the assertions below check.
+		UserPublicID:  "usr_SHOULD_NOT_BE_CREATED",
+		AgentPublicID: "ag_SHOULD_NOT_BE_CREATED",
+		AgentName:     "ShouldNotExist",
+		AgentSlug:     "shouldnotexist",
+		KeyPrefix:     "sk_arena_shouldnotexist",
+		KeyHash:       "nope",
+		Limits:        identity.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("UpsertGoogleAccount on an existing email: %v", err)
+	}
+
+	// 3. It must be the SAME account, not a second one.
+	if res.Created {
+		t.Error("Created=true — Google made a NEW account instead of adopting the existing one; " +
+			"every developer who signed up with a password would lose their agents on first Google login")
+	}
+	if res.UserPublicID != userPID {
+		t.Fatalf("adopted the wrong user: got %s, want %s", res.UserPublicID, userPID)
+	}
+	if res.AgentPublicID != agentPID {
+		t.Errorf("agent changed: got %s, want %s", res.AgentPublicID, agentPID)
+	}
+
+	// 4. And everything that mattered is still attached to it.
+	var googleSub *string
+	var storedEmail string
+	if err := pool.QueryRow(ctx,
+		`SELECT google_sub, COALESCE(email,'') FROM users WHERE public_id = $1`, userPID).
+		Scan(&googleSub, &storedEmail); err != nil {
+		t.Fatalf("read the adopted user: %v", err)
+	}
+	if googleSub == nil || *googleSub == "" {
+		t.Error("google_sub was not linked — the next Google login would not find this account")
+	}
+	if storedEmail != email {
+		t.Errorf("email changed to %q, want %q", storedEmail, email)
+	}
+
+	// The key the developer actually holds must still be live on the same agent.
+	//
+	// Asserted by PREFIX rather than by counting: issuing the 'laptop' key above also
+	// reclaimed the never-used 'initial' key that CreateAccount mints (see
+	// IdentityRepo.IssueKey — a sign-up key nobody saved is released by the first real
+	// login), so the live count is legitimately 1 and a count assertion would be testing
+	// that reclaim rule rather than the migration.
+	var laptopLive, balance int64
+	if err := pool.QueryRow(ctx, `
+		SELECT (SELECT COUNT(*) FROM agent_keys k JOIN agents a ON a.id = k.agent_id
+		         WHERE a.public_id = $1 AND k.key_prefix = 'sk_arena_legacydev' AND k.revoked_at IS NULL),
+		       (SELECT COALESCE(balance,0) FROM wallets w JOIN agents a ON a.id = w.agent_id
+		         WHERE a.public_id = $1)`, agentPID).Scan(&laptopLive, &balance); err != nil {
+		t.Fatalf("read agent state: %v", err)
+	}
+	if laptopLive != 1 {
+		t.Error("the developer's device key was revoked or detached by the Google adoption — " +
+			"their agent would stop being able to connect after migrating")
+	}
+	if balance != 4242 {
+		t.Errorf("wallet balance = %d, want 4242 — coins must survive the migration", balance)
+	}
+
+	// 5. Signing in AGAIN resolves by google_sub and is still the same account.
+	again, err := repo.UpsertGoogleAccount(ctx, identity.GoogleUpsertInput{
+		GoogleSub: fmt.Sprintf("google-sub-%d", os.Getpid()), Email: email,
+		UserPublicID: "usr_no", AgentPublicID: "ag_no", AgentName: "no", AgentSlug: "no",
+		KeyPrefix: "sk_arena_no", KeyHash: "no", Limits: identity.DefaultLimits(),
+	})
+	if err != nil {
+		t.Fatalf("second Google login: %v", err)
+	}
+	if again.Created || again.UserPublicID != userPID {
+		t.Errorf("second login = (created %v, user %s), want (false, %s)", again.Created, again.UserPublicID, userPID)
 	}
 }
