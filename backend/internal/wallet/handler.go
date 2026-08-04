@@ -32,10 +32,42 @@ func NewHandler(svc *Service, authn *auth.Authenticator, allowMint bool, adminUs
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
-		r.Get("/v1/wallet", h.get)
-		r.Get("/v1/wallet/history", h.history)
-		r.Get("/v1/user/wallet", h.userSummary)
-		r.Get("/v1/user/wallet/history", h.userHistory)
+
+		// AN AGENT'S PLAYING WALLET — agent or owner, and both are legitimate.
+		//
+		// The SDK reads its own balance with an agent key (resolveAgent falls back to
+		// p.AgentPublicID), and the dashboard reads it for a chosen agent with ?agent= on a
+		// user token. RequireScopeAny states that pair instead of leaving it to bare authn,
+		// which also admitted a Platform service token — an admin credential had a silent
+		// side door into per-agent balances that no admin surface asks for.
+		agentOrOwner := auth.RequireScopeAny(auth.ScopeAgent, auth.ScopeUser)
+		r.With(agentOrOwner).Get("/v1/wallet", h.get)
+		r.With(agentOrOwner).Get("/v1/wallet/history", h.history)
+
+		// THE OWNER'S TREASURY — user scope, enforced at the router.
+		//
+		// These two had no scope guard, and their handlers only check that the principal
+		// carries a UserPublicID. That is an IDENTITY check, not an authorization one: an
+		// agent API key resolves to its OWNER's UserPublicID, so every agent key could read
+		// its owner's treasury balance and their entire ledger — deposits, withdrawals,
+		// allocations, match settlements. The caller's own money, in the sense that the key
+		// belongs to their agent; not the caller's own decision, in the sense that an agent
+		// is a program deployed to a container or a CI runner and its key is expected to
+		// leak eventually.
+		//
+		// This is the allocate bug's shape exactly, in the same file: a handler doing its own
+		// ownership reasoning on a router that declared no scope. allocate got the guard
+		// because it MOVED money; these were left because they only READ it. But the reason
+		// allocate needed the guard was never that it wrote — it was that an agent key is not
+		// the owner, and that is equally true of a read. Disclosure is not the smaller half
+		// of a compromise when what is disclosed is a complete financial history.
+		//
+		// Nothing legitimate loses access. The dashboard sends session.dashboardToken and
+		// `pyyol wallet` sends the CLI's access_token; both are user-scope, and the CLI
+		// already refuses to run this command without one. No SDK path reads either route.
+		owner := auth.RequireScope(auth.ScopeUser)
+		r.With(owner).Get("/v1/user/wallet", h.userSummary)
+		r.With(owner).Get("/v1/user/wallet/history", h.userHistory)
 		// USER SCOPE, enforced at the router.
 		//
 		// allocate moves coins out of the OWNER's treasury into an agent's playing wallet.

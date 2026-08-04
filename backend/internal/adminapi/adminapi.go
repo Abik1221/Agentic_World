@@ -278,9 +278,25 @@ func NewHandler(repo Repo, authn *auth.Authenticator, adminUserIDs []string) *Ha
 func (h *Handler) Register(r chi.Router) {
 	guard := auth.RequirePlatformOrAdmin(h.admins)
 	r.Group(func(r chi.Router) {
+		// ONE authn.Middleware. This line appeared twice — once here and once again
+		// after the /v1/admin/users route below — so every admin route registered after
+		// that second call authenticated twice per request, while /v1/admin/users
+		// authenticated once.
+		//
+		// It did not panic, which is why it survived: chi's "all middlewares must be
+		// defined before routes" guard checks mx.handler, and inside a Group the router
+		// is an INLINE mux whose handler is not set by a `With(...).Get(...)` route — that
+		// sets the handler on the new inline mux returned by With, not on this one. So the
+		// second Use was accepted silently.
+		//
+		// The visible symptom was in the headers: denySharedCaching runs on each pass and
+		// uses Header().Add, so those routes answered with
+		// `Vary: Authorization, Cookie, Authorization, Cookie`. It also verified the Super
+		// Admin's Ed25519 Platform token twice on every admin request. Harmless, but it
+		// left the group in a state where reordering these lines WOULD hit the real panic
+		// at boot.
 		r.Use(h.authn.Middleware)
 		r.With(guard).Get("/v1/admin/users", h.users)
-		r.Use(h.authn.Middleware)
 		r.With(guard).Get("/v1/admin/users/{id}", h.userDetail)
 		r.With(guard).Get("/v1/admin/agents", h.agents)
 		r.With(guard).Get("/v1/admin/matches", h.matches)

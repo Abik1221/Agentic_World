@@ -88,17 +88,44 @@ func TestDocumentedArenaEnvVarsAreRead(t *testing.T) {
 	// checked against the SDK source instead of config.go. Skipping them entirely is what
 	// let PYYOL_API_KEY sit in the deployment guide: a variable nothing reads, in the one
 	// example people copy verbatim into a Dockerfile.
+	//
+	// sdkReadable records whether we could actually SEE the SDK, and it is load-bearing.
+	// The SDK lives in a sibling directory (../../../sdk), so a checkout or a container
+	// that mounts only backend/ cannot reach it — and when that happened this test did not
+	// skip the PYYOL_ names, it left `read` empty for all of them and then reported every
+	// documented PYYOL_ variable as one "neither the arena nor the SDK reads". Ten failures
+	// blaming the docs for a path the test could not open.
+	//
+	// That is the same vacuous-assertion problem contentFiles guards against above, run in
+	// reverse: there, missing input would silently PASS; here, missing input spuriously
+	// FAILED, which is worse — it sends someone to edit correct documentation. The arena's
+	// own variables are still fully checked either way; only the client-owned subset is
+	// held back, and loudly.
+	sdkReadable := false
 	if cli, ok := repoFile(t, "../../../sdk/python/pyyol/cli.py"); ok {
+		sdkReadable = true
 		sdk := cli
 		for _, f := range []string{"../../../sdk/python/pyyol/telemetry.py", "../../../sdk/python/pyyol/config.py", "../../../sdk/python/pyyol/credentials.py", "../../../sdk/python/pyyol/runtime.py", "../../../sdk/python/pyyol/server.py"} {
 			if extra, ok := repoFile(t, f); ok {
 				sdk += extra
 			}
 		}
-		for _, m := range regexp.MustCompile(`(?:environ\.get|getenv)\(\s*"(PYYOL_[A-Z0-9_]+)"`).FindAllStringSubmatch(sdk, -1) {
-			read[m[1]] = true
+		// Both accessor spellings. `os.environ.get("X", default)` is the common one, but the
+		// CLI also does a bare `os.environ["X"]` after testing for presence, so a name read
+		// only that way would look unread.
+		for _, re := range []*regexp.Regexp{
+			regexp.MustCompile(`(?:environ\.get|getenv)\(\s*"(PYYOL_[A-Z0-9_]+)"`),
+			regexp.MustCompile(`environ\[\s*"(PYYOL_[A-Z0-9_]+)"\s*\]`),
+		} {
+			for _, m := range re.FindAllStringSubmatch(sdk, -1) {
+				read[m[1]] = true
+			}
 		}
 		read["PYYOL_LENS_API_KEY"] = true // read by the telemetry emitter
+	} else {
+		t.Logf("SDK source not reachable from here (../../../sdk/python/pyyol/cli.py) — " +
+			"PYYOL_* names in the docs are NOT being verified in this run. Mount the repo " +
+			"root, not just backend/, to restore that half of the check.")
 	}
 
 	arenaPrefix := regexp.MustCompile(`^(SOLANA_|WITHDRAW_|DEPOSIT_|RAKE_|COIN_|RANKED_|HOT_WALLET_|S3_|MEDIA_|METRICS_|PYYOL_)`)
@@ -108,6 +135,11 @@ func TestDocumentedArenaEnvVarsAreRead(t *testing.T) {
 		for _, m := range nameRe.FindAllStringSubmatch(body, -1) {
 			name := m[1]
 			if !arenaPrefix.MatchString(name) || read[name] {
+				continue
+			}
+			// Client-owned name we had no source to check against — see sdkReadable.
+			// Asserting here would be asserting against an empty set.
+			if !sdkReadable && strings.HasPrefix(name, "PYYOL_") {
 				continue
 			}
 			t.Errorf("%s names %s, which neither the arena nor the SDK reads — following "+

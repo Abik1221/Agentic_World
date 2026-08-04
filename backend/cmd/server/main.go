@@ -1095,21 +1095,56 @@ func run() error {
 	// observation the threshold has to be derived from. Turn the gate on when honest
 	// agents are seen scoring above zero, and set the share rule from what they score —
 	// not from a guess.
-	if !cfg.RankedAutoDrive {
-		log.Warn("ranked integrity NOT enforced: a match whose decisions cannot be shown to be LLM-backed will still settle and pay out",
-			"reason", "checker+minter are installed only under RANKED_AUTODRIVE",
-			"measure_with", "GET /v1/developer/matches/{id} → bound_decisions")
+	// PROOF MINTING AND PROOF CHECKING ARE WIRED UNCONDITIONALLY.
+	//
+	// Both used to sit inside `if cfg.RankedAutoDrive`, which coupled ranked integrity to
+	// an unrelated feature — whether the server drives paired agents over their sockets.
+	// Auto-drive is off by default, so on a default deployment `s.integrity` was nil and
+	// rankedIntegrityFailed returned at its first line. Every ranked match settled with no
+	// integrity check of any kind, including the zero-proof gate.
+	//
+	// That made SetIntegrityCheck's own documented promise false — "the zero-proof gate
+	// (rule 1) is always active once a checker is installed" — because outside auto-drive a
+	// checker was never installed. A ranked match played by agents polling /v1/match/{id}/action
+	// (the ordinary path, no auto-drive involved) got nothing.
+	//
+	// What the correct dependency is: TURN_PROOF_SECRET, not RANKED_AUTODRIVE. Enforcement
+	// needs proofs to exist, and proofs need a minting secret.
+	//
+	//   secret unset → turnproof.New("") is inert by construction: Mint returns "" and
+	//                  Verify is false, so nothing binds, every seat scores zero, `total`
+	//                  is zero and rule 1 does not fire. Identical to today's behaviour,
+	//                  and NOT forgeable — an empty secret disables the proof rather than
+	//                  signing with an empty key.
+	//   secret set   → proofs mint on every ranked view, agents routing through the gateway
+	//                  bind decisions, and rule 1 starts protecting automatically.
+	//
+	// Rule 1 is safe to have always on because it is RELATIVE: a zero-proof seat is only
+	// voided when another seat in the same match did prove its decisions. Until proofs
+	// actually flow it cannot fire at all. That is the property the gate was written to
+	// have (see rankedIntegrityFailed) and it is the property it now actually has.
+	//
+	// RANKED_INTEGRITY_MIN_PCT is deliberately still 0. The share rule is the part that
+	// needs a number derived from what honest agents score, and guessing it would void the
+	// matches of developers who are genuinely paying for inference. Measure first — the
+	// zero-proof gate needs no threshold, which is exactly why it can ship ahead of one.
+	//
+	// SetTurnMinter must precede EnableRankedDrive: the driver copies the minter at
+	// construction, so installing it afterwards would ship views with no proof token.
+	matchSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
+	matchSvc.SetIntegrityCheck(store.NewPIndexRepo(st.DB), cfg.RankedIntegrityMinPct)
+	if cfg.TurnProofSecret == "" {
+		log.Warn("ranked integrity INERT: no TURN_PROOF_SECRET, so no decision can be proven LLM-backed and a scripted agent can take ranked stakes",
+			"fix", "set TURN_PROOF_SECRET to mint per-turn proof tokens",
+			"then", "the zero-proof gate enforces itself; measure with GET /v1/developer/matches/{id} → bound_decisions before setting RANKED_INTEGRITY_MIN_PCT")
+	} else {
+		log.Info("ranked integrity active: zero-proof gate on (a seat proving nothing is voided when another seat in the same match proved something)",
+			"share_rule_min_pct", cfg.RankedIntegrityMinPct)
 	}
+
 	if cfg.RankedAutoDrive {
 		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
 		// default (auto-plays real staked matches) — enable post integration test.
-		// Before EnableRankedDrive: the driver copies the minter at construction, so
-		// installing it afterwards would ship views with no proof token.
-		matchSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
-		// Ranked integrity: void a staked match whose decisions cannot be shown to be
-		// LLM-backed. Off unless RANKED_INTEGRITY_MIN_PCT is set — see the config
-		// comment for why measuring has to come first.
-		matchSvc.SetIntegrityCheck(store.NewPIndexRepo(st.DB), cfg.RankedIntegrityMinPct)
 		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, manifestProbe, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
