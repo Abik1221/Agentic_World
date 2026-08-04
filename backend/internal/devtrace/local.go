@@ -3,7 +3,6 @@ package devtrace
 import (
 	"context"
 	"encoding/json"
-	"sort"
 	"time"
 )
 
@@ -73,151 +72,25 @@ type Registration struct {
 // to Lens-only behaviour (which is how it used to work, and how it fails).
 func (s *Service) SetLocalRepo(r LocalRepo) { s.local = r }
 
-// localActivity assembles trace entries from the arena's own tables.
+// localActivity assembles the flat "recent activity" feed from the arena's own tables.
 //
 // Rounds are folded rather than reported one row per event: a developer wants "round 7,
 // played the 9, took 1.2s, won the 11-point prize" as ONE line, not four rows they have to
-// join by eye. That folding is the whole reason this returns a shaped timeline instead of a
-// table dump.
+// join by eye. That folding — and the per-game payload mapping for all three games — lives
+// in games.go, shared with the per-match detail endpoint so the two views can never
+// describe the same match differently.
 func (s *Service) localActivity(ctx context.Context, agentIDs []string, since time.Time, limit int) ([]Entry, error) {
 	rows, err := s.local.MatchActivity(ctx, agentIDs, since, limit)
 	if err != nil {
 		return nil, err
 	}
 
-	// Per (match, agent, round): when the prize was revealed (the round's start) and when
-	// this agent sealed its card. The difference is its thinking time.
-	type roundKey struct {
-		match string
-		agent string
-		round int
-	}
-	prizeAt := map[roundKey]time.Time{}
-	sealedAt := map[roundKey]time.Time{}
-	out := make([]Entry, 0, len(rows))
-
-	// First pass: timings. Done separately because a round's prize is revealed before the
-	// card is sealed but a reveal arrives for the whole table, so the pairing cannot be
-	// made row-by-row in one sweep.
-	for _, r := range rows {
-		switch r.Type {
-		case "prize_revealed":
-			var p struct{ Round int }
-			if json.Unmarshal(r.Payload, &p) == nil {
-				k := roundKey{r.MatchPublicID, r.AgentPublicID, p.Round}
-				// Keep the FIRST reveal for a round. A retry or a duplicate row must not
-				// move the start of the clock and make a decision look instant.
-				if _, seen := prizeAt[k]; !seen {
-					prizeAt[k] = r.CreatedAt
-				}
-			}
-		case "card_sealed":
-			var p struct {
-				Round int
-				Seat  int
-			}
-			if json.Unmarshal(r.Payload, &p) == nil && p.Seat == r.Seat {
-				sealedAt[roundKey{r.MatchPublicID, r.AgentPublicID, p.Round}] = r.CreatedAt
-			}
-		}
-	}
-
-	latency := func(k roundKey) int64 {
-		start, ok := prizeAt[k]
-		if !ok {
-			return 0
-		}
-		end, ok := sealedAt[k]
-		if !ok {
-			return 0
-		}
-		ms := end.Sub(start).Milliseconds()
-		// A negative or absurd gap means the two rows are not the pair we think they are;
-		// reporting it would put a fictional number on a latency chart.
-		if ms < 0 || ms > int64(6*time.Hour/time.Millisecond) {
-			return 0
-		}
-		return ms
-	}
-
-	for _, r := range rows {
-		base := Entry{
-			At:      r.CreatedAt,
-			Status:  "ok",
-			Game:    r.Game,
-			MatchID: r.MatchPublicID,
-			AgentID: r.AgentPublicID,
-		}
-		switch r.Type {
-		case "round_revealed":
-			// The decision WITH its value. `card_sealed` deliberately carries no card (a
-			// spectator must not learn a move early), so the reveal is where a developer
-			// finally sees what their agent actually played.
-			var p struct {
-				Round  int    `json:"round"`
-				Prize  int    `json:"prize"`
-				Cards  [2]int `json:"cards"`
-				Winner int    `json:"winner"`
-			}
-			if json.Unmarshal(r.Payload, &p) != nil || r.Seat < 0 || r.Seat > 1 {
-				continue
-			}
-			e := base
-			e.Type = "agent_decision"
-			e.Operation = "bid"
-			e.LatencyMS = latency(roundKey{r.MatchPublicID, r.AgentPublicID, p.Round})
-			e.Detail = map[string]any{
-				"round":  p.Round,
-				"action": "played " + itoa(p.Cards[r.Seat]),
-				"prize":  p.Prize,
-				"won":    p.Winner == r.Seat,
-			}
-			out = append(out, e)
-
-		case "agent_says":
-			var p struct {
-				Round int    `json:"round"`
-				Seat  int    `json:"seat"`
-				Text  string `json:"text"`
-				Kind  string `json:"kind"`
-			}
-			if json.Unmarshal(r.Payload, &p) != nil || p.Seat != r.Seat {
-				continue
-			}
-			e := base
-			e.Type = "agent_said"
-			e.Detail = map[string]any{"round": p.Round}
-			// A rationale is the agent explaining its own move; table talk is what it said
-			// to the opponent. The client renders them differently, so they stay distinct.
-			if p.Kind == "rationale" {
-				e.Detail["rationale"] = p.Text
-			} else {
-				e.Detail["text"] = p.Text
-			}
-			out = append(out, e)
-
-		case "match_finished":
-			var p struct {
-				Scores [2]int `json:"scores"`
-				Winner int    `json:"winner"`
-			}
-			if json.Unmarshal(r.Payload, &p) != nil {
-				continue
-			}
-			e := base
-			e.Type = "match_finished"
-			e.Detail = map[string]any{"won": p.Winner == r.Seat}
-			if r.Seat >= 0 && r.Seat <= 1 {
-				e.Detail["score"] = p.Scores[r.Seat]
-			}
-			out = append(out, e)
-
-		case "match_created":
-			e := base
-			e.Type = "match_started"
-			out = append(out, e)
-		}
-	}
+	// No per-match context here on purpose: this flat feed spans many matches, and
+	// fetching a roster per match to name seats would be N+1 queries for a view whose
+	// job is "what has my agent been doing lately". `Finished` stays false, so ONLY the
+	// caller's own seat is admitted — the same scope this endpoint always had. The
+	// per-match detail endpoint is where seats get names and public events get shown.
+	out := mapRows(rows, nil)
 
 	// "Your agent exists" is a fact worth showing when there is nothing else.
 	//
@@ -236,41 +109,14 @@ func (s *Service) localActivity(ctx context.Context, agentIDs []string, since ti
 					Type:    "agent_registered",
 					Status:  "ok",
 					AgentID: reg.AgentPublicID,
-					Detail:  map[string]any{"name": reg.Name},
+					Detail:  map[string]any{"name": reg.Name, "summary": "Agent " + reg.Name + " registered"},
 				})
 			}
 		}
 	}
 
-	// Newest first, matching what the Lens returns and what the client expects before it
-	// regroups into per-match timelines.
-	sort.SliceStable(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
-}
-
-// itoa avoids pulling strconv in for one call and keeps the detail map values as strings
-// where the client expects strings.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
 }

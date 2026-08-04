@@ -338,6 +338,17 @@ func (r *DevProfileRepo) Leaderboard(ctx context.Context, season int, segment st
 // "Public" = an active user who has opted into a public presence: they either claimed
 // an @handle or own at least one real (non-house) agent. House/system owners are
 // excluded because their only agents are kind='house'.
+//
+// PARAMETERS. $1 season, $2 free-text query, $3 "only this developer" and $4 "not this
+// developer" — the last two both empty for a plain listing. They exist so the signed-in
+// visitor's own row can be pulled out and shown to them separately while being removed
+// from the list, WITHOUT the count and the paging going wrong. Filtering self out in the
+// browser instead would leave a page of 23 rows claiming to be 24 and a total one too
+// high, which is the off-by-one that makes the last page render empty.
+//
+// Every output column is ALIASED. Not cosmetic: DirectoryCount and DirectoryRowFor wrap
+// this query as a subselect, and an unaliased `COALESCE(...)` cannot be referenced from
+// the outer WHERE.
 const directoryBaseSQL = `
 WITH pub AS (
     SELECT u.id, u.public_id,
@@ -361,11 +372,13 @@ WITH pub AS (
     WHERE a.kind <> 'house'
     GROUP BY a.owner_user_id
 )
-SELECT pub.public_id, pub.username, pub.display_name, pub.avatar_url, pub.country, pub.segment,
-       COALESCE(d.p_index, 0)::float8, COALESCE(d.global_rank, 0)::int,
+SELECT pub.public_id AS public_id, pub.username AS username, pub.display_name AS display_name,
+       pub.avatar_url AS avatar_url, pub.country AS country, pub.segment AS segment,
+       COALESCE(d.p_index, 0)::float8 AS p_index, COALESCE(d.global_rank, 0)::int AS global_rank,
        (d.user_id IS NOT NULL) AS ranked,
-       COALESCE(rec.matches, 0), COALESCE(rec.wins, 0), COALESCE(rec.agents, 0),
-       pub.created_at,
+       COALESCE(rec.matches, 0) AS matches, COALESCE(rec.wins, 0) AS wins,
+       COALESCE(rec.agents, 0) AS agents,
+       pub.created_at AS created_at,
        -- The agent whose name matched the query, when that is WHY this row is here.
        -- Without it a search for an agent returns a developer whose handle looks
        -- nothing like what was typed, and the result reads as a bug.
@@ -381,20 +394,27 @@ SELECT pub.public_id, pub.username, pub.display_name, pub.avatar_url, pub.countr
 FROM pub
 LEFT JOIN developer_pindex d ON d.user_id = pub.id AND d.season = $1
 LEFT JOIN rec              ON rec.uid    = pub.id
-WHERE $2 = ''
-   OR pub.username     ILIKE '%' || $2 || '%' ESCAPE '\'
-   OR pub.display_name ILIKE '%' || $2 || '%' ESCAPE '\'
-   OR pub.public_id    ILIKE '%' || $2 || '%' ESCAPE '\'
-   -- Agents are how most people know each other here: a developer is far more likely
-   -- to be recognised by the bot they shipped than by the handle they registered, so
-   -- an agent name, slug or id finds its owner.
-   OR EXISTS (
-        SELECT 1 FROM agents a
-        WHERE a.owner_user_id = pub.id AND a.kind <> 'house'
-          AND (a.name ILIKE '%' || $2 || '%' ESCAPE '\'
-               OR a.slug      ILIKE '%' || $2 || '%' ESCAPE '\'
-               OR a.public_id ILIKE '%' || $2 || '%' ESCAPE '\')
+WHERE (
+        $2 = ''
+     OR pub.username     ILIKE '%' || $2 || '%' ESCAPE '\'
+     OR pub.display_name ILIKE '%' || $2 || '%' ESCAPE '\'
+     OR pub.public_id    ILIKE '%' || $2 || '%' ESCAPE '\'
+     -- Agents are how most people know each other here: a developer is far more likely
+     -- to be recognised by the bot they shipped than by the handle they registered, so
+     -- an agent name, slug or id finds its owner.
+     OR EXISTS (
+          SELECT 1 FROM agents a
+          WHERE a.owner_user_id = pub.id AND a.kind <> 'house'
+            AND (a.name ILIKE '%' || $2 || '%' ESCAPE '\'
+                 OR a.slug      ILIKE '%' || $2 || '%' ESCAPE '\'
+                 OR a.public_id ILIKE '%' || $2 || '%' ESCAPE '\')
+     )
    )
+   -- The query group above is PARENTHESISED. Without the brackets these two AND terms
+   -- would bind to the last OR branch only, so an empty query would stop matching
+   -- everyone and the filters would apply to one arm of the search.
+   AND ($3 = '' OR pub.public_id = $3)
+   AND ($4 = '' OR pub.public_id <> $4)
 `
 
 // likeEscape neutralises LIKE wildcards in user input so a search for "_" or "%"
@@ -411,15 +431,52 @@ func likeEscape(s string) string {
 // they are looking at 20 developers or the first 20 of 400. It wraps the same base query so
 // the count and the rows can never disagree about what "matching" means — a count computed
 // from a second, hand-maintained WHERE clause is a number that goes wrong quietly.
-func (r *DevProfileRepo) DirectoryCount(ctx context.Context, season int, q string) (int, error) {
+func (r *DevProfileRepo) DirectoryCount(ctx context.Context, season int, q, exclude string) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM (`+directoryBaseSQL+`) matched`,
-		season, likeEscape(q)).Scan(&n)
+		season, likeEscape(q), "", exclude).Scan(&n)
 	return n, err
 }
 
-func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]devprofile.DirectoryRow, error) {
+// DirectoryRowFor returns ONE developer's directory row — the signed-in visitor's own,
+// so the page can show it to them separately from the list it has been removed from.
+//
+// Deliberately the same query as the list rather than a second hand-written one: the row
+// shown at the top of the page and the rows in it must agree about what a developer's
+// record is, and two queries computing "matches" and "ranked" separately is how they
+// come to disagree. Not found is (row, false, nil): a developer who is not PUBLIC yet
+// has no directory row, which is a real answer and not an error.
+func (r *DevProfileRepo) DirectoryRowFor(ctx context.Context, season int, developerID string) (devprofile.DirectoryRow, bool, error) {
+	if developerID == "" {
+		return devprofile.DirectoryRow{}, false, nil
+	}
+	rows, err := r.db.Query(ctx, directoryBaseSQL+` LIMIT 1`, season, "", developerID, "")
+	if err != nil {
+		return devprofile.DirectoryRow{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return devprofile.DirectoryRow{}, false, rows.Err()
+	}
+	d, err := scanDirectoryRow(rows)
+	if err != nil {
+		return devprofile.DirectoryRow{}, false, err
+	}
+	return d, true, nil
+}
+
+func scanDirectoryRow(rows pgx.Rows) (devprofile.DirectoryRow, error) {
+	var d devprofile.DirectoryRow
+	if err := rows.Scan(&d.Developer, &d.Username, &d.DisplayName, &d.AvatarURL,
+		&d.Country, &d.Segment, &d.PIndex, &d.GlobalRank, &d.Ranked,
+		&d.Matches, &d.Wins, &d.Agents, &d.JoinedAt, &d.MatchedAgent); err != nil {
+		return devprofile.DirectoryRow{}, err
+	}
+	return d, nil
+}
+
+func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort string, limit, offset int, exclude string) ([]devprofile.DirectoryRow, error) {
 	// "top": developers who have actually played rank first (that is what the landing
 	// spotlight wants), then by P-Index, then by volume. "recent": newest first.
 	order := `ORDER BY (COALESCE(rec.matches,0) > 0) DESC,
@@ -429,18 +486,16 @@ func (r *DevProfileRepo) Directory(ctx context.Context, season int, q, sort stri
 	if sort == "recent" {
 		order = `ORDER BY pub.created_at DESC, pub.id`
 	}
-	rows, err := r.db.Query(ctx, directoryBaseSQL+order+` LIMIT $3 OFFSET $4`,
-		season, likeEscape(q), limit, offset)
+	rows, err := r.db.Query(ctx, directoryBaseSQL+order+` LIMIT $5 OFFSET $6`,
+		season, likeEscape(q), "", exclude, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []devprofile.DirectoryRow
 	for rows.Next() {
-		var d devprofile.DirectoryRow
-		if err := rows.Scan(&d.Developer, &d.Username, &d.DisplayName, &d.AvatarURL,
-			&d.Country, &d.Segment, &d.PIndex, &d.GlobalRank, &d.Ranked,
-			&d.Matches, &d.Wins, &d.Agents, &d.JoinedAt, &d.MatchedAgent); err != nil {
+		d, err := scanDirectoryRow(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, d)

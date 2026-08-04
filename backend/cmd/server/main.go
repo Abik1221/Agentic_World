@@ -633,6 +633,10 @@ func run() error {
 	devTraceSvc := devtrace.New(devTraceRepo, cfg.PyyolLensQueryEndpoint,
 		cfg.PyyolLensQueryAPIKey, cfg.PyyolLensOrg, log)
 	devTraceSvc.SetLocalRepo(devTraceRepo)
+	// The paginated game history + per-match record (/v1/developer/matches). Same repo,
+	// separate port: those are aggregate queries over matches rather than a scan of the
+	// event log, and the history must not be reachable when it has no source.
+	devTraceSvc.SetMatchRepo(devTraceRepo)
 	devTraceHandler := devtrace.NewHandler(devTraceSvc, authn)
 
 	// All event handlers are now registered — start the dispatcher (see the NOTE at
