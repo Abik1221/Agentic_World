@@ -293,3 +293,83 @@ func TestDirectoryEmptyQueryStillMatchesEveryone(t *testing.T) {
 	}
 	var _ []devprofile.DirectoryRow = rows // shape assertion
 }
+
+// FOLLOWERS vs FOLLOWING must not be swapped. The two directions are one map lookup apart
+// (followEdges), and getting them backwards would show a developer their own followers under
+// "following" — a wrong answer that looks entirely plausible on screen, which is exactly the
+// kind of bug that survives review and only a real edge can catch.
+func TestFollowListDirectionsAreNotSwapped(t *testing.T) {
+	pool := testPool(t)
+	repo := NewDevProfileRepo(pool)
+	ctx := context.Background()
+
+	// alice follows bob. So bob has one FOLLOWER (alice), and alice is FOLLOWING one (bob).
+	alice, _ := seedOwnerWithAgent(t, pool, "falice")
+	bob, _ := seedOwnerWithAgent(t, pool, "fbob")
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO developer_follows (follower_user_id, followee_user_id)
+		 SELECT (SELECT id FROM users WHERE public_id = $1), (SELECT id FROM users WHERE public_id = $2)`,
+		alice, bob); err != nil {
+		t.Fatalf("seed follow edge: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM developer_follows
+			WHERE follower_user_id = (SELECT id FROM users WHERE public_id = $1)`, alice)
+	})
+
+	only := func(dir, subject string) []string {
+		t.Helper()
+		rows, err := repo.FollowList(ctx, 1, subject, dir, 50, 0)
+		if err != nil {
+			t.Fatalf("FollowList(%s, %s): %v", dir, subject, err)
+		}
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.Developer)
+		}
+		return out
+	}
+
+	if got := only("followers", bob); len(got) != 1 || got[0] != alice {
+		t.Errorf("bob's followers = %v, want [alice=%s]", got, alice)
+	}
+	if got := only("following", alice); len(got) != 1 || got[0] != bob {
+		t.Errorf("alice's following = %v, want [bob=%s]", got, bob)
+	}
+	// And the reverse must be EMPTY, or the two directions are the same query.
+	if got := only("following", bob); len(got) != 0 {
+		t.Errorf("bob follows nobody but 'following' returned %v — the directions are swapped", got)
+	}
+	if got := only("followers", alice); len(got) != 0 {
+		t.Errorf("alice has no followers but 'followers' returned %v — the directions are swapped", got)
+	}
+
+	// The counts must agree with the lists, since the pager is driven by them.
+	for _, tc := range []struct {
+		subject, dir string
+		want         int
+	}{{bob, "followers", 1}, {alice, "following", 1}, {bob, "following", 0}, {alice, "followers", 0}} {
+		n, err := repo.FollowListCount(ctx, tc.subject, tc.dir)
+		if err != nil {
+			t.Fatalf("FollowListCount(%s): %v", tc.dir, err)
+		}
+		if n != tc.want {
+			t.Errorf("FollowListCount(%s, %s) = %d, want %d", tc.subject, tc.dir, n, tc.want)
+		}
+	}
+
+	// FollowCounts backs the profile header and MUST match the lists, or the header says 1
+	// and the list shows 0 (or the pager offers a page that comes back empty).
+	followers, following, err := repo.FollowCounts(ctx, bob)
+	if err != nil {
+		t.Fatalf("FollowCounts: %v", err)
+	}
+	if followers != 1 || following != 0 {
+		t.Errorf("FollowCounts(bob) = (%d, %d), want (1, 0) — header and list disagree", followers, following)
+	}
+
+	// An unknown direction must yield nothing rather than the wrong list.
+	if rows, err := repo.FollowList(ctx, 1, bob, "sideways", 10, 0); err != nil || len(rows) != 0 {
+		t.Errorf("FollowList with a bad direction = (%d rows, %v), want (0, nil)", len(rows), err)
+	}
+}

@@ -375,6 +375,69 @@ paths:
                   sort: { type: string }
                   season: { type: integer }
 
+  /v1/developers/{handle}/followers:
+    get:
+      tags: [Developer Directory]
+      summary: Who follows this developer (unauthenticated)
+      security: []
+      description: |
+        The list behind the "N followers" count, which was public and unopenable: the edges
+        were in `developer_follows` with an index in both directions, and the only way a
+        developer could learn who followed them was to catch the notification as it arrived.
+
+        Rows are the SAME shape as a directory entry, so one client component renders a
+        directory row, a follower and an agent's follower — three shapes for one thing is how
+        three lists come to disagree.
+
+        EVERY follower is listed, including accounts that have not claimed an @handle or
+        shipped an agent yet: a follower is a follower whether or not they have finished
+        setting up. `count` is computed with the same predicate as the rows (both exclude
+        non-active accounts), so it matches both the list and the profile header — a count
+        that includes a row the list filters out makes the last page render empty.
+
+        Public, like the count it expands. Nothing here is visible that the profile page did
+        not already publish.
+      parameters:
+        - { name: handle, in: path, required: true, description: "@handle or developer id", schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 24 } }
+        - { name: cursor, in: query, description: row offset, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200": { description: one page of followers, content: { application/json: { schema: { $ref: "#/components/schemas/FollowListPage" } } } }
+        "404": { description: "not_found — no such developer", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/developers/{handle}/following:
+    get:
+      tags: [Developer Directory]
+      summary: Who this developer follows (unauthenticated)
+      security: []
+      description: |
+        The reverse edge of `/followers`, same row shape and same paging. Its own route rather
+        than a `?direction=` on one endpoint, so each list has a URL that can be linked,
+        shared and cached separately — and so the two, which answer opposite questions, can
+        never be confused for one another by a mis-parsed parameter.
+      parameters:
+        - { name: handle, in: path, required: true, description: "@handle or developer id", schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 24 } }
+        - { name: cursor, in: query, description: row offset, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200": { description: one page of followed developers, content: { application/json: { schema: { $ref: "#/components/schemas/FollowListPage" } } } }
+        "404": { description: "not_found — no such developer", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/agents/{agent_id}/followers:
+    get:
+      tags: [Developer Directory]
+      summary: The developers following one agent (unauthenticated)
+      security: []
+      description: |
+        A different table from the developer lists — `follows` maps a USER to an AGENT — so
+        the subject is an agent and the rows are developers. Same row shape regardless, for
+        the same reason. An agent has no "following" side, which is why there is no sibling
+        route.
+      parameters:
+        - { name: agent_id, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 24 } }
+        - { name: cursor, in: query, description: row offset, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200": { description: one page of followers, content: { application/json: { schema: { $ref: "#/components/schemas/FollowListPage" } } } }
+
   /v1/queue:
     post:
       tags: [Matchmaking]
@@ -796,6 +859,21 @@ components:
     Health:
       type: object
       properties: { status: { type: string, example: ok } }
+    FollowListPage:
+      type: object
+      description: One page of a follower / following list.
+      properties:
+        subject: { type: string, description: The handle or agent id the list belongs to, echoed so two lists cannot be mixed up }
+        direction: { type: string, enum: [followers, following] }
+        entries: { type: array, items: { $ref: "#/components/schemas/DirectoryRow" } }
+        count:
+          type: integer
+          description: >-
+            Every row matching, ignoring paging. Counted with the same predicate as the rows,
+            so it equals both what the list can reach and the count on the profile header.
+        limit: { type: integer }
+        offset: { type: integer }
+        next_cursor: { type: integer, description: 0 on the last page }
     DirectoryRow:
       type: object
       description: One public developer in the directory.

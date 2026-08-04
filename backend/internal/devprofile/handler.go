@@ -32,6 +32,13 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/developers/username-available", h.usernameAvailable)
 	r.Get("/v1/developers/{handle}", h.profile)
 	r.Get("/v1/developers/{handle}/pindex", h.pindex)
+	// The two numbers on every profile, now openable. Public, exactly like the counts they
+	// expand — see internal/devprofile/follows.go on why.
+	r.Get("/v1/developers/{handle}/followers", h.followersList)
+	r.Get("/v1/developers/{handle}/following", h.followingList)
+	// Agent followers use a different table (user → agent) but return the same row shape,
+	// so one client component renders all three lists.
+	r.Get("/v1/agents/{agent_id}/followers", h.agentFollowers)
 	r.Get("/v1/developers/{handle}/matches", h.matches)
 
 	// Authenticated developer actions (user scope).
@@ -306,6 +313,53 @@ func (h *Handler) followState(w http.ResponseWriter, r *http.Request) {
 	// shared cache would hand one developer another's relationship.
 	w.Header().Set("Cache-Control", "private, no-store")
 	httpx.JSON(w, http.StatusOK, st)
+}
+
+// followList serves both /followers and /following. The direction is taken from the ROUTE
+// rather than a query parameter, so the two lists have their own URLs and can be linked,
+// shared and cached separately — a `?dir=` would have made them one page pretending to be
+// two.
+func (h *Handler) followersList(w http.ResponseWriter, r *http.Request) {
+	h.followList(w, r, DirFollowers)
+}
+
+func (h *Handler) followingList(w http.ResponseWriter, r *http.Request) {
+	h.followList(w, r, DirFollowing)
+}
+
+// followList backs both routes. The direction is passed in by the route that matched rather
+// than read back off the URL: sniffing `path.Base` would quietly serve the wrong list for a
+// trailing slash or an unexpected mount prefix, and these two answer opposite questions.
+func (h *Handler) followList(w http.ResponseWriter, r *http.Request, dir FollowDirection) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+
+	page, found, err := h.svc.DeveloperFollowList(r.Context(), chi.URLParam(r, "handle"), dir, limit, offset)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if !found {
+		httpx.Error(w, httpx.NewError(http.StatusNotFound, "not_found", "no such developer"))
+		return
+	}
+	// Briefly shared-cacheable: everything here is public and identical for every viewer,
+	// unlike followState, which is per-viewer and must never be cached.
+	w.Header().Set("Cache-Control", "public, max-age=15")
+	httpx.JSON(w, http.StatusOK, page)
+}
+
+// agentFollowers serves GET /v1/agents/{id}/followers.
+func (h *Handler) agentFollowers(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+	page, err := h.svc.AgentFollowerList(r.Context(), chi.URLParam(r, "agent_id"), limit, offset)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=15")
+	httpx.JSON(w, http.StatusOK, page)
 }
 
 func (h *Handler) follow(w http.ResponseWriter, r *http.Request) {

@@ -194,4 +194,22 @@ type Repo interface {
 	// otherwise, so following someone appeared to work and then undid itself on the
 	// next page load. The row was there the whole time.
 	IsFollowing(ctx context.Context, followerUserPublicID, followeeUserPublicID string) (bool, error)
+
+	// FollowList returns one page of a developer's followers ("followers") or the
+	// developers they follow ("following"), newest edge first. Rows are the same shape as
+	// a directory row so one card component renders a directory entry and a follower
+	// identically — two shapes for the same thing is how two lists come to disagree.
+	//
+	// It lists EVERY follower, including accounts with no @handle and no agent yet: a
+	// follower is a follower whether or not they have finished setting up. Enrichment
+	// (P-Index, record) is absent rather than exclusionary for those.
+	FollowList(ctx context.Context, season int, userPublicID, direction string, limit, offset int) ([]DirectoryRow, error)
+	// FollowListCount is the total for that page's pager, counted with the same predicate
+	// as FollowList so the count and the list cannot disagree.
+	FollowListCount(ctx context.Context, userPublicID, direction string) (int, error)
+
+	// AgentFollowers lists the developers following one AGENT (the `follows` table, which
+	// maps user → agent), plus its total.
+	AgentFollowers(ctx context.Context, season int, agentPublicID string, limit, offset int) ([]DirectoryRow, error)
+	AgentFollowerCount(ctx context.Context, agentPublicID string) (int, error)
 }

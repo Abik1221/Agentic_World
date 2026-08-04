@@ -256,9 +256,15 @@ func (r *DevProfileRepo) TopModels(ctx context.Context, userPublicID string, lim
 func (r *DevProfileRepo) FollowCounts(ctx context.Context, userPublicID string) (int, int, error) {
 	var followers, following int
 	err := r.db.QueryRow(ctx,
+		// Both counts exclude non-active accounts, matching FollowList exactly. Without
+		// that the header says 5, the list shows 4, and the pager's last page comes back
+		// empty — the same off-by-N as counting a row the list filters out. A suspended
+		// account is also not a follower anyone should be credited with.
 		`SELECT
-		   (SELECT COUNT(*) FROM developer_follows WHERE followee_user_id = u.id),
-		   (SELECT COUNT(*) FROM developer_follows WHERE follower_user_id = u.id)
+		   (SELECT COUNT(*) FROM developer_follows f JOIN users fu ON fu.id = f.follower_user_id
+		     WHERE f.followee_user_id = u.id AND fu.status = 'active'),
+		   (SELECT COUNT(*) FROM developer_follows f JOIN users fu ON fu.id = f.followee_user_id
+		     WHERE f.follower_user_id = u.id AND fu.status = 'active')
 		 FROM users u WHERE u.public_id = $1`, userPublicID).Scan(&followers, &following)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, 0, nil
@@ -659,4 +665,169 @@ func (r *DevProfileRepo) Unfollow(ctx context.Context, followerUserPublicID, fol
 		   AND followee_user_id = (SELECT id FROM users WHERE public_id = $2)`,
 		followerUserPublicID, followeeUserPublicID)
 	return err
+}
+
+// ── Follower / following lists ───────────────────────────────────────────────
+//
+// "N followers" was a number nobody could open. The counts have always been public on the
+// profile, the edges have always been in developer_follows with an index in BOTH directions
+// (PK on (follower, followee), idx_developer_follows_followee), and the only way a developer
+// could learn WHO followed them was to catch the notification as it arrived.
+//
+// EVERY FOLLOWER IS LISTED, including developers with no @handle and no agent yet. That is
+// deliberate and it is the whole reason this is not built on directoryBaseSQL: that query's
+// `pub` CTE only admits an account that has claimed a handle or owns a real agent, so
+// wrapping it would silently drop followers who have done neither — and the list would then
+// disagree with the count beside it, which is exactly the off-by-N that makes a paginated
+// view show an empty last page. A follower is a follower whether or not they have finished
+// setting up their profile.
+//
+// The enrichment (P-Index, record, agent count) is LEFT JOINed for the same reason: absent
+// for a brand-new account, rather than excluding them.
+const followListSQL = `
+SELECT u.public_id AS public_id,
+       COALESCE(u.username::text,'') AS username,
+       COALESCE(u.display_name,'')   AS display_name,
+       COALESCE(u.avatar_url,'')     AS avatar_url,
+       COALESCE(u.country,'')        AS country,
+       u.segment                     AS segment,
+       COALESCE(d.p_index, 0)::float8 AS p_index,
+       COALESCE(d.global_rank, 0)::int AS global_rank,
+       (d.user_id IS NOT NULL)        AS ranked,
+       COALESCE(rec.matches, 0)       AS matches,
+       COALESCE(rec.wins, 0)          AS wins,
+       COALESCE(rec.agents, 0)        AS agents,
+       u.created_at                   AS created_at,
+       ''                             AS matched_agent
+  FROM developer_follows f
+  JOIN users u   ON u.id = %[1]s
+  JOIN users own ON own.id = %[2]s
+  LEFT JOIN developer_pindex d ON d.user_id = u.id AND d.season = $1
+  LEFT JOIN (
+       SELECT a.owner_user_id AS uid,
+              COUNT(DISTINCT a.id)::int                            AS agents,
+              COALESCE(SUM(rt.wins),0)::int                        AS wins,
+              COALESCE(SUM(rt.wins + rt.losses + rt.ties),0)::int  AS matches
+         FROM agents a
+         LEFT JOIN ratings rt ON rt.agent_id = a.id AND rt.season = $1
+        WHERE a.kind <> 'house'
+        GROUP BY a.owner_user_id
+  ) rec ON rec.uid = u.id
+ WHERE own.public_id = $2
+   AND u.status = 'active'
+ ORDER BY f.created_at DESC, u.id
+ LIMIT $3 OFFSET $4`
+
+// followEdges names the two sides of the edge for each direction. Kept as data rather than
+// two near-identical query strings so the enrichment can never drift between them.
+var followEdges = map[string][2]string{
+	// Who follows this developer: the ROW is the follower, the owner is the followee.
+	"followers": {"f.follower_user_id", "f.followee_user_id"},
+	// Who this developer follows: the reverse.
+	"following": {"f.followee_user_id", "f.follower_user_id"},
+}
+
+// FollowList returns one page of a developer's followers or the developers they follow.
+// direction is "followers" or "following"; anything else is a programming error and yields
+// no rows rather than the wrong list.
+func (r *DevProfileRepo) FollowList(
+	ctx context.Context, season int, userPublicID, direction string, limit, offset int,
+) ([]devprofile.DirectoryRow, error) {
+	edge, ok := followEdges[direction]
+	if !ok {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx,
+		fmt.Sprintf(followListSQL, edge[0], edge[1]),
+		season, userPublicID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]devprofile.DirectoryRow, 0, limit)
+	for rows.Next() {
+		d, err := scanDirectoryRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// AgentFollowers lists the developers following one agent.
+//
+// A different table (`follows`, from migration 0007) with a different shape: it maps a USER
+// to an AGENT, so the rows here are developers and the subject is an agent. Same row shape
+// as everything else on purpose — the client renders one card component for a directory
+// entry, a follower and an agent's follower, so the three can never drift apart.
+func (r *DevProfileRepo) AgentFollowers(
+	ctx context.Context, season int, agentPublicID string, limit, offset int,
+) ([]devprofile.DirectoryRow, error) {
+	rows, err := r.db.Query(ctx, `
+SELECT u.public_id, COALESCE(u.username::text,''), COALESCE(u.display_name,''),
+       COALESCE(u.avatar_url,''), COALESCE(u.country,''), u.segment,
+       COALESCE(d.p_index, 0)::float8, COALESCE(d.global_rank, 0)::int,
+       (d.user_id IS NOT NULL),
+       COALESCE(rec.matches, 0), COALESCE(rec.wins, 0), COALESCE(rec.agents, 0),
+       u.created_at, ''
+  FROM follows f
+  JOIN agents a ON a.id = f.agent_id
+  JOIN users  u ON u.id = f.user_id
+  LEFT JOIN developer_pindex d ON d.user_id = u.id AND d.season = $1
+  LEFT JOIN (
+       SELECT a2.owner_user_id AS uid,
+              COUNT(DISTINCT a2.id)::int                           AS agents,
+              COALESCE(SUM(rt.wins),0)::int                        AS wins,
+              COALESCE(SUM(rt.wins + rt.losses + rt.ties),0)::int  AS matches
+         FROM agents a2
+         LEFT JOIN ratings rt ON rt.agent_id = a2.id AND rt.season = $1
+        WHERE a2.kind <> 'house'
+        GROUP BY a2.owner_user_id
+  ) rec ON rec.uid = u.id
+ WHERE a.public_id = $2 AND u.status = 'active'
+ ORDER BY f.created_at DESC, u.id
+ LIMIT $3 OFFSET $4`, season, agentPublicID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]devprofile.DirectoryRow, 0, limit)
+	for rows.Next() {
+		d, err := scanDirectoryRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// AgentFollowerCount is the total for the agent list's pager. Counted from the same table
+// with the same predicate as the rows, so the header and the list cannot disagree.
+func (r *DevProfileRepo) AgentFollowerCount(ctx context.Context, agentPublicID string) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx, `
+SELECT COUNT(*) FROM follows f
+  JOIN agents a ON a.id = f.agent_id
+  JOIN users  u ON u.id = f.user_id
+ WHERE a.public_id = $1 AND u.status = 'active'`, agentPublicID).Scan(&n)
+	return n, err
+}
+
+// FollowListCount is the total for a follow list's pager, counted with the SAME joins and
+// predicate as FollowList so the two can never disagree about who is in the list.
+func (r *DevProfileRepo) FollowListCount(ctx context.Context, userPublicID, direction string) (int, error) {
+	edge, ok := followEdges[direction]
+	if !ok {
+		return 0, nil
+	}
+	var n int
+	err := r.db.QueryRow(ctx, fmt.Sprintf(`
+SELECT COUNT(*)
+  FROM developer_follows f
+  JOIN users u   ON u.id = %[1]s
+  JOIN users own ON own.id = %[2]s
+ WHERE own.public_id = $1 AND u.status = 'active'`, edge[0], edge[1]), userPublicID).Scan(&n)
+	return n, err
 }
