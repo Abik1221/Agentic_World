@@ -36,7 +36,26 @@ func (h *Handler) Register(r chi.Router) {
 		r.Get("/v1/wallet/history", h.history)
 		r.Get("/v1/user/wallet", h.userSummary)
 		r.Get("/v1/user/wallet/history", h.userHistory)
-		r.Post("/v1/wallet/allocate", h.allocate)
+		// USER SCOPE, enforced at the router.
+		//
+		// allocate moves coins out of the OWNER's treasury into an agent's playing wallet.
+		// It had no scope guard, and authorizeFor() returns nil as soon as the principal's
+		// agent id matches the target — so an AGENT-scope key was accepted, and an agent
+		// key resolves to its owner's UserPublicID. A key that leaked from a CI runner or a
+		// container could therefore drain its owner's entire treasury into the agent
+		// wallet, in one call, with no cap.
+		//
+		// Nothing legitimate did that. No SDK calls this route; the only caller is the
+		// dashboard's AllocateModal, which sends session.dashboardToken, and the client's
+		// own comment on allocateToAgent already says "(user)". Funding an agent is an
+		// OWNER decision — the agent needs coins in its wallet, not the authority to put
+		// them there.
+		//
+		// Same fix as /v1/admin/mint below, for the same reason: enforced at the router so
+		// authz cannot be forgotten by a future handler edit. With the scope guard, no cap
+		// is needed — the caller is the owner moving their own money, and it still cannot
+		// leave the platform without a withdrawal, which requires user scope AND 2FA.
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/wallet/allocate", h.allocate)
 		if h.allowMint {
 			// Admin-enforced at the ROUTER, not just by the allowMint flag. mint only
 			// checked that the caller owned the target agent, so with ALLOW_MINT on
