@@ -33,10 +33,16 @@ type GoogleClaims struct {
 	Email         string
 	EmailVerified bool
 	Name          string
+	// Nonce is the value the client bound this sign-in to. Empty when the client did not
+	// send one — which Verify treats as a failure whenever nonce enforcement is on.
+	Nonce string
 }
 
 type GoogleVerifier struct {
 	clientID string
+	// nonces enforces OIDC §3.1.3.7 replay protection. Nil leaves it off, which is only
+	// correct for a deployment that has not been reconfigured yet — see Verify.
+	nonces *NonceIssuer
 	client   *http.Client
 	mu       sync.Mutex
 	keys     map[string]*rsa.PublicKey
@@ -55,6 +61,14 @@ func NewGoogleVerifier(clientID string) *GoogleVerifier {
 
 // Enabled reports whether Google login is configured (a client id is set).
 func (v *GoogleVerifier) Enabled() bool { return v.clientID != "" }
+
+// RequireNonce turns on replay protection. Separate from the constructor so an existing
+// deployment keeps working across the rollout: until the client is shipping nonces, calling
+// this would reject every sign-in. Wire it once the frontend requests one.
+func (v *GoogleVerifier) RequireNonce(n *NonceIssuer) { v.nonces = n }
+
+// NonceRequired reports whether tokens must carry a validated nonce.
+func (v *GoogleVerifier) NonceRequired() bool { return v.nonces != nil && v.nonces.Enabled() }
 
 type googleJWK struct {
 	Kid string `json:"kid"`
@@ -165,6 +179,8 @@ func (v *GoogleVerifier) Verify(ctx context.Context, idToken string) (GoogleClai
 		Email         string `json:"email"`
 		EmailVerified bool   `json:"email_verified"`
 		Name          string `json:"name"`
+		Nonce         string `json:"nonce"`
+		Iat           int64  `json:"iat"`
 	}
 	if err := json.Unmarshal(pb, &c); err != nil {
 		return GoogleClaims{}, err
@@ -175,11 +191,33 @@ func (v *GoogleVerifier) Verify(ctx context.Context, idToken string) (GoogleClai
 	if c.Aud != v.clientID {
 		return GoogleClaims{}, errors.New("google: audience mismatch")
 	}
-	if time.Now().Unix() >= c.Exp {
+	// A small skew allowance in BOTH directions. Google's clock and ours are not the same
+	// clock, and a token rejected for being one second old is a sign-in failure a user can
+	// do nothing about; without the iat bound, a token minted far in the future would be
+	// accepted for as long as its exp allowed.
+	const skew = 60 * time.Second
+	now := time.Now()
+	if now.After(time.Unix(c.Exp, 0).Add(skew)) {
 		return GoogleClaims{}, errors.New("google: token expired")
+	}
+	if c.Iat > 0 && time.Unix(c.Iat, 0).After(now.Add(skew)) {
+		return GoogleClaims{}, errors.New("google: token issued in the future")
 	}
 	if c.Sub == "" {
 		return GoogleClaims{}, errors.New("google: missing subject")
 	}
-	return GoogleClaims{Sub: c.Sub, Email: c.Email, EmailVerified: c.EmailVerified, Name: c.Name}, nil
+	// REPLAY PROTECTION. A token that is otherwise perfectly valid is still only good for
+	// the sign-in it was minted for. Checked last: the cheap structural failures should not
+	// be reported as nonce problems.
+	if v.NonceRequired() {
+		if c.Nonce == "" {
+			return GoogleClaims{}, errors.New("google: token carries no nonce")
+		}
+		if err := v.nonces.Verify(c.Nonce); err != nil {
+			return GoogleClaims{}, errors.New("google: " + err.Error())
+		}
+	}
+	return GoogleClaims{
+		Sub: c.Sub, Email: c.Email, EmailVerified: c.EmailVerified, Name: c.Name, Nonce: c.Nonce,
+	}, nil
 }
