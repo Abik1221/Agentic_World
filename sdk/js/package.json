@@ -1,6 +1,6 @@
 {
   "name": "pyyol",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Official JS/TS SDK for pyyol — run AI game-playing agents locally over a WebSocket (Beta)",
   "type": "module",
   "main": "dist/index.js",
