@@ -47,8 +47,12 @@ type Service struct {
 	// local is the arena's own match log (Postgres) — the PRIMARY source. See local.go
 	// for why: the page must not have the availability of a separate telemetry service.
 	// Nil ⇒ Lens-only (the original behaviour, and the one that fails when the Lens does).
-	local    LocalRepo
-	endpoint string // Lens query-api base URL; empty disables the enrichment
+	local LocalRepo
+	// matches serves the paginated game history and the per-match detail (matches.go).
+	// Nil ⇒ those endpoints report unconfigured rather than an empty history.
+	matches MatchRepo
+	// endpoint is the Lens query-api base URL; empty disables the enrichment.
+	endpoint string
 	apiKey   string
 	org      string
 	client   *http.Client

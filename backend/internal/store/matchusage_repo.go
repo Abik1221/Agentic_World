@@ -21,10 +21,16 @@ func NewMatchUsageRepo(db *pgxpool.Pool) *MatchUsageRepo { return &MatchUsageRep
 // OwnedBy reports whether agentPublicID belongs to userPublicID. Used to keep one
 // developer from reading another's token spend and cost, which would leak the shape
 // of their strategy budget.
+// The join column is owner_user_id. It was `a.user_id`, which does not exist on agents
+// and never has (migration 0002 creates owner_user_id) — so this query failed with
+// `column a.user_id does not exist` on EVERY call, and GET /v1/matches/{id}/usage,
+// the only surface that ever exposed tokens, cost and fallbacks to the developer who
+// produced them, answered 500 for its entire life. Nothing in the product read it, so
+// nothing reported the break.
 func (r *MatchUsageRepo) OwnedBy(ctx context.Context, userPublicID, agentPublicID string) (bool, error) {
 	var n int
 	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM agents a JOIN users u ON u.id = a.user_id
+		`SELECT COUNT(*) FROM agents a JOIN users u ON u.id = a.owner_user_id
 		  WHERE a.public_id = $1 AND u.public_id = $2`,
 		agentPublicID, userPublicID).Scan(&n)
 	return n > 0, err

@@ -162,10 +162,17 @@ type Repo interface {
 	// Directory lists PUBLIC developers matching q (blank = everyone), whether or not
 	// they have a P-Index yet. sort is "top" (played-first, then P-Index) or "recent"
 	// (newest signups first).
-	Directory(ctx context.Context, season int, q, sort string, limit, offset int) ([]DirectoryRow, error)
+	// exclude omits one developer (by public id) from the results; empty omits nobody.
+	// It exists so the signed-in visitor's own row can be lifted out of the list without
+	// the page count or the total going wrong.
+	Directory(ctx context.Context, season int, q, sort string, limit, offset int, exclude string) ([]DirectoryRow, error)
+	// DirectoryRowFor returns one developer's own directory row — the same shape and the
+	// same query as a list row, so the card at the top of the page and the rows in it can
+	// never describe a record differently. found=false when they are not public yet.
+	DirectoryRowFor(ctx context.Context, season int, developerID string) (DirectoryRow, bool, error)
 	// DirectoryCount is how many developers match `q`, ignoring paging — so the UI can
 	// number pages and say "412 developers" instead of only offering "load more".
-	DirectoryCount(ctx context.Context, season int, q string) (int, error)
+	DirectoryCount(ctx context.Context, season int, q, exclude string) (int, error)
 	SetUsername(ctx context.Context, userPublicID, username string) error
 	// SetProfile writes the developer's PUBLIC identity — the name, bio and avatar
 	// other developers see on their profile. These columns existed since 0019 and were

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/agent-arena/arena/internal/agentgw"
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
+	"github.com/agent-arena/arena/internal/identity"
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/platformcfg"
@@ -65,6 +67,37 @@ func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID st
 		a.log.Warn("agentgw: auth lookup failed", "agent", agentID, "err", err)
 	}
 	return "", false
+}
+
+// AuthFailureReason implements agentgw.AuthFailureDiagnoser: it turns the two
+// rejections a developer actually hits into a sentence they can act on.
+//
+// A revoked key is by far the most common one and used to be indistinguishable from
+// a typo'd agent id, because the gateway closed with a flat "register token
+// rejected". identity only reports key_revoked when the presented secret verifies
+// against the revoked row, so reaching that branch means the caller really did hold
+// this key — naming the cause leaks nothing they did not already have.
+//
+// Anything else stays deliberately vague: an unknown key must not confirm which half
+// of (agent_id, token) was wrong.
+func (a socketAuthenticator) AuthFailureReason(ctx context.Context, token, agentID string) (string, string) {
+	if a.keys == nil || token == "" || agentID == "" {
+		return "", ""
+	}
+	_, err := a.keys.ResolveAgentKey(ctx, token)
+	switch {
+	case errors.Is(err, identity.ErrRevokedAPIKey):
+		// key_revoked is load-bearing, not decoration: the SDK keys off it to stop
+		// refreshing into a dashboard JWT and masking a dead credential.
+		return "key_revoked", "this agent key was revoked — either from the dashboard " +
+			"(Security → Agent API keys) or by re-issuing a key with the same device " +
+			"name. Run `pyyol login` to get a fresh one."
+	case err == nil:
+		// The key is valid but belongs to a different agent than the one claimed.
+		return "agent_mismatch", "this agent key is valid but does not belong to " + agentID +
+			" — check the agent id (`pyyol whoami`), or set PYYOL_AGENT_ID to the agent this key was issued for."
+	}
+	return "", ""
 }
 
 // newAgentGateway builds the WSS agent gateway wired to the agent-key resolver

@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"strings"
+	"unicode"
 
 	"github.com/agent-arena/arena/internal/platform"
 	"golang.org/x/crypto/bcrypt"
@@ -71,6 +72,51 @@ func verifySecret(hash, secret, pepper string) bool {
 		return true
 	}
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(secret+pepper)) == nil
+}
+
+// MaxLiveKeysPerAgent caps how many keys an agent can have live at once. Labels
+// make re-issuing for the same machine a REPLACE, so hitting this means genuinely
+// distinct machines, and a developer with twenty live agent credentials has lost
+// track of them. The cap is enforced in the issuing transaction, not here, so two
+// concurrent issues cannot both squeeze past it.
+const MaxLiveKeysPerAgent = 20
+
+const maxKeyLabelLen = 40
+
+// NormalizeKeyLabel cleans a caller-supplied device name into what gets stored, or
+// reports why it cannot. Labels are identity in the key list — the owner revokes
+// "ci-runner", not "sk_arena_4kd2…" — and they are also the REPLACE key, so
+// "Macbook " and "macbook" must not become two slots for one machine: the label is
+// lowercased and its whitespace collapsed.
+//
+// Control characters are stripped rather than rejected: they arrive from hostnames
+// and shell interpolation, not from a person, and failing a login over an invisible
+// byte would be the more confusing outcome.
+func NormalizeKeyLabel(raw string) (string, error) {
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range strings.TrimSpace(raw) {
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if b.Len() > 0 && !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+		case unicode.IsControl(r):
+			// dropped
+		default:
+			b.WriteRune(unicode.ToLower(r))
+			lastSpace = false
+		}
+	}
+	label := strings.TrimSpace(b.String())
+	if label == "" {
+		return "", errInvalid("label is required — name the machine or deployment that will hold this key")
+	}
+	if len([]rune(label)) > maxKeyLabelLen {
+		return "", errInvalid("label must be at most 40 characters")
+	}
+	return label, nil
 }
 
 func randToken(n int) (string, error) {

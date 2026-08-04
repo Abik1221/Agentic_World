@@ -31,6 +31,28 @@ type Authenticator interface {
 	Authenticate(ctx context.Context, token, agentID string) (resolvedID string, ok bool)
 }
 
+// AuthFailureDiagnoser is an OPTIONAL companion to Authenticator: when the
+// authenticator also implements it, a rejected register frame carries its code and
+// sentence back to the SDK instead of a bare unauthorized/"register token rejected".
+//
+// This exists because the most common rejection is a credential that used to work —
+// revoked from the dashboard, or replaced by a login elsewhere — and the developer
+// had no way to tell that apart from a typo in their agent id.
+//
+// The CODE matters as much as the sentence: the SDK's reflex on a rejected register
+// is to spend its refresh token and reconnect, which for a revoked agent key
+// "succeeds" by quietly swapping in a short-lived dashboard JWT — so the agent keeps
+// playing, the dead key stays in the keyring, and every process start repeats the
+// dance forever. A distinguishable code is what lets the SDK stop and say so.
+//
+// Implementations must return ("", "") unless they can say something true and
+// specific, and must only name a cause the caller has already proven they are
+// entitled to know (see identity.ErrRevokedAPIKey on why the revoked branch is not
+// an oracle).
+type AuthFailureDiagnoser interface {
+	AuthFailureReason(ctx context.Context, token, agentID string) (code, reason string)
+}
+
 // AuthenticatorFunc adapts a function to Authenticator.
 type AuthenticatorFunc func(ctx context.Context, token, agentID string) (string, bool)
 
@@ -343,7 +365,13 @@ func (g *Gateway) serve(parent context.Context, ws *websocket.Conn) {
 	if g.auth != nil {
 		resolved, ok := g.auth.Authenticate(ctx, reg.Token, reg.AgentID)
 		if !ok {
-			_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{T: FrameError, Error: "unauthorized", Reason: "register token rejected"})
+			code, reason := "unauthorized", "register token rejected"
+			if d, canDiagnose := g.auth.(AuthFailureDiagnoser); canDiagnose {
+				if c, explained := d.AuthFailureReason(ctx, reg.Token, reg.AgentID); explained != "" {
+					code, reason = c, explained
+				}
+			}
+			_ = writeFrame(ctx, ws, g.opts.WriteTimeout, Frame{T: FrameError, Error: code, Reason: reason})
 			_ = ws.Close(websocket.StatusPolicyViolation, "unauthorized")
 			return
 		}

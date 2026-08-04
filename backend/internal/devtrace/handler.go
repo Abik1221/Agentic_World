@@ -29,7 +29,61 @@ func (h *Handler) Register(r chi.Router) {
 		// an authorisation.
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/traces", h.activity)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/agents/{agentID}/traces", h.activity)
+		// The paginated game history, and one match in full. Split from /traces because
+		// they answer different questions: "what has my agent been doing" is a feed,
+		// "what happened in this game and what did it cost" is a record.
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/matches", h.matches)
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/matches/{matchID}", h.matchDetail)
 	})
+}
+
+// matches serves one page of the caller's game history, newest first.
+//
+// The response always carries `total`, `limit` and `offset`. That is not decoration: the
+// page this replaced fetched a flat 300 events with no total, so a developer with a
+// hundred matches saw four of them and had no way to know the rest existed.
+func (h *Handler) matches(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+
+	mode, ok := ValidMatchMode(r.URL.Query().Get("mode"))
+	if !ok {
+		// Not silently widened to "all": a typo'd mode quietly returning real-money
+		// matches under a sandbox heading is the one failure this filter must not have.
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid_request",
+			"mode must be one of: sandbox, competitive (or omitted for all)"))
+		return
+	}
+	limit := 20
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= MaxMatchPageSize {
+		limit = n
+	}
+	offset := 0
+	if n, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && n > 0 {
+		offset = n
+	}
+
+	list, total, err := h.svc.Matches(r.Context(), p.UserPublicID, r.URL.Query().Get("agent"), mode, limit, offset)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"matches": list, "total": total, "limit": limit, "offset": offset,
+		"mode": string(mode),
+	})
+}
+
+// matchDetail serves one match: summary, roster, and the full timeline.
+func (h *Handler) matchDetail(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	detail, err := h.svc.MatchDetail(r.Context(), p.UserPublicID, chi.URLParam(r, "matchID"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	httpx.JSON(w, http.StatusOK, detail)
 }
 
 func (h *Handler) activity(w http.ResponseWriter, r *http.Request) {

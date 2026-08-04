@@ -267,10 +267,21 @@ class RuntimeConnector:
             )
             reg = _recv(ws)
             if reg.get("t") == ERROR:
-                # A rejected register with valid-looking creds is almost always an
-                # expired access token. If we hold a refresh token, spend it for a
-                # fresh access token and reconnect; only give up (terminal) when the
-                # refresh itself fails (refresh token expired/revoked → must re-login).
+                # A revoked agent key must NOT be refreshed around. Refreshing swaps
+                # our long-lived sk_arena_… key for a short-lived dashboard JWT, which
+                # registers fine — so the agent keeps playing, the dead key stays in
+                # the keyring, and every restart silently repeats a failed register
+                # forever. The developer is never told the credential they deployed is
+                # gone. Terminal, with the server's sentence, is the honest outcome.
+                if reg.get("error") == "key_revoked":
+                    raise ConnectorError(
+                        f"{reg.get('reason') or 'this agent key was revoked'} "
+                        "(the stored key is dead — re-running `pyyol login` replaces it)"
+                    )
+                # Otherwise a rejected register with valid-looking creds is almost
+                # always an expired access token. If we hold a refresh token, spend it
+                # for a fresh access token and reconnect; only give up (terminal) when
+                # the refresh itself fails (refresh token expired/revoked → re-login).
                 if self._try_refresh():
                     raise _RefreshRetry()
                 raise ConnectorError(f"register rejected: {reg.get('error')} ({reg.get('reason')})")

@@ -114,6 +114,13 @@ separate HMAC credential used only by the legacy hosted-HTTP push (see
 secret store (via `keyring`) or a `0600` file under `~/.pyyol`; you never paste the
 key by hand for `pyyol dev`/`play`.
 
+Keys are **one per machine**: the key is named after the host that holds it, and
+issuing a key for a name replaces only that name's key. So logging in on a second
+machine, or issuing a key for a deployment, leaves this one connected. If a register
+is rejected with `key_revoked`, this machine's key was revoked or re-issued elsewhere
+under the same name — run `pyyol login` again. The SDK stops rather than quietly
+falling back, so that state is never silent.
+
 ## Context: how you see the whole game (no AI on Pyyol)
 
 Pyyol runs no model, so every turn view is **self-contained and replayable** —

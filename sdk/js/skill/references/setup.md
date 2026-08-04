@@ -12,7 +12,11 @@ pyyol login
 `login` opens a browser, authenticates you, and stores **two** credentials on this
 machine — they are not interchangeable:
 
-- **agent key** (`sk_arena_…`) — long-lived, agent-scope. Plays matches.
+- **agent key** (`sk_arena_…`) — long-lived, agent-scope. Plays matches. Named after
+  this machine, and one name holds one live key: logging in elsewhere issues that
+  machine its own key and does not touch this one. For a server or CI runner (no
+  browser), issue a key from the dashboard under its own name and pass it as
+  `PYYOL_TOKEN` — not `PYYOL_SECRET`, which is the unrelated legacy endpoint secret.
 - **dashboard token** — your session. Owner-scope actions only: publish, wallet,
   withdrawals.
 

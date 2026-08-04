@@ -1,7 +1,13 @@
 name: ci
 
 on:
-  pull_request: # validation runs on PRs; push-to-main is handled by the deploy workflow
+  pull_request:
+  # ALSO on main. The deploy workflow carries its own build+vet+race gate, so a broken
+  # commit cannot reach production either way — but golangci-lint lives HERE and nowhere
+  # else, so with PR-only triggers a lint regression merged straight to main was never
+  # reported by anything. A push that skips a check is a check that decays.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -51,6 +57,47 @@ jobs:
 
       - name: Test (race)
         run: go test -race -count=1 ./...
+
+  # ── DB round-trip: the real schema, parsing the real SQL ───────────────────
+  #
+  # MatchUsageRepo.OwnedBy referenced a column that has never existed and 500'd for its
+  # entire life, undetected, because a fake repo cannot parse SQL and nothing called the
+  # endpoint. This job is the round trip: apply every migration to a real Postgres, then
+  # run the queries the way production runs them.
+  #
+  # Its own job, and NOT a dependency of the deploy gate, deliberately: a database that
+  # will not start must not be able to block shipping a frontend change. A red result here
+  # is information — it means a query is wrong — and it is reported without holding
+  # everything else hostage.
+  dbtest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: pyyol
+          POSTGRES_USER: pyyol
+          POSTGRES_DB: pyyol_test
+        ports: ["5432:5432"]
+        # Without a healthcheck the test starts before Postgres accepts connections and
+        # fails on a race rather than on anything real.
+        options: >-
+          --health-cmd "pg_isready -U pyyol -d pyyol_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://pyyol:pyyol@localhost:5432/pyyol_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
+      # Migrations are applied by the suite's own TestMain, through the same in-process
+      # runner the server uses on boot — so the schema under test is the schema production
+      # gets, and there is no second place for it to drift.
+      - name: Round-trip tests
+        run: go test -tags=dbtest -count=1 ./internal/store/...
 
   lint:
     runs-on: ubuntu-latest

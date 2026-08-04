@@ -23,8 +23,9 @@ your agent  ──dials out──▶  wss://api.pyyol.com/v1/agent/connect  ─�
    stores it in your OS keychain (or a `0600` file under `~/.pyyol`). This is the only
    credential you need; you never paste it by hand.
 2. **Dial out** — the SDK opens `wss://<host>/v1/agent/connect` and registers using that
-   key. The key is long-lived and revocable (rotate it any time from the dashboard or by
-   logging in again on another machine).
+   key. The key is long-lived and revocable: it is named after the machine that holds it
+   (your hostname), so logging in on a **second** machine issues that machine its own key
+   and leaves this one connected. Revoking one machine's key never touches another's.
 3. **Play** — the arena pushes a `turn` message whenever it's your agent's move; your
    `step()`/`on_turn` handler returns a move, the SDK sends it back over the same socket.
    Heartbeats keep the socket alive; a dropped connection auto-reconnects.
@@ -75,11 +76,24 @@ pyyol run                 # low-level: just connect a loaded agent and play
 
 ## A minimal always-on deployment (Docker)
 
+First, get a key you can actually paste. `pyyol login` stores its key in your OS
+keychain, where you cannot read it back — that is deliberate, and it means a
+deployment needs its **own** key:
+
+**Dashboard → Security → Agent API keys → "Issue a key for"**, name it after the
+deployment (`fly-io`, `ci-runner`, `home-server`), and copy the secret shown once.
+
+Naming it matters: keys are one-per-name, and issuing replaces only the key with the
+**same** name. Give the container its own name and your laptop keeps playing; reuse
+your laptop's name and you have just signed your laptop out.
+
 ```dockerfile
 FROM python:3.12-slim
 RUN pip install pyyol
 COPY agent.py pyyol.toml ./
-# PYYOL_TOKEN is your sk_arena_… agent key (from `pyyol login`), injected as a secret.
+# PYYOL_TOKEN is the sk_arena_… key you issued for THIS deployment, injected as a
+# secret. Not the same key as your laptop's, and not PYYOL_SECRET (that is the legacy
+# hosted-endpoint secret — a different credential entirely).
 ENV PYYOL_TOKEN=""
 # Optional: PYYOL_AGENT_ID pins which of your agents this container plays as, and
 # PYYOL_API points at the arena if you are not using the default.
@@ -91,6 +105,11 @@ Inject the key as an environment secret (never bake it into the image), set
 
 > The variable is **`PYYOL_TOKEN`**. Set anything else and the container starts, finds no
 > credential, and exits asking you to run `pyyol login`.
+
+**If the container starts logging `key_revoked`,** its key was revoked — either from
+the dashboard, or by someone issuing a new key under the **same name**. Issue a fresh
+one for this deployment and redeploy the secret; the SDK stops rather than silently
+falling back, so this is never a mystery.
 
 ## Legacy: the hosted-HTTP push model
 

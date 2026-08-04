@@ -265,6 +265,17 @@ type DirectoryPage struct {
 	Limit      int `json:"limit"`
 	Offset     int `json:"offset"`
 	NextCursor int `json:"next_cursor,omitempty"`
+	// Self is the caller's OWN row, returned when they identified themselves with
+	// ?self=<developer id>, and removed from Entries and Total when it is.
+	//
+	// It is one request rather than two because the row shown at the top of the page and
+	// the rows listed below it must agree about what a developer's record is — and
+	// because the alternative, filtering yourself out in the browser, silently breaks
+	// paging: the page holding you comes back one short while the total still counts you,
+	// so the last page renders empty.
+	//
+	// Nil when not asked for, or when that developer has no public directory row yet.
+	Self *DirectoryRow `json:"self,omitempty"`
 }
 
 // Directory lists public developers, optionally filtered by a free-text query over
@@ -274,7 +285,11 @@ type DirectoryPage struct {
 // developer_pindex, so a developer who has signed up and claimed a handle but never
 // played a ranked match is invisible there. The directory left-joins it, so every
 // public developer is discoverable from day one and search finds them.
-func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, offset int) (DirectoryPage, error) {
+// self, when set, is the caller's own developer id: their row is returned separately as
+// Page.Self and left OUT of the entries and the total. The id is not a credential — it is
+// already public in this very listing — so this stays an unauthenticated endpoint. Passing
+// somebody else's id only removes a public row from your own view of the page.
+func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, offset int, self string) (DirectoryPage, error) {
 	if season <= 0 {
 		season = s.season()
 	}
@@ -291,7 +306,24 @@ func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, 
 	if len(q) > 64 {
 		q = q[:64]
 	}
-	rows, err := s.repo.Directory(ctx, season, q, sort, limit, offset)
+	self = strings.TrimSpace(self)
+	if len(self) > 64 {
+		self = self[:64]
+	}
+	// The caller's own row, fetched BEFORE the list so a failure here cannot half-render
+	// the page. Best-effort on purpose: not being able to build the "your profile" card is
+	// not a reason to refuse somebody the directory.
+	var selfRow *DirectoryRow
+	if self != "" {
+		// A failure here is swallowed deliberately: the card is a convenience, and the
+		// directory below it is the page's actual job. The visitor sees no card rather
+		// than no directory.
+		if row, found, rerr := s.repo.DirectoryRowFor(ctx, season, self); rerr == nil && found {
+			selfRow = &row
+		}
+	}
+
+	rows, err := s.repo.Directory(ctx, season, q, sort, limit, offset, self)
 	if err != nil {
 		return DirectoryPage{}, err
 	}
@@ -301,7 +333,9 @@ func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, 
 	// The real total, so the client can number pages. Best-effort: a failed count leaves
 	// Total at the page length, which is what it always was — degrading the pager is far
 	// better than failing the whole directory over a COUNT.
-	total, cerr := s.repo.DirectoryCount(ctx, season, q)
+	// Counted with the SAME exclusion as the rows, so the total and the list agree about
+	// who is in the directory and the page arithmetic stays exact.
+	total, cerr := s.repo.DirectoryCount(ctx, season, q, self)
 	if cerr != nil || total < len(rows) {
 		total = offset + len(rows)
 	}
@@ -315,6 +349,7 @@ func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, 
 	return DirectoryPage{
 		Season: season, Query: q, Sort: sort,
 		Total: total, Entries: rows, Limit: limit, Offset: offset, NextCursor: next,
+		Self: selfRow,
 	}, nil
 }
 
@@ -334,7 +369,7 @@ func (s *Service) Spotlight(ctx context.Context, season int) (Spotlight, bool, e
 	if season <= 0 {
 		season = s.season()
 	}
-	rows, err := s.repo.Directory(ctx, season, "", "top", 1, 0)
+	rows, err := s.repo.Directory(ctx, season, "", "top", 1, 0, "")
 	if err != nil {
 		return Spotlight{}, false, err
 	}

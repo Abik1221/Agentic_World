@@ -412,7 +412,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
     creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
     api = (args.api or (creds.url if creds else "")).rstrip("/")
     agent = args.agent or (creds.agent_id if creds else "")
-    token = args.token or (creds.access_token if creds else "")
+    # Refreshed, not read raw: see _owner_token. An expired JWT here is what made
+    # `pyyol publish` fail hours after a successful login.
+    token = _owner_token(creds, args.token)
     if not (api and agent and token):
         print(f"{BAD} need --api, --agent and --token (or `pyyol login` first)", file=sys.stderr)
         return 2
@@ -482,8 +484,12 @@ def _login_and_save(api: str, dashboard: str, connect: str = "", provider: str =
     if connect:
         creds.connect_url = connect
     if not creds.api_key and creds.agent_id and creds.access_token:
+        # Label the key after this machine so re-issuing replaces THIS device's key
+        # and leaves other machines and deployments connected (migration 0071).
         st, resp = _api_post(
-            f"{api}/v1/agent/keys", creds.access_token, {"agent_id": creds.agent_id}
+            f"{api}/v1/agent/keys",
+            creds.access_token,
+            {"agent_id": creds.agent_id, "label": login.device_label()},
         )
         if st == 201 and resp.get("api_key"):
             creds.api_key = resp["api_key"]
@@ -558,12 +564,21 @@ def cmd_login(args: argparse.Namespace) -> int:
     # Mint a long-lived agent key for THIS machine (unless the dashboard already
     # handed one back). This is the credential the agent connection uses — like an
     # OpenAI/`gh` token, it never expires on a timer, so `pyyol dev`/`serve` keeps
-    # working forever until you revoke it, re-login elsewhere, or lose the machine.
+    # working forever until you revoke it or lose the machine.
+    #
+    # Logging in ELSEWHERE no longer kills it: keys are named per machine and issuing
+    # replaces only the matching name (migration 0071). Before that, every login
+    # revoked every live key for the agent, so a second machine — or the dashboard
+    # button — silently knocked this one offline.
     # Best-effort: if it fails we still store the session and fall back to the
     # short-lived JWT + refresh for the connection.
     if not creds.api_key and creds.agent_id and creds.access_token:
+        # Label the key after this machine so re-issuing replaces THIS device's key
+        # and leaves other machines and deployments connected (migration 0071).
         st, resp = _api_post(
-            f"{api}/v1/agent/keys", creds.access_token, {"agent_id": creds.agent_id}
+            f"{api}/v1/agent/keys",
+            creds.access_token,
+            {"agent_id": creds.agent_id, "label": login.device_label()},
         )
         if st == 201 and resp.get("api_key"):
             creds.api_key = resp["api_key"]
@@ -930,6 +945,54 @@ def _urlopen_json(req, timeout: float = 15.0):
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             return 0, {"error": _net_err(e)}
     return 0, {"error": "rate_limited"}  # retries exhausted (defensive; unreachable)
+
+
+def _owner_token(creds, explicit: str = "") -> str:
+    """The credential OWNER commands must send: the developer's dashboard JWT.
+
+    Refreshes it first when a refresh token is held, because the access token is
+    SHORT-LIVED and every owner command is one a developer runs occasionally rather
+    than continuously. `pyyol publish` — the required step before a ranked match — read
+    creds.access_token directly, so a developer who logged in in the morning and
+    published in the afternoon sent an expired JWT and was told to log in again, on the
+    one path that leads to competing for real.
+
+    Best-effort: a failed refresh returns the stored token unchanged, so the command
+    still runs and still reports the server's own error rather than a refresh failure
+    the developer cannot act on.
+    """
+    if explicit:
+        return explicit
+    if not creds:
+        return ""
+    stored = getattr(creds, "access_token", "") or ""
+    refresh = getattr(creds, "refresh_token", "") or ""
+    base = (getattr(creds, "url", "") or "").rstrip("/")
+    if not (refresh and base):
+        return stored
+    st, resp = _api_post(f"{base}/v1/auth/refresh", "", {"refresh_token": refresh})
+    if st != 200 or not isinstance(resp, dict):
+        return stored
+    # `dashboard_token` is the field this endpoint actually returns — same key the
+    # connector's refresh reads (runtime.py). Getting the name wrong here would not fail
+    # loudly: it would fall through to the stored token and the refresh would silently
+    # never happen, which is indistinguishable from not having written this at all.
+    access = resp.get("dashboard_token") or ""
+    if not access:
+        return stored
+    # Persist the rotated pair so the NEXT command starts from a fresh token instead of
+    # refreshing again — and so a rotated refresh token is not thrown away, which would
+    # invalidate the session on a server that rotates them.
+    from . import credentials as _creds
+
+    creds.access_token = access
+    if resp.get("refresh_token"):
+        creds.refresh_token = resp["refresh_token"]
+    try:
+        _creds.save(creds)
+    except Exception:  # noqa: BLE001 — persistence is best-effort
+        pass
+    return access
 
 
 def _api_get(url: str, token: str = ""):

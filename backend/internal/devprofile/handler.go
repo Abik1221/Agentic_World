@@ -120,7 +120,15 @@ func (h *Handler) directory(w http.ResponseWriter, r *http.Request) {
 	season, _ := strconv.Atoi(q.Get("season"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("cursor"))
-	page, err := h.svc.Directory(r.Context(), q.Get("q"), q.Get("sort"), season, limit, offset)
+	// ?self=<developer id> — the visitor saying which row is theirs. Their row comes back
+	// as `self` and is left out of `entries` and `count`, so a signed-in developer is not
+	// listed among the people they are browsing, and the paging still adds up.
+	//
+	// This does NOT make the endpoint authenticated, and must not: the id is already
+	// public in this very listing, everything returned is public, and the response stays
+	// a pure function of the URL — which is what keeps the shared-cache directive below
+	// correct (the id is part of the cache key).
+	page, err := h.svc.Directory(r.Context(), q.Get("q"), q.Get("sort"), season, limit, offset, q.Get("self"))
 	if err != nil {
 		httpx.Error(w, err)
 		return

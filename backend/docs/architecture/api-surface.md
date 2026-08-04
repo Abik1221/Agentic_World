@@ -93,7 +93,7 @@ JSON over HTTPS. SSE for live streams. Authoritative spec lives in
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | POST | `/v1/agent/config` `{coin_limit_per_match, daily_loss_limit, …, default_bid, auto_join}` | **Set spending limits** (user-only) |
-| POST | `/v1/agent/keys` / `DELETE /v1/agent/keys/{id}` | Create / revoke (rotate) agent keys |
+| POST | `/v1/agent/keys` `{agent_id, label}` / `GET` / `DELETE /v1/agent/keys/{prefix}` | Issue a key for one machine (replaces only the same `label`) / list for audit / revoke |
 | GET | `/v1/wallet` | Full balance + limit status + headroom |
 | POST | `/v1/wallet/topup` `{pack}` | Create a Stripe Checkout session for coins |
 | GET | `/v1/wallet/history?cursor=` | Ledger-backed transaction history |

@@ -94,7 +94,8 @@ func (r *IdentityRepo) CompleteClaim(ctx context.Context, in identity.CompleteCl
 
 	// 3. Issue the first API key.
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope) VALUES ($1, $2, $3, 'agent')`,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
 		agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.Agent{}, identity.User{}, err
 	}
@@ -147,6 +148,27 @@ func (r *IdentityRepo) LiveKeyByPrefix(ctx context.Context, prefix string) (iden
 	return rec, nil
 }
 
+// RevokedKeyByPrefix returns the most recently revoked key for a prefix. Prefixes
+// are 8 random bytes and the live-key index makes them unique among live keys, but
+// nothing stops a prefix appearing more than once across revoked history, so this
+// takes the newest revocation deterministically rather than relying on that.
+func (r *IdentityRepo) RevokedKeyByPrefix(ctx context.Context, prefix string) (identity.KeyRecord, error) {
+	var rec identity.KeyRecord
+	err := r.db.QueryRow(ctx,
+		`SELECT k.key_hash, a.public_id, u.public_id
+		 FROM agent_keys k
+		 JOIN agents a ON a.id = k.agent_id
+		 JOIN users  u ON u.id = a.owner_user_id
+		 WHERE k.key_prefix = $1 AND k.revoked_at IS NOT NULL
+		 ORDER BY k.revoked_at DESC
+		 LIMIT 1`, prefix).
+		Scan(&rec.Hash, &rec.AgentPublicID, &rec.OwnerPublicID)
+	if err != nil {
+		return identity.KeyRecord{}, err
+	}
+	return rec, nil
+}
+
 func (r *IdentityRepo) TouchKey(ctx context.Context, prefix string) error {
 	_, err := r.db.Exec(ctx,
 		`UPDATE agent_keys SET last_used_at = now() WHERE key_prefix = $1 AND revoked_at IS NULL`, prefix)
@@ -171,12 +193,12 @@ func (r *IdentityRepo) InsertKey(ctx context.Context, agentPublicID, ownerPublic
 
 func (r *IdentityRepo) ListKeys(ctx context.Context, ownerPublicID string) ([]identity.KeyInfo, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT k.key_prefix, a.public_id, k.created_at, k.last_used_at, k.revoked_at
+		`SELECT k.key_prefix, a.public_id, k.label, k.created_at, k.last_used_at, k.revoked_at
 		 FROM agent_keys k
 		 JOIN agents a ON a.id = k.agent_id
 		 JOIN users  u ON u.id = a.owner_user_id
 		 WHERE u.public_id = $1
-		 ORDER BY k.created_at DESC`, ownerPublicID)
+		 ORDER BY k.revoked_at IS NOT NULL, k.created_at DESC`, ownerPublicID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +206,7 @@ func (r *IdentityRepo) ListKeys(ctx context.Context, ownerPublicID string) ([]id
 	var out []identity.KeyInfo
 	for rows.Next() {
 		var k identity.KeyInfo
-		if err := rows.Scan(&k.Prefix, &k.AgentPublicID, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt); err != nil {
+		if err := rows.Scan(&k.Prefix, &k.AgentPublicID, &k.Label, &k.CreatedAt, &k.LastUsedAt, &k.RevokedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -192,29 +214,73 @@ func (r *IdentityRepo) ListKeys(ctx context.Context, ownerPublicID string) ([]id
 	return out, rows.Err()
 }
 
-func (r *IdentityRepo) InsertKeyRotating(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash string) error {
+// IssueKey replaces one label's key and leaves every other label alone. See
+// identity.Repo for the contract and migration 0071 for why this is not a
+// revoke-everything rotate any more.
+func (r *IdentityRepo) IssueKey(ctx context.Context, agentPublicID, ownerPublicID, prefix, hash, label string, maxLive int) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Revoke every live key for this agent (owner-scoped) first.
+	// Revoke only THIS label's live key, so re-issuing for one machine replaces that
+	// machine's credential. The partial unique index (agent_id, label) WHERE live
+	// makes this a hard guarantee under concurrency, not just a hopeful ordering.
 	if _, err := tx.Exec(ctx,
 		`UPDATE agent_keys SET revoked_at = now()
-		 WHERE revoked_at IS NULL AND agent_id IN (
+		 WHERE revoked_at IS NULL AND label = $3 AND agent_id IN (
 		     SELECT a.id FROM agents a JOIN users u ON u.id = a.owner_user_id
 		     WHERE a.public_id = $1 AND u.public_id = $2)`,
-		agentPublicID, ownerPublicID); err != nil {
+		agentPublicID, ownerPublicID, label); err != nil {
 		return err
 	}
+
+	// Reclaim the sign-up key's slot — but ONLY if nothing ever authenticated with it.
+	//
+	// Account creation issues a key labelled 'initial' and shows it exactly once. Most
+	// developers never save it: they run `pyyol login`, which used to revoke it as a
+	// side effect of revoking everything. Now that issuing is per-machine it would
+	// survive forever as a live credential nobody holds.
+	//
+	// `last_used_at IS NULL` is the discriminator, and it is the whole reason this is
+	// safe: a developer who DID save that key and put it in a deployment has a key that
+	// has authenticated, so it is left alone. Never-used means nobody is holding it.
+	if _, err := tx.Exec(ctx,
+		`UPDATE agent_keys SET revoked_at = now()
+		 WHERE revoked_at IS NULL AND label = 'initial' AND last_used_at IS NULL
+		   AND label <> $3
+		   AND agent_id IN (
+		     SELECT a.id FROM agents a JOIN users u ON u.id = a.owner_user_id
+		     WHERE a.public_id = $1 AND u.public_id = $2)`,
+		agentPublicID, ownerPublicID, label); err != nil {
+		return err
+	}
+
+	// Count what would remain live AFTER that revoke, inside the same transaction, so
+	// two concurrent issues cannot both read "one under the cap" and both insert.
+	if maxLive > 0 {
+		var live int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM agent_keys k
+			 WHERE k.revoked_at IS NULL AND k.agent_id IN (
+			     SELECT a.id FROM agents a JOIN users u ON u.id = a.owner_user_id
+			     WHERE a.public_id = $1 AND u.public_id = $2)`,
+			agentPublicID, ownerPublicID).Scan(&live); err != nil {
+			return err
+		}
+		if live >= maxLive {
+			return identity.ErrTooManyKeys
+		}
+	}
+
 	// Then mint the replacement, re-checking ownership.
 	ct, err := tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope)
-		 SELECT a.id, $3, $4, 'agent'
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 SELECT a.id, $3, $4, 'agent', $5
 		 FROM agents a JOIN users u ON u.id = a.owner_user_id
 		 WHERE a.public_id = $1 AND u.public_id = $2`,
-		agentPublicID, ownerPublicID, prefix, hash)
+		agentPublicID, ownerPublicID, prefix, hash, label)
 	if err != nil {
 		return err
 	}
@@ -368,7 +434,8 @@ func (r *IdentityRepo) CreateAccount(ctx context.Context, in identity.CreateAcco
 
 	// 3. Issue the first API key.
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope) VALUES ($1, $2, $3, 'agent')`,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
 		agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.Agent{}, identity.User{}, err
 	}
@@ -467,7 +534,8 @@ func (r *IdentityRepo) UpsertGoogleAccount(ctx context.Context, in identity.Goog
 		return identity.GoogleUpsertResult{}, err
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope) VALUES ($1, $2, $3, 'agent')`,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
 		agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.GoogleUpsertResult{}, err
 	}

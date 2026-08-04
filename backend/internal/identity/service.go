@@ -252,20 +252,31 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 	return LoginResult{DashboardToken: dash, AgentID: rec.AgentPublicID, AgentName: rec.AgentName, UserPublicID: rec.UserPublicID}, nil
 }
 
-// RotateKey issues a fresh API key for an agent the caller owns and REVOKES any
-// prior keys atomically, so exactly one key is ever active. The raw key is
-// returned once. (This is what makes the UI's "minting a new key invalidates the
-// previous one immediately" true, and stops `pyyol login` from leaking
-// unbounded live keys.)
-func (s *Service) RotateKey(ctx context.Context, ownerPublicID, agentPublicID string) (string, error) {
+// IssueKey mints an API key for one machine, named by label, for an agent the
+// caller owns. The raw key is returned once.
+//
+// It revokes exactly ONE thing: that agent's existing live key with the SAME label.
+// So re-running `pyyol login` on a laptop replaces the laptop's key, and issuing a
+// key for "ci-runner" leaves the laptop — and every container — connected.
+//
+// This replaced RotateKey, which revoked every live key for the agent. That made one
+// key per agent a hard invariant while three separate paths minted unconditionally
+// (`pyyol login`, /cli-login, the dashboard button), so the documented deployment
+// flow signed the developer's own laptop out as a side effect and nothing said so.
+// See migration 0071 for the full account.
+func (s *Service) IssueKey(ctx context.Context, ownerPublicID, agentPublicID, label string) (string, error) {
 	if _, err := s.repo.AgentByOwner(ctx, agentPublicID, ownerPublicID); err != nil {
 		return "", ErrForbiddenOwner
+	}
+	label, err := NormalizeKeyLabel(label)
+	if err != nil {
+		return "", err
 	}
 	key, err := generateKey(s.pepper)
 	if err != nil {
 		return "", err
 	}
-	if err := s.repo.InsertKeyRotating(ctx, agentPublicID, ownerPublicID, key.Prefix, key.Hash); err != nil {
+	if err := s.repo.IssueKey(ctx, agentPublicID, ownerPublicID, key.Prefix, key.Hash, label, MaxLiveKeysPerAgent); err != nil {
 		return "", err
 	}
 	return key.Raw, nil
@@ -315,6 +326,14 @@ func (s *Service) ResolveAgentKey(ctx context.Context, raw string) (*auth.Princi
 	}
 	rec, err := s.repo.LiveKeyByPrefix(ctx, prefix)
 	if err != nil {
+		// No live key for this prefix. If a REVOKED one matches the presented secret,
+		// the caller is the rightful holder of a key that was turned off — say so, so
+		// the SDK can print something actionable instead of a bare rejection. Anyone
+		// without the secret still gets the same opaque error as before.
+		if rev, revErr := s.repo.RevokedKeyByPrefix(ctx, prefix); revErr == nil &&
+			verifySecret(rev.Hash, secret, s.pepper) {
+			return nil, ErrRevokedAPIKey
+		}
 		return nil, ErrInvalidAPIKey
 	}
 	if !verifySecret(rec.Hash, secret, s.pepper) {

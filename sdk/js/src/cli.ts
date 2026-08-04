@@ -15,7 +15,7 @@ import * as config from "./config.js";
 import * as creds from "./credentials.js";
 import { enableGateway } from "./instrument.js";
 import { maybeInstallPing } from "./install-ping.js";
-import { deriveConnectUrl, runLoginFlow } from "./login.js";
+import { deriveConnectUrl, deviceLabel, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
 import {
@@ -265,7 +265,12 @@ async function loginAndSave(
   const c = await runLoginFlow({ dashboardUrl: dashboard, apiUrl: api, provider });
   if (connect) c.connectUrl = connect;
   if (!c.apiKey && c.agentId && c.accessToken) {
-    const [st, resp] = await apiPost(`${api}/v1/agent/keys`, c.accessToken, { agent_id: c.agentId });
+    // Label the key after this machine so re-issuing replaces THIS device's key and
+    // leaves other machines and deployments connected (see backend migration 0071).
+    const [st, resp] = await apiPost(`${api}/v1/agent/keys`, c.accessToken, {
+      agent_id: c.agentId,
+      label: deviceLabel(),
+    });
     if (st === 201 && resp.api_key) c.apiKey = resp.api_key;
   }
   creds.save(c);
@@ -327,7 +332,12 @@ async function cmdLogin(a: Args): Promise<number> {
     // Best-effort: if it fails we still store the session and fall back to the
     // short-lived JWT + refresh for the connection.
     if (!c.apiKey && c.agentId && c.accessToken) {
-      const [st, resp] = await apiPost(`${api}/v1/agent/keys`, c.accessToken, { agent_id: c.agentId });
+      // Label the key after this machine so re-issuing replaces THIS device's key and
+      // leaves other machines and deployments connected (see backend migration 0071).
+      const [st, resp] = await apiPost(`${api}/v1/agent/keys`, c.accessToken, {
+        agent_id: c.agentId,
+        label: deviceLabel(),
+      });
       if (st === 201 && resp.api_key) c.apiKey = resp.api_key;
       else console.error(`note: couldn't mint a persistent agent key (${st}); using the refreshable session instead.`);
     }
