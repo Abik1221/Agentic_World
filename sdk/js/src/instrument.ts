@@ -17,6 +17,7 @@
 // non-streaming calls for automatic capture.
 
 import { estimateCost } from "./pricing.js";
+import * as providers from "./providers.js";
 import { currentSpan, currentUsage } from "./telemetry.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -65,13 +66,35 @@ export function gatewayHeaders(): Record<string, string> {
 }
 
 function detectProvider(client: Any): string {
-  const name = (client?.constructor?.name ?? "").toLowerCase();
-  if (name.includes("openai")) return "openai";
-  if (name.includes("anthropic")) return "anthropic";
+  // baseURL first: most of the ecosystem speaks the OpenAI wire format, so an OpenAI
+  // client pointed at http://localhost:11434/v1 IS Ollama — and calling it "openai"
+  // would price a model on the developer's own GPU at OpenAI's rates.
+  const byUrl = providers.fromBaseUrl(String(client?.baseURL ?? ""));
+  if (byUrl) return byUrl;
+  const byName = providers.fromName(client?.constructor?.name ?? "");
+  if (byName) return byName;
   // duck-type fallback
   if (client?.chat?.completions) return "openai";
   if (client?.messages) return "anthropic";
   return "";
+}
+
+/** The provider for one instrumented call.
+ *
+ *  `patchedAs` is the SDK we wrapped (which wire format this is). The client's baseURL
+ *  is consulted first and wins. A baseURL pointing at the PYYOL GATEWAY is not used for
+ *  attribution — it says the call was proxied, not who served it — so the upstream is
+ *  recovered from the gateway path by matching it back against PROVIDER_PATH. */
+export function resolveCallProvider(resource: Any, patchedAs: string): string {
+  const base = clientBaseUrl(resource);
+  if (base && gateway.base && base.startsWith(gateway.base)) {
+    const tail = base.slice(gateway.base.length);
+    for (const [provider, path] of Object.entries(PROVIDER_PATH)) {
+      if (tail.startsWith(path)) return provider;
+    }
+    return patchedAs;
+  }
+  return providers.resolve({ baseUrl: base, fallback: patchedAs });
 }
 
 /** Point a provider client at the Pyyol Gateway (sets its baseURL). Explicit, robust
@@ -145,9 +168,68 @@ export interface ExtractedUsage {
 /** Pull normalized usage from a provider response, or null if it has none.
  *  Handles OpenAI Chat Completions, Anthropic Messages, and the OpenAI Responses
  *  API; duck-typed so a plain object or an SDK object both work. */
+/** Ollama's native shape: no `usage` object at all, counts at the top level.
+ *  Without this an agent running Ollama reported zero tokens forever — it looked
+ *  instrumented and measured nothing, and no bill ever arrives to contradict a zero. */
+function extractOllama(resp: Any): ExtractedUsage | null {
+  const prompt = get(resp, "prompt_eval_count");
+  const completion = get(resp, "eval_count");
+  if (prompt === undefined && completion === undefined) return null;
+  return {
+    model: get(resp, "model", "") || "",
+    provider: providers.OLLAMA,
+    promptTokens: Math.trunc(prompt || 0),
+    completionTokens: Math.trunc(completion || 0),
+    cachedTokens: 0,
+    reasoningTokens: 0,
+  };
+}
+
+/** Google Gemini: counts hang off `usageMetadata` (camelCase in the JS SDK). */
+function extractGoogle(resp: Any): ExtractedUsage | null {
+  const um = get(resp, "usageMetadata") ?? get(resp, "usage_metadata");
+  if (um == null) return null;
+  const prompt = get(um, "promptTokenCount", get(um, "prompt_token_count", 0)) || 0;
+  const completion = get(um, "candidatesTokenCount", get(um, "candidates_token_count", 0)) || 0;
+  if (!prompt && !completion) return null;
+  return {
+    model: get(resp, "modelVersion", "") || get(resp, "model", "") || "",
+    provider: providers.GOOGLE,
+    promptTokens: Math.trunc(prompt),
+    completionTokens: Math.trunc(completion),
+    cachedTokens: Math.trunc(get(um, "cachedContentTokenCount", get(um, "cached_content_token_count", 0)) || 0),
+    reasoningTokens: Math.trunc(get(um, "thoughtsTokenCount", get(um, "thoughts_token_count", 0)) || 0),
+  };
+}
+
+/** Cohere nests counts under `meta.tokens`. */
+function extractCohere(resp: Any): ExtractedUsage | null {
+  const tokens = get(get(resp, "meta"), "tokens");
+  if (tokens == null) return null;
+  const prompt = get(tokens, "inputTokens", get(tokens, "input_tokens", 0)) || 0;
+  const completion = get(tokens, "outputTokens", get(tokens, "output_tokens", 0)) || 0;
+  if (!prompt && !completion) return null;
+  return {
+    model: get(resp, "model", "") || "",
+    provider: "cohere",
+    promptTokens: Math.trunc(prompt),
+    completionTokens: Math.trunc(completion),
+    cachedTokens: 0,
+    reasoningTokens: 0,
+  };
+}
+
 export function extractUsage(resp: Any): ExtractedUsage | null {
   const u = get(resp, "usage");
-  if (u == null) return null;
+  if (u == null) {
+    // Shapes that carry no `usage` at all. Only consulted here, so they can never
+    // hijack a normal OpenAI or Anthropic response.
+    for (const extractor of [extractOllama, extractGoogle, extractCohere]) {
+      const info = extractor(resp);
+      if (info !== null) return info;
+    }
+    return null;
+  }
 
   const model = get(resp, "model", "") || "";
 
@@ -187,6 +269,10 @@ export function recordResponse(resp: Any, o: { provider?: string; latencyMs?: nu
   if (info === null) return null;
   const provider = o.provider || info.provider;
   const cost = estimateCost(info.model, {
+    // WHO served it, not just what was served: an open-weight model is free on your
+    // own hardware and billed when a hosted provider serves it, and the model id is
+    // identical either way.
+    provider,
     promptTokens: info.promptTokens,
     completionTokens: info.completionTokens,
     cachedTokens: info.cachedTokens,
@@ -224,7 +310,9 @@ export function patchPrototype(proto: Any, method: string, provider: string): bo
     const start = Date.now();
     const resp = await orig.apply(this, args);
     try {
-      recordResponse(resp, { provider, latencyMs: Date.now() - start });
+      // Resolve from the CLIENT's baseURL — the wire format we patched is not the
+      // same thing as who actually served the call.
+      recordResponse(resp, { provider: resolveCallProvider(this, provider), latencyMs: Date.now() - start });
     } catch {
       // instrumentation must never break the dev's call
     }
