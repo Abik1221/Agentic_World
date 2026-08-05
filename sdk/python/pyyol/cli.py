@@ -1555,6 +1555,12 @@ _MANIFEST_TMPL = {
     "games": ["goofspiel"],
     "endpoint": {"url": "https://your-host.example.com/turn", "authentication": "bearer-token"},
     "runtime": {"timeout": 5000, "maxMemory": "256Mi"},
+    # The model you run. Optional to the schema, but scaffolded because leaving it out
+    # is how an agent ends up missing from the model benchmark: the board falls back to
+    # this block for any match where neither the gateway nor the SDK saw the real model
+    # name, and with no block there is nothing to fall back to. Placeholders, so an
+    # unedited manifest cannot silently claim a model it does not run.
+    "model": {"provider": "your-provider", "model": "your-model", "reasoning": False},
     "sdk": {"language": "python", "version": __version__},
     "contact": {"email": "you@example.com"},
 }

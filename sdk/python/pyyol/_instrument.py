@@ -34,7 +34,7 @@ import inspect
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import pricing
+from . import pricing, providers
 from .telemetry import current_span, current_usage
 
 # (class, method_name, original_callable) for uninstrument().
@@ -159,20 +159,49 @@ def _warn(msg: str) -> None:
 def _detect_provider(client: Any) -> str:
     """Identify the provider behind a client, or "" when we cannot tell.
 
-    Detection is by module name, so a client is recognised by what it IS rather than
-    what it is configured to talk to. Note the Groq case has TWO shapes: the native
-    `groq` package, and the far more common one of pointing the OpenAI SDK at Groq's
-    OpenAI-compatible endpoint. The second correctly reports "openai" — it IS an
-    OpenAI client — and the gateway routes by path, so that keeps working.
+    Resolution prefers the client's configured base_url over its module name, because
+    most of the ecosystem speaks the OpenAI wire format: Ollama, vLLM, LM Studio,
+    OpenRouter, Together, Groq, DeepSeek and Azure are all routinely driven through the
+    OpenAI SDK with nothing changed but the URL. Classifying those by module would call
+    every one of them "openai" — pricing a locally-served Llama at OpenAI's rates and
+    filing it under the wrong vendor on the public board.
+
+    See `providers.resolve`. Returns "" only when neither the URL nor the module says
+    anything, which is the case `route()` warns about.
     """
-    mod = type(client).__module__.lower()
-    if "groq" in mod:
-        return "groq"
-    if "openai" in mod:
-        return "openai"
-    if "anthropic" in mod:
-        return "anthropic"
-    return ""
+    base = ""
+    try:
+        raw = getattr(client, "base_url", None)
+        base = str(raw) if raw else ""
+    except Exception:  # noqa: BLE001
+        base = ""
+    return providers.resolve(module_name=type(client).__module__, base_url=base)
+
+
+def _resolve_call_provider(resource: Any, patched_as: str) -> str:
+    """The provider for one instrumented call.
+
+    `patched_as` is the SDK we wrapped (what wire format this is). The client's
+    base_url is consulted first and wins, so an OpenAI client pointed at
+    http://localhost:11434/v1 records as `ollama` — self-hosted and free — instead of
+    billing the developer for tokens OpenAI never served.
+
+    A base_url that points at the PYYOL GATEWAY is ignored for attribution: it tells us
+    the call was proxied, not who served it, and the gateway records the real provider
+    itself from the upstream response.
+    """
+    base = _client_base_url(resource)
+    gw = _gateway.get("base", "")
+    if base and gw and base.startswith(gw):
+        # Routed through us. Recover the upstream from the gateway PATH by matching it
+        # back against the routing table, rather than by parsing segments — the table
+        # is the thing that defined the path, so the two cannot drift apart.
+        tail = base[len(gw):]
+        for provider, path in _PROVIDER_PATH.items():
+            if tail.startswith(path):
+                return provider
+        return patched_as
+    return providers.resolve(base_url=base, fallback=patched_as)
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -181,17 +210,91 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
+def _extract_ollama(resp: Any) -> Optional[Dict[str, Any]]:
+    """Ollama's native response shape, which has no ``usage`` object at all.
+
+    Counts live at the top level as ``prompt_eval_count`` / ``eval_count``. Without
+    this an agent running Ollama through the native client reported zero tokens
+    forever — it looked instrumented and measured nothing.
+    """
+    prompt = _get(resp, "prompt_eval_count")
+    completion = _get(resp, "eval_count")
+    if prompt is None and completion is None:
+        return None
+    return {
+        "model": _get(resp, "model", "") or "",
+        "provider": providers.OLLAMA,
+        "prompt_tokens": int(prompt or 0),
+        "completion_tokens": int(completion or 0),
+        "cached_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+
+def _extract_google(resp: Any) -> Optional[Dict[str, Any]]:
+    """Google Gemini (google-genai / google-generativeai): counts hang off
+    ``usage_metadata`` with their own field names."""
+    um = _get(resp, "usage_metadata")
+    if um is None:
+        return None
+    prompt = _get(um, "prompt_token_count", 0) or 0
+    completion = _get(um, "candidates_token_count", 0) or 0
+    if not prompt and not completion:
+        return None
+    return {
+        # google-genai exposes the resolved model on the response; older shapes do not,
+        # in which case the caller's model kwarg is the only source and we leave it to
+        # the manual path rather than inventing one.
+        "model": _get(resp, "model_version", "") or _get(resp, "model", "") or "",
+        "provider": providers.GOOGLE,
+        "prompt_tokens": int(prompt),
+        "completion_tokens": int(completion),
+        "cached_tokens": int(_get(um, "cached_content_token_count", 0) or 0),
+        "reasoning_tokens": int(_get(um, "thoughts_token_count", 0) or 0),
+    }
+
+
+def _extract_cohere(resp: Any) -> Optional[Dict[str, Any]]:
+    """Cohere nests counts under ``meta.tokens``."""
+    meta = _get(resp, "meta")
+    if meta is None:
+        return None
+    tokens = _get(meta, "tokens")
+    if tokens is None:
+        return None
+    prompt = _get(tokens, "input_tokens", 0) or 0
+    completion = _get(tokens, "output_tokens", 0) or 0
+    if not prompt and not completion:
+        return None
+    return {
+        "model": _get(resp, "model", "") or "",
+        "provider": "cohere",
+        "prompt_tokens": int(prompt),
+        "completion_tokens": int(completion),
+        "cached_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+
 def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
     """Pull normalized usage from a provider response, or None if it has none.
 
     Handles OpenAI Chat Completions (``prompt_tokens``/``completion_tokens`` with
     ``prompt_tokens_details.cached_tokens`` + ``completion_tokens_details.reasoning_tokens``),
     Anthropic Messages (``input_tokens``/``output_tokens`` + ``cache_read_input_tokens``),
-    and the OpenAI Responses API (``input_tokens``/``output_tokens``). Duck-typed so a
-    dict or an SDK object both work.
+    the OpenAI Responses API (``input_tokens``/``output_tokens``), Ollama
+    (``prompt_eval_count``/``eval_count``, no usage object), Google Gemini
+    (``usage_metadata``) and Cohere (``meta.tokens``). Duck-typed so a dict or an SDK
+    object both work.
     """
     u = _get(resp, "usage")
     if u is None:
+        # Shapes that carry no `usage` at all. Checked in order of how distinctive
+        # their marker fields are, so none can claim another's response.
+        for extractor in (_extract_ollama, _extract_google, _extract_cohere):
+            info = extractor(resp)
+            if info is not None:
+                return info
         return None
 
     model = _get(resp, "model", "") or ""
@@ -322,10 +425,13 @@ def _inject_gateway_headers(resource: Any, kwargs: Dict[str, Any]) -> None:
         pass
 
 
-def _safe_record(resp: Any, provider: str, start: float) -> None:
+def _safe_record(resp: Any, provider: str, start: float, resource: Any = None) -> None:
     try:
+        # Resolve from the CLIENT's base_url when we have one — the wire format we
+        # patched is not the same thing as who served the call.
+        prov = _resolve_call_provider(resource, provider) if resource is not None else provider
         record_response(
-            resp, provider=provider, latency_ms=int((time.perf_counter() - start) * 1000)
+            resp, provider=prov, latency_ms=int((time.perf_counter() - start) * 1000)
         )
     except Exception:  # noqa: BLE001 - instrumentation must never break the dev's call
         pass
@@ -349,20 +455,22 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
 
         @functools.wraps(orig)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            _inject_gateway_headers(args[0] if args else None, kwargs)
+            resource = args[0] if args else None
+            _inject_gateway_headers(resource, kwargs)
             start = time.perf_counter()
             resp = await orig(*args, **kwargs)
-            _safe_record(resp, provider, start)
+            _safe_record(resp, provider, start, resource)
             return resp
 
     else:
 
         @functools.wraps(orig)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            _inject_gateway_headers(args[0] if args else None, kwargs)
+            resource = args[0] if args else None
+            _inject_gateway_headers(resource, kwargs)
             start = time.perf_counter()
             resp = orig(*args, **kwargs)
-            _safe_record(resp, provider, start)
+            _safe_record(resp, provider, start, resource)
             return resp
 
     wrapper._pyyol_instrumented = True  # type: ignore[attr-defined]
@@ -371,6 +479,50 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
     except Exception:  # noqa: BLE001
         return False
     _PATCHED.append((cls, method, orig))
+    return True
+
+
+def _patch_bound_module_func(module_path: str, name: str, provider: str) -> bool:
+    """Wrap a module-level function that was BOUND at import time.
+
+    Some SDKs expose conveniences by capturing a default client's bound methods at
+    import (``ollama.chat = _client.chat``). Patching the class afterwards does not
+    touch those references, so an agent calling ``ollama.chat(...)`` — the form every
+    tutorial uses — would go completely unmeasured while the class patch reported
+    success.
+    """
+    try:
+        mod = importlib.import_module(module_path)
+    except Exception:  # noqa: BLE001
+        return False
+    orig = getattr(mod, name, None)
+    if orig is None or not callable(orig) or getattr(orig, "_pyyol_instrumented", False):
+        return False
+
+    if inspect.iscoroutinefunction(orig):
+
+        @functools.wraps(orig)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
+            resp = await orig(*args, **kwargs)
+            _safe_record(resp, provider, start, getattr(orig, "__self__", None))
+            return resp
+
+    else:
+
+        @functools.wraps(orig)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
+            resp = orig(*args, **kwargs)
+            _safe_record(resp, provider, start, getattr(orig, "__self__", None))
+            return resp
+
+    wrapper._pyyol_instrumented = True  # type: ignore[attr-defined]
+    try:
+        setattr(mod, name, wrapper)
+    except Exception:  # noqa: BLE001
+        return False
+    _PATCHED.append((mod, name, orig))
     return True
 
 
@@ -393,24 +545,71 @@ def _patch_anthropic() -> bool:
     return patched
 
 
+def _patch_ollama() -> bool:
+    """Ollama's native client, both call styles.
+
+    Local models are the case people most often assume "just works" and least often
+    check: no bill arrives to contradict a zero, so an unmeasured Ollama agent looks
+    exactly like a cheap one.
+    """
+    patched = False
+    for class_name in ("Client", "AsyncClient"):
+        for method in ("chat", "generate"):
+            patched |= _patch_method("ollama._client", class_name, method, providers.OLLAMA)
+    # The module-level conveniences are bound to a default client at import.
+    for name in ("chat", "generate"):
+        patched |= _patch_bound_module_func("ollama", name, providers.OLLAMA)
+    return patched
+
+
+def _patch_google() -> bool:
+    """Both Google SDKs: the current google-genai and the legacy google-generativeai."""
+    patched = False
+    for class_name in ("Models", "AsyncModels"):
+        patched |= _patch_method("google.genai.models", class_name, "generate_content", providers.GOOGLE)
+    patched |= _patch_method(
+        "google.generativeai.generative_models", "GenerativeModel", "generate_content", providers.GOOGLE
+    )
+    return patched
+
+
+def _patch_cohere() -> bool:
+    patched = False
+    for class_name in ("Client", "AsyncClient", "ClientV2", "AsyncClientV2"):
+        patched |= _patch_method("cohere.client", class_name, "chat", "cohere")
+    return patched
+
+
+# Every backend the SDK can auto-capture. Note this list is about NATIVE clients only:
+# any OpenAI-compatible endpoint (vLLM, LM Studio, llama.cpp, OpenRouter, Together,
+# Groq, DeepSeek, Azure, xAI, Perplexity, Cerebras…) is already covered by the OpenAI
+# patch, and `providers.resolve` reads its base_url to attribute it correctly.
+_PATCHERS = {
+    "openai": _patch_openai,
+    "anthropic": _patch_anthropic,
+    "ollama": _patch_ollama,
+    "google": _patch_google,
+    "cohere": _patch_cohere,
+}
+
+
 def instrument(providers: Optional[List[str]] = None) -> List[str]:
     """Auto-capture LLM usage from installed providers. Pass e.g. ``["openai"]`` to
-    limit which are patched; default patches all supported providers that are
+    limit which are patched; default patches every supported backend that is
     installed. Returns the list actually instrumented. Safe to call more than once."""
-    want = set(providers) if providers is not None else {"openai", "anthropic"}
+    want = set(providers) if providers is not None else set(_PATCHERS)
     done: List[str] = []
-    if "openai" in want and _patch_openai():
-        done.append("openai")
-    if "anthropic" in want and _patch_anthropic():
-        done.append("anthropic")
+    for name, patch in _PATCHERS.items():
+        if name in want and patch():
+            done.append(name)
     return done
 
 
 def uninstrument() -> None:
-    """Restore all patched methods (primarily for tests)."""
+    """Restore all patched methods/functions (primarily for tests)."""
     while _PATCHED:
-        cls, method, orig = _PATCHED.pop()
+        target, name, orig = _PATCHED.pop()
         try:
-            setattr(cls, method, orig)
+            setattr(target, name, orig)
         except Exception:  # noqa: BLE001
             pass

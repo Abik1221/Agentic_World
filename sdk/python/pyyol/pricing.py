@@ -147,12 +147,26 @@ def _canonical(model: str, provider: str = "") -> Optional[str]:
     return None
 
 
+# Rate for a model the developer serves themselves. Not a guess and not a fallback —
+# there is no per-token bill, so any non-zero number here would be fiction.
+_FREE = Rate(0.0, 0.0, 0.0)
+
+
 def rate_for(model: str, provider: str = "") -> Rate:
     """The Rate used for `model` (falls back to a mid-tier rate for unknown models).
 
     `provider` scopes the lookup so a hosted open-weight model is priced while the
     same model self-hosted stays at $0.
     """
+    # Self-hosted first, ahead of every name-based rule. The model id cannot tell you
+    # who served it — "llama-3.3-70b" is the same string on Groq's bill and on your own
+    # GPU — so without this an Ollama user is charged Groq's rates for electricity they
+    # already paid for, and the unknown-model fallback would invent a bill for a
+    # locally-served model nobody has a rule for.
+    from . import providers as _providers
+
+    if _providers.is_self_hosted((provider or "").strip().lower()):
+        return _FREE
     key = _canonical(model, provider)
     return _TABLE[key] if key is not None else _FALLBACK
 
