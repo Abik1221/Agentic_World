@@ -4,6 +4,18 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.9.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.8.0...py-v1.9.0) (2026-08-05)
+
+
+### Features
+
+* resolve the LLM provider by base_url, not by client class ([dcac13c](https://github.com/Abik1221/Agentic_World/commit/dcac13c597da226ee3c71e028d71f9e594007ff5))
+
+
+### Bug Fixes
+
+* **ci:** satisfy the lint and docs-freshness gates ([eaadfb6](https://github.com/Abik1221/Agentic_World/commit/eaadfb61dda166390404cfefe1e8681af5b2f87e))
+
 ## [1.8.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.7.0...py-v1.8.0) (2026-08-04)
 
 
