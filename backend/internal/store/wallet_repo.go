@@ -22,6 +22,18 @@ func NewWalletRepo(db *pgxpool.Pool) *WalletRepo { return &WalletRepo{db: db} }
 var _ wallet.Repo = (*WalletRepo)(nil)
 
 func (r *WalletRepo) Settlement(ctx context.Context, matchPublicID string) (wallet.Settlement, error) {
+	// Agents here means STAKEHOLDERS, not seats. Every caller multiplies bid by
+	// len(Agents) to reconstruct what escrow is holding — settleMafia's gross, Refund's
+	// pool, SettleHeld's fallback pool — so a seat that never paid an entry fee must
+	// not be in this set.
+	//
+	// kind='house' fillers are exactly that: group matchmaking seats them to complete a
+	// roster the queue could not fill, and the staking path deliberately skips them.
+	// Counting them here would make settlement debit escrow for coins that were never
+	// staked (12 seats × bid against a 4 × bid escrow) and post the phantom difference
+	// to platform revenue — draining the shared escrow that backs other live matches.
+	// Refund was worse: it would credit each bot its "stake back", minting coins into
+	// the system owner's wallet.
 	rows, err := r.db.Query(ctx,
 		`SELECT m.bid, m.rake_pct, COALESCE(wa.public_id, ''), ag.public_id
 		 FROM match_players mp
@@ -29,6 +41,7 @@ func (r *WalletRepo) Settlement(ctx context.Context, matchPublicID string) (wall
 		 JOIN agents  ag ON ag.id = mp.agent_id
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1
+		   AND COALESCE(ag.kind, '') <> 'house'
 		 ORDER BY mp.seat`, matchPublicID)
 	if err != nil {
 		return wallet.Settlement{}, err
