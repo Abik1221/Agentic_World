@@ -53,7 +53,10 @@ func TestAgentTelemetryLive(t *testing.T) {
 	// Mafia: 10 decisions, rounds 1-2 clean, round 3 fails 3 of 4 times.
 	var mafiaDecs []MatchDecision
 	for i := 0; i < 10; i++ {
-		round, outcome, lat := 1, "ok", int64(300)
+		// round is assigned by the switch below on every branch; declaring it without a
+		// value keeps the initial 1 from reading as meaningful (ineffassign).
+		var round int
+		outcome, lat := "ok", int64(300)
 		switch {
 		case i < 3:
 			round = 1

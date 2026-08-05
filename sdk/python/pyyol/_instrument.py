@@ -196,7 +196,7 @@ def _resolve_call_provider(resource: Any, patched_as: str) -> str:
         # Routed through us. Recover the upstream from the gateway PATH by matching it
         # back against the routing table, rather than by parsing segments — the table
         # is the thing that defined the path, so the two cannot drift apart.
-        tail = base[len(gw):]
+        tail = base[len(gw) :]
         for provider, path in _PROVIDER_PATH.items():
             if tail.startswith(path):
                 return provider
@@ -430,9 +430,7 @@ def _safe_record(resp: Any, provider: str, start: float, resource: Any = None) -
         # Resolve from the CLIENT's base_url when we have one — the wire format we
         # patched is not the same thing as who served the call.
         prov = _resolve_call_provider(resource, provider) if resource is not None else provider
-        record_response(
-            resp, provider=prov, latency_ms=int((time.perf_counter() - start) * 1000)
-        )
+        record_response(resp, provider=prov, latency_ms=int((time.perf_counter() - start) * 1000))
     except Exception:  # noqa: BLE001 - instrumentation must never break the dev's call
         pass
 
@@ -566,9 +564,14 @@ def _patch_google() -> bool:
     """Both Google SDKs: the current google-genai and the legacy google-generativeai."""
     patched = False
     for class_name in ("Models", "AsyncModels"):
-        patched |= _patch_method("google.genai.models", class_name, "generate_content", providers.GOOGLE)
+        patched |= _patch_method(
+            "google.genai.models", class_name, "generate_content", providers.GOOGLE
+        )
     patched |= _patch_method(
-        "google.generativeai.generative_models", "GenerativeModel", "generate_content", providers.GOOGLE
+        "google.generativeai.generative_models",
+        "GenerativeModel",
+        "generate_content",
+        providers.GOOGLE,
     )
     return patched
 

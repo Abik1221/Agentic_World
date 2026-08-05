@@ -73,9 +73,9 @@ _HOST_RULES: Tuple[Tuple[str, str], ...] = (
 # these names the runtime; one that does not is still self-hosted, just unnamed.
 _LOCAL_PORTS = {
     11434: OLLAMA,
-    1234: "lmstudio",   # LM Studio's default server port
-    8000: "vllm",       # vLLM's default
-    8080: "llamacpp",   # llama.cpp server default
+    1234: "lmstudio",  # LM Studio's default server port
+    8000: "vllm",  # vLLM's default
+    8080: "llamacpp",  # llama.cpp server default
     5000: "localai",
     3000: SELF_HOSTED,
     9997: SELF_HOSTED,
@@ -155,9 +155,7 @@ def from_module(module_name: str) -> str:
     return ""
 
 
-def resolve(
-    *, module_name: str = "", base_url: str = "", fallback: str = ""
-) -> str:
+def resolve(*, module_name: str = "", base_url: str = "", fallback: str = "") -> str:
     """The provider serving this call.
 
     base_url wins over the module name, because the module only says which WIRE FORMAT

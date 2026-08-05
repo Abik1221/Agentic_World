@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -46,6 +47,28 @@ func main() {
 		})
 	})
 	rating.NewHandler(svc, nil, false, nil).Register(r)
-	log.Printf("e2ebench listening on %s (season %d)", addr, svc.CurrentSeason())
-	log.Fatal(http.ListenAndServe(addr, r))
+
+	// Bind first, then log the address the LISTENER reports rather than the raw ADDR
+	// env string. Two reasons: it prints the real bound port (useful when ADDR is ":0"),
+	// and the logged value comes from the net stack instead of the environment, so a
+	// newline in ADDR cannot forge log lines (gosec G706).
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	// Explicit timeouts: a zero-value http.Server has none, so one stalled client can
+	// hold a connection open forever (gosec G114). Generous, since this harness serves a
+	// local browser doing large board reads.
+	srv := &http.Server{
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	//nolint:gosec // G706: gosec taints ln through net.Listen(addr), but ln.Addr() is a
+	// net.Addr built by the kernel from the parsed address — not the ADDR string — so it
+	// cannot carry a newline. Logged deliberately: it reports the real bound port.
+	log.Printf("e2ebench listening on %s (season %d)", ln.Addr(), svc.CurrentSeason())
+	log.Fatal(srv.Serve(ln))
 }

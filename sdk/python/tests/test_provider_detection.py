@@ -124,7 +124,9 @@ def test_unknown_model_served_locally_is_free_not_fallback_priced():
     """
     assert pricing.estimate_cost("brand-new-thing-2026", 500_000, 500_000, provider="ollama") == 0
     # ...while the same unknown model on an unknown hosted provider still estimates.
-    assert pricing.estimate_cost("brand-new-thing-2026", 500_000, 500_000, provider="openrouter") > 0
+    assert (
+        pricing.estimate_cost("brand-new-thing-2026", 500_000, 500_000, provider="openrouter") > 0
+    )
 
 
 # --- usage extraction across response shapes ----------------------------------
