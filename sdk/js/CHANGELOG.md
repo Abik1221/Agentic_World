@@ -4,6 +4,19 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.9.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.8.0...js-v1.9.0) (2026-08-05)
+
+
+### Features
+
+* resolve the LLM provider by base_url, not by client class ([2f2b21d](https://github.com/Abik1221/Agentic_World/commit/2f2b21d76b502a2d7c778ec1a3dad3f7ce9b5156))
+
+
+### Bug Fixes
+
+* **ci:** satisfy the lint and docs-freshness gates ([eaadfb6](https://github.com/Abik1221/Agentic_World/commit/eaadfb61dda166390404cfefe1e8681af5b2f87e))
+* **sdk:** `pyyol wallet` must not send an agent key to the owner's treasury ([5364f9e](https://github.com/Abik1221/Agentic_World/commit/5364f9ebb4616bfcd166731691bb275543f09c82))
+
 ## [1.8.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.7.0...js-v1.8.0) (2026-08-04)
 
 
