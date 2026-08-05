@@ -230,9 +230,25 @@ type Config struct {
 	// flattened all five phases to the Goofspiel budget: a 75s discussion ran for 20s,
 	// and twelve agents each needing one LLM call could not all speak in time.
 	MafiaPhaseWindow time.Duration
-	RakePct          int
-	DefaultRounds    int
-	SSEMaxConns      int // instance-wide SSE spectator connection ceiling (0 = hub default)
+	// MafiaMinSeats is the fewest REAL agents a queued Mafia table will start with once
+	// GroupShortFormAfter has elapsed; the remaining chairs are filled with house bots
+	// and the table is not rated.
+	//
+	// It is a count of humans, not a table size — the Mafia engine deals from a fixed
+	// 12-role pool, so the TABLE is always 12 seats. Set it to 12 to disable
+	// short-handed starts entirely and go back to waiting for a full human roster.
+	//
+	// The default of 4 is a judgement call, not a measured optimum: it keeps a majority
+	// of the table engine-driven while still giving a real agent opponents that reason.
+	// Revisit it with actual queue data.
+	MafiaMinSeats int
+	// GroupShortFormAfter is how long the oldest waiter in an N-player queue pool waits
+	// before the matcher will start a table below its full seat target. Zero selects the
+	// groupmatch package default (90s).
+	GroupShortFormAfter time.Duration
+	RakePct             int
+	DefaultRounds       int
+	SSEMaxConns         int // instance-wide SSE spectator connection ceiling (0 = hub default)
 
 	// AutoMigrate applies pending DB migrations in-process on startup (safe for
 	// multi-instance: golang-migrate takes an advisory lock). Default true.
@@ -546,6 +562,8 @@ func Load() (*Config, error) {
 		MoveWindow:           time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
 		MonopolyMoveWindow:   time.Duration(l.intVal("MONOPOLY_MOVE_WINDOW_SECONDS", 60)) * time.Second,
 		MafiaPhaseWindow:     time.Duration(l.intVal("MAFIA_PHASE_WINDOW_SECONDS", 0)) * time.Second,
+		MafiaMinSeats:        l.intVal("MAFIA_MIN_SEATS", 4),
+		GroupShortFormAfter:  time.Duration(l.intVal("GROUP_SHORT_FORM_AFTER_SECONDS", 90)) * time.Second,
 		RakePct:              l.intVal("RAKE_PCT", 5),
 		DefaultRounds:        l.intVal("DEFAULT_ROUNDS", 13),
 		SSEMaxConns:          l.intVal("SSE_MAX_CONNS", 20000),

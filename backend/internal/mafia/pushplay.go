@@ -75,6 +75,13 @@ func (s *Service) EnablePushPlay(remote RemoteResolver, client PushClient, bots 
 		log = slog.Default()
 	}
 	s.pusher = &pushPlayer{remote: remote, client: client, bots: bots, log: log, maxMatch: 5 * time.Minute, turns: s.turns}
+	// The same list is the allowlist for JoinHouseSeat, so every path that fills a seat
+	// with a bot — push-play here, group-matchmaking backfill — draws from one declared
+	// set and no other agent can ever be seated through the gate-bypassing path.
+	s.houseAgents = make(map[string]bool, len(bots))
+	for _, b := range bots {
+		s.houseAgents[b.PublicID] = true
+	}
 }
 
 // SetWebhookEnqueuer routes async /event + /game-end through the durable webhook
@@ -183,10 +190,15 @@ func (s *Service) StartPushPlay(ctx context.Context, userAgent, userOwner string
 		return "", err
 	}
 	// Fill the remaining seats with bots; the final join starts the match.
+	//
+	// JoinHouseSeat, not Join: every bot shares the `usr_system` owner, and Join's
+	// anti-collusion rule rejects a second seat from an owner who already holds one — so
+	// this loop used to fail on the SECOND bot with a 409, making Mafia push-play
+	// unavailable wherever the house bots are the fillers (i.e. production).
 	seatIDs := []string{userAgent}
 	for i := 0; i < s.cfg.RosterSize-1; i++ {
 		b := s.pusher.bots[i]
-		if _, err := s.Join(ctx, b.PublicID, b.OwnerPublicID, matchID); err != nil {
+		if _, err := s.JoinHouseSeat(ctx, b.PublicID, b.OwnerPublicID, matchID); err != nil {
 			s.pusher.log.Error("mafia pushplay: bot join failed", "seat", i+2, "bot", b.PublicID, "err", err)
 			return "", err
 		}
@@ -284,6 +296,9 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 				rec.Record(benchmark.Decision{
 					Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 					Round: v.Day, Action: act.Kind, Rationale: rationale, Usage: usage,
+					// The INPUT half of the record: the view this seat was handed,
+					// including its own role and what it had heard. Owner-scoped on read.
+					View: v,
 				})
 				// Durable per-decision event — see the goofspiel drive loop for why the
 				// match-end Recorder alone is not enough.

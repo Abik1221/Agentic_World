@@ -43,12 +43,44 @@ type Player struct {
 	Team          string
 	Alive         bool
 	CoinsDelta    int64
+	// IsHouse marks a seat held by a kind='house' engine bot rather than a
+	// developer's agent. House seats exist so a table can reach its roster when the
+	// queue is thin, and they are excluded from EVERY money and ranking path: they
+	// do not stake, are not counted in the pool, cannot be paid, and their presence
+	// makes the whole table unrated. Sourced from agents.kind, so it cannot drift
+	// from the seeded bot set (migration 0063).
+	IsHouse bool
 	// Display identity. The agents/users rows were already joined to load a seat —
 	// these columns were simply never selected, which is why every surface could
 	// only ever say "Seat 7" instead of naming the agent behind it.
 	Name      string
 	OwnerName string
 	AvatarURL string
+}
+
+// HumanPlayers returns the seats that belong to real developers' agents — the only
+// seats that stake, settle, or rate. Use this anywhere a count of "how many agents
+// are in this game" feeds money or ranking, because len(Match.Players) now includes
+// house fillers.
+func HumanPlayers(players []Player) []Player {
+	out := make([]Player, 0, len(players))
+	for _, p := range players {
+		if !p.IsHouse {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// HasHouseSeat reports whether any seat at this table is a house bot, which is what
+// makes a table unrated.
+func HasHouseSeat(players []Player) bool {
+	for _, p := range players {
+		if p.IsHouse {
+			return true
+		}
+	}
+	return false
 }
 
 // RosterSeat is one seat's public identity. Roles are NEVER included — that is
@@ -188,6 +220,9 @@ type Repo interface {
 	Get(ctx context.Context, matchPublicID string) (Match, error)
 	JoinSeat(ctx context.Context, matchPublicID string, p Player) error
 	Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, deadline time.Time, events []mf.Event) error
+	// MarkUnrated flags a match as excluded from ranked statistics (matches.rated =
+	// false). Called at start time for a table that house bots had to fill. Idempotent.
+	MarkUnrated(ctx context.Context, matchPublicID string) error
 	Advance(ctx context.Context, matchPublicID string, state mf.State, deadline *time.Time, alive map[int]bool, events []mf.Event) error
 	Finish(ctx context.Context, matchPublicID string, state mf.State, winnerTeam, replayHash string, players []Player, events []mf.Event) error
 	ListActiveExpired(ctx context.Context, game string, now time.Time, limit int) ([]string, error)

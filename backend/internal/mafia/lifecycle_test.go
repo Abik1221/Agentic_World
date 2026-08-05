@@ -48,6 +48,8 @@ type fakeRepo struct {
 	failWriteFor   string
 	errBoom        error
 	advanced       []string // ids that reached a successful Advance
+
+	unrated []string // ids flagged as excluded from ranked stats
 }
 
 func (f *fakeRepo) CreateWaiting(context.Context, CreateMatchInput) (Match, error) {
@@ -66,6 +68,10 @@ func (f *fakeRepo) Get(_ context.Context, id string) (Match, error) {
 }
 func (f *fakeRepo) JoinSeat(context.Context, string, Player) error { return nil }
 func (f *fakeRepo) Start(context.Context, string, map[int]string, mf.State, time.Time, []mf.Event) error {
+	return nil
+}
+func (f *fakeRepo) MarkUnrated(_ context.Context, id string) error {
+	f.unrated = append(f.unrated, id)
 	return nil
 }
 func (f *fakeRepo) Advance(_ context.Context, id string, _ mf.State, _ *time.Time, _ map[int]bool, _ []mf.Event) error {

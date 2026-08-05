@@ -17,6 +17,21 @@ type rollFakeRepo struct {
 	champSeen  map[int]string // season -> champion passed to RollSeason
 	models     []ModelStat    // canned ModelBenchmark result
 	standing   *Standing      // canned AgentStanding result (nil = not found)
+
+	// What ModelBenchmark was actually asked for, so a test can assert the service
+	// resolved the arena and the season window rather than trusting the return value.
+	benchGame  string
+	benchStart time.Time
+	benchEnd   time.Time
+	// The arena the service passed to AgentStanding ("" = resolve the primary arena).
+	standingGame string
+
+	split     []DevModelRow // canned DeveloperModelSplit result
+	splitGame string        // the arena the service asked for
+
+	runners []ModelRunner // canned ModelRunners result
+	// (game, provider, model) the service asked ModelRunners for.
+	runnersFor [3]string
 }
 
 func newRollFakeRepo(lastRolled int) *rollFakeRepo {
@@ -38,14 +53,24 @@ func (f *rollFakeRepo) RollSeason(_ context.Context, season int, champion string
 	f.champSeen[season] = champion
 	return true, nil
 }
-func (f *rollFakeRepo) ModelBenchmark(context.Context, int, string, int) ([]ModelStat, error) {
+func (f *rollFakeRepo) ModelBenchmark(_ context.Context, _ int, game string, start, end time.Time) ([]ModelStat, error) {
+	f.benchGame, f.benchStart, f.benchEnd = game, start, end
 	return f.models, nil
 }
-func (f *rollFakeRepo) AgentStanding(context.Context, int, string, string) (Standing, bool, error) {
+func (f *rollFakeRepo) AgentStanding(_ context.Context, _ int, game, _ string) (Standing, bool, error) {
+	f.standingGame = game
 	if f.standing == nil {
 		return Standing{}, false, nil
 	}
 	return *f.standing, true, nil
+}
+func (f *rollFakeRepo) DeveloperModelSplit(_ context.Context, _ int, game string, _, _ time.Time) ([]DevModelRow, error) {
+	f.splitGame = game
+	return f.split, nil
+}
+func (f *rollFakeRepo) ModelRunners(_ context.Context, _ int, game, provider, model string, _, _ time.Time) ([]ModelRunner, error) {
+	f.runnersFor = [3]string{game, provider, model}
+	return f.runners, nil
 }
 
 // svcAtSeason builds a Service whose current season is `season` (30-day windows).

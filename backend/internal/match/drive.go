@@ -268,6 +268,10 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 			rec.Record(benchmark.Decision{
 				Seat: seat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 				Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
+				// The INPUT half of the record: the exact view this agent was handed. Its
+				// own hand and the revealed prize — which is what makes the chosen card
+				// judgeable at all. Owner-scoped on every read path.
+				View: v,
 			})
 			// Emit the decision NOW, not at match end. The Recorder above is an
 			// in-process buffer flushed once when the match finishes and capped at 256

@@ -31,6 +31,12 @@ type RewardRow struct {
 }
 
 // ComputeEconomy mirrors computeEconomy() in mafiaEconomy.ts.
+//
+// agentCount must be the number of STAKING seats, not the roster size. Since group
+// matchmaking can fill a short table with house bots, len(Match.Players) is no longer
+// the same number: a bot staked nothing, so counting it here would compute a reward
+// pool larger than the coins actually escrowed and settle a deficit against the
+// platform. Callers pass len(HumanPlayers(...)).
 func ComputeEconomy(agentCount int, entryFee int64, platformFeePct int) EconomySnapshot {
 	// A FREE table has a zero economy — full stop.
 	//
@@ -68,12 +74,23 @@ type SeatInfo struct {
 	Role          string
 	Team          string
 	Alive         bool
+	// IsHouse marks an engine-driven filler seat. It staked nothing, so it can never
+	// be paid from a pool it did not contribute to. See ComputeRewards.
+	IsHouse bool
 }
 
 // ComputeRewards mirrors computeRewards() in mafiaEconomy.ts.
 func ComputeRewards(winner string, seats []SeatInfo, econ EconomySnapshot) []RewardRow {
 	var winners []SeatInfo
 	for _, s := range seats {
+		// A house filler is excluded from the winners set BEFORE the share is divided,
+		// not just from the payout. Excluding it only at payout time would divide the
+		// pool by a denominator that includes it and silently shrink every real
+		// winner's share, leaving the difference to fall through to the platform as
+		// unpaid remainder.
+		if s.IsHouse {
+			continue
+		}
 		if s.Alive && s.Team == winner {
 			winners = append(winners, s)
 		}
@@ -89,6 +106,11 @@ func ComputeRewards(winner string, seats []SeatInfo, econ EconomySnapshot) []Rew
 			Alive: s.Alive, OnWinningTeam: s.Team == winner,
 		}
 		switch {
+		case s.IsHouse:
+			// Checked first: a house bot on the winning team that survived would
+			// otherwise fall through to the paid branch and move real coins to the
+			// system owner's wallet.
+			row.Reason = "House bot · not staked"
 		case s.Team != winner:
 			row.Reason = "Losing team"
 		case !s.Alive:

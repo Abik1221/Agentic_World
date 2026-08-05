@@ -56,12 +56,32 @@ type upstream struct {
 
 // Proxy is the gateway HTTP handler. Mount it under a base path; it routes by the
 // first path segment: /openai/... → OpenAI, /anthropic/... → Anthropic.
+// VerifiedCall is one gateway-observed LLM call, as the server measured it.
+//
+// Model and Provider are read off the UPSTREAM RESPONSE, not off anything the agent
+// sent, which makes them the only model attribution on the platform that an agent
+// cannot misreport. They were being computed here and dropped, so the public model
+// board had nothing but manifest claims to rank.
+type VerifiedCall struct {
+	AgentID string
+	MatchID string // from X-Pyyol-Match; may be "" for a call outside a match
+	Round   int
+	Bound   bool // provably the call made for (MatchID, Round)
+
+	Provider string // upstream that served it (openai|anthropic)
+	Model    string // model name the provider itself returned
+	CostUSD  float64
+
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+}
+
 // VerifiedHook is called (best-effort, off the response's critical path) on every
-// observed verified call, with the agent, match (from X-Pyyol-Match; may be ""), and
-// the server-measured USD cost. The wiring layer uses it to (a) accumulate per-match
-// verified cost and (b) award the "Verified" badge once. Must be fast/non-blocking or
-// spawn its own goroutine — it runs inline after the response is written.
-type VerifiedHook func(ctx context.Context, agentID, matchID string, round int, bound bool, costUSD float64)
+// observed verified call. The wiring layer uses it to (a) accumulate per-match
+// verified economics and (b) award the "Verified" badge once. Must be fast/non-blocking
+// or spawn its own goroutine — it runs inline after the response is written.
+type VerifiedHook func(ctx context.Context, c VerifiedCall)
 
 // TurnVerifier reports whether a proof token is the one the platform issued for
 // exactly this (agent, match, round). Satisfied by *turnproof.Signer. Nil ⇒ no call
@@ -257,10 +277,18 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 		p.turns.Verify(agentID, match, round, reqHeader.Get("X-Pyyol-Proof"))
 
 	// The agent produced a real, gateway-observed LLM call: accumulate its verified
-	// cost (per match) and let the wiring award the "Verified" badge. Fires regardless
-	// of whether Lens is enabled.
+	// economics (per match) and let the wiring award the "Verified" badge. Fires
+	// regardless of whether Lens is enabled.
 	if p.onVerified != nil && agentID != "" {
-		p.onVerified(context.Background(), agentID, match, round, bound, cost)
+		p.onVerified(context.Background(), VerifiedCall{
+			AgentID: agentID, MatchID: match, Round: round, Bound: bound,
+			// provider is the upstream that served the call; u.Model is the model the
+			// provider named in its own response body.
+			Provider: provider, Model: u.Model, CostUSD: cost,
+			PromptTokens:     int64(u.PromptTokens),
+			CompletionTokens: int64(u.CompletionTokens),
+			TotalTokens:      int64(u.total()),
+		})
 	}
 	if p.em == nil || !p.em.Enabled() {
 		return

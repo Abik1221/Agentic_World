@@ -37,6 +37,16 @@ func TestLoad_HappyPath(t *testing.T) {
 	if cfg.MafiaPhaseWindow != 0 {
 		t.Errorf("MafiaPhaseWindow default = %s, want 0 (engine per-phase clock)", cfg.MafiaPhaseWindow)
 	}
+	// A thin queue must not be an indefinite wait: below a full 12-agent roster, a Mafia
+	// table starts with this many REAL agents (bots fill the rest, table unrated) once
+	// the short-form window has passed. Both must be non-zero, or the group matcher is
+	// back to waiting forever for a twelfth agent.
+	if cfg.MafiaMinSeats != 4 {
+		t.Errorf("MafiaMinSeats default = %d, want 4", cfg.MafiaMinSeats)
+	}
+	if cfg.GroupShortFormAfter.Seconds() != 90 {
+		t.Errorf("GroupShortFormAfter default = %s, want 90s", cfg.GroupShortFormAfter)
+	}
 }
 
 func TestValidate(t *testing.T) {

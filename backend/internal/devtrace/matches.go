@@ -2,6 +2,7 @@ package devtrace
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -125,6 +126,57 @@ type MatchDetail struct {
 	// sentences by games.go. Other seats' public events are included only once the match
 	// has finished — see the note in games.go.
 	Entries []Entry `json:"entries"`
+	// Decisions is the caller's own per-move record: what it chose, why, how long it
+	// took and what the call cost. ALWAYS the caller's agent only — a rationale is
+	// private reasoning about opponents, and it must never appear in another
+	// developer's trace even after the match ends.
+	Decisions []Decision `json:"decisions"`
+}
+
+// Decision is one recorded move by the caller's agent.
+//
+// This is what the trace was missing. The event log says what HAPPENED in the match;
+// this says what the agent DID and why — the only view from which a developer can
+// change anything.
+type Decision struct {
+	Seq       int    `json:"seq"`
+	Round     int    `json:"round"`
+	Action    string `json:"action,omitempty"`
+	Outcome   string `json:"outcome,omitempty"` // ok|illegal|timeout|transport_error|…
+	LatencyMS int64  `json:"latency_ms"`
+	// Rationale is the agent's own explanation of the move, verbatim. Empty when the
+	// agent returned none — most do not, and the UI says so rather than implying the
+	// move was unreasoned.
+	Rationale string `json:"rationale,omitempty"`
+
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	ReasoningTokens  int     `json:"reasoning_tokens"`
+	CachedTokens     int     `json:"cached_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	EstimatedCost    float64 `json:"estimated_cost"`
+
+	// Input is the turn view the agent was handed for this decision, passed through as
+	// raw JSON so the arena's own shape reaches the client unflattened. Absent when
+	// there was none to keep.
+	//
+	// This is the seat's HIDDEN information (its hand, its Mafia role) and is strictly
+	// more sensitive than the rationale beside it — the read path is owner-scoped at the
+	// query for exactly that reason.
+	Input json.RawMessage `json:"input,omitempty"`
+	// InputTruncated marks a view that existed but was dropped for size, so the client
+	// can say "not kept" rather than rendering the same empty pane it shows for "the
+	// agent was handed nothing".
+	InputTruncated bool `json:"input_truncated,omitempty"`
+
+	// StartedAt is when the engine asked for this move. nil for matches recorded before
+	// the platform stamped it — the client then draws no timeline rather than inventing
+	// offsets from cumulative latency, which would fabricate exactly the gaps a timeline
+	// exists to reveal.
+	StartedAt *time.Time `json:"started_at,omitempty"`
 }
 
 // MatchRepo is the history read port. Separate from LocalRepo because these are
@@ -143,6 +195,10 @@ type MatchRepo interface {
 	// MatchEvents returns the allowlisted log rows for one match, attributed to the
 	// caller's seat.
 	MatchEvents(ctx context.Context, agentPublicIDs []string, matchPublicID string, limit int) ([]MatchRow, error)
+	// MatchDecisions returns the per-move record for the caller's OWN agents in one
+	// match, in order. Scoped to the passed agent ids at the query — a rationale is
+	// private reasoning and is never returned for a seat the caller does not own.
+	MatchDecisions(ctx context.Context, agentPublicIDs []string, matchPublicID string, limit int) ([]Decision, error)
 }
 
 // SetMatchRepo wires the history source. Without it the endpoints below report
@@ -242,7 +298,15 @@ func (s *Service) MatchDetail(ctx context.Context, userPublicID, matchPublicID s
 		}
 	})
 
-	return MatchDetail{Match: sum, Roster: roster, Entries: entries}, nil
+	// The caller's own per-move record. Best-effort: a match played before decisions
+	// were persisted has none, and the trace is still worth rendering without them —
+	// failing the whole page over a missing supplement would be worse than the gap.
+	decisions, err := s.matches.MatchDecisions(ctx, owned, matchPublicID, 1000)
+	if err != nil {
+		return MatchDetail{}, err
+	}
+
+	return MatchDetail{Match: sum, Roster: roster, Entries: entries, Decisions: decisions}, nil
 }
 
 // actors resolves the agent ids a request may read, enforcing ownership. Shared by the

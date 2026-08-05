@@ -46,7 +46,9 @@ func (m *Matcher) tick(ctx context.Context) error {
 			return err
 		}
 		depth += len(entries)
-		target := m.svc.creators[game].SeatTarget()
+		// target is the full roster; minSeats is the fewest real agents this game will
+		// start with once ShortFormAfter has elapsed (== target ⇒ full rosters only).
+		target, minSeats := seatBounds(m.svc.creators[game])
 		if target < 2 {
 			continue // misconfigured game — never try to form a 0/1-seat table
 		}
@@ -56,18 +58,21 @@ func (m *Matcher) tick(ctx context.Context) error {
 			byBid[e.Bid] = append(byBid[e.Bid], e)
 		}
 		for _, pool := range byBid {
-			m.formGroups(ctx, game, pool, target, now)
+			m.formGroups(ctx, game, pool, target, minSeats, now)
 		}
 	}
 	m.svc.m.depth.Set(float64(depth))
 	return nil
 }
 
-// formGroups greedily forms full groups within one (game, bid) pool. For each still-
-// unused anchor (oldest first) it collects the earliest later entries with distinct
-// owners whose rating is within the anchor's wait-widened band, until it has `target`
-// members, then claims + creates the table.
-func (m *Matcher) formGroups(ctx context.Context, game string, pool []Entry, target int, now time.Time) {
+// formGroups greedily forms groups within one (game, bid) pool. For each still-unused
+// anchor (oldest first) it collects the earliest later entries with distinct owners
+// whose rating is within the anchor's wait-widened band, until it has `target` members,
+// then claims + creates the table.
+//
+// A group that never reaches `target` is formed anyway once the anchor has waited
+// ShortFormAfter and the group holds at least `minSeats` members — see shouldFormShort.
+func (m *Matcher) formGroups(ctx context.Context, game string, pool []Entry, target, minSeats int, now time.Time) {
 	used := make([]bool, len(pool))
 	for i := 0; i < len(pool); i++ {
 		if used[i] {
@@ -91,7 +96,8 @@ func (m *Matcher) formGroups(ctx context.Context, game string, pool []Entry, tar
 			group = append(group, j)
 			owners[c.OwnerPublicID] = true
 		}
-		if len(group) < target {
+		short := len(group) < target
+		if short && !m.shouldFormShort(anchor, len(group), minSeats, now) {
 			continue // not enough compatible distinct-owner agents yet — wait for more
 		}
 
@@ -131,10 +137,38 @@ func (m *Matcher) formGroups(ctx context.Context, game string, pool []Entry, tar
 			m.svc.log.Error("groupmatch mark-matched failed (table live, rows left claimed)", "game", game, "match", matchID, "error", err)
 		}
 		m.svc.m.tables.Inc()
+		if short {
+			m.svc.m.shortTables.Inc()
+			m.svc.log.Info("groupmatch formed a short-handed table",
+				"game", game, "match", matchID, "real_seats", len(group), "seat_target", target,
+				"anchor_wait", now.Sub(anchor.EnqueuedAt).String())
+		}
 		for _, idx := range group {
 			used[idx] = true
 		}
 	}
+}
+
+// shouldFormShort decides whether to start a table that could not reach a full roster.
+//
+// Two conditions, both required. The group must hold at least minSeats real agents, and
+// the ANCHOR — the oldest waiter, whose patience this is spending — must have waited
+// ShortFormAfter. So a short table is a fallback for a thin queue rather than the normal
+// path whenever a tick happens to catch a partial pool.
+//
+// The wait is deliberately measured on the anchor's own clock and not the pool's youngest
+// member, so somebody joining a stale pool cannot postpone a table that was already
+// overdue.
+//
+// A game that opts out (MinSeats == SeatTarget) needs no separate check: this is only
+// consulted when the group is SHORT of target, and a short group cannot also hold
+// minSeats when minSeats equals target. An explicit `minSeats >= target` guard here would
+// be unreachable, so it is left out rather than kept as untestable defence.
+func (m *Matcher) shouldFormShort(anchor Entry, have, minSeats int, now time.Time) bool {
+	if have < minSeats {
+		return false
+	}
+	return now.Sub(anchor.EnqueuedAt) >= m.svc.cfg.ShortFormAfter
 }
 
 // bandFor is the rating half-width allowed for an anchor right now: it widens the

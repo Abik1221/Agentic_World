@@ -11,7 +11,7 @@ func approx(a, b float64) bool { return math.Abs(a-b) < 0.001 }
 // the public board promises. 120k tokens across two minutes of play is 60k/min.
 func TestTokensPerMinuteUsesRealPlayTime(t *testing.T) {
 	m := &ModelStat{Tokens: 120_000, PlaySeconds: 120, Decisions: 300}
-	deriveModelQuality(m)
+	deriveModelStat(m)
 	if !approx(m.TokensPerMin, 60_000) {
 		t.Fatalf("tokens/min = %v, want 60000", m.TokensPerMin)
 	}
@@ -21,7 +21,7 @@ func TestTokensPerMinuteUsesRealPlayTime(t *testing.T) {
 // A rate nobody can reproduce is worse than an honest blank.
 func TestNoPlayTimeYieldsZeroRateNotAGuess(t *testing.T) {
 	m := &ModelStat{Tokens: 50_000, PlaySeconds: 0, Decisions: 300}
-	deriveModelQuality(m)
+	deriveModelStat(m)
 	if m.TokensPerMin != 0 {
 		t.Fatalf("tokens/min = %v with no measured play time; want 0", m.TokensPerMin)
 	}
@@ -31,7 +31,7 @@ func TestNoPlayTimeYieldsZeroRateNotAGuess(t *testing.T) {
 // lucky run, so intelligence stays 0 below the sample threshold.
 func TestIntelligenceNeedsARealSample(t *testing.T) {
 	small := &ModelStat{Decisions: intelMinDecisions - 1, Legal: intelMinDecisions - 1, AvgLatencyMs: 100}
-	deriveModelQuality(small)
+	deriveModelStat(small)
 	if small.Intelligence != 0 {
 		t.Fatalf("scored %d on a %d-decision sample; want 0", small.Intelligence, small.Decisions)
 	}
@@ -45,7 +45,7 @@ func TestIntelligenceNeedsARealSample(t *testing.T) {
 // latency band. That is full marks on all three components.
 func TestPerfectModelScoresFullMarks(t *testing.T) {
 	m := &ModelStat{Decisions: 1000, Legal: 1000, Fallbacks: 0, AvgLatencyMs: 200}
-	deriveModelQuality(m)
+	deriveModelStat(m)
 	if m.Intelligence != intelScale {
 		t.Fatalf("intelligence = %d, want %d", m.Intelligence, intelScale)
 	}
@@ -55,7 +55,7 @@ func TestPerfectModelScoresFullMarks(t *testing.T) {
 // but slowly still keeps its legal and reliability credit.
 func TestSlowModelLosesOnlyTheSpeedComponent(t *testing.T) {
 	m := &ModelStat{Decisions: 1000, Legal: 1000, Fallbacks: 0, AvgLatencyMs: 20_000}
-	deriveModelQuality(m)
+	deriveModelStat(m)
 	want := int((intelWLegal + intelWReliability) * intelScale)
 	if m.Intelligence != want {
 		t.Fatalf("intelligence = %d, want %d (legal + reliability, no speed)", m.Intelligence, want)
@@ -66,7 +66,7 @@ func TestSlowModelLosesOnlyTheSpeedComponent(t *testing.T) {
 // cost reliability directly.
 func TestFallbacksCostReliability(t *testing.T) {
 	m := &ModelStat{Decisions: 1000, Legal: 500, Fallbacks: 500, AvgLatencyMs: 200}
-	deriveModelQuality(m)
+	deriveModelStat(m)
 	if !approx(m.FallbackRate, 0.5) || !approx(m.LegalRate, 0.5) {
 		t.Fatalf("rates = legal %v / fallback %v, want 0.5 each", m.LegalRate, m.FallbackRate)
 	}
@@ -79,7 +79,7 @@ func TestFallbacksCostReliability(t *testing.T) {
 // Zero decisions must not divide by zero or produce a score.
 func TestNoDecisionsIsInert(t *testing.T) {
 	m := &ModelStat{Decisions: 0, Tokens: 100}
-	deriveModelQuality(m)
+	deriveModelStat(m)
 	if m.Intelligence != 0 || m.LegalRate != 0 || m.FallbackRate != 0 {
 		t.Fatalf("a model with no decisions produced %+v", m)
 	}

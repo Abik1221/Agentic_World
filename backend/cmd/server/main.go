@@ -45,6 +45,7 @@ import (
 	"github.com/agent-arena/arena/internal/invoices"
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/liveness"
+	"github.com/agent-arena/arena/internal/llmgateway"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/manifest"
 	"github.com/agent-arena/arena/internal/match"
@@ -65,8 +66,8 @@ import (
 	"github.com/agent-arena/arena/internal/rating"
 	"github.com/agent-arena/arena/internal/sandbox"
 	"github.com/agent-arena/arena/internal/sdkstats"
-	"github.com/agent-arena/arena/internal/seedadmin"
 	"github.com/agent-arena/arena/internal/secretbox"
+	"github.com/agent-arena/arena/internal/seedadmin"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/solanadeposit"
 	"github.com/agent-arena/arena/internal/spectator"
@@ -564,10 +565,34 @@ func run() error {
 			if seat.AgentID == "" || seat.Decisions == 0 {
 				continue
 			}
-			if err := pindexRepo.RecordMatchBenchmark(ctx, ms.MatchID, seat.AgentID, ms.Game,
-				int(seat.Decisions), int(seat.Legal), int(seat.Fallbacks), seat.LatencySumMS, seat.TotalTokens,
-				seat.EstimatedCost, string(seat.Result)); err != nil {
+			// The model this seat ACTUALLY called, recovered from the per-move usage in
+			// its decision log. Persisted alongside the manifest's claim so the public
+			// board can rank on what ran rather than on what was declared — and can say
+			// which of the two it is using.
+			obsProvider, obsModel := seat.ObservedModel()
+			if err := pindexRepo.RecordMatchBenchmark(ctx, store.MatchBenchmarkFact{
+				MatchID: ms.MatchID, AgentPublicID: seat.AgentID, Game: ms.Game, Result: string(seat.Result),
+				Decisions: int(seat.Decisions), Legal: int(seat.Legal), Fallbacks: int(seat.Fallbacks),
+				Illegal: int(seat.Illegal), Timeouts: int(seat.Timeouts), TransportErrors: int(seat.TransportErrors),
+				LatencySumMS: seat.LatencySumMS, LatencyMinMS: seat.LatencyMinMS, LatencyMaxMS: seat.LatencyMaxMS,
+				Tokens: seat.TotalTokens, PromptTokens: seat.PromptTokens,
+				CompletionTokens: seat.CompletionTokens, ReasoningTokens: seat.ReasoningTokens,
+				CachedTokens: seat.CachedTokens, EstimatedCost: seat.EstimatedCost,
+				ObservedProvider: obsProvider, ObservedModel: obsModel,
+				DeclaredProvider: seat.Provider, DeclaredModel: seat.Model,
+			}); err != nil {
 				return err // let the outbox retry
+			}
+
+			// The PER-DECISION record, from the same payload. This log was already being
+			// carried on the event and emitted to Lens, then dropped — so with Lens
+			// unconfigured (the default) a developer's match trace could show what
+			// HAPPENED but never what their agent chose, why, or what the move cost.
+			// That is the whole content of debugging an agent.
+			if decisions := store.DecisionsFromSeat(seat, obsProvider, obsModel); len(decisions) > 0 {
+				if err := pindexRepo.RecordMatchDecisions(ctx, ms.MatchID, seat.AgentID, decisions); err != nil {
+					return err // let the outbox retry
+				}
 			}
 		}
 		return nil
@@ -637,6 +662,8 @@ func run() error {
 	// separate port: those are aggregate queries over matches rather than a scan of the
 	// event log, and the history must not be reachable when it has no source.
 	devTraceSvc.SetMatchRepo(devTraceRepo)
+	// Cross-match agent telemetry (failure taxonomy, latency percentiles, hotspots).
+	devTraceSvc.SetTelemetryRepo(devTraceRepo)
 	devTraceHandler := devtrace.NewHandler(devTraceSvc, authn)
 
 	// All event handlers are now registered — start the dispatcher (see the NOTE at
@@ -1200,10 +1227,18 @@ func run() error {
 	groupSvc := groupmatch.New(
 		store.NewGroupQueueRepo(st.DB),
 		map[string]groupmatch.TableCreator{
-			string(devplatform.GameMafia):    mafiaTableCreator{svc: mafiaSvc},
+			// Mafia carries the same house-bot set push-play uses, so a thin queue can
+			// start a real table for however many agents ARE waiting instead of leaving
+			// them queued forever behind a 12-seat requirement.
+			string(devplatform.GameMafia): mafiaTableCreator{svc: mafiaSvc, bots: mafiaHouseBots, min: cfg.MafiaMinSeats},
+			// Monopoly keeps forming at exactly MinPlayers, as it already did: it is
+			// natively playable at that size, so its target IS its minimum and the
+			// short-form fallback never engages. Nothing about its timing changes here.
 			string(devplatform.GameMonopoly): monopolyTableCreator{svc: monopolySvc, seats: monopoly.MinPlayers},
 		},
-		ratingSvc, clock, groupmatch.Config{}, log, metrics.Registry(),
+		ratingSvc, clock,
+		groupmatch.Config{ShortFormAfter: cfg.GroupShortFormAfter},
+		log, metrics.Registry(),
 	)
 	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg}) // certified + not suspended (game guarded by the queue)
 	groupSvc.SetAffordability(walletSvc)
@@ -1507,30 +1542,36 @@ func run() error {
 		// the "Verified" badge (dual-badge model). Deduped in-process to one event
 		// per agent per instance; the badge award is idempotent anyway.
 		var gwSeen sync.Map
-		gwVerified := func(ctx context.Context, agentID, matchID string, round int, bound bool, costUSD float64) {
-			// bound = this call is provably the one made for (matchID, round). Recorded
+		gwVerified := func(ctx context.Context, c llmgateway.VerifiedCall) {
+			// Bound = this call is provably the one made for (MatchID, Round). Recorded
 			// so ranked integrity can count decisions that were genuinely LLM-backed;
 			// it does not change how cost is accumulated, since an unbound call is
 			// still a real call the developer really paid for.
-			if bound {
-				if err := pindexRepo.RecordBoundDecision(context.Background(), matchID, agentID, round); err != nil {
-					log.Warn("gateway: could not record bound decision", "agent", agentID, "match", matchID, "round", round, "err", err)
+			if c.Bound {
+				if err := pindexRepo.RecordBoundDecision(context.Background(), c.MatchID, c.AgentID, c.Round); err != nil {
+					log.Warn("gateway: could not record bound decision", "agent", c.AgentID, "match", c.MatchID, "round", c.Round, "err", err)
 				}
 			}
-			// Accumulate per-match verified cost on EVERY observed call (unfakeable
-			// input for the P-Index cost-efficiency dimension + verified economics).
-			if err := pindexRepo.RecordVerifiedCost(context.Background(), matchID, agentID, costUSD); err != nil {
-				log.Warn("gateway: could not record verified cost", "agent", agentID, "match", matchID, "err", err)
+			// Accumulate per-match verified economics on EVERY observed call (unfakeable
+			// input for the P-Index cost-efficiency dimension, and the only model
+			// attribution on the platform that the agent cannot misreport — the model
+			// name here came out of the provider's own response).
+			if err := pindexRepo.RecordVerifiedCost(context.Background(), store.VerifiedCall{
+				MatchID: c.MatchID, AgentPublicID: c.AgentID, CostUSD: c.CostUSD,
+				Provider: c.Provider, Model: c.Model,
+				PromptTokens: c.PromptTokens, CompletionTokens: c.CompletionTokens, TotalTokens: c.TotalTokens,
+			}); err != nil {
+				log.Warn("gateway: could not record verified cost", "agent", c.AgentID, "match", c.MatchID, "err", err)
 			}
 			// Award the "Verified" badge ONCE per agent (dedup in-process; idempotent
 			// award makes at-least-once safe anyway).
-			if _, seen := gwSeen.LoadOrStore(agentID, struct{}{}); seen {
+			if _, seen := gwSeen.LoadOrStore(c.AgentID, struct{}{}); seen {
 				return
 			}
-			payload, _ := json.Marshal(map[string]string{"agent_id": agentID})
+			payload, _ := json.Marshal(map[string]string{"agent_id": c.AgentID})
 			if _, err := store.InsertEvent(context.Background(), st.DB, events.TypeAgentGatewayVerified, payload); err != nil {
-				gwSeen.Delete(agentID) // let a later call retry
-				log.Warn("gateway: could not emit agent.gateway_verified", "agent", agentID, "err", err)
+				gwSeen.Delete(c.AgentID) // let a later call retry
+				log.Warn("gateway: could not emit agent.gateway_verified", "agent", c.AgentID, "err", err)
 			}
 		}
 		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, turnproof.New(cfg.TurnProofSecret), log))
@@ -1776,9 +1817,32 @@ func errRankedGameUnsupported(game string) error {
 // that fails mid-fill returns an error → the matcher releases the queue claim and the
 // partially-filled waiting table is reaped by the game's waiting-lobby TTL sweeper
 // (no stake escrowed until the table actually starts).
-type mafiaTableCreator struct{ svc *mafia.Service }
+type mafiaTableCreator struct {
+	svc  *mafia.Service
+	bots []mafia.BotAgent // house fillers (migration 0063), same set push-play uses
+	min  int              // fewest REAL agents to start with; see MinSeats
+}
 
 func (mafiaTableCreator) SeatTarget() int { return mafiaengine.RosterSize } // fixed 12
+
+// MinSeats is how few real agents Mafia will start with. The TABLE is still twelve
+// seats — the engine deals from a fixed 12-role pool, and dealing the first N of a
+// shuffled twelve to a shorter table produces degenerate games (roughly one in six
+// five-seat tables gets no mafia at all and is over before anyone acts). So a
+// short-handed start means "fewer humans, rest are bots", not "smaller table".
+//
+// Falls back to full-roster-only if misconfigured, or if there are not enough house
+// bots to cover the gap — better to keep waiting than to try to start a table that
+// cannot be filled.
+func (c mafiaTableCreator) MinSeats() int {
+	if c.min < 2 || c.min > mafiaengine.RosterSize {
+		return mafiaengine.RosterSize
+	}
+	if len(c.bots) < mafiaengine.RosterSize-c.min {
+		return mafiaengine.RosterSize
+	}
+	return c.min
+}
 
 func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []groupmatch.Seat, bid int64) (string, error) {
 	id, err := c.svc.CreateTable(ctx, seats[0].AgentPublicID, seats[0].OwnerPublicID, bid)
@@ -1790,6 +1854,25 @@ func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []group
 			return "", err
 		}
 	}
+	// Backfill whatever the queue could not supply. Bots join LAST so that every real
+	// agent is already seated when the final join starts the match, and so a table that
+	// could have filled with humans never has a bot in it. JoinHouseSeat rather than
+	// Join: the fillers share one owner and hold no coins (see mafia.JoinHouseSeat).
+	//
+	// The human seats still stake and settle normally; the table is recorded unrated
+	// because its opposition was partly engine-driven.
+	filled := make([]string, 0, mafiaengine.RosterSize-len(seats))
+	for i := 0; i < mafiaengine.RosterSize-len(seats); i++ {
+		b := c.bots[i]
+		if _, err := c.svc.JoinHouseSeat(ctx, b.PublicID, b.OwnerPublicID, id); err != nil {
+			return "", err
+		}
+		filled = append(filled, b.PublicID)
+	}
+	// Real agents act for themselves over the API, but nothing else would ever act for
+	// the fillers — push-play's drive loop only runs for a push-play table. Without this
+	// the bot seats would stay silent until every phase timed out.
+	c.svc.DriveHouseSeats(id, filled)
 	return id, nil
 }
 
@@ -1799,6 +1882,10 @@ type monopolyTableCreator struct {
 }
 
 func (c monopolyTableCreator) SeatTarget() int { return c.seats }
+
+// MinSeats equals SeatTarget: Monopoly's creator already sizes the table to the group it
+// is handed, and its target is its minimum playable size, so there is nothing to relax.
+func (c monopolyTableCreator) MinSeats() int { return c.seats }
 
 func (c monopolyTableCreator) CreateStartedTable(ctx context.Context, seats []groupmatch.Seat, bid int64) (string, error) {
 	id, err := c.svc.CreateTable(ctx, seats[0].AgentPublicID, seats[0].OwnerPublicID, bid, len(seats))

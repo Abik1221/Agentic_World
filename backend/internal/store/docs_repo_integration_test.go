@@ -2,28 +2,22 @@ package store
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/agent-arena/arena/internal/docs"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestDocsRepoIntegration exercises the full docs-as-data data path against a REAL
 // Postgres: docs.Load() (parse embedded content) → DocsRepo.Seed → ListPages / GetPage
 // / Versions — the exact queries the /v1/docs API serves the frontend. Skipped unless
-// PYYOL_TEST_DATABASE_URL points at a migrated DB (the repo has no standing PG harness).
+// PYYOL_TEST_DATABASE_URL points at a Postgres; the harness migrates the schema itself.
 func TestDocsRepoIntegration(t *testing.T) {
-	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run the docs integration test")
-	}
+	// Shares the harness that MIGRATES the schema. This test used to connect straight
+	// to the DSN and assume someone else had migrated, so it failed on a fresh database
+	// with "relation docs_pages does not exist" — it only passed if a test that happened
+	// to sort earlier had migrated first.
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer pool.Close()
+	pool := openGroupTestDB(t)
 
 	repo := NewDocsRepo(pool)
 	pages, err := docs.Load()
@@ -76,6 +70,16 @@ func TestDocsRepoIntegration(t *testing.T) {
 
 	// --- admin write path (CRUD without redeploy) ---
 	const editVer = "9999-01-01-test" // isolated version, never clobbered by the seed
+	// Remove it afterwards. The version string deliberately sorts after every real one
+	// so the "latest" assertion below works — which also means leaving it behind makes
+	// it the latest version FOREVER, and the earlier `latest == docs.DocsVersion` check
+	// then fails on every subsequent run against the same database.
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM docs_pages WHERE version = $1`, editVer); err != nil {
+			t.Errorf("cleanup of %s failed; later runs of this test will fail: %v", editVer, err)
+		}
+	})
 	// Clone the seeded baseline into a new editable version.
 	n, err := repo.CloneVersion(ctx, docs.DocsVersion, editVer)
 	if err != nil || n != len(pages) {

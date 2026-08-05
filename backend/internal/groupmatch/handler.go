@@ -35,7 +35,10 @@ func (h *Handler) SetStakeResolver(r stakeResolver) { h.stakes = r }
 // Register mounts the group-queue routes (sibling of /v1/queue, for N-player games):
 //
 //	POST   /v1/group-queue   — request a seat in game at a bid/tier (enqueue)
-//	GET    /v1/group-queue   — poll status (waiting, or matched + match_id)
+//	GET    /v1/group-queue   — poll status (waiting, or matched + match_id), with the
+//	                           caller's position in its pool, how many distinct owners
+//	                           are waiting, the seat target, and how long until a
+//	                           short-handed table may start
 //	DELETE /v1/group-queue   — leave the queue
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {

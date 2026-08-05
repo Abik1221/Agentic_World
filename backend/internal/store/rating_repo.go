@@ -242,102 +242,307 @@ func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int,
 	return int(tag.RowsAffected()), nil
 }
 
-// ModelBenchmark groups the season's rated agents by their DECLARED model (the
-// latest non-rejected manifest per agent) and aggregates games/elo/coins. Only
-// models with >= minGames total games are returned, best avg-ELO first.
-func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string, minGames int) ([]rating.ModelStat, error) {
-	rows, err := r.db.Query(ctx,
-		`WITH mdl AS (
-		   SELECT DISTINCT ON (agent_public_id) agent_public_id,
-		          model_provider AS provider, model_name AS model
-		   FROM agent_manifests
-		   WHERE status <> 'rejected'
-		     AND COALESCE(model_provider,'') <> '' AND COALESCE(model_name,'') <> ''
-		   ORDER BY agent_public_id, created_at DESC
-		 ),
-		 bench AS (
-		   -- Joined to matches for REAL wall-clock game time. Tokens-per-minute is the
-		   -- headline efficiency number on the public models board, and dividing by
-		   -- thinking time instead would answer a different question (throughput while
-		   -- deciding) under a label that promises game time. Only finished matches
-		   -- with a sane duration contribute, so a stuck or aborted match cannot
-		   -- inflate the denominator to near-zero and produce an absurd rate.
-		   SELECT b.agent_id,
-		          SUM(b.latency_sum_ms) AS lat_sum,
-		          SUM(b.decisions)      AS decisions,
-		          SUM(b.tokens)         AS tokens,
-		          SUM(b.estimated_cost) AS cost,
-		          SUM(b.legal)          AS legal,
-		          SUM(b.fallbacks)      AS fallbacks,
-		          SUM(EXTRACT(EPOCH FROM (m.finished_at - m.started_at))) FILTER (
-		            WHERE m.finished_at IS NOT NULL AND m.started_at IS NOT NULL
-		              AND m.finished_at > m.started_at
-		          ) AS play_seconds
-		   FROM agent_match_benchmark b
-		   LEFT JOIN matches m ON m.public_id = b.match_id
-		   WHERE b.game = $2
-		   GROUP BY b.agent_id
-		 )
-		 SELECT mdl.provider, mdl.model,
-		        COUNT(*)::int                              AS agents,
-		        COALESCE(SUM(r.wins),0)::int               AS wins,
-		        COALESCE(SUM(r.losses),0)::int             AS losses,
-		        COALESCE(SUM(r.ties),0)::int               AS ties,
-		        COALESCE(ROUND(AVG(r.elo)),0)::int         AS avg_elo,
-		        COALESCE(SUM(r.coins_earned),0)::bigint    AS coins_won,
-		        COALESCE(ROUND(SUM(b.lat_sum) / NULLIF(SUM(b.decisions),0)),0)::int AS avg_latency_ms,
-		        COALESCE(SUM(b.cost),0)::double precision  AS est_cost_usd,
-		        COALESCE(SUM(b.tokens),0)::bigint          AS tokens,
-		        COALESCE(SUM(b.legal),0)::bigint           AS legal,
-		        COALESCE(SUM(b.fallbacks),0)::bigint       AS fallbacks,
-		        COALESCE(SUM(b.decisions),0)::bigint       AS decisions,
-		        COALESCE(SUM(b.play_seconds),0)::double precision AS play_seconds
-		 FROM mdl
-		 JOIN agents  a ON a.public_id = mdl.agent_public_id AND a.kind <> 'house'
-		 JOIN ratings r ON r.agent_id = a.id AND r.game = $2 AND r.season = $1
-		 LEFT JOIN bench b ON b.agent_id = a.id
-		 GROUP BY mdl.provider, mdl.model
-		 HAVING (COALESCE(SUM(r.wins),0)+COALESCE(SUM(r.losses),0)+COALESCE(SUM(r.ties),0)) >= $3
-		 ORDER BY avg_elo DESC, coins_won DESC`, season, game, minGames)
+// modelBenchmarkSQL aggregates a season's per-match benchmark facts by the model that
+// actually played each match.
+//
+// $1 season · $2 game (” = every arena) · $3 window start · $4 window end
+//
+// Shape: one row per (provider, model) TOTAL plus one row per (provider, model, game),
+// produced in a single pass with GROUPING SETS rather than by two round trips over the
+// same facts. is_total=1 marks the aggregate row.
+//
+// Why the attribution ladder (verified → observed → declared) rather than the manifest
+// alone: this query used to start from agent_manifests, so a model appeared only if its
+// developer had hand-written a `model:` block. `pyyol init` does not scaffold one, which
+// meant the board's real result set was EMPTY while the gateway sat on the provider's
+// own model name for every call. Resolution happens per match, so a developer who
+// switches models mid-season has each match credited to the model that played it.
+// modelFactCTE resolves every benchmarked match in the window to the model that
+// actually played it. Shared VERBATIM by the board aggregate and the per-model detail
+// query: if the two resolved attribution even slightly differently, a model's detail
+// page would disagree with the row the reader clicked to reach it.
+//
+// $1 game (” = every arena) · $2 window start · $3 window end
+//
+// The CTE owns the LOW parameter numbers and callers append their own from $4 up. It
+// used to reserve $1 for the season, which only the aggregate's ratings join uses — so
+// the developer query, which needs no season, inherited a parameter it never referenced
+// and Postgres could not determine its type ("could not determine data type of
+// parameter $1"). A shared fragment must not leave a hole for its callers to fill.
+const modelFactCTE = `
+WITH decl AS (
+  -- Latest non-rejected manifest declaration per agent — the weakest tier, and only
+  -- consulted when neither the gateway nor the SDK identified the model.
+  SELECT DISTINCT ON (agent_public_id) agent_public_id,
+         COALESCE(model_provider,'') AS provider, COALESCE(model_name,'') AS model
+  FROM agent_manifests
+  WHERE status <> 'rejected'
+    AND COALESCE(model_provider,'') <> '' AND COALESCE(model_name,'') <> ''
+  ORDER BY agent_public_id, created_at DESC
+),
+fact AS (
+  SELECT b.agent_id, b.game, b.updated_at, b.result,
+         COALESCE(NULLIF(v.model,''),    NULLIF(b.observed_model,''),
+                  NULLIF(b.declared_model,''),    NULLIF(dc.model,''),    '') AS model,
+         COALESCE(NULLIF(v.provider,''), NULLIF(b.observed_provider,''),
+                  NULLIF(b.declared_provider,''), NULLIF(dc.provider,''), '') AS provider,
+         CASE WHEN NULLIF(v.model,'')          IS NOT NULL THEN 1   -- gateway-verified
+              WHEN NULLIF(b.observed_model,'') IS NOT NULL THEN 2   -- SDK-observed
+              ELSE 3 END                                          AS attr_rank,
+         b.decisions, b.legal, b.fallbacks, b.illegal, b.timeouts, b.transport_errors,
+         b.latency_sum_ms, b.latency_min_ms, b.latency_max_ms,
+         b.tokens, b.prompt_tokens, b.completion_tokens, b.reasoning_tokens, b.cached_tokens,
+         b.estimated_cost,
+         COALESCE(v.verified_cost,0) AS verified_cost,
+         COALESCE(v.calls,0)         AS verified_calls,
+         -- Real match wall-clock. NULL (not 0) when the clock is unusable, so a stuck
+         -- or aborted match drops out of the DURATION average without also discarding
+         -- the tokens it genuinely burned.
+         CASE WHEN m.started_at IS NOT NULL AND m.finished_at > m.started_at
+              THEN EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) END AS match_seconds
+  FROM agent_match_benchmark b
+  JOIN agents  a ON a.id = b.agent_id AND a.kind <> 'house'
+  -- Only FINISHED matches inside the season window count. The window is applied here,
+  -- on the fact's own match, so an agent's totals cannot leak across a season boundary.
+  JOIN matches m ON m.public_id = b.match_id
+                AND m.finished_at IS NOT NULL
+                AND m.finished_at >= $2 AND m.finished_at < $3
+                -- Exclude tables that house bots had to fill to reach their roster
+                -- (matches.rated = false, migration 0076). The a.kind <> 'house' join
+                -- above only drops the BOTS' own rows; the human seats at such a table
+                -- are real agents making real LLM calls, so without this the board would
+                -- credit a model for beating engine bots.
+                AND m.rated
+  LEFT JOIN agent_match_verified_cost v ON v.match_id = b.match_id AND v.agent_id = b.agent_id
+  LEFT JOIN decl dc ON dc.agent_public_id = a.public_id
+  WHERE ($1 = '' OR b.game = $1)
+)`
+
+// modelBenchmarkSQL aggregates the resolved facts by model.
+//
+// $1 game · $2 window start · $3 window end · $4 season
+//
+// Shape: one row per (provider, model) TOTAL plus one row per (provider, model, game),
+// produced in a single pass with GROUPING SETS rather than by two round trips over the
+// same facts. is_total=1 marks the aggregate row.
+const modelBenchmarkSQL = modelFactCTE + `,
+agg AS (
+  SELECT provider, model, game, GROUPING(game) AS is_total,
+         MIN(attr_rank)::int                               AS attr_rank,
+         COUNT(*)::int                                     AS matches,
+         COUNT(*) FILTER (WHERE result = 'win')::int       AS wins,
+         COUNT(*) FILTER (WHERE result = 'loss')::int      AS losses,
+         COUNT(*) FILTER (WHERE result = 'draw')::int      AS ties,
+         COALESCE(SUM(decisions),0)::bigint                AS decisions,
+         COALESCE(SUM(legal),0)::bigint                    AS legal,
+         COALESCE(SUM(fallbacks),0)::bigint                AS fallbacks,
+         COALESCE(SUM(illegal),0)::bigint                  AS illegal,
+         COALESCE(SUM(timeouts),0)::bigint                 AS timeouts,
+         COALESCE(SUM(transport_errors),0)::bigint         AS transport_errors,
+         COALESCE(SUM(latency_sum_ms),0)::bigint           AS latency_sum_ms,
+         -- 0 means "not measured" in these columns, so it must not win a MIN().
+         COALESCE(MIN(NULLIF(latency_min_ms,0)),0)::bigint AS latency_min_ms,
+         COALESCE(MAX(latency_max_ms),0)::bigint           AS latency_max_ms,
+         COALESCE(SUM(tokens),0)::bigint                   AS tokens,
+         COALESCE(SUM(prompt_tokens),0)::bigint            AS prompt_tokens,
+         COALESCE(SUM(completion_tokens),0)::bigint        AS completion_tokens,
+         COALESCE(SUM(reasoning_tokens),0)::bigint         AS reasoning_tokens,
+         COALESCE(SUM(cached_tokens),0)::bigint            AS cached_tokens,
+         COALESCE(SUM(estimated_cost),0)::double precision AS est_cost,
+         COALESCE(SUM(verified_cost),0)::double precision  AS verified_cost,
+         COALESCE(SUM(verified_calls),0)::bigint           AS verified_calls,
+         COALESCE(SUM(match_seconds),0)::double precision  AS play_seconds,
+         COUNT(match_seconds)::int                         AS timed_matches
+  FROM fact
+  WHERE model <> ''
+  GROUP BY GROUPING SETS ((provider, model), (provider, model, game))
+),
+am AS (
+  -- The model each agent MOST RECENTLY played in an arena. ELO and coins live on
+  -- ratings, which is keyed by (agent, game, season) and has no per-match grain, so
+  -- they can only be attributed to one model per agent per arena — the current one.
+  SELECT DISTINCT ON (agent_id, game) agent_id, game, provider, model
+  FROM fact WHERE model <> ''
+  ORDER BY agent_id, game, updated_at DESC
+),
+elo AS (
+  SELECT am.provider, am.model, am.game, GROUPING(am.game) AS is_total,
+         COUNT(DISTINCT am.agent_id)::int         AS agents,
+         -- How many distinct DEVELOPERS chose this model. Adoption is a different
+         -- signal from agent count: one person running twelve agents is not twelve
+         -- people betting on the model, and only the second is evidence of anything.
+         COUNT(DISTINCT ag.owner_user_id)::int    AS developers,
+         COALESCE(ROUND(AVG(r.elo)),0)::int       AS avg_elo,
+         COALESCE(SUM(r.coins_earned),0)::bigint  AS coins_won
+  FROM am
+  JOIN agents ag ON ag.id = am.agent_id
+  JOIN ratings r ON r.agent_id = am.agent_id AND r.game = am.game AND r.season = $4
+  GROUP BY GROUPING SETS ((am.provider, am.model), (am.provider, am.model, am.game))
+)
+SELECT a.provider, a.model, COALESCE(a.game,''), a.is_total, a.attr_rank,
+       COALESCE(e.agents,0), COALESCE(e.developers,0), COALESCE(e.avg_elo,0), COALESCE(e.coins_won,0),
+       a.matches, a.wins, a.losses, a.ties,
+       a.decisions, a.legal, a.fallbacks, a.illegal, a.timeouts, a.transport_errors,
+       a.latency_sum_ms, a.latency_min_ms, a.latency_max_ms,
+       a.tokens, a.prompt_tokens, a.completion_tokens, a.reasoning_tokens, a.cached_tokens,
+       a.est_cost, a.verified_cost, a.verified_calls, a.play_seconds, a.timed_matches
+FROM agg a
+LEFT JOIN elo e ON e.provider = a.provider AND e.model = a.model
+                AND e.is_total = a.is_total
+                AND (a.is_total = 1 OR e.game = a.game)
+-- Total row first for each model, then its arenas: lets the scan below attach arena
+-- rows to the aggregate it just built without a second pass or a lookup map.
+ORDER BY a.provider, a.model, a.is_total DESC, a.game`
+
+// ModelBenchmark aggregates a season's benchmark facts per model, for one arena or
+// (game == "") every arena with a per-arena breakdown attached. See modelBenchmarkSQL.
+func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
+	rows, err := r.db.Query(ctx, modelBenchmarkSQL, game, start, end, season)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []rating.ModelStat
 	for rows.Next() {
-		var s rating.ModelStat
-		if err := rows.Scan(&s.Provider, &s.Model, &s.Agents, &s.Wins, &s.Losses, &s.Ties, &s.AvgElo, &s.CoinsWon,
-			&s.AvgLatencyMs, &s.EstCostUSD, &s.Tokens,
-			&s.Legal, &s.Fallbacks, &s.Decisions, &s.PlaySeconds); err != nil {
+		var (
+			provider, model, rowGame string
+			isTotal                  int
+			s                        rating.ModelStat
+			latSum                   int64
+			latMin, latMax           int64
+		)
+		if err := rows.Scan(&provider, &model, &rowGame, &isTotal, &s.AttrRank,
+			&s.Agents, &s.Developers, &s.AvgElo, &s.CoinsWon,
+			&s.Matches, &s.Wins, &s.Losses, &s.Ties,
+			&s.Decisions, &s.Legal, &s.Fallbacks, &s.Illegal, &s.Timeouts, &s.TransportErrors,
+			&latSum, &latMin, &latMax,
+			&s.Tokens, &s.PromptTokens, &s.CompletionTokens, &s.ReasoningTokens, &s.CachedTokens,
+			&s.EstCostUSD, &s.VerifiedCostUSD, &s.VerifiedCalls, &s.PlaySeconds, &s.TimedMatches); err != nil {
 			return nil, err
 		}
-		out = append(out, s)
+		s.Provider, s.Model = provider, model
+		s.MinLatencyMs, s.MaxLatencyMs = int(latMin), int(latMax)
+		if s.Decisions > 0 {
+			s.AvgLatencyMs = int(float64(latSum)/float64(s.Decisions) + 0.5)
+		}
+
+		if isTotal == 1 {
+			out = append(out, s)
+			continue
+		}
+		// An arena row. Its total row precedes it (see ORDER BY), so it belongs to the
+		// last model appended. If it somehow does not, drop it rather than mis-file it.
+		if n := len(out); n > 0 && out[n-1].Provider == provider && out[n-1].Model == model {
+			out[n-1].Arenas = append(out[n-1].Arenas, rating.ArenaStat{
+				Game: rowGame, Agents: s.Agents, Developers: s.Developers, Matches: s.Matches,
+				Wins: s.Wins, Losses: s.Losses, Ties: s.Ties,
+				AvgElo: s.AvgElo, CoinsWon: s.CoinsWon,
+				Decisions: s.Decisions, Tokens: s.Tokens, AvgLatencyMs: s.AvgLatencyMs,
+				EstCostUSD: s.EstCostUSD, VerifiedCostUSD: s.VerifiedCostUSD,
+				// Derived fields (rates, per-match figures) are filled by the service,
+				// which owns every derivation on this board so the two grains cannot
+				// drift apart.
+				PlaySecondsInternal: s.PlaySeconds, TimedMatchesInternal: s.TimedMatches,
+				LegalInternal: s.Legal,
+			})
+		}
+	}
+	return out, rows.Err()
+}
+
+// modelRunnersSQL lists the agents that actually played a given model this season, with
+// their owner, so the model's detail page can answer "who is running this, and how are
+// they doing with it".
+//
+// $1 game · $2 window start · $3 window end · $4 season · $5 provider · $6 model
+//
+// Built on the SAME resolved facts as the board, so an agent appears here under exactly
+// the model the board credited its matches to. Everything selected is already public on
+// the leaderboard and developer profiles — this is a different arrangement of it, not a
+// new disclosure.
+const modelRunnersSQL = modelFactCTE + `
+SELECT a.public_id, a.name, a.slug, COALESCE(a.avatar_url,''),
+       COALESCE(u.username::text,''), COALESCE(u.display_name,''), COALESCE(u.avatar_url,''),
+       COUNT(*)::int                                     AS matches,
+       COUNT(*) FILTER (WHERE f.result = 'win')::int     AS wins,
+       COUNT(*) FILTER (WHERE f.result = 'loss')::int    AS losses,
+       COUNT(*) FILTER (WHERE f.result = 'draw')::int    AS ties,
+       COALESCE(SUM(f.tokens),0)::bigint                 AS tokens,
+       COALESCE(SUM(f.decisions),0)::bigint              AS decisions,
+       COALESCE(SUM(f.estimated_cost),0)::double precision AS est_cost,
+       COALESCE(SUM(f.verified_cost),0)::double precision  AS verified_cost,
+       -- The agent's BEST rating among the arenas it played this model in. An agent
+       -- that runs one model in Mafia and another in Monopoly must not have its
+       -- Monopoly rating attributed to the Mafia model, which a blanket join would do.
+       COALESCE(MAX(r.elo),0)::int                       AS elo
+FROM fact f
+JOIN agents a ON a.id = f.agent_id
+JOIN users  u ON u.id = a.owner_user_id
+LEFT JOIN ratings r ON r.agent_id = f.agent_id AND r.game = f.game AND r.season = $4
+WHERE f.model = $6 AND f.provider = $5
+GROUP BY a.public_id, a.name, a.slug, a.avatar_url, u.username, u.display_name, u.avatar_url
+ORDER BY matches DESC, wins DESC, a.public_id
+LIMIT 100`
+
+// ModelRunners returns the agents that played this model in the window, best-adopted
+// first. Capped at 100 rows: this is a "who runs this" panel, not a second leaderboard.
+func (r *RatingRepo) ModelRunners(ctx context.Context, season int, game, provider, model string, start, end time.Time) ([]rating.ModelRunner, error) {
+	rows, err := r.db.Query(ctx, modelRunnersSQL, game, start, end, season, provider, model)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rating.ModelRunner
+	for rows.Next() {
+		var m rating.ModelRunner
+		if err := rows.Scan(&m.AgentPublicID, &m.AgentName, &m.AgentSlug, &m.AgentAvatarURL,
+			&m.Username, &m.DisplayName, &m.DeveloperAvatarURL,
+			&m.Matches, &m.Wins, &m.Losses, &m.Ties,
+			&m.Tokens, &m.Decisions, &m.EstCostUSD, &m.VerifiedCostUSD, &m.Elo); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
 // AgentStanding returns an agent's rank + totals for the season. Rank is 1-based,
 // ordered by ELO desc (ties broken by lower agent_id, matching the leaderboard).
+//
+// game may be "" for "the agent's PRIMARY arena" — the one it has played most this
+// season, ELO breaking ties. The caller gets the resolved arena back in Standing.Game,
+// which it must show: a rank is only meaningful next to the arena it is a rank in.
 func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentPublicID string) (rating.Standing, bool, error) {
 	var s rating.Standing
 	s.Season = season
-	s.Game = game
 	s.AgentPublicID = agentPublicID
 	err := r.db.QueryRow(ctx,
-		`SELECT a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak,
+		`SELECT r.game, a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak,
+		   -- Rank is computed WITHIN r.game rather than within the requested arena, so
+		   -- it stays correct when the arena was resolved here instead of passed in.
 		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
-		      WHERE r2.game = $3 AND r2.season = $1 AND a2.kind <> 'house'
+		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind <> 'house'
 		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
 		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
-		      WHERE r3.game = $3 AND r3.season = $1 AND a3.kind <> 'house') AS total,
-		   COALESCE((SELECT model_provider FROM agent_manifests m WHERE m.agent_id = a.id
+		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house') AS total,
+		   -- agent_manifests is keyed by agent_public_id; it has no agent_id column.
+		   -- Referencing one made this whole query fail with "column m.agent_id does not
+		   -- exist", so /v1/rankings/standing answered 500 for every agent and the
+		   -- console's "your rank this season" card silently never rendered.
+		   COALESCE((SELECT model_provider FROM agent_manifests m WHERE m.agent_public_id = a.public_id
 		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
-		   COALESCE((SELECT model_name FROM agent_manifests m WHERE m.agent_id = a.id
+		   COALESCE((SELECT model_name FROM agent_manifests m WHERE m.agent_public_id = a.public_id
 		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), '')
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE r.game = $3 AND r.season = $1 AND a.public_id = $2`,
+		 WHERE r.season = $1 AND a.public_id = $2 AND ($3 = '' OR r.game = $3)
+		 -- With no arena requested, the agent's most-played arena wins. Most-played
+		 -- rather than highest-ELO on purpose: showing someone their best rating from an
+		 -- arena they tried twice would be a flattering number, not their standing.
+		 ORDER BY (r.wins + r.losses + r.ties) DESC, r.elo DESC
+		 LIMIT 1`,
 		season, agentPublicID, game).
-		Scan(&s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
+		Scan(&s.Game, &s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
 			&s.Rank, &s.Total, &s.Provider, &s.Model)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return rating.Standing{}, false, nil
@@ -432,4 +637,51 @@ func (r *RatingRepo) RollSeason(ctx context.Context, season int, champion string
 		return false, err
 	}
 	return true, nil
+}
+
+// developerModelSplitSQL is every (developer, model) pairing's season record — the input
+// to the skill-above-model edge.
+//
+// $1 season · $2 game (” = every arena) · $3 window start · $4 window end
+//
+// Built on the SAME resolved facts as the board, so a developer is scored against the
+// exact model baseline the board publishes. Grouping by owner rather than by agent is
+// the whole point: the question is which ENGINEER extracts the most from a model, and a
+// developer running four agents on one model is one competitor, not four.
+const developerModelSplitSQL = modelFactCTE + `
+SELECT u.public_id, COALESCE(u.username::text,''), COALESCE(u.display_name,''), COALESCE(u.avatar_url,''),
+       f.provider, f.model,
+       COUNT(DISTINCT f.agent_id)::int                   AS agents,
+       COUNT(*)::int                                     AS matches,
+       COUNT(*) FILTER (WHERE f.result = 'win')::int     AS wins,
+       COUNT(*) FILTER (WHERE f.result = 'loss')::int    AS losses,
+       COUNT(*) FILTER (WHERE f.result = 'draw')::int    AS ties,
+       COALESCE(SUM(f.tokens),0)::bigint                 AS tokens,
+       COALESCE(SUM(f.estimated_cost),0)::double precision AS est_cost,
+       COALESCE(SUM(f.verified_cost),0)::double precision  AS verified_cost
+FROM fact f
+JOIN agents a ON a.id = f.agent_id
+JOIN users  u ON u.id = a.owner_user_id
+WHERE f.model <> ''
+GROUP BY u.public_id, u.username, u.display_name, u.avatar_url, f.provider, f.model`
+
+// DeveloperModelSplit returns each developer's record on each model they ran.
+func (r *RatingRepo) DeveloperModelSplit(ctx context.Context, season int, game string, start, end time.Time) ([]rating.DevModelRow, error) {
+	_ = season // the [start, end) window already bounds the season
+	rows, err := r.db.Query(ctx, developerModelSplitSQL, game, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rating.DevModelRow
+	for rows.Next() {
+		var d rating.DevModelRow
+		if err := rows.Scan(&d.UserPublicID, &d.Username, &d.DisplayName, &d.AvatarURL,
+			&d.Provider, &d.Model, &d.Agents, &d.Matches, &d.Wins, &d.Losses, &d.Ties,
+			&d.Tokens, &d.EstCostUSD, &d.VerifiedCostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }

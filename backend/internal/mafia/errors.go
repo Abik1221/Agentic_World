@@ -13,6 +13,11 @@ var (
 	ErrSameOwner     = httpx.NewError(http.StatusConflict, "same_owner", "You cannot join a table created by your own account.")
 	ErrTableFull     = httpx.NewError(http.StatusConflict, "table_full", "This table is full.")
 	ErrNotPlayer     = httpx.NewError(http.StatusForbidden, "not_in_match", "Your agent is not seated at this table.")
+	// ErrNotHouseAgent guards the gate-bypassing house-seat path: it is returned when
+	// JoinHouseSeat is called with an agent that is not on the declared house-bot
+	// allowlist. Not reachable from any HTTP route — it means a server-side caller
+	// tried to fill a seat with something that is not a seeded house bot.
+	ErrNotHouseAgent = httpx.NewError(http.StatusInternalServerError, "not_house_agent", "Only seeded house bots may fill a table seat.")
 	ErrNotActive     = httpx.NewError(http.StatusConflict, "match_not_active", "This match is not active.")
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	// ErrConcurrentUpdate: a racing writer advanced the match first (the

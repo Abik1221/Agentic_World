@@ -19,9 +19,18 @@ import (
 
 func openGroupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	// DATABASE_URL is accepted as a fallback because that is what CI's database job
+	// sets (`DATABASE_URL=... go test -tags=dbtest ./internal/store/...`). Reading only
+	// PYYOL_TEST_DATABASE_URL meant every test built on this harness — the model
+	// benchmark aggregation, the benchmark API, the docs round trip — SKIPPED in CI
+	// while reporting green, so the one environment that has a real Postgres was the
+	// one place they never ran.
 	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("set PYYOL_TEST_DATABASE_URL to a Postgres DSN to run the group-queue integration test")
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if dsn == "" {
+		t.Skip("set PYYOL_TEST_DATABASE_URL (or DATABASE_URL) to a Postgres DSN to run the integration tests")
 	}
 	if err := Migrate(dsn); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -162,11 +171,18 @@ func countAgents(entries []groupmatch.Entry, ids ...string) int {
 
 type recordingCreator struct {
 	seats   int
+	min     int // 0 ⇒ full-roster-only (MinSeats == SeatTarget)
 	groups  [][]groupmatch.Seat
 	matchID string
 }
 
 func (c *recordingCreator) SeatTarget() int { return c.seats }
+func (c *recordingCreator) MinSeats() int {
+	if c.min == 0 {
+		return c.seats
+	}
+	return c.min
+}
 func (c *recordingCreator) CreateStartedTable(_ context.Context, seats []groupmatch.Seat, _ int64) (string, error) {
 	c.groups = append(c.groups, seats)
 	return c.matchID, nil
@@ -250,8 +266,31 @@ func TestNewReadQueriesValidLive(t *testing.T) {
 	pool := openGroupTestDB(t)
 	ctx := context.Background()
 
-	if _, err := NewRatingRepo(pool).ModelBenchmark(ctx, 1, "goofspiel", 1); err != nil {
-		t.Fatalf("ModelBenchmark (latency/cost): %v", err)
+	rr := NewRatingRepo(pool)
+	// Both shapes of the model board: one arena, and the all-arena aggregate whose
+	// GROUPING SETS produce the per-arena breakdown rows.
+	start, end := time.Now().Add(-30*24*time.Hour), time.Now().Add(24*time.Hour)
+	if _, err := rr.ModelBenchmark(ctx, 1, "goofspiel", start, end); err != nil {
+		t.Fatalf("ModelBenchmark (single arena): %v", err)
+	}
+	if _, err := rr.ModelBenchmark(ctx, 1, "", start, end); err != nil {
+		t.Fatalf("ModelBenchmark (all arenas): %v", err)
+	}
+	// AgentStanding both ways: a named arena, and "" for primary-arena resolution.
+	// This query referenced a non-existent agent_manifests.agent_id column and so
+	// answered 500 for every agent in production; nothing here executed it.
+	if _, _, err := rr.AgentStanding(ctx, 1, "goofspiel", "ag_none"); err != nil {
+		t.Fatalf("AgentStanding (named arena): %v", err)
+	}
+	if _, _, err := rr.AgentStanding(ctx, 1, "", "ag_none"); err != nil {
+		t.Fatalf("AgentStanding (primary arena): %v", err)
+	}
+	// The two queries behind the model detail page and the agentic (developer) board.
+	if _, err := rr.ModelRunners(ctx, 1, "", "openai", "gpt-4o", start, end); err != nil {
+		t.Fatalf("ModelRunners: %v", err)
+	}
+	if _, err := rr.DeveloperModelSplit(ctx, 1, "", start, end); err != nil {
+		t.Fatalf("DeveloperModelSplit: %v", err)
 	}
 	dp := NewDevProfileRepo(pool)
 	if _, _, err := dp.TokenEfficiency(ctx, "u_none"); err != nil {
@@ -341,5 +380,78 @@ func TestExpireStaleWaitingIntegration(t *testing.T) {
 		}
 		// Cleanup.
 		_, _ = pool.Exec(ctx, `DELETE FROM matches WHERE public_id = ANY($1)`, []string{staleID, freshID})
+	}
+}
+
+// PoolStats is what GET /v1/group-queue reports back to a waiting agent, so its SQL is
+// worth exercising against real Postgres: it uses a row comparison for the position and
+// a correlated subquery that must yield 0 (not NULL) for an agent who is no longer
+// waiting. Both are easy to get wrong in a way unit tests with a fake repo cannot see.
+func TestGroupQueuePoolStatsIntegration(t *testing.T) {
+	pool := openGroupTestDB(t)
+	ctx := context.Background()
+	repo := NewGroupQueueRepo(pool)
+
+	// A game name unique to this run isolates the pool completely, so a reused DB (or a
+	// concurrent run) cannot perturb the counts asserted below.
+	run := time.Now().Format("150405.000")
+	game := "pooltest-" + run
+
+	aAg, aOw := mkUserAgent(t, pool, "ps-a-"+run)
+	bAg, bOw := mkUserAgent(t, pool, "ps-b-"+run)
+	cAg, _ := mkUserAgent(t, pool, "ps-c-"+run)
+	for _, ag := range []string{aAg, bAg, cAg} {
+		t.Cleanup(func(ag string) func() {
+			return func() { _ = repo.Delete(context.Background(), ag) }
+		}(ag))
+	}
+
+	// a, then b, then c — where c belongs to b's OWNER. Three waiting agents, two owners:
+	// the pool can never seat more than two of them at one table.
+	for _, p := range []struct{ ag, ow string }{{aAg, aOw}, {bAg, bOw}, {cAg, bOw}} {
+		if err := repo.Upsert(ctx, groupmatch.Entry{
+			AgentPublicID: p.ag, OwnerPublicID: p.ow, Game: game, Bid: 500, Elo: 1500,
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", p.ag, err)
+		}
+	}
+
+	for i, ag := range []string{aAg, bAg, cAg} {
+		ps, err := repo.PoolStats(ctx, game, 500, ag)
+		if err != nil {
+			t.Fatalf("PoolStats(%s): %v", ag, err)
+		}
+		if ps.Position != i+1 {
+			t.Errorf("%s position = %d, want %d (enqueue order)", ag, ps.Position, i+1)
+		}
+		if ps.Waiting != 3 {
+			t.Errorf("%s pool size = %d, want 3", ag, ps.Waiting)
+		}
+		if ps.DistinctOwners != 2 {
+			t.Errorf("%s distinct owners = %d, want 2 (c shares b's owner)", ag, ps.DistinctOwners)
+		}
+	}
+
+	// A different bid is a different pool, even in the same game.
+	if ps, err := repo.PoolStats(ctx, game, 999, aAg); err != nil {
+		t.Fatalf("PoolStats(other bid): %v", err)
+	} else if ps.Waiting != 0 || ps.Position != 0 {
+		t.Errorf("a different bid must be an empty pool, got %+v", ps)
+	}
+
+	// Once claimed, an agent has no position — and the query must return 0 rather than
+	// failing to scan a NULL.
+	if ok, err := repo.ClaimGroup(ctx, []string{aAg, bAg}); err != nil || !ok {
+		t.Fatalf("ClaimGroup: ok=%v err=%v", ok, err)
+	}
+	ps, err := repo.PoolStats(ctx, game, 500, aAg)
+	if err != nil {
+		t.Fatalf("PoolStats after claim: %v", err)
+	}
+	if ps.Position != 0 {
+		t.Errorf("a claimed agent has no queue position, got %d", ps.Position)
+	}
+	if ps.Waiting != 1 || ps.DistinctOwners != 1 {
+		t.Errorf("only c should still be waiting, got waiting=%d owners=%d", ps.Waiting, ps.DistinctOwners)
 	}
 }

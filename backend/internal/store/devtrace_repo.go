@@ -168,10 +168,10 @@ func (r *DevTraceRepo) AgentRegistrations(
 // because three of them are LEFT joins onto tables keyed by the match's PUBLIC id as
 // TEXT, not by matches.id:
 //
-//   agent_match_benchmark      (match_id TEXT, agent_id BIGINT) — decisions/legal/fallbacks/
-//                              latency/tokens/estimated_cost/result, written by the drive loop
-//   agent_match_verified_cost  (match_id TEXT, agent_id BIGINT) — gateway-observed USD + calls
-//   agent_match_bound_decisions(match_id TEXT, agent_id BIGINT, round) — proof-carrying turns
+//	agent_match_benchmark      (match_id TEXT, agent_id BIGINT) — decisions/legal/fallbacks/
+//	                           latency/tokens/estimated_cost/result, written by the drive loop
+//	agent_match_verified_cost  (match_id TEXT, agent_id BIGINT) — gateway-observed USD + calls
+//	agent_match_bound_decisions(match_id TEXT, agent_id BIGINT, round) — proof-carrying turns
 //
 // They are LEFT joins on purpose: a match with no telemetry row is a real and common
 // state (a deterministic agent making no LLM calls), and it must read as zeroes rather
@@ -390,4 +390,228 @@ func (r *DevTraceRepo) MatchEvents(
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// MatchDecisions returns the caller's own per-move record for one match, in order.
+//
+// SCOPED AT THE QUERY, not filtered after. A rationale is the agent's private reasoning
+// about its opponents, so the agent-id list is part of the WHERE clause — there is no
+// code path that reads another seat's decisions and then discards them, because the
+// path that discards them is the one that eventually forgets to.
+func (r *DevTraceRepo) MatchDecisions(
+	ctx context.Context, agentPublicIDs []string, matchPublicID string, limit int,
+) ([]devtrace.Decision, error) {
+	if len(agentPublicIDs) == 0 || matchPublicID == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 4000 {
+		limit = 1000
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT d.seq, d.round, d.action, d.outcome, d.latency_ms, d.rationale,
+		        d.provider, d.model, d.prompt_tokens, d.completion_tokens,
+		        d.reasoning_tokens, d.cached_tokens, d.total_tokens, d.estimated_cost,
+		        d.input_json, d.input_truncated, d.started_at
+		   FROM agent_match_decisions d
+		   JOIN agents a ON a.id = d.agent_id
+		  WHERE d.match_id = $1 AND a.public_id = ANY($2)
+		  ORDER BY d.seq
+		  LIMIT $3`, matchPublicID, agentPublicIDs, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []devtrace.Decision
+	for rows.Next() {
+		var d devtrace.Decision
+		var input []byte
+		if err := rows.Scan(&d.Seq, &d.Round, &d.Action, &d.Outcome, &d.LatencyMS, &d.Rationale,
+			&d.Provider, &d.Model, &d.PromptTokens, &d.CompletionTokens,
+			&d.ReasoningTokens, &d.CachedTokens, &d.TotalTokens, &d.EstimatedCost,
+			&input, &d.InputTruncated, &d.StartedAt); err != nil {
+			return nil, err
+		}
+		d.Input = input
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// ── cross-match agent telemetry ──────────────────────────────────────────────
+//
+// SCOPING NOTE, because this is where aggregates leak. Each query below applies
+// `a.public_id = ANY($1)` inside the SAME statement that groups — not in a wrapper, not
+// afterwards in Go. An aggregate that forgets its filter returns a summary of every agent
+// on the platform and looks entirely plausible while doing it, which is the one bug class
+// a reviewer cannot spot from the numbers.
+
+const agentTelemetryBaseCTE = `
+WITH d AS (
+  SELECT dd.match_id, dd.seq, dd.round, dd.action, dd.outcome, dd.latency_ms, dd.rationale,
+         dd.total_tokens, dd.estimated_cost, dd.started_at,
+         COALESCE(m.game, '') AS game
+  FROM agent_match_decisions dd
+  JOIN agents a  ON a.id = dd.agent_id AND a.public_id = ANY($1)
+  LEFT JOIN matches m ON m.public_id = dd.match_id
+  WHERE dd.created_at >= $2
+)`
+
+// AgentTelemetry rolls up the per-decision record for the caller's agents over a window.
+func (r *DevTraceRepo) AgentTelemetry(ctx context.Context, agentPublicIDs []string, since time.Time) (devtrace.AgentTelemetry, error) {
+	var out devtrace.AgentTelemetry
+	if len(agentPublicIDs) == 0 {
+		return out, nil
+	}
+
+	// Headline totals. percentile_disc (not a mean) because the tail is the thing that
+	// times out under load, and a mean hides it.
+	err := r.db.QueryRow(ctx, agentTelemetryBaseCTE+`
+		SELECT COUNT(DISTINCT match_id)::int,
+		       COUNT(*)::int,
+		       COUNT(*) FILTER (WHERE outcome <> 'ok' AND outcome <> '')::int,
+		       COALESCE(AVG((outcome = 'ok')::int), 0)::double precision,
+		       COALESCE(percentile_disc(0.50) WITHIN GROUP (ORDER BY latency_ms), 0)::int,
+		       COALESCE(percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int,
+		       COALESCE(percentile_disc(0.99) WITHIN GROUP (ORDER BY latency_ms), 0)::int,
+		       COALESCE(MAX(latency_ms), 0)::int,
+		       COALESCE(SUM(total_tokens), 0)::bigint,
+		       COALESCE(SUM(estimated_cost), 0)::double precision,
+		       COALESCE(AVG((rationale <> '')::int), 0)::double precision
+		FROM d`, agentPublicIDs, since).
+		Scan(&out.Matches, &out.Decisions, &out.Failures, &out.LegalRate,
+			&out.P50Ms, &out.P95Ms, &out.P99Ms, &out.MaxMs,
+			&out.Tokens, &out.CostUSD, &out.ReasonedShare)
+	if err != nil {
+		return devtrace.AgentTelemetry{}, err
+	}
+
+	// Failures by cause, worst first — "what breaks" before "how often anything breaks".
+	rows, err := r.db.Query(ctx, agentTelemetryBaseCTE+`
+		SELECT outcome, COUNT(*)::int
+		FROM d WHERE outcome <> 'ok' AND outcome <> ''
+		GROUP BY outcome ORDER BY 2 DESC, 1`, agentPublicIDs, since)
+	if err != nil {
+		return devtrace.AgentTelemetry{}, err
+	}
+	for rows.Next() {
+		var f devtrace.FailureCount
+		if err := rows.Scan(&f.Outcome, &f.Count); err != nil {
+			rows.Close()
+			return devtrace.AgentTelemetry{}, err
+		}
+		out.FailuresByCause = append(out.FailuresByCause, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return devtrace.AgentTelemetry{}, err
+	}
+
+	// Per arena. Failure modes are arena-specific, so this is never averaged away.
+	rows, err = r.db.Query(ctx, agentTelemetryBaseCTE+`
+		SELECT game, COUNT(DISTINCT match_id)::int, COUNT(*)::int,
+		       COUNT(*) FILTER (WHERE outcome <> 'ok' AND outcome <> '')::int,
+		       COALESCE(AVG((outcome = 'ok')::int), 0)::double precision,
+		       COALESCE(percentile_disc(0.50) WITHIN GROUP (ORDER BY latency_ms), 0)::int,
+		       COALESCE(percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms), 0)::int,
+		       COALESCE(SUM(total_tokens), 0)::bigint,
+		       COALESCE(SUM(estimated_cost), 0)::double precision
+		FROM d WHERE game <> ''
+		GROUP BY game ORDER BY 3 DESC`, agentPublicIDs, since)
+	if err != nil {
+		return devtrace.AgentTelemetry{}, err
+	}
+	for rows.Next() {
+		var a devtrace.ArenaTelemetry
+		if err := rows.Scan(&a.Game, &a.Matches, &a.Decisions, &a.Failures,
+			&a.LegalRate, &a.P50Ms, &a.P95Ms, &a.Tokens, &a.CostUSD); err != nil {
+			rows.Close()
+			return devtrace.AgentTelemetry{}, err
+		}
+		out.Arenas = append(out.Arenas, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return devtrace.AgentTelemetry{}, err
+	}
+
+	// Hotspots: rounds that fail disproportionately.
+	//
+	// The minimum sample is the whole design of this list. Too low and a single failure
+	// out of one decision is a 100% failure rate that tops the list forever; too high and
+	// a new agent — which is exactly who needs this page — sees nothing. Three is the
+	// lowest floor that excludes the pure-noise 1-of-1 and 2-of-2 cases while surfacing a
+	// real pattern within a couple of matches.
+	rows, err = r.db.Query(ctx, agentTelemetryBaseCTE+`
+		SELECT round, game, COUNT(*)::int,
+		       COUNT(*) FILTER (WHERE outcome <> 'ok' AND outcome <> '')::int
+		FROM d WHERE game <> ''
+		GROUP BY round, game
+		HAVING COUNT(*) >= 3 AND COUNT(*) FILTER (WHERE outcome <> 'ok' AND outcome <> '') > 0
+		ORDER BY (COUNT(*) FILTER (WHERE outcome <> 'ok' AND outcome <> ''))::float / COUNT(*) DESC,
+		         COUNT(*) DESC
+		LIMIT 8`, agentPublicIDs, since)
+	if err != nil {
+		return devtrace.AgentTelemetry{}, err
+	}
+	for rows.Next() {
+		var h devtrace.RoundHotspot
+		if err := rows.Scan(&h.Round, &h.Game, &h.Decisions, &h.Failures); err != nil {
+			rows.Close()
+			return devtrace.AgentTelemetry{}, err
+		}
+		if h.Decisions > 0 {
+			h.Rate = float64(h.Failures) / float64(h.Decisions)
+		}
+		out.Hotspots = append(out.Hotspots, h)
+	}
+	rows.Close()
+	return out, rows.Err()
+}
+
+// AgentWorstDecisions returns the slowest decisions and the most recent failures — the
+// rows a developer should open first.
+func (r *DevTraceRepo) AgentWorstDecisions(
+	ctx context.Context, agentPublicIDs []string, since time.Time, limit int,
+) (slowest, failures []devtrace.WorstDecision, err error) {
+	if len(agentPublicIDs) == 0 {
+		return nil, nil, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+
+	scan := func(q string) ([]devtrace.WorstDecision, error) {
+		rows, err := r.db.Query(ctx, agentTelemetryBaseCTE+q, agentPublicIDs, since, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []devtrace.WorstDecision
+		for rows.Next() {
+			var w devtrace.WorstDecision
+			if err := rows.Scan(&w.MatchID, &w.Seq, &w.Game, &w.Round, &w.Outcome,
+				&w.LatencyMS, &w.Action, &w.Rationale, &w.At); err != nil {
+				return nil, err
+			}
+			out = append(out, w)
+		}
+		return out, rows.Err()
+	}
+
+	const cols = `
+		SELECT match_id, seq, game, round, outcome, latency_ms, action, rationale, started_at
+		FROM d`
+	if slowest, err = scan(cols + ` ORDER BY latency_ms DESC LIMIT $3`); err != nil {
+		return nil, nil, err
+	}
+	// Recent, not "worst": the failures that matter are the ones still happening. Ordered
+	// by the decision's own clock where there is one, falling back to write order.
+	failures, err = scan(cols + `
+		WHERE outcome <> 'ok' AND outcome <> ''
+		ORDER BY COALESCE(started_at, TIMESTAMPTZ '-infinity') DESC, seq DESC
+		LIMIT $3`)
+	if err != nil {
+		return nil, nil, err
+	}
+	return slowest, failures, nil
 }

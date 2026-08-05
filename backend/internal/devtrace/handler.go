@@ -34,6 +34,9 @@ func (h *Handler) Register(r chi.Router) {
 		// "what happened in this game and what did it cost" is a record.
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/matches", h.matches)
 		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/matches/{matchID}", h.matchDetail)
+		// Cross-match rollup for one agent (or all of the caller's, with no id).
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/telemetry", h.telemetry)
+		gr.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/developer/agents/{agentID}/telemetry", h.telemetry)
 	})
 }
 
@@ -108,4 +111,26 @@ func (h *Handler) activity(w http.ResponseWriter, r *http.Request) {
 	// Never cached by a shared cache: the response is scoped to one developer.
 	w.Header().Set("Cache-Control", "private, no-store")
 	httpx.JSON(w, http.StatusOK, map[string]any{"entries": entries, "count": len(entries)})
+}
+
+// telemetry serves the cross-match view for one of the caller's agents.
+//
+// The agent id is a PATH parameter here but is never trusted: the service intersects it
+// with the caller's owned set, so an id belonging to somebody else resolves to an empty
+// page rather than to their data — and, deliberately, not to a 403 that would confirm the
+// id exists.
+func (h *Handler) telemetry(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	days := 0
+	if n, err := strconv.Atoi(r.URL.Query().Get("days")); err == nil {
+		days = n
+	}
+	out, err := h.svc.AgentTelemetry(r.Context(), p.UserPublicID, chi.URLParam(r, "agentID"), days)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Never cached: one developer's own record.
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.JSON(w, http.StatusOK, out)
 }

@@ -54,6 +54,41 @@ type Seat struct {
 	OwnerPublicID string
 }
 
+// PoolStats describes the (game, bid) pool one agent is waiting in. It exists for
+// queue visibility: the wait itself is acceptable, but silence during it is not, and
+// before this an agent polling GET /v1/group-queue learned only "waiting" — no
+// position, no idea whether anybody else was even queued.
+type PoolStats struct {
+	// Position is the agent's 1-based place in its pool by enqueue time, or 0 when the
+	// agent is not currently waiting (already claimed/matched, or gone).
+	Position int
+	// Waiting is how many agents are waiting in this pool.
+	Waiting int
+	// DistinctOwners is how many DIFFERENT owners those agents belong to — the real
+	// ceiling on a single table, since two agents of one owner may never be seated
+	// together. Twelve queued agents from two owners can never fill a Mafia table, and
+	// reporting only `Waiting` would make that look imminent.
+	DistinctOwners int
+}
+
+// QueueStatus is the agent-facing view of a queue entry: the entry itself plus enough
+// of its pool to explain what is happening. Entry is embedded, so the JSON keeps every
+// field the endpoint already returned and adds to it.
+type QueueStatus struct {
+	Entry
+	Position       int   `json:"position"`        // 1-based place in the pool; 0 once matched
+	PoolSize       int   `json:"pool_size"`       // agents waiting at this game+bid
+	DistinctOwners int   `json:"distinct_owners"` // how many owners they represent
+	SeatsNeeded    int   `json:"seats_needed"`    // full roster for this game
+	MinSeats       int   `json:"min_seats"`       // fewest real agents this game will start with
+	WaitedMs       int64 `json:"waited_ms"`
+	// ShortFormInMs is how long until the matcher may start this pool below a full
+	// roster. 0 means that point has passed (so the only thing still missing is
+	// MinSeats' worth of distinct owners); it is omitted for a game that always needs a
+	// full roster.
+	ShortFormInMs int64 `json:"short_form_in_ms,omitempty"`
+}
+
 // Repo persists the group queue.
 type Repo interface {
 	// Upsert inserts or replaces the caller's entry as waiting (resets enqueued_at).
@@ -74,6 +109,9 @@ type Repo interface {
 	ReleaseGroup(ctx context.Context, agentPublicIDs []string) error
 	// MarkMatchedGroup flips a claimed group to matched with the match id.
 	MarkMatchedGroup(ctx context.Context, agentPublicIDs []string, matchPublicID string) error
+	// PoolStats reports the size, owner diversity, and the agent's place in one
+	// (game, bid) waiting pool. Read-only; used by Status for queue visibility.
+	PoolStats(ctx context.Context, game string, bid int64, agentPublicID string) (PoolStats, error)
 }
 
 // TableCreator creates and starts a full staked table for one game from a matched
@@ -83,6 +121,16 @@ type TableCreator interface {
 	// SeatTarget is how many distinct-owner agents this game's table needs to start
 	// (Mafia: 12; Monopoly: a configured 2–8).
 	SeatTarget() int
+	// MinSeats is the fewest REAL queued agents this game will start a table with once
+	// Config.ShortFormAfter has elapsed, so a thin queue is not an indefinite wait.
+	// Returning SeatTarget() opts out and keeps full-roster-only behaviour.
+	//
+	// How the remaining chairs are handled is the GAME's business, not the matcher's:
+	// Monopoly is natively playable at 2–8 so it just sizes the table to the group,
+	// while Mafia's engine deals from a fixed 12-role pool and so fills the gap with
+	// house bots inside CreateStartedTable. The matcher only decides how few real
+	// agents is acceptable.
+	MinSeats() int
 	// CreateStartedTable seats every group member and starts the staked table,
 	// returning its public id. A partial failure leaves a waiting table for the TTL
 	// sweeper; it must return an error so the matcher releases the claim.
@@ -116,6 +164,17 @@ type Config struct {
 	StepInterval time.Duration
 	MaxBand      int
 	Interval     time.Duration
+	// ShortFormAfter is how long the OLDEST waiter in a pool must have waited before
+	// the matcher will form a table below SeatTarget (down to the game's MinSeats).
+	//
+	// This is the fix for the launch-day failure mode: band widening alone can never
+	// start a Mafia table, because widening makes waiters more compatible with each
+	// other without ever producing a 12th one. Four agents queued for a twelve-seat
+	// table waited forever, which is indistinguishable from a dead platform.
+	//
+	// Anchored on the anchor's wait (not the pool's), so a newcomer who joins a thin
+	// pool does not reset anybody's clock.
+	ShortFormAfter time.Duration
 }
 
 func (c *Config) withDefaults() {
@@ -133,6 +192,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.Interval <= 0 {
 		c.Interval = time.Second
+	}
+	if c.ShortFormAfter <= 0 {
+		c.ShortFormAfter = 90 * time.Second
 	}
 }
 
@@ -216,9 +278,55 @@ func (s *Service) Handles(game string) bool {
 	return ok
 }
 
-// Status returns the caller's current queue entry.
-func (s *Service) Status(ctx context.Context, agentPublicID string) (Entry, error) {
-	return s.repo.Get(ctx, agentPublicID)
+// Status returns the caller's current queue entry together with its position in the
+// pool and when a short-handed table becomes possible.
+//
+// Pool figures are best-effort: a failure to read them degrades to the bare entry
+// rather than failing the poll, because an agent waiting on a match must always be able
+// to learn that it is still queued.
+func (s *Service) Status(ctx context.Context, agentPublicID string) (QueueStatus, error) {
+	e, err := s.repo.Get(ctx, agentPublicID)
+	if err != nil {
+		return QueueStatus{}, err
+	}
+	waited := s.clock.Now().Sub(e.EnqueuedAt)
+	if waited < 0 {
+		waited = 0 // a clock skew must not report a negative wait
+	}
+	out := QueueStatus{Entry: e, WaitedMs: waited.Milliseconds()}
+	if c, ok := s.creators[e.Game]; ok {
+		out.SeatsNeeded, out.MinSeats = seatBounds(c)
+		if out.MinSeats < out.SeatsNeeded {
+			remaining := s.cfg.ShortFormAfter - waited
+			if remaining < 0 {
+				remaining = 0
+			}
+			out.ShortFormInMs = remaining.Milliseconds()
+		}
+	}
+	if e.Status != StatusWaiting {
+		return out, nil // matched/claimed: it is no longer in a pool
+	}
+	ps, err := s.repo.PoolStats(ctx, e.Game, e.Bid, agentPublicID)
+	if err != nil {
+		s.log.Warn("groupmatch pool stats failed", "agent", agentPublicID, "game", e.Game, "error", err)
+		return out, nil
+	}
+	out.Position, out.PoolSize, out.DistinctOwners = ps.Position, ps.Waiting, ps.DistinctOwners
+	return out, nil
+}
+
+// seatBounds returns a game's full seat target and the minimum the matcher will actually
+// honour, clamped into [2, target] so a creator returning something nonsensical falls
+// back to full-roster-only. Shared by the matcher and Status: reporting a minimum the
+// matcher would ignore is how a queue starts lying about when it will seat you.
+func seatBounds(c TableCreator) (target, minSeats int) {
+	target = c.SeatTarget()
+	minSeats = c.MinSeats()
+	if minSeats < 2 || minSeats > target {
+		minSeats = target
+	}
+	return target, minSeats
 }
 
 // Cancel removes the caller from the queue (idempotent).
@@ -229,19 +337,24 @@ func (s *Service) Cancel(ctx context.Context, agentPublicID string) error {
 // ── metrics ──────────────────────────────────────────────────────────────────
 
 type metrics struct {
-	enqueued prometheus.Counter
-	tables   prometheus.Counter
-	depth    prometheus.Gauge
+	enqueued    prometheus.Counter
+	tables      prometheus.Counter
+	shortTables prometheus.Counter
+	depth       prometheus.Gauge
 }
 
 func newMetrics(reg *prometheus.Registry) *metrics {
 	m := &metrics{
 		enqueued: prometheus.NewCounter(prometheus.CounterOpts{Name: "groupmatch_enqueued_total", Help: "Agents enqueued for N-player group matchmaking."}),
 		tables:   prometheus.NewCounter(prometheus.CounterOpts{Name: "groupmatch_tables_total", Help: "Staked tables started by the group matchmaker."}),
-		depth:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "groupmatch_queue_depth", Help: "Agents currently waiting in the group matchmaking queue."}),
+		// The ratio of this to groupmatch_tables_total is the health signal for a thin
+		// queue: if most tables are starting short-handed, the pool is too small for the
+		// seat target and it is a product problem, not a matchmaking one.
+		shortTables: prometheus.NewCounter(prometheus.CounterOpts{Name: "groupmatch_short_tables_total", Help: "Tables started below the game's full seat target (thin queue fallback)."}),
+		depth:       prometheus.NewGauge(prometheus.GaugeOpts{Name: "groupmatch_queue_depth", Help: "Agents currently waiting in the group matchmaking queue."}),
 	}
 	if reg != nil {
-		reg.MustRegister(m.enqueued, m.tables, m.depth)
+		reg.MustRegister(m.enqueued, m.tables, m.shortTables, m.depth)
 	}
 	return m
 }

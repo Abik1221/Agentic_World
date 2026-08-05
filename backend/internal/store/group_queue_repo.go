@@ -84,6 +84,37 @@ func (r *GroupQueueRepo) WaitingByGame(ctx context.Context, game string, limit i
 	return out, rows.Err()
 }
 
+// PoolStats reports one (game, bid) waiting pool: its size, how many distinct owners
+// it represents, and where the given agent sits in it by enqueue time.
+//
+// Position uses a row comparison on (enqueued_at, agent_id) rather than enqueued_at
+// alone, so agents that enqueued in the same instant get stable, distinct positions
+// instead of all reporting the same one. An agent that is not waiting (already claimed,
+// matched, or gone) yields position 0: the subquery is NULL, the comparison is NULL, no
+// rows match, and COUNT(*) is 0.
+func (r *GroupQueueRepo) PoolStats(ctx context.Context, game string, bid int64, agentPublicID string) (groupmatch.PoolStats, error) {
+	var ps groupmatch.PoolStats
+	err := r.db.QueryRow(ctx,
+		`WITH pool AS (
+		     SELECT q.agent_id, q.owner_user_id, q.enqueued_at, a.public_id
+		     FROM group_queue q
+		     JOIN agents a ON a.id = q.agent_id
+		     WHERE q.status = 'waiting' AND q.game = $1 AND q.bid = $2
+		 ),
+		 me AS (SELECT enqueued_at, agent_id FROM pool WHERE public_id = $3)
+		 SELECT
+		     (SELECT COUNT(*) FROM pool p
+		        WHERE (p.enqueued_at, p.agent_id) <= (SELECT enqueued_at, agent_id FROM me))::int,
+		     (SELECT COUNT(*) FROM pool)::int,
+		     (SELECT COUNT(DISTINCT owner_user_id) FROM pool)::int`,
+		game, bid, agentPublicID).
+		Scan(&ps.Position, &ps.Waiting, &ps.DistinctOwners)
+	if err != nil {
+		return groupmatch.PoolStats{}, err
+	}
+	return ps, nil
+}
+
 // ClaimGroup reserves ALL given entries (waiting -> claimed) all-or-nothing. It locks
 // the rows FOR UPDATE in public_id order (deadlock-safe) and only claims when EVERY
 // one is still waiting, so two matcher instances racing the same snapshot can never

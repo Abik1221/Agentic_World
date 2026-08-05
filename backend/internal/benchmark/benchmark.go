@@ -12,7 +12,9 @@
 package benchmark
 
 import (
+	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/agent-arena/arena/internal/pricing"
 )
@@ -60,6 +62,14 @@ type Decision struct {
 	Action    string      // the action kind the agent chose (e.g. "vote", "buy", card value)
 	Rationale string      // optional agent-supplied reasoning for the move
 	Usage     *TokenUsage // optional per-move LLM token usage (drives cost/economics)
+	// View is the turn view the agent was handed for this decision — the INPUT half of
+	// the record. Serialized and size-capped by the Recorder; nil is fine.
+	//
+	// Without it a developer's trace shows the answer and not the question: "reasoned X,
+	// played 9, illegal" is unactionable, while the same line beside the state the agent
+	// was looking at is a bug report. This is the single most useful thing the platform
+	// can hand back, and it was the one thing never recorded.
+	View any
 }
 
 // TokenUsage is the optional per-move LLM economics an agent may report with its
@@ -89,17 +99,50 @@ func (u TokenUsage) total() int {
 // DecisionDetail is one recorded move, kept in the seat's decision log so the
 // full per-agent decision trail — including reasoning — reaches observability.
 type DecisionDetail struct {
+	// At is when the engine ASKED for this move — the anchor a waterfall needs.
+	//
+	// DERIVED, not measured directly: the Recorder is called immediately after a
+	// decision returns, so At = (record time − latency). The ask time is the right
+	// anchor rather than the answer time because it is what makes the GAPS between
+	// turns visible, and the gaps are the point of a waterfall. An agent that answered
+	// in 200ms inside an 8-second phase window looks fine on a latency bar and is
+	// obviously not the bottleneck on a timeline.
+	At        time.Time   `json:"at"`
 	Round     int         `json:"round"`
 	Action    string      `json:"action,omitempty"`
 	Outcome   string      `json:"outcome"`
 	LatencyMS int64       `json:"latency_ms"`
 	Rationale string      `json:"rationale,omitempty"`
 	Usage     *TokenUsage `json:"usage,omitempty"`
+	// Input is the JSON-encoded turn view the agent was given. Omitted when the view was
+	// absent, unserializable, or over the per-decision size cap — see recordInput.
+	Input json.RawMessage `json:"input,omitempty"`
+	// InputTruncated marks a view that was dropped for size. A developer must be able to
+	// tell "the agent was given nothing" from "we did not keep what it was given";
+	// rendering both as an empty pane would make the first look like an engine bug.
+	InputTruncated bool `json:"input_truncated,omitempty"`
 }
 
 // maxDecisionLog bounds per-seat decision detail so one match can't emit an
 // unbounded payload. Only real agent seats are recorded, so this is generous.
 const maxDecisionLog = 256
+
+// Input-capture size caps.
+//
+// A turn view is the biggest thing in this record by an order of magnitude — a
+// mid-game Monopoly view carries the whole board — and there can be 256 of them per
+// seat. Two caps, because one is not enough:
+//
+//   - maxInputBytes bounds a SINGLE view, so one pathological state cannot dominate.
+//   - maxSeatInputBytes bounds the seat's TOTAL, so a long match cannot multiply a
+//     merely-large view into an event payload the outbox chokes on.
+//
+// Hitting either cap sets InputTruncated rather than silently storing nothing: a
+// developer needs to distinguish "the agent got no view" from "we did not keep it".
+const (
+	maxInputBytes     = 16 << 10  // 16 KiB per decision
+	maxSeatInputBytes = 512 << 10 // 512 KiB per seat, across the whole match
+)
 
 // SeatSummary aggregates every decision made at one seat in a match.
 type SeatSummary struct {
@@ -131,10 +174,15 @@ type SeatSummary struct {
 	// else the manifest model). PricingVersion records which table produced it.
 	EstimatedCost  float64 `json:"estimated_cost,omitempty"`
 	PricingVersion string  `json:"pricing_version,omitempty"`
-	// Full per-move trail (capped) — action, outcome, latency, reasoning, and
-	// token usage for every decision, so observability can see WHY an agent
-	// moved and at what cost, not just aggregate rates.
+	// Full per-move trail (capped) — action, outcome, latency, reasoning, the view the
+	// agent was given, and token usage for every decision, so observability can see WHY
+	// an agent moved and at what cost, not just aggregate rates.
 	DecisionLog []DecisionDetail `json:"decision_log,omitempty"`
+
+	// inputBytes tracks how much captured view this seat has accumulated, against
+	// maxSeatInputBytes. Unexported so it never reaches the wire — it is a budget
+	// counter, not a fact about the match.
+	inputBytes int
 }
 
 // LegalRate is the fraction of decisions that were legal + on time (0..1). An
@@ -162,6 +210,42 @@ func (s SeatSummary) AvgLatencyMS() float64 {
 	return float64(s.LatencySumMS) / float64(s.Decisions)
 }
 
+// ObservedModel is the model this seat ACTUALLY called, as reported per-move by the
+// SDK, or ("","") when no move reported one.
+//
+// This is a stronger claim than the seat's manifest-declared Provider/Model: the
+// manifest says what the developer intends to run and is written once, while this is
+// read back from the calls the agent made during this specific match. The model
+// benchmark prefers it for exactly that reason.
+//
+// The MODE (most frequent) move wins rather than the first or last, because an agent
+// may legitimately make a cheap warm-up or fallback call on a different model, and a
+// single such call must not relabel the whole match. Ties break toward the earlier
+// model so the result is deterministic for a given decision log.
+func (s SeatSummary) ObservedModel() (provider, model string) {
+	type key struct{ provider, model string }
+	counts := make(map[key]int)
+	var order []key
+	for _, d := range s.DecisionLog {
+		if d.Usage == nil || d.Usage.Model == "" {
+			continue
+		}
+		k := key{d.Usage.Provider, d.Usage.Model}
+		if counts[k] == 0 {
+			order = append(order, k)
+		}
+		counts[k]++
+	}
+	var best key
+	var bestN int
+	for _, k := range order { // insertion order ⇒ deterministic tie-break
+		if counts[k] > bestN {
+			best, bestN = k, counts[k]
+		}
+	}
+	return best.provider, best.model
+}
+
 // MatchSummary is the full per-match benchmark fact (one per match, low volume →
 // safe to route through the durable path).
 type MatchSummary struct {
@@ -176,14 +260,34 @@ type Recorder struct {
 	game    string
 	matchID string
 
+	// now is injectable so decision timestamps are assertable. Never nil after
+	// NewRecorder.
+	now func() time.Time
+
 	mu    sync.Mutex
 	seats map[int]*SeatSummary
 	order []int // seat insertion order, for a stable Summary
 }
 
+// RecorderOption configures a Recorder.
+type RecorderOption func(*Recorder)
+
+// WithClock overrides the Recorder's clock (tests).
+func WithClock(now func() time.Time) RecorderOption {
+	return func(r *Recorder) {
+		if now != nil {
+			r.now = now
+		}
+	}
+}
+
 // NewRecorder starts a per-match recorder.
-func NewRecorder(game, matchID string) *Recorder {
-	return &Recorder{game: game, matchID: matchID, seats: map[int]*SeatSummary{}}
+func NewRecorder(game, matchID string, opts ...RecorderOption) *Recorder {
+	r := &Recorder{game: game, matchID: matchID, now: time.Now, seats: map[int]*SeatSummary{}}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // Record folds one decision into the running per-seat aggregate.
@@ -245,11 +349,37 @@ func (r *Recorder) Record(d Decision) {
 		s.PricingVersion = pricing.Version
 	}
 	if len(s.DecisionLog) < maxDecisionLog {
+		input, truncated := s.recordInput(d.View)
+		// Back-date to the ask. Record runs on the line after the decision returned, so
+		// the subtraction is accurate to the cost of a few statements.
+		askedAt := r.now().Add(-time.Duration(d.LatencyMS) * time.Millisecond)
 		s.DecisionLog = append(s.DecisionLog, DecisionDetail{
-			Round: d.Round, Action: d.Action, Outcome: string(d.Outcome),
+			At: askedAt, Round: d.Round, Action: d.Action, Outcome: string(d.Outcome),
 			LatencyMS: d.LatencyMS, Rationale: d.Rationale, Usage: d.Usage,
+			Input: input, InputTruncated: truncated,
 		})
 	}
+}
+
+// recordInput serializes one turn view under the seat's size budget.
+//
+// Returns (nil, false) when there was no view to keep and (nil, true) when there was
+// one and we chose not to keep it. Never returns an error: instrumentation must not be
+// able to fail a match, so a view that will not marshal is simply reported as dropped.
+func (s *SeatSummary) recordInput(view any) (json.RawMessage, bool) {
+	if view == nil {
+		return nil, false
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		// A view containing a channel, a func or a NaN. Not a reason to lose the match.
+		return nil, true
+	}
+	if len(raw) > maxInputBytes || s.inputBytes+len(raw) > maxSeatInputBytes {
+		return nil, true
+	}
+	s.inputBytes += len(raw)
+	return raw, false
 }
 
 // SetAgentMeta records a seat's manifest-declared metadata (version + model

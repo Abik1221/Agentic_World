@@ -2,6 +2,8 @@ package rating
 
 import (
 	"context"
+	"math"
+	"sort"
 	"strconv"
 	"time"
 
@@ -301,37 +303,229 @@ func (s *Service) SnapshotRanks(ctx context.Context) (int, error) {
 	return s.repo.SnapshotRanks(ctx, s.clock.Now())
 }
 
-// BenchmarkPage is the "which model wins" board for the current season.
-type BenchmarkPage struct {
-	Season int         `json:"season"`
-	Game   string      `json:"game"`
-	Models []ModelStat `json:"models"`
+// ArenaAll is the `game` value meaning "every arena, aggregated". It is the DEFAULT
+// for the model board: the board's claim is "which model wins on Pyyol", and silently
+// answering it from one of three arenas — which is what an empty game used to do — is
+// a different claim than the heading makes.
+const ArenaAll = "all"
+
+// Arenas is every rated arena, in board display order.
+var Arenas = []string{GameGoofspiel, GameMafia, GameMonopoly}
+
+// IsArena reports whether game names a rated arena (or the all-arena aggregate).
+func IsArena(game string) bool {
+	if game == "" || game == ArenaAll {
+		return true
+	}
+	for _, g := range Arenas {
+		if g == game {
+			return true
+		}
+	}
+	return false
 }
 
-// ModelBenchmark ranks declared models by season performance. minGames defaults
-// to 1 (a model must have actually played). Games + WinRate are computed here so
-// the store stays a plain aggregation.
+// BenchmarkPage is the "which model wins" board for the current season.
+type BenchmarkPage struct {
+	Season int    `json:"season"`
+	Game   string `json:"game"` // "all" for the cross-arena aggregate
+	// SeasonStart/End bound the window every figure below was measured over, so a
+	// reader can tell whether a small sample means "new model" or "quiet season".
+	SeasonStart time.Time   `json:"season_start"`
+	SeasonEnd   time.Time   `json:"season_end"`
+	Arenas      []string    `json:"arenas"` // arenas selectable on this board
+	MinGames    int         `json:"min_games"`
+	Models      []ModelStat `json:"models"`
+	// Groups is the same season pooled by provider, vendor, openness, hosting and
+	// family — the "are open-weight models competitive yet" view. Derived from Models,
+	// so it always reconciles against the rows above it and a never-before-seen model
+	// joins its groups on its first finished match.
+	Groups []GroupStat `json:"groups"`
+}
+
+// ModelBenchmark ranks models by their real season performance, across every arena
+// (game == "" or ArenaAll) or within one.
+//
+// minGames is the floor for APPEARING at all and defaults to 1 — a model must have
+// actually finished a rated game. It is deliberately not the same thing as having
+// enough games to RANK on, which is what ModelStat.Preliminary and the win-rate
+// confidence interval report: dropping thin rows would make the board look complete
+// when it is not, so they are shown and marked instead.
 func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
-	if game == "" {
-		game = GameGoofspiel
+	if game == ArenaAll {
+		game = "" // the repo reads "" as "do not filter by arena"
 	}
 	if minGames <= 0 {
 		minGames = 1
 	}
 	season := s.CurrentSeason()
-	models, err := s.repo.ModelBenchmark(ctx, season, game, minGames)
+	start, end := s.SeasonBounds(season)
+	models, err := s.repo.ModelBenchmark(ctx, season, game, start, end)
 	if err != nil {
 		return BenchmarkPage{}, err
 	}
+
+	out := make([]ModelStat, 0, len(models))
 	for i := range models {
 		m := &models[i]
-		m.Games = m.Wins + m.Losses + m.Ties
-		if decisive := m.Wins + m.Losses; decisive > 0 {
-			m.WinRate = float64(m.Wins) / float64(decisive)
+		deriveModelStat(m)
+		if m.Games < minGames {
+			continue
 		}
-		deriveModelQuality(m)
+		out = append(out, *m)
 	}
-	return BenchmarkPage{Season: season, Game: game, Models: models}, nil
+	// Best first. Intelligence is the primary key because it is the only figure here
+	// that is normalized across arenas — avg ELO is not comparable between a Glicko
+	// 1v1 arena and a TrueSkill N-player one, so it breaks ties rather than setting
+	// the order. Models with too small a sample to score sink below those with one.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Intelligence != b.Intelligence {
+			return a.Intelligence > b.Intelligence
+		}
+		if a.WinRate != b.WinRate {
+			return a.WinRate > b.WinRate
+		}
+		if a.AvgElo != b.AvgElo {
+			return a.AvgElo > b.AvgElo
+		}
+		return a.CoinsWon > b.CoinsWon
+	})
+
+	reported := game
+	if reported == "" {
+		reported = ArenaAll
+	}
+	return BenchmarkPage{
+		Season: season, Game: reported,
+		SeasonStart: start, SeasonEnd: end,
+		Arenas: Arenas, MinGames: minGames, Models: out,
+		// Built from the rows that survived filtering, so the groups always reconcile
+		// against the board.
+		Groups: BuildGroups(out),
+	}, nil
+}
+
+// ModelDetail is everything one model's page shows: its full season record, the
+// per-arena split, and who is actually running it.
+type ModelDetail struct {
+	Season      int       `json:"season"`
+	SeasonStart time.Time `json:"season_start"`
+	SeasonEnd   time.Time `json:"season_end"`
+	Game        string    `json:"game"`
+	Arenas      []string  `json:"arenas"`
+
+	Model ModelStat `json:"model"`
+	// Runners are the agents playing it, most active first. Capped by the store.
+	Runners []ModelRunner `json:"runners"`
+	// Rank is this model's position on the board it was reached from (1-based), so the
+	// page can say "3rd of 11" without the reader having to go back and count.
+	Rank  int `json:"rank"`
+	Total int `json:"total"`
+}
+
+// ModelDetail assembles one model's page.
+//
+// It reuses ModelBenchmark rather than running its own aggregate, so the detail page
+// and the row the reader clicked to reach it cannot disagree — the alternative is a
+// second query that has to be kept in step with the first by hand, which is exactly
+// the kind of drift that makes a benchmark untrustworthy. minGames is deliberately 1
+// here: a model reachable by URL must render even when it is too thin for the board.
+//
+// found=false when no match in the window resolved to this model.
+func (s *Service) ModelDetail(ctx context.Context, game, provider, model string) (ModelDetail, bool, error) {
+	if model == "" {
+		return ModelDetail{}, false, nil
+	}
+	page, err := s.ModelBenchmark(ctx, game, 1)
+	if err != nil {
+		return ModelDetail{}, false, err
+	}
+	idx := -1
+	for i := range page.Models {
+		if page.Models[i].Model == model && page.Models[i].Provider == provider {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return ModelDetail{}, false, nil
+	}
+
+	arena := game
+	if arena == ArenaAll {
+		arena = ""
+	}
+	season := s.CurrentSeason()
+	start, end := s.SeasonBounds(season)
+	runners, err := s.repo.ModelRunners(ctx, season, arena, provider, model, start, end)
+	if err != nil {
+		return ModelDetail{}, false, err
+	}
+	for i := range runners {
+		r := &runners[i]
+		if decisive := r.Wins + r.Losses; decisive > 0 {
+			r.WinRate = float64(r.Wins) / float64(decisive)
+			r.WinRateCI = wilsonHalfWidth95(r.Wins, decisive)
+		}
+	}
+
+	return ModelDetail{
+		Season: season, SeasonStart: start, SeasonEnd: end,
+		Game: page.Game, Arenas: Arenas,
+		Model: page.Models[idx], Runners: runners,
+		Rank: idx + 1, Total: len(page.Models),
+	}, true, nil
+}
+
+// DeveloperBoard is the AGENTIC benchmark: developers ranked by how much they get out
+// of whatever model they run, rather than by which model they can afford.
+type DeveloperBoard struct {
+	Season      int             `json:"season"`
+	Game        string          `json:"game"`
+	SeasonStart time.Time       `json:"season_start"`
+	SeasonEnd   time.Time       `json:"season_end"`
+	Arenas      []string        `json:"arenas"`
+	MinGames    int             `json:"min_games"`
+	Developers  []DeveloperEdge `json:"developers"`
+}
+
+// DeveloperBoard computes the agentic leaderboard for a season.
+//
+// It reuses ModelBenchmark for the baselines, so a developer's edge is measured against
+// the exact per-model win rate the public model board publishes — the two boards are
+// two views of one dataset, and a reader can check any edge by hand from them.
+func (s *Service) DeveloperBoard(ctx context.Context, game string, minGames int) (DeveloperBoard, error) {
+	if game == ArenaAll {
+		game = ""
+	}
+	if minGames <= 0 {
+		minGames = 1
+	}
+	season := s.CurrentSeason()
+	start, end := s.SeasonBounds(season)
+
+	// minGames 1 for the baselines on purpose: a thin model still supplies the fairest
+	// available expectation for the developer who ran it, and filtering it out would
+	// silently score them against nothing.
+	page, err := s.ModelBenchmark(ctx, game, 1)
+	if err != nil {
+		return DeveloperBoard{}, err
+	}
+	rows, err := s.repo.DeveloperModelSplit(ctx, season, game, start, end)
+	if err != nil {
+		return DeveloperBoard{}, err
+	}
+
+	reported := game
+	if reported == "" {
+		reported = ArenaAll
+	}
+	return DeveloperBoard{
+		Season: season, Game: reported, SeasonStart: start, SeasonEnd: end,
+		Arenas: Arenas, MinGames: minGames,
+		Developers: BuildDeveloperEdges(rows, page.Models, minGames),
+	}, nil
 }
 
 // Intelligence scoring constants, mirroring the P-Index v2 intelligence dimension
@@ -349,40 +543,139 @@ const (
 	intelScale        = 1000
 )
 
-// deriveModelQuality computes the public efficiency + quality figures for one model.
+// prelimMinGames is the number of finished rated games below which a model's figures
+// are tagged Preliminary.
 //
-// Every one of these is 0 rather than a guess when the inputs are missing. A model
-// with no finished matches showing "0 tokens/min" is honest; showing an extrapolated
-// rate from a partial match would be a number nobody could reproduce.
-func deriveModelQuality(m *ModelStat) {
-	// Tokens per minute of real match wall-clock.
+// At 30 decisive games the 95% interval on a 50% win rate is still roughly ±18
+// points, so this is not "now it is accurate" — it is the point below which the
+// numbers are actively misleading if read as a ranking. The published confidence
+// interval remains the honest guide; the tag exists so nobody has to compute one to
+// know a row is thin.
+const prelimMinGames = 30
+
+// wilsonHalfWidth95 returns the half-width of the 95% Wilson score interval for k
+// successes in n trials — the "±" on a win rate.
+//
+// Wilson rather than the textbook normal approximation because the normal interval
+// misbehaves exactly where a young leaderboard lives: at 4 wins from 4 games it
+// reports ±0, claiming a 100% win rate is certain. Returns 0 for n == 0, where there
+// is no rate to bound.
+func wilsonHalfWidth95(k, n int) float64 {
+	if n <= 0 {
+		return 0
+	}
+	const z = 1.96
+	nf := float64(n)
+	p := float64(k) / nf
+	denom := 1 + z*z/nf
+	return (z * math.Sqrt(p*(1-p)/nf+z*z/(4*nf*nf))) / denom
+}
+
+// deriveModelStat computes every derived figure on a model row, and on each of its
+// per-arena rows, from the raw counters the store summed.
+//
+// All derivation lives here rather than in SQL so the aggregate and the per-arena
+// breakdown cannot drift: a "tokens per match" that means one thing on the total row
+// and another on an arena row is worse than not showing it.
+//
+// Every figure stays 0 rather than becoming a guess when its inputs are missing. A
+// model with no finished match showing "0 tokens/min" is honest; extrapolating a rate
+// from a partial match would publish a number nobody could reproduce.
+func deriveModelStat(m *ModelStat) {
+	m.Attribution = attributionName(m.AttrRank)
+	m.Class = Classify(m.Provider, m.Model)
+	m.Games = m.Wins + m.Losses + m.Ties
+	if decisive := m.Wins + m.Losses; decisive > 0 {
+		m.WinRate = float64(m.Wins) / float64(decisive)
+		m.WinRateCI = wilsonHalfWidth95(m.Wins, decisive)
+	}
+	m.Preliminary = m.Games < prelimMinGames
+
+	// Wall-clock per match, over matches that actually contributed a usable clock.
+	if m.TimedMatches > 0 {
+		m.AvgMatchSeconds = m.PlaySeconds / float64(m.TimedMatches)
+	}
+	// Economics are per MATCH (every match burns tokens), outcomes are per GAME.
+	if m.Matches > 0 {
+		m.TokensPerMatch = float64(m.Tokens) / float64(m.Matches)
+		m.DecisionsPerMatch = float64(m.Decisions) / float64(m.Matches)
+		m.CostPerMatch = m.costBasis() / float64(m.Matches)
+	}
+	if m.Decisions > 0 {
+		m.TokensPerDecision = float64(m.Tokens) / float64(m.Decisions)
+		m.LegalRate = float64(m.Legal) / float64(m.Decisions)
+		m.FallbackRate = float64(m.Fallbacks) / float64(m.Decisions)
+	}
+	// Cost- and tokens-to-win: the figure that actually decides which model to run,
+	// and the one a cumulative total hides. Undefined with no wins — left at 0 rather
+	// than reported as infinity.
+	if m.Wins > 0 {
+		m.TokensPerWin = float64(m.Tokens) / float64(m.Wins)
+		m.CostPerWin = m.costBasis() / float64(m.Wins)
+	}
 	if m.PlaySeconds > 0 && m.Tokens > 0 {
 		m.TokensPerMin = float64(m.Tokens) / (m.PlaySeconds / 60)
 	}
-	if m.Decisions <= 0 {
-		return
-	}
-	d := float64(m.Decisions)
-	m.LegalRate = float64(m.Legal) / d
-	m.FallbackRate = float64(m.Fallbacks) / d
+	m.Intelligence = intelligenceScore(m.Decisions, m.LegalRate, m.FallbackRate, m.AvgLatencyMs)
 
-	// The intelligence score needs a real sample. Below the threshold it stays 0 and
-	// the UI says "not enough data" — a model that played three turns must not be
-	// able to top a public leaderboard on a lucky run.
-	if m.Decisions < intelMinDecisions {
-		return
+	for i := range m.Arenas {
+		a := &m.Arenas[i]
+		a.Games = a.Wins + a.Losses + a.Ties
+		if decisive := a.Wins + a.Losses; decisive > 0 {
+			a.WinRate = float64(a.Wins) / float64(decisive)
+			a.WinRateCI = wilsonHalfWidth95(a.Wins, decisive)
+		}
+		if a.Matches > 0 {
+			a.TokensPerMatch = float64(a.Tokens) / float64(a.Matches)
+		}
+		if a.Decisions > 0 {
+			a.LegalRate = float64(a.LegalInternal) / float64(a.Decisions)
+		}
+		if a.TimedMatchesInternal > 0 {
+			a.AvgMatchSeconds = a.PlaySecondsInternal / float64(a.TimedMatchesInternal)
+		}
 	}
-	reliability := 1 - m.FallbackRate
+}
+
+// costBasis is the USD figure the per-match and per-win cost columns divide.
+//
+// Gateway-verified cost when there is any, self-reported otherwise. Verified wins
+// because self-reported cost is gameable — an agent that under-reports its spend
+// would otherwise top a cost-efficiency column by lying. CostBasis records which was
+// used so the UI can say so rather than implying both rows mean the same thing.
+func (m *ModelStat) costBasis() float64 {
+	if m.VerifiedCostUSD > 0 {
+		m.CostBasis = CostVerified
+		return m.VerifiedCostUSD
+	}
+	if m.EstCostUSD > 0 {
+		m.CostBasis = CostSelfReported
+	}
+	return m.EstCostUSD
+}
+
+// intelligenceScore is the 0..1000 quality composite, using the SAME weights and
+// thresholds as the P-Index intelligence dimension (migration 0051).
+//
+// Returns 0 below intelMinDecisions: a model that played three turns must not be able
+// to top a public leaderboard on a lucky run, and the UI renders 0 as "not enough
+// decisions to score" rather than as a score of zero.
+func intelligenceScore(decisions int64, legalRate, fallbackRate float64, avgLatencyMs int) int {
+	if decisions < intelMinDecisions {
+		return 0
+	}
 	speed := 1.0
-	if lat := float64(m.AvgLatencyMs); lat > intelLatencyFast {
+	if lat := float64(avgLatencyMs); lat > intelLatencyFast {
 		if lat >= intelLatencySlow {
 			speed = 0
 		} else {
 			speed = 1 - (lat-intelLatencyFast)/(intelLatencySlow-intelLatencyFast)
 		}
 	}
-	score := intelWLegal*m.LegalRate + intelWReliability*clamp01(reliability) + intelWSpeed*speed
-	m.Intelligence = int(clamp01(score) * intelScale)
+	score := intelWLegal*clamp01(legalRate) +
+		intelWReliability*clamp01(1-fallbackRate) +
+		intelWSpeed*speed
+	return int(clamp01(score) * intelScale)
 }
 
 func clamp01(v float64) float64 {
@@ -395,10 +688,14 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-// Standing returns an agent's rank + totals in the given arena for the current season.
+// Standing returns an agent's rank + totals for the current season.
+//
+// With no arena named, this reports the agent's PRIMARY arena — the one it has played
+// most this season — and says which in Standing.Game. It used to silently answer for
+// Goofspiel, so an agent that had only ever played Mafia was told it was unranked.
 func (s *Service) Standing(ctx context.Context, agentPublicID, game string) (Standing, bool, error) {
-	if game == "" {
-		game = GameGoofspiel
+	if game == ArenaAll {
+		game = ""
 	}
 	return s.repo.AgentStanding(ctx, s.CurrentSeason(), game, agentPublicID)
 }

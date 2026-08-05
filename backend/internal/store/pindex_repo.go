@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/events"
@@ -126,33 +128,250 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 	return in, nil
 }
 
-// RecordMatchBenchmark upserts one seat's per-match decision-quality counts (the
-// P-Index Intelligence projection over match.benchmark). A no-op when the agent's
-// public id is unknown (INSERT…SELECT yields no row) so it never errors on a bot.
-func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, matchID, agentPublicID, game string, decisions, legal, fallbacks int, latencySumMS, tokens int64, estimatedCost float64, result string) error {
+// MatchBenchmarkFact is one seat's complete per-match benchmark record: decision
+// quality, the failure taxonomy behind it, LLM economics, and which model played.
+//
+// A struct rather than a parameter list because this reached fourteen positional
+// arguments, at which point a caller can transpose two int64s (tokens and latency,
+// say) and still compile — while the board silently reports a model that burned
+// 40,000 ms of tokens.
+type MatchBenchmarkFact struct {
+	MatchID       string
+	AgentPublicID string
+	Game          string
+	Result        string // win|loss|draw
+
+	Decisions int
+	Legal     int
+	Fallbacks int
+	// Why a decision was not usable. `Fallbacks` counts substitutions; these say
+	// whether the cause was the model's reasoning or the developer's endpoint.
+	Illegal         int
+	Timeouts        int
+	TransportErrors int
+
+	LatencySumMS int64
+	LatencyMinMS int64
+	LatencyMaxMS int64
+
+	Tokens           int64
+	PromptTokens     int64
+	CompletionTokens int64
+	ReasoningTokens  int64
+	CachedTokens     int64
+	EstimatedCost    float64
+
+	// Model attribution. Observed is read back from the calls the agent actually made
+	// this match (SDK-reported); Declared is the manifest's claim. Either may be empty.
+	// The gateway-verified tier is recorded separately by RecordVerifiedCost.
+	ObservedProvider string
+	ObservedModel    string
+	DeclaredProvider string
+	DeclaredModel    string
+}
+
+// RecordMatchBenchmark upserts one seat's per-match benchmark fact (the P-Index
+// Intelligence projection over match.benchmark, and the input the public model
+// board aggregates). A no-op when the agent's public id is unknown (INSERT…SELECT
+// yields no row) so it never errors on a bot.
+func (r *PIndexRepo) RecordMatchBenchmark(ctx context.Context, f MatchBenchmarkFact) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO agent_match_benchmark (match_id, agent_id, game, decisions, legal, fallbacks, latency_sum_ms, tokens, estimated_cost, result, updated_at)
-		 SELECT $1, a.id, $3, $4, $5, $6, $7, $8, $9, $10, now() FROM agents a WHERE a.public_id = $2
+		`INSERT INTO agent_match_benchmark (
+		     match_id, agent_id, game, decisions, legal, fallbacks,
+		     illegal, timeouts, transport_errors,
+		     latency_sum_ms, latency_min_ms, latency_max_ms,
+		     tokens, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens,
+		     estimated_cost, result,
+		     observed_provider, observed_model, declared_provider, declared_model, updated_at)
+		 SELECT $1, a.id, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+		        $18, $19, $20, $21, $22, $23, now()
+		 FROM agents a WHERE a.public_id = $2
 		 ON CONFLICT (match_id, agent_id) DO UPDATE SET
-		   game = EXCLUDED.game, decisions = EXCLUDED.decisions, legal = EXCLUDED.legal, fallbacks = EXCLUDED.fallbacks,
-		   latency_sum_ms = EXCLUDED.latency_sum_ms, tokens = EXCLUDED.tokens,
-		   estimated_cost = EXCLUDED.estimated_cost, result = EXCLUDED.result, updated_at = now()`,
-		matchID, agentPublicID, game, decisions, legal, fallbacks, latencySumMS, tokens, estimatedCost, result)
+		   game = EXCLUDED.game, decisions = EXCLUDED.decisions, legal = EXCLUDED.legal,
+		   fallbacks = EXCLUDED.fallbacks, illegal = EXCLUDED.illegal, timeouts = EXCLUDED.timeouts,
+		   transport_errors = EXCLUDED.transport_errors,
+		   latency_sum_ms = EXCLUDED.latency_sum_ms, latency_min_ms = EXCLUDED.latency_min_ms,
+		   latency_max_ms = EXCLUDED.latency_max_ms,
+		   tokens = EXCLUDED.tokens, prompt_tokens = EXCLUDED.prompt_tokens,
+		   completion_tokens = EXCLUDED.completion_tokens, reasoning_tokens = EXCLUDED.reasoning_tokens,
+		   cached_tokens = EXCLUDED.cached_tokens,
+		   estimated_cost = EXCLUDED.estimated_cost, result = EXCLUDED.result,
+		   -- Attribution is only ever UPGRADED by a replay: a re-emitted summary that
+		   -- lost its decision log must not blank a model we already resolved.
+		   observed_provider = COALESCE(NULLIF(EXCLUDED.observed_provider,''), agent_match_benchmark.observed_provider),
+		   observed_model    = COALESCE(NULLIF(EXCLUDED.observed_model,''),    agent_match_benchmark.observed_model),
+		   declared_provider = COALESCE(NULLIF(EXCLUDED.declared_provider,''), agent_match_benchmark.declared_provider),
+		   declared_model    = COALESCE(NULLIF(EXCLUDED.declared_model,''),    agent_match_benchmark.declared_model),
+		   updated_at = now()`,
+		f.MatchID, f.AgentPublicID, f.Game, f.Decisions, f.Legal, f.Fallbacks,
+		f.Illegal, f.Timeouts, f.TransportErrors,
+		f.LatencySumMS, f.LatencyMinMS, f.LatencyMaxMS,
+		f.Tokens, f.PromptTokens, f.CompletionTokens, f.ReasoningTokens, f.CachedTokens,
+		f.EstimatedCost, f.Result,
+		f.ObservedProvider, f.ObservedModel, f.DeclaredProvider, f.DeclaredModel)
 	return err
 }
 
-// RecordVerifiedCost accumulates one gateway-observed LLM call's USD cost into the
-// per-(match, agent) verified-cost row (server-measured, unfakeable). A no-op when the
-// agent public id is unknown (INSERT…SELECT yields no row). matchID may be empty
-// (call made outside a match) — such rows still aggregate per agent for lifetime cost.
-func (r *PIndexRepo) RecordVerifiedCost(ctx context.Context, matchID, agentPublicID string, costUSD float64) error {
+// MatchDecision is one recorded move: what the agent did, why, how long it took and
+// what it cost. The per-round record behind the per-match aggregate.
+type MatchDecision struct {
+	Seq       int
+	Round     int
+	Action    string
+	Outcome   string
+	LatencyMS int64
+	Rationale string
+
+	Provider string
+	Model    string
+
+	PromptTokens     int
+	CompletionTokens int
+	ReasoningTokens  int
+	CachedTokens     int
+	TotalTokens      int
+	EstimatedCost    float64
+
+	// InputJSON is the turn view the agent was handed, already JSON-encoded and
+	// size-capped by the producer. nil when there was none to keep.
+	InputJSON []byte
+	// InputTruncated marks a view that existed but was dropped for size.
+	InputTruncated bool
+
+	// StartedAt is when the engine asked for this move — the timeline anchor. Zero for
+	// a record produced before the platform stamped it; stored as NULL, and the client
+	// draws no timeline rather than a fabricated one.
+	StartedAt time.Time
+}
+
+// RecordMatchDecisions persists one seat's decision log for a match.
+//
+// Written in a single multi-row statement rather than a loop: a 256-move Mafia seat
+// would otherwise be 256 round trips inside an event handler that must not become the
+// slowest thing in the outbox.
+//
+// Idempotent on (match_id, agent_id, seq) — the outbox delivers at least once, and a
+// redelivered benchmark event must refresh the log rather than duplicate or error on it.
+// A no-op when the agent's public id is unknown or the log is empty.
+func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPublicID string, decisions []MatchDecision) error {
+	if matchID == "" || agentPublicID == "" || len(decisions) == 0 {
+		return nil
+	}
+	var agentID int64
+	err := r.db.QueryRow(ctx, `SELECT id FROM agents WHERE public_id = $1`, agentPublicID).Scan(&agentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // a bot or an unknown seat — nothing to attribute
+	}
+	if err != nil {
+		return err
+	}
+
+	rows := make([][]any, 0, len(decisions))
+	for _, d := range decisions {
+		rows = append(rows, []any{
+			matchID, agentID, d.Seq, d.Round, d.Action, d.Outcome, d.LatencyMS, d.Rationale,
+			d.Provider, d.Model, d.PromptTokens, d.CompletionTokens, d.ReasoningTokens,
+			d.CachedTokens, d.TotalTokens, d.EstimatedCost,
+			// nil (not "null") so an absent view stores SQL NULL rather than the JSON
+			// literal null — the two read back differently and only one is honest.
+			inputOrNil(d.InputJSON), d.InputTruncated, timeOrNil(d.StartedAt),
+		})
+	}
+
+	const cols = 19
+	args := make([]any, 0, len(rows)*cols)
+	var b strings.Builder
+	b.WriteString(`INSERT INTO agent_match_decisions (
+		match_id, agent_id, seq, round, action, outcome, latency_ms, rationale,
+		provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
+		cached_tokens, total_tokens, estimated_cost, input_json, input_truncated,
+		started_at) VALUES `)
+	for i, row := range rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('(')
+		for j := range row {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(i*cols + j + 1))
+			// input_json is column 17 (index 16): pgx sends []byte as bytea unless the
+			// placeholder is cast, and a bytea in a jsonb column is a type error at
+			// execute time, not at prepare time — so it would only surface in production.
+			if j == 16 {
+				b.WriteString("::jsonb")
+			}
+		}
+		b.WriteByte(')')
+		args = append(args, row...)
+	}
+	b.WriteString(` ON CONFLICT (match_id, agent_id, seq) DO UPDATE SET
+		round = EXCLUDED.round, action = EXCLUDED.action, outcome = EXCLUDED.outcome,
+		latency_ms = EXCLUDED.latency_ms,
+		-- Never blank a rationale we already have: a replayed summary that lost its
+		-- decision log must not erase the most useful column in the table.
+		rationale = COALESCE(NULLIF(EXCLUDED.rationale,''), agent_match_decisions.rationale),
+		provider = COALESCE(NULLIF(EXCLUDED.provider,''), agent_match_decisions.provider),
+		model = COALESCE(NULLIF(EXCLUDED.model,''), agent_match_decisions.model),
+		prompt_tokens = EXCLUDED.prompt_tokens, completion_tokens = EXCLUDED.completion_tokens,
+		reasoning_tokens = EXCLUDED.reasoning_tokens, cached_tokens = EXCLUDED.cached_tokens,
+		total_tokens = EXCLUDED.total_tokens, estimated_cost = EXCLUDED.estimated_cost,
+		-- Same rule as the rationale: a replay that lost the view must not erase a view
+		-- we already captured.
+		input_json = COALESCE(EXCLUDED.input_json, agent_match_decisions.input_json),
+		input_truncated = EXCLUDED.input_truncated AND agent_match_decisions.input_json IS NULL,
+		-- Same rule again: a replay that lost the timestamp must not erase a real one.
+		started_at = COALESCE(EXCLUDED.started_at, agent_match_decisions.started_at)`)
+
+	_, err = r.db.Exec(ctx, b.String(), args...)
+	return err
+}
+
+// VerifiedCall is one gateway-observed LLM call: the USD cost the server measured,
+// the usage the provider itself reported, and the model name the provider returned.
+//
+// Provider/Model here are the only model attribution on the platform that the agent
+// cannot fake — everything else is either the manifest's claim or the SDK's
+// self-report. The model benchmark ranks on this tier first.
+type VerifiedCall struct {
+	MatchID       string // may be empty: a call made outside a match
+	AgentPublicID string
+	CostUSD       float64
+	Provider      string
+	Model         string
+
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+}
+
+// RecordVerifiedCost accumulates one gateway-observed LLM call into the per-(match,
+// agent) verified row (server-measured, unfakeable). A no-op when the agent public id
+// is unknown (INSERT…SELECT yields no row). matchID may be empty — such rows still
+// aggregate per agent for lifetime cost.
+func (r *PIndexRepo) RecordVerifiedCost(ctx context.Context, c VerifiedCall) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO agent_match_verified_cost (match_id, agent_id, verified_cost, calls, updated_at)
-		 SELECT $1, a.id, $3, 1, now() FROM agents a WHERE a.public_id = $2
+		`INSERT INTO agent_match_verified_cost (
+		     match_id, agent_id, verified_cost, calls, provider, model,
+		     prompt_tokens, completion_tokens, total_tokens, updated_at)
+		 SELECT $1, a.id, $3, 1, $4, $5, $6, $7, $8, now()
+		 FROM agents a WHERE a.public_id = $2
 		 ON CONFLICT (match_id, agent_id) DO UPDATE SET
 		   verified_cost = agent_match_verified_cost.verified_cost + EXCLUDED.verified_cost,
-		   calls = agent_match_verified_cost.calls + 1, updated_at = now()`,
-		matchID, agentPublicID, costUSD)
+		   calls = agent_match_verified_cost.calls + 1,
+		   prompt_tokens     = agent_match_verified_cost.prompt_tokens + EXCLUDED.prompt_tokens,
+		   completion_tokens = agent_match_verified_cost.completion_tokens + EXCLUDED.completion_tokens,
+		   total_tokens      = agent_match_verified_cost.total_tokens + EXCLUDED.total_tokens,
+		   -- Model is LAST-WRITER-WINS among non-empty readings, not accumulated: an
+		   -- agent that switched models mid-match is reported as the one it finished on,
+		   -- and a call whose response carried no model name never erases a known one.
+		   provider = COALESCE(NULLIF(EXCLUDED.provider,''), agent_match_verified_cost.provider),
+		   model    = COALESCE(NULLIF(EXCLUDED.model,''),    agent_match_verified_cost.model),
+		   updated_at = now()`,
+		c.MatchID, c.AgentPublicID, c.CostUSD, c.Provider, c.Model,
+		c.PromptTokens, c.CompletionTokens, c.TotalTokens)
 	return err
 }
 
@@ -375,4 +594,27 @@ func (r *PIndexRepo) History(ctx context.Context, userPublicID string, limit int
 		out = append(out, h)
 	}
 	return out, rows.Err()
+}
+
+// inputOrNil converts an empty capture to a true SQL NULL.
+//
+// Passing an empty []byte would store the four bytes "null" as a jsonb value, which
+// reads back as a present-but-null view — indistinguishable from an agent that really
+// was handed nothing. The distinction is the whole point of input_truncated.
+func inputOrNil(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// timeOrNil converts a zero time to SQL NULL.
+//
+// Storing year 1 would put every pre-stamp decision at the start of a timeline that
+// spans two millennia, which is a more confident lie than storing nothing.
+func timeOrNil(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }

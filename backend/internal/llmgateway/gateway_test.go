@@ -218,14 +218,10 @@ func TestProxy_VerifiedHookFires(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 
-	type obs struct {
-		agent, match string
-		cost         float64
-	}
-	var got []obs
+	var got []VerifiedCall
 	// em=nil (Lens disabled) to prove the hook is independent of telemetry.
-	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, agentID, matchID string, _ int, _ bool, cost float64) {
-		got = append(got, obs{agentID, matchID, cost})
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, c VerifiedCall) {
+		got = append(got, c)
 	}))
 	rec := do(t, p, "POST", "/openai/v1/chat/completions", `{"model":"gpt-4o"}`, map[string]string{
 		"X-Pyyol-Key":   "agentZ",
@@ -234,8 +230,21 @@ func TestProxy_VerifiedHookFires(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("code = %d", rec.Code)
 	}
-	if len(got) != 1 || got[0].agent != "agentZ" || got[0].match != "m99" || got[0].cost <= 0 {
-		t.Errorf("verified hook = %+v, want agent=agentZ match=m99 cost>0", got)
+	if len(got) != 1 || got[0].AgentID != "agentZ" || got[0].MatchID != "m99" || got[0].CostUSD <= 0 {
+		t.Fatalf("verified hook = %+v, want agent=agentZ match=m99 cost>0", got)
+	}
+	// The model attribution the board ranks on: read out of the UPSTREAM response, not
+	// out of the request the agent sent. openaiBody names gpt-4o-2024-08-06 while the
+	// request asked for "gpt-4o", so this also proves we report what actually served
+	// the call rather than what was requested.
+	if got[0].Provider != "openai" {
+		t.Errorf("provider = %q, want openai", got[0].Provider)
+	}
+	if got[0].Model == "" || got[0].Model == "gpt-4o" {
+		t.Errorf("model = %q, want the model named in the upstream response body", got[0].Model)
+	}
+	if got[0].TotalTokens <= 0 || got[0].PromptTokens <= 0 || got[0].CompletionTokens <= 0 {
+		t.Errorf("token usage = %+v, want the provider-reported split", got[0])
 	}
 }
 
@@ -246,7 +255,7 @@ func TestProxy_VerifiedHookNotFiredOnError(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 	fired := false
-	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _, _ string, _ int, _ bool, _ float64) { fired = true }))
+	p := New(nil, nil, WithUpstream("openai", up.URL), WithVerifiedHook(func(_ context.Context, _ VerifiedCall) { fired = true }))
 	do(t, p, "POST", "/openai/v1/chat/completions", `{}`, map[string]string{"X-Pyyol-Key": "a"})
 	if fired {
 		t.Error("verified hook must not fire on a non-2xx response")
@@ -281,8 +290,8 @@ func TestVerifiedHookReportsWhetherTheCallIsBound(t *testing.T) {
 		bound bool
 	}
 	var seen []got
-	hook := func(_ context.Context, _, matchID string, round int, bound bool, _ float64) {
-		seen = append(seen, got{matchID, round, bound})
+	hook := func(_ context.Context, c VerifiedCall) {
+		seen = append(seen, got{c.MatchID, c.Round, c.Bound})
 	}
 
 	p := New(nil, slog.Default(), WithVerifiedHook(hook), WithTurnVerifier(sig))
@@ -330,7 +339,7 @@ func TestWithoutAVerifierNothingIsBoundButCallsStillReport(t *testing.T) {
 	var fired int
 	var bound bool
 	p := New(nil, slog.Default(), WithVerifiedHook(
-		func(_ context.Context, _, _ string, _ int, b bool, _ float64) { fired++; bound = bound || b }))
+		func(_ context.Context, c VerifiedCall) { fired++; bound = bound || c.Bound }))
 
 	h := http.Header{}
 	h.Set("X-Pyyol-Match", "m_1")

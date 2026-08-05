@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -86,16 +87,46 @@ func (r *memRepo) MarkMatchedGroup(_ context.Context, agents []string, matchID s
 	}
 	return nil
 }
+func (r *memRepo) PoolStats(_ context.Context, game string, bid int64, agent string) (PoolStats, error) {
+	var ps PoolStats
+	owners := map[string]bool{}
+	subject, waiting := r.entries[agent], []*Entry{}
+	for _, e := range r.entries {
+		if e.Game == game && e.Bid == bid && e.Status == StatusWaiting {
+			waiting = append(waiting, e)
+			owners[e.OwnerPublicID] = true
+		}
+	}
+	ps.Waiting, ps.DistinctOwners = len(waiting), len(owners)
+	if subject == nil || subject.Status != StatusWaiting {
+		return ps, nil // not waiting ⇒ no position, matching the SQL behaviour
+	}
+	for _, e := range waiting {
+		if e.EnqueuedAt.Before(subject.EnqueuedAt) ||
+			(e.EnqueuedAt.Equal(subject.EnqueuedAt) && e.AgentPublicID <= subject.AgentPublicID) {
+			ps.Position++
+		}
+	}
+	return ps, nil
+}
 
-// fakeCreator records the groups it was asked to start.
+// fakeCreator records the groups it was asked to start. min defaults to seats (i.e.
+// full-roster-only) unless a test sets it.
 type fakeCreator struct {
 	seats   int
+	min     int
 	err     error
 	created [][]Seat
 	calls   int
 }
 
 func (c *fakeCreator) SeatTarget() int { return c.seats }
+func (c *fakeCreator) MinSeats() int {
+	if c.min == 0 {
+		return c.seats
+	}
+	return c.min
+}
 func (c *fakeCreator) CreateStartedTable(_ context.Context, seats []Seat, _ int64) (string, error) {
 	c.calls++
 	if c.err != nil {
@@ -276,6 +307,186 @@ func TestMafiaFullRosterForms(t *testing.T) {
 	}
 	if creator.calls != 1 || len(creator.created[0]) != 12 {
 		t.Fatalf("expected one 12-seat table, got calls=%d", creator.calls)
+	}
+}
+
+// The blocker this package existed to hit: a pool that can never reach the seat target
+// must eventually start anyway. Below MinSeats it still waits; at MinSeats it waits until
+// ShortFormAfter has elapsed; then it forms with exactly the agents present.
+func TestFormsShortHandedAfterWait(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	clk := &mutClock{t: start}
+	repo := newMemRepo(clk)
+	creator := &fakeCreator{seats: 12, min: 4}
+	svc := New(repo, map[string]TableCreator{"mafia": creator}, fakeRating{}, clk,
+		Config{Interval: time.Second, ShortFormAfter: 90 * time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+
+	// Three agents is below MinSeats: no table, however long they wait.
+	for _, id := range []string{"a", "b", "c"} {
+		enqueue(t, svc, id, "o-"+id, "mafia", 500)
+	}
+	clk.t = start.Add(10 * time.Minute)
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick below min: %v", err)
+	}
+	if creator.calls != 0 {
+		t.Fatalf("3 agents is below MinSeats(4) — must not form, got %d calls", creator.calls)
+	}
+
+	// A fourth arrives, reaching MinSeats. Its own wait is zero, but the ANCHOR has
+	// waited well past ShortFormAfter, and the anchor's patience is what this spends.
+	enqueue(t, svc, "d", "o-d", "mafia", 500)
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick at min: %v", err)
+	}
+	if creator.calls != 1 || len(creator.created) != 1 {
+		t.Fatalf("expected one short table once MinSeats was reached, got calls=%d", creator.calls)
+	}
+	if got := len(creator.created[0]); got != 4 {
+		t.Fatalf("short table should carry the 4 real agents, got %d seats", got)
+	}
+	for _, ag := range []string{"a", "b", "c", "d"} {
+		if e, _ := svc.Status(context.Background(), ag); e.Status != StatusMatched {
+			t.Fatalf("%s should be matched into the short table, got %q", ag, e.Status)
+		}
+	}
+}
+
+// Before ShortFormAfter elapses, a pool at MinSeats keeps waiting — a short-handed table
+// is a fallback for a thin queue, not the default whenever a tick catches a partial pool.
+func TestShortFormWaitsForTheWindow(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	clk := &mutClock{t: start}
+	repo := newMemRepo(clk)
+	creator := &fakeCreator{seats: 12, min: 4}
+	svc := New(repo, map[string]TableCreator{"mafia": creator}, fakeRating{}, clk,
+		Config{Interval: time.Second, ShortFormAfter: 90 * time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+
+	for _, id := range []string{"a", "b", "c", "d"} {
+		enqueue(t, svc, id, "o-"+id, "mafia", 500)
+	}
+	clk.t = start.Add(89 * time.Second)
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick inside window: %v", err)
+	}
+	if creator.calls != 0 {
+		t.Fatalf("must hold out for a fuller table inside the window, got %d calls", creator.calls)
+	}
+	clk.t = start.Add(91 * time.Second)
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick past window: %v", err)
+	}
+	if creator.calls != 1 {
+		t.Fatalf("should form once the window has passed, got %d calls", creator.calls)
+	}
+}
+
+// A full roster still forms IMMEDIATELY when one is available — the short-form path must
+// not delay or shrink a table that could be complete.
+func TestFullRosterStillPreferredImmediately(t *testing.T) {
+	clk := fixedClock{t: time.Unix(1_700_000_000, 0)}
+	repo := newMemRepo(clk)
+	creator := &fakeCreator{seats: 12, min: 4}
+	svc := New(repo, map[string]TableCreator{"mafia": creator}, fakeRating{}, clk,
+		Config{Interval: time.Second, ShortFormAfter: 90 * time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+
+	for i := 1; i <= 12; i++ {
+		id := "m" + strconv.Itoa(i)
+		enqueue(t, svc, id, "o-"+id, "mafia", 500)
+	}
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if creator.calls != 1 || len(creator.created[0]) != 12 {
+		t.Fatalf("a full roster must form at once and at full size, got calls=%d", creator.calls)
+	}
+}
+
+// A game that opts out (MinSeats == SeatTarget) never forms below its target however long
+// the pool waits — this is what keeps Monopoly's behaviour unchanged. Asserted at
+// target-1, the largest short group possible, so the test fails if the short-form path
+// ever stops respecting the opt-out (a smaller pool would pass for the trivial reason
+// that it lacks MinSeats agents).
+func TestMinSeatsEqualToTargetNeverFormsShort(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	clk := &mutClock{t: start}
+	repo := newMemRepo(clk)
+	creator := &fakeCreator{seats: 4, min: 4}
+	svc := New(repo, map[string]TableCreator{"monopoly": creator}, fakeRating{}, clk,
+		Config{Interval: time.Second, ShortFormAfter: time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+
+	// Three distinct owners for a 4-seat target: one short, and long past the window.
+	for _, id := range []string{"a", "b", "c"} {
+		enqueue(t, svc, id, "o-"+id, "monopoly", 100)
+	}
+	clk.t = start.Add(time.Hour)
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if creator.calls != 0 {
+		t.Fatalf("MinSeats == SeatTarget must never form short, got %d calls", creator.calls)
+	}
+
+	// The fourth owner completes the roster: it forms immediately, at full size.
+	enqueue(t, svc, "d", "o-d", "monopoly", 100)
+	if err := svc.NewMatcher().tick(context.Background()); err != nil {
+		t.Fatalf("tick after 4th: %v", err)
+	}
+	if creator.calls != 1 || len(creator.created[0]) != 4 {
+		t.Fatalf("a complete roster should form at full size, got calls=%d", creator.calls)
+	}
+}
+
+// Status explains the wait: position in the pool, how many DISTINCT owners are waiting
+// (the real ceiling on one table), and how long until a short table may start.
+func TestStatusReportsQueueVisibility(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	clk := &mutClock{t: start}
+	repo := newMemRepo(clk)
+	creator := &fakeCreator{seats: 12, min: 4}
+	svc := New(repo, map[string]TableCreator{"mafia": creator}, fakeRating{}, clk,
+		Config{Interval: time.Second, ShortFormAfter: 90 * time.Second},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+
+	enqueue(t, svc, "first", "o-1", "mafia", 500)
+	clk.t = start.Add(30 * time.Second)
+	// Two agents of ONE owner: three waiting, but only two owners can ever be seated.
+	enqueue(t, svc, "second", "o-2", "mafia", 500)
+	enqueue(t, svc, "third", "o-2", "mafia", 500)
+
+	st, err := svc.Status(context.Background(), "first")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if st.Position != 1 {
+		t.Errorf("the oldest waiter is position 1, got %d", st.Position)
+	}
+	if st.PoolSize != 3 {
+		t.Errorf("pool size = %d, want 3", st.PoolSize)
+	}
+	if st.DistinctOwners != 2 {
+		t.Errorf("distinct owners = %d, want 2 (o-2 holds two agents)", st.DistinctOwners)
+	}
+	if st.SeatsNeeded != 12 || st.MinSeats != 4 {
+		t.Errorf("seat target/min = %d/%d, want 12/4", st.SeatsNeeded, st.MinSeats)
+	}
+	if st.WaitedMs != 30_000 {
+		t.Errorf("waited = %dms, want 30000", st.WaitedMs)
+	}
+	// 90s window, 30s spent ⇒ 60s left before a short table is allowed.
+	if st.ShortFormInMs != 60_000 {
+		t.Errorf("short-form countdown = %dms, want 60000", st.ShortFormInMs)
+	}
+
+	// Past the window the countdown reads zero rather than going negative.
+	clk.t = start.Add(2 * time.Minute)
+	st, _ = svc.Status(context.Background(), "first")
+	if st.ShortFormInMs != 0 {
+		t.Errorf("countdown past the window = %dms, want 0", st.ShortFormInMs)
 	}
 }
 

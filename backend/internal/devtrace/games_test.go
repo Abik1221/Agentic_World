@@ -188,8 +188,8 @@ func TestGoofspielLatency_RejectsImpossibleGaps(t *testing.T) {
 func TestMapRows_LiveMatchHidesOtherSeats(t *testing.T) {
 	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	rows := []MatchRow{
-		row("mafia", "vote", 3, map[string]any{"from": 3, "target": 5}, t0),            // mine
-		row("mafia", "vote", 3, map[string]any{"from": 7, "target": 3}, t0.Add(1)),     // someone else's
+		row("mafia", "vote", 3, map[string]any{"from": 3, "target": 5}, t0),        // mine
+		row("mafia", "vote", 3, map[string]any{"from": 7, "target": 3}, t0.Add(1)), // someone else's
 		row("mafia", "message", 3, map[string]any{"from": 8, "text": "trust me"}, t0.Add(2)),
 		row("mafia", "eliminate", 3, map[string]any{"target": 9, "cause": "vote"}, t0.Add(3)),
 	}

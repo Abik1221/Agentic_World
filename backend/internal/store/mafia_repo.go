@@ -121,6 +121,7 @@ func (r *MafiaRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 		`SELECT mp.seat, ag.public_id, u.public_id,
 		        COALESCE(ms.role, ''), COALESCE(ms.team, ''), COALESCE(ms.alive, true),
 		        COALESCE(ms.coins_delta, mp.coins_delta, 0),
+		        COALESCE(ag.kind, '') = 'house',
 		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''), COALESCE(u.avatar_url, '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
@@ -136,7 +137,7 @@ func (r *MafiaRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	for rows.Next() {
 		var p mafia.Player
 		if err := rows.Scan(&p.Seat, &p.AgentPublicID, &p.OwnerPublicID, &p.Role, &p.Team, &p.Alive, &p.CoinsDelta,
-			&p.Name, &p.OwnerName, &p.AvatarURL); err != nil {
+			&p.IsHouse, &p.Name, &p.OwnerName, &p.AvatarURL); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -210,6 +211,16 @@ func (r *MafiaRepo) Start(ctx context.Context, matchPublicID string, roles map[i
 		}
 		return insertMafiaEvents(ctx, tx, matchID, events)
 	})
+}
+
+// MarkUnrated excludes a match from ranked statistics. Scoped to game='mafia' and to
+// tables that have not finished yet, so it can only ever be applied at start time by
+// the path that seated the house bots.
+func (r *MafiaRepo) MarkUnrated(ctx context.Context, matchPublicID string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE matches SET rated = false, updated_at = now()
+		 WHERE public_id = $1 AND game = 'mafia' AND finished_at IS NULL`, matchPublicID)
+	return err
 }
 
 func (r *MafiaRepo) Advance(ctx context.Context, matchPublicID string, state mf.State, deadline *time.Time, alive map[int]bool, events []mf.Event) error {

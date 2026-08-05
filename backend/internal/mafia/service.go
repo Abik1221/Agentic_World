@@ -35,6 +35,11 @@ type Config struct {
 	// sweeper aborts it. A Mafia table needs a full 12 distinct-owner roster to
 	// start, so an unfillable lobby is the likely default, not an edge case.
 	WaitingTTL time.Duration
+	// HouseDriveInterval paces the house-bot driver (see DriveHouseSeats). Zero uses
+	// DefaultHouseDriveInterval. Exists as a knob mainly so tests can run the loop fast;
+	// in production the default is what keeps bots from answering faster than any
+	// LLM-backed agent could.
+	HouseDriveInterval time.Duration
 }
 
 // Service drives the Mafia match lifecycle.
@@ -59,6 +64,12 @@ type Service struct {
 	// pusher is set by EnablePushPlay to enable POST /v1/mafia/pushplay
 	// (manifest push model with bot-filled seats). Nil ⇒ push-play returns 501.
 	pusher *pushPlayer
+	// houseAgents is the allowlist of seeded house-bot ids that JoinHouseSeat will seat,
+	// populated by EnablePushPlay from the same bot list. It exists because JoinHouseSeat
+	// bypasses the distinct-owner, spending-limit, and certification gates: without an
+	// allowlist, one mistaken call with a real agent's id would seat that agent free of
+	// every check. Empty ⇒ no house seating at all, which fails closed.
+	houseAgents map[string]bool
 	// notify wakes long-polling State callers on a state change. Nil ⇒ no long-poll.
 	notify Notifier
 	// rater applies per-arena skill ratings when a paid table finalizes. Nil ⇒
@@ -152,6 +163,9 @@ func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broa
 	if cfg.MaxDays <= 0 {
 		cfg.MaxDays = DefaultMaxDays
 	}
+	if cfg.HouseDriveInterval <= 0 {
+		cfg.HouseDriveInterval = DefaultHouseDriveInterval
+	}
 	if finish == nil {
 		finish = NoopFinishHook{}
 	}
@@ -228,7 +242,40 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	return m.PublicID, nil
 }
 
+// Join seats a developer's agent at a waiting table, enforcing every competitive and
+// money gate (distinct owner, spending limit, certification).
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	return s.join(ctx, agentPublicID, ownerPublicID, matchPublicID, false)
+}
+
+// JoinHouseSeat seats a kind='house' engine bot to fill a roster the queue could not
+// fill with real agents. It is NOT reachable from any HTTP route — only from
+// server-side fill paths (push-play sandbox, group-matchmaking backfill) — and it must
+// only ever be called with an agent from the seeded house set (migration 0063).
+//
+// It exists because the ordinary Join path cannot seat these bots at all: all eleven
+// share the single `usr_system` owner, and Join rejects a second seat from an owner who
+// already holds one (the M5 anti-collusion rule). That rule is exactly right for real
+// developers and must not be relaxed for them, so the fill path gets its own entry
+// point rather than a weakened check. Before this existed, filling a Mafia table failed
+// on the SECOND bot with ErrSameOwner, which is why sandbox push-play returned a 409 in
+// production.
+//
+// House seats also skip the spending-limit and certification gates: they have
+// zero-balance wallets by construction (0063) and stake nothing, so asking whether they
+// can afford the entry fee would fail on every paid table.
+//
+// Because it bypasses those gates, it will only seat an agent on the declared house
+// allowlist (see Service.houseAgents). Anything else is a programming error and is
+// refused rather than quietly seated without checks.
+func (s *Service) JoinHouseSeat(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
+	if !s.houseAgents[agentPublicID] {
+		return AgentView{}, ErrNotHouseAgent
+	}
+	return s.join(ctx, agentPublicID, ownerPublicID, matchPublicID, true)
+}
+
+func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string, house bool) (AgentView, error) {
 	// Serialize this agent's concurrent joins (agent lock FIRST, then table lock) so
 	// it can't race joins into different tables/games and bypass the per-agent limits
 	// via TOCTOU. Shared "agent:join:lock:" namespace with Goofspiel. (M6)
@@ -267,14 +314,22 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	// A 12-seat Mafia table lets one owner who controls a coordinated majority force
 	// their team to win and funnel honest players' entry fees to their own agents;
 	// checking only the creator let one owner take the other 11 chairs. (M5)
-	for i := range m.Players {
-		if m.Players[i].OwnerPublicID == ownerPublicID {
-			return AgentView{}, ErrSameOwner
+	//
+	// House fillers are the one exemption (see JoinHouseSeat): they all share
+	// `usr_system`, they never stake and can never be paid, so seating several of them
+	// cannot funnel anybody's entry fee anywhere. The exemption is keyed on the
+	// server-side call path, never on anything a request can set.
+	if !house {
+		for i := range m.Players {
+			if m.Players[i].OwnerPublicID == ownerPublicID {
+				return AgentView{}, ErrSameOwner
+			}
 		}
 	}
 	// No-stakes practice table (see CreateTable): skip the spending-limit and
-	// certification gates when nothing is staked.
-	if m.EntryFee > 0 {
+	// certification gates when nothing is staked. House seats skip them on every
+	// table, staked or not — they hold zero-balance wallets and stake nothing.
+	if m.EntryFee > 0 && !house {
 		if err := s.limits.CheckJoin(ctx, agentPublicID, m.EntryFee); err != nil {
 			return AgentView{}, err
 		}
@@ -308,17 +363,33 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 
 func (s *Service) startMatch(ctx context.Context, m Match) error {
 	seats := make([]int, len(m.Players))
-	agents := make([]string, len(m.Players))
 	for i, p := range m.Players {
 		seats[i] = p.Seat
-		agents[i] = p.AgentPublicID
+	}
+	// Only real agents stake. A house filler holds a zero-balance wallet by
+	// construction (migration 0063), so handing it to StakeTable would either fail the
+	// whole start on insufficient funds or, worse, overdraw a system wallet.
+	stakers := make([]string, 0, len(m.Players))
+	for _, p := range HumanPlayers(m.Players) {
+		stakers = append(stakers, p.AgentPublicID)
 	}
 	state, events := s.eng.Init(m.Seed, seats)
 	roles := state.Roles
 
+	// A bot-filled table is not ranked evidence. Recorded BEFORE any coins move so a
+	// failure here leaves a still-waiting, unstaked table rather than a live staked one
+	// that analytics would read as fully human. Rating itself is skipped in finalize
+	// from the same seat data, so this flag is the durable record for the model board,
+	// not the enforcement point.
+	if HasHouseSeat(m.Players) {
+		if err := s.repo.MarkUnrated(ctx, m.PublicID); err != nil {
+			return err
+		}
+	}
+
 	// Only paid tables move coins; a zero-fee practice table stakes nothing.
 	if m.EntryFee > 0 {
-		if err := s.wallet.StakeTable(ctx, m.PublicID, agents, m.EntryFee); err != nil {
+		if err := s.wallet.StakeTable(ctx, m.PublicID, stakers, m.EntryFee); err != nil {
 			return err
 		}
 	}
@@ -580,7 +651,12 @@ func (s *Service) persist(ctx context.Context, m Match, state mf.State, events [
 }
 
 func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events []mf.Event) error {
-	econ := ComputeEconomy(len(m.Players), m.EntryFee, m.RakePct)
+	// The pool is what the STAKING seats paid in. A table that the group matcher filled
+	// with house bots has more seats than stakers, and counting the fillers here would
+	// compute a reward pool bigger than the escrow that backs it — settling a deficit
+	// against platform revenue on every bot-filled table.
+	humans := HumanPlayers(m.Players)
+	econ := ComputeEconomy(len(humans), m.EntryFee, m.RakePct)
 	seats := seatsFromPlayers(m.Players, state)
 	rewards := ComputeRewards(state.Winner, seats, econ)
 
@@ -608,7 +684,9 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	platformFee := econ.PlatformFee
 	if len(payouts) == 0 && m.EntryFee > 0 {
 		platformFee = 0
-		for _, p := range m.Players {
+		// Refund the stakers only. A house seat paid nothing in, so "refunding" it would
+		// mint coins into the system wallet out of the other players' escrow.
+		for _, p := range humans {
 			payouts[p.AgentPublicID] += m.EntryFee
 		}
 	}
@@ -624,8 +702,13 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 		// people their own stake, not paying out a result, and withholding somebody's own
 		// money because of a proof they were never asked for would be theft.
 		if s.integrity != nil && len(payouts) > 0 && platformFee > 0 {
-			agents := make([]string, 0, len(m.Players))
-			for _, p := range m.Players {
+			// House fillers are engine-driven and make no LLM calls, so they can never
+			// show an LLM-backed decision. Including them would make every bot-filled
+			// table look like it contains unproven seats, and — since the rule only
+			// withholds when some OTHER seat at the table did prove itself — could flip
+			// the verdict for the humans depending on who else was seated.
+			agents := make([]string, 0, len(humans))
+			for _, p := range humans {
 				agents = append(agents, p.AgentPublicID)
 			}
 			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, slog.Default())
@@ -647,7 +730,14 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	// result is faction-based and server-authoritative: the whole winning team ranks
 	// 1, everyone else ranks 2. Idempotent per match, retried a few times since the
 	// match is already durably finished + settled (nothing re-drives finalize).
-	if s.rater != nil && m.EntryFee > 0 {
+	//
+	// A table the matcher had to fill with house bots is NOT rated at all — not even
+	// for its human seats. Beating engine bots is not the achievement that beating
+	// eleven other developers' agents is, and rating it would let anyone farm skill
+	// rating (and through it P-Index) by queueing when the pool is empty. Skipping the
+	// rater is also what keeps such a table out of P-Index entirely, since P-Index reads
+	// match_rating_changes and none are written.
+	if s.rater != nil && m.EntryFee > 0 && !HasHouseSeat(m.Players) {
 		res := rating.MatchResult{MatchPublicID: m.PublicID, Game: rating.GameMafia}
 		for _, p := range players {
 			placement := 2
@@ -853,7 +943,11 @@ func (s *Service) Economy(ctx context.Context, matchPublicID string) (EconomySna
 	if err != nil {
 		return EconomySnapshot{}, nil, ErrNotFound
 	}
-	econ := ComputeEconomy(len(m.Players), m.EntryFee, m.RakePct)
+	// Staking seats only — the same count finalize settles against. Reporting the roster
+	// here instead would publish a gross pool bigger than the coins actually escrowed on
+	// any bot-filled table, and the spectator economy view is exactly where a fabricated
+	// pool figure becomes something people believe.
+	econ := ComputeEconomy(len(HumanPlayers(m.Players)), m.EntryFee, m.RakePct)
 	if m.Status != StatusFinished {
 		return econ, nil, nil
 	}
@@ -984,7 +1078,9 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 		MatchID: m.PublicID, Status: m.Status,
 		Day: m.State.Day, Phase: m.State.Phase,
 		Alive: cloneAlive(m.State.Alive), EntryFee: m.EntryFee,
-		Economy: ComputeEconomy(len(m.Players), m.EntryFee, m.RakePct),
+		// Staking seats only, matching Economy() and finalize — an agent reading its own
+		// view must see the pool it can actually win, not one inflated by house fillers.
+		Economy: ComputeEconomy(len(HumanPlayers(m.Players)), m.EntryFee, m.RakePct),
 		// Public identities only — roles stay in the redacted per-seat view.
 		Roster: RosterOf(m.Players, m.State.Alive),
 	}
@@ -1052,6 +1148,7 @@ func seatsFromPlayers(players []Player, st mf.State) []SeatInfo {
 		out[i] = SeatInfo{
 			Seat: p.Seat, AgentPublicID: p.AgentPublicID, OwnerPublicID: p.OwnerPublicID,
 			Role: st.Roles[p.Seat], Team: mf.TeamOf(st.Roles[p.Seat]), Alive: st.Alive[p.Seat],
+			IsHouse: p.IsHouse,
 		}
 	}
 	return out
@@ -1068,9 +1165,18 @@ func finalizePlayers(players []Player, st mf.State, rewards []RewardRow, entryFe
 		out[i].Role = st.Roles[out[i].Seat]
 		out[i].Team = mf.TeamOf(out[i].Role)
 		out[i].Alive = st.Alive[out[i].Seat]
-		if r, ok := bySeat[out[i].Seat]; ok && r.Eligible {
-			out[i].CoinsDelta = r.Payout - entryFee
-		} else {
+		switch {
+		case out[i].IsHouse:
+			// A house filler neither paid an entry fee nor can be paid, so its coin
+			// movement is exactly zero. Writing -entryFee here would persist a
+			// fabricated loss to match_players.coins_delta, which is read back as fact
+			// by the spectator economy view and the lifetime-winnings tile — the same
+			// class of phantom-number bug the zero-fee guard in ComputeEconomy exists
+			// to prevent.
+			out[i].CoinsDelta = 0
+		case bySeat[out[i].Seat].Eligible:
+			out[i].CoinsDelta = bySeat[out[i].Seat].Payout - entryFee
+		default:
 			out[i].CoinsDelta = -entryFee
 		}
 	}

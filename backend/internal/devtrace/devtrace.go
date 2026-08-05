@@ -48,6 +48,10 @@ type Service struct {
 	// for why: the page must not have the availability of a separate telemetry service.
 	// Nil ⇒ Lens-only (the original behaviour, and the one that fails when the Lens does).
 	local LocalRepo
+	// telemetry serves the cross-match agent rollup (telemetry.go). Nil ⇒ that endpoint
+	// reports unconfigured rather than an empty page, which would read as "your agent has
+	// never failed".
+	telemetry TelemetryRepo
 	// matches serves the paginated game history and the per-match detail (matches.go).
 	// Nil ⇒ those endpoints report unconfigured rather than an empty history.
 	matches MatchRepo

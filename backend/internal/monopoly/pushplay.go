@@ -271,6 +271,9 @@ func (p *pushPlayer) drive(s *Service, matchID, agentID string, target agentclie
 		rec.Record(benchmark.Decision{
 			Seat: v.YourSeat, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
 			Round: round, Action: act.Kind, Rationale: rationale, Usage: usage,
+			// The INPUT half of the record: the board as this seat saw it. The largest
+			// view of the three arenas, which is why the Recorder caps it.
+			View: v,
 		})
 		// Durable per-decision event — see the goofspiel drive loop for why the
 		// match-end Recorder alone is not enough.
