@@ -79,8 +79,8 @@ func TestComputeV2SumsAndCountsIntelligence(t *testing.T) {
 		LastMatchAt: now.Add(-24 * time.Hour), AsOf: now,
 	}
 	res := NewEngine().Compute(in, cfg)
-	if len(res.Contributions) != 5 {
-		t.Fatalf("want 5 dimensions, got %d", len(res.Contributions))
+	if len(res.Contributions) != 6 {
+		t.Fatalf("want 6 dimensions, got %d", len(res.Contributions))
 	}
 	if res.Sub(keyIntelligence) <= 0 {
 		t.Fatal("intelligence sub-score should be > 0 with strong signals")
@@ -128,8 +128,8 @@ func TestComputeStrongDeveloper(t *testing.T) {
 	if d := sum - res.PIndex; d > 0.02 || d < -0.02 {
 		t.Fatalf("contributions %.2f != P-Index %.2f", sum, res.PIndex)
 	}
-	if len(res.Contributions) != 5 {
-		t.Fatalf("want 5 dimensions, got %d", len(res.Contributions))
+	if len(res.Contributions) != 6 {
+		t.Fatalf("want 6 dimensions, got %d", len(res.Contributions))
 	}
 }
 

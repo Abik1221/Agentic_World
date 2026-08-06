@@ -13,7 +13,7 @@ type Engine struct {
 // so the dimension is inert until a config version activates it.
 func NewEngine() *Engine {
 	return &Engine{dims: []Dimension{
-		Arena{}, Consistency{}, Difficulty{}, Activity{}, Intelligence{},
+		Arena{}, Consistency{}, Difficulty{}, Activity{}, Intelligence{}, Skill{},
 	}}
 }
 
@@ -30,6 +30,8 @@ func weightOf(key string, cfg Config) float64 {
 		return cfg.Weights.Activity
 	case keyIntelligence:
 		return cfg.Weights.Intelligence
+	case keySkill:
+		return cfg.Weights.Skill
 	default:
 		return 0
 	}

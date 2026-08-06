@@ -10,6 +10,7 @@ import (
 
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/pindex"
+	"github.com/agent-arena/arena/internal/skill"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -123,6 +124,41 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 		in.LegalRate = float64(legal) / float64(dec)
 		in.FallbackRate = float64(fb) / float64(dec)
 		in.AvgLatencyMS = float64(latSum) / float64(dec)
+	}
+
+	// Skill: DECISION QUALITY, from the per-decision scores internal/skill wrote.
+	//
+	// Scoped exactly like the intelligence rollup above — same owner, same season, same
+	// fraud exclusion, same ranked-only join — so the two dimensions describe the same set
+	// of matches and cannot disagree about which games counted.
+	//
+	// `skill_regret IS NOT NULL` is the load-bearing predicate. A row can be stamped with
+	// a scorer version and still hold NULL when the decision was not scorable (a game with
+	// no scorer, a malformed view). Counting those as zero regret would hand every
+	// Monopoly agent a perfect record, since Monopoly has no scorer yet.
+	//
+	// The version filter keeps one average from mixing verdicts produced by two different
+	// scorers, which would compare agents against different yardsticks.
+	var skillN int64
+	var regretSum, blunders float64
+	if err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(d.skill_regret),0),
+		        COALESCE(SUM(CASE WHEN d.skill_regret > $3 THEN 1 ELSE 0 END),0)
+		   FROM agent_match_decisions d
+		   JOIN matches m ON m.public_id = d.match_id
+		   JOIN match_rating_changes mrc ON mrc.match_id = m.id AND mrc.agent_id = d.agent_id
+		   JOIN agents a ON a.id = d.agent_id AND a.owner_user_id = $1 AND a.kind <> 'house'
+		  WHERE mrc.season = $2
+		    AND d.skill_regret IS NOT NULL
+		    AND d.skill_scorer_version = $4
+		    AND NOT EXISTS (SELECT 1 FROM fraud_flags f WHERE f.match_id = mrc.match_id AND f.active)`,
+		uid, season, skill.BlunderThreshold, skill.ScorerVersion).Scan(&skillN, &regretSum, &blunders); err != nil {
+		return in, err
+	}
+	if skillN > 0 {
+		in.SkillDecisions = int(skillN)
+		in.SkillQuality = 1 - regretSum/float64(skillN)
+		in.SkillBlunderRate = blunders / float64(skillN)
 	}
 
 	return in, nil

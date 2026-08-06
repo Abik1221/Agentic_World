@@ -159,6 +159,20 @@ type Decision struct {
 	TotalTokens      int     `json:"total_tokens"`
 	EstimatedCost    float64 `json:"estimated_cost"`
 
+	// SkillRegret is the share of the achievable value this decision gave up, in [0,1]:
+	// 0 played the best action available from this exact state, 1 played the worst. Nil
+	// when the decision has not been scored — an arena with no scorer yet, or a decision
+	// recorded before input capture shipped.
+	//
+	// A POINTER, not a float, and that distinction is the whole contract: 0 means "you
+	// found the best move" and nil means "we did not score this". Collapsing them would
+	// tell a developer their unscored Monopoly match was played perfectly.
+	SkillRegret *float64 `json:"skill_regret,omitempty"`
+	// SkillBest is the action that was best, in the game's own vocabulary. Paired with
+	// the action actually taken this is the single most actionable line the platform can
+	// show: "you bid 6, the best bid was 12" beats any aggregate.
+	SkillBest string `json:"skill_best,omitempty"`
+
 	// Input is the turn view the agent was handed for this decision, passed through as
 	// raw JSON so the arena's own shape reaches the client unflattened. Absent when
 	// there was none to keep.
