@@ -127,7 +127,21 @@ func (s *Service) SetIntegrityChecker(c integrity.Checker) { s.integrity = c }
 
 // SetTurnMinter installs the per-turn proof minter used by push-play views. MUST be called
 // BEFORE EnablePushPlay, which copies it onto the push player.
-func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
+func (s *Service) SetTurnMinter(m TurnMinter) {
+	s.turns = m
+	// ALSO push onto an already-built pushPlayer, because EnablePushPlay copies s.turns by value.
+	//
+	// Monopoly's wiring called SetTurnMinter AFTER EnablePushPlay, so the pusher captured nil and
+	// every Monopoly view shipped with no turn proof — meaning no Monopoly decision could ever be
+	// bound, no Monopoly agent could earn Verified, and nothing anywhere said so. Mafia happened to
+	// be wired in the opposite order and worked, which is the worst kind of correctness: identical
+	// code, opposite behaviour, decided by a line number.
+	//
+	// Propagating here makes the order irrelevant instead of merely fixing today's order.
+	if s.pusher != nil {
+		s.pusher.turns = m
+	}
+}
 
 // Notifier is the low-latency wake-up channel for long-polling State callers.
 // Satisfied by *store.Notifier (structural).

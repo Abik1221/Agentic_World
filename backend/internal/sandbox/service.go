@@ -40,7 +40,15 @@ type TurnMinter interface {
 // coins are at stake; without a proof here they would discover a broken Verified setup only
 // in ranked play, where it costs them. Sandbox binding carries no reward on its own — the
 // integrity gate reads ranked matches — so this buys confidence, not standing.
-func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
+func (s *Service) SetTurnMinter(m TurnMinter) {
+	s.turns = m
+	// Also push onto an already-built pushPlayer: EnablePushPlay copies s.turns by value, so
+	// calling these in the other order would silently ship views with no turn proof. See the
+	// Monopoly note in internal/monopoly/service.go for what that cost.
+	if s.pusher != nil {
+		s.pusher.turns = m
+	}
+}
 
 // New constructs the sandbox service. When enabled is false, Start returns a 403
 // so the feature can be turned off per-environment without removing the routes.

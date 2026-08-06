@@ -131,7 +131,21 @@ func (s *Service) SetIntegrityChecker(c integrity.Checker) { s.integrity = c }
 // ordering constraint Goofspiel documents. Without a minter, Mafia views ship with no
 // proof, no decision can be shown to be LLM-backed, and the integrity check on paid
 // tables can never arm however it is configured.
-func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
+func (s *Service) SetTurnMinter(m TurnMinter) {
+	s.turns = m
+	// ALSO push onto an already-built pushPlayer, because EnablePushPlay copies s.turns by value.
+	//
+	// Monopoly's wiring called SetTurnMinter AFTER EnablePushPlay, so the pusher captured nil and
+	// every Monopoly view shipped with no turn proof — meaning no Monopoly decision could ever be
+	// bound, no Monopoly agent could earn Verified, and nothing anywhere said so. Mafia happened to
+	// be wired in the opposite order and worked, which is the worst kind of correctness: identical
+	// code, opposite behaviour, decided by a line number.
+	//
+	// Propagating here makes the order irrelevant instead of merely fixing today's order.
+	if s.pusher != nil {
+		s.pusher.turns = m
+	}
+}
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {
 	// PhaseWindow is left at zero on purpose when unset: that selects the engine's
