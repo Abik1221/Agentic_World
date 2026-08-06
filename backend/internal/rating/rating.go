@@ -582,7 +582,12 @@ func wilsonHalfWidth95(k, n int) float64 {
 // model with no finished match showing "0 tokens/min" is honest; extrapolating a rate
 // from a partial match would publish a number nobody could reproduce.
 func deriveModelStat(m *ModelStat) {
-	m.Attribution = attributionName(m.AttrRank)
+	// Derived from COVERAGE, not from the raw rank. The rank says the best tier at which
+	// this model was ever identified; coverage says how much of the row that tier actually
+	// describes. One gateway-verified call out of ten thousand decisions used to be enough to
+	// stamp the whole row "verified", which is the state an agent would engineer to keep a
+	// badge while avoiding the audit. Tier can only ever downgrade, never promote.
+	m.Attribution = Tier(m.AttrRank, m.Verified)
 	m.Class = Classify(m.Provider, m.Model)
 	m.Games = m.Wins + m.Losses + m.Ties
 	if decisive := m.Wins + m.Losses; decisive > 0 {

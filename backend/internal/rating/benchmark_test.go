@@ -220,13 +220,28 @@ func TestCostBasisPrefersVerifiedOverSelfReported(t *testing.T) {
 	}
 }
 
-// Attribution tier travels from the store's numeric rank to a name the UI can print.
+// Attribution tier travels from the store's numeric rank to a name the UI can print — but
+// gated by COVERAGE, so the name reflects how much of the row the tier actually describes.
+//
+// The rank alone used to decide it, which meant a single gateway-verified call out of any
+// number of decisions stamped the whole row "verified". These cases pin the gate: a rank-1 row
+// is verified only when nearly all of its decisions were proven, and a rank-1 row whose
+// coverage cannot be measured reports the weaker, honest tier rather than the flattering one.
 func TestAttributionTierNaming(t *testing.T) {
 	repo := newRollFakeRepo(-1)
 	repo.models = []ModelStat{
-		{Provider: "a", Model: "gw", AttrRank: 1, Wins: 1},
-		{Provider: "a", Model: "sdk", AttrRank: 2, Wins: 1},
-		{Provider: "a", Model: "manifest", AttrRank: 3, Wins: 1},
+		// Gateway-identified AND nearly fully covered — the only state that earns the badge.
+		{Provider: "a", Model: "gw", AttrRank: 1, Wins: 1, Verified: NewCoverage(13, 13)},
+		// Gateway-identified but only a sliver proven: the inversion, refused.
+		{Provider: "a", Model: "gw-thin", AttrRank: 1, Wins: 1, Verified: NewCoverage(10_000, 1)},
+		// Gateway-identified with a real partial migration in progress: its own tier.
+		{Provider: "a", Model: "gw-partial", AttrRank: 1, Wins: 1, Verified: NewCoverage(100, 50)},
+		// Gateway-identified with NO denominator. Unmeasurable coverage is exactly what an
+		// agent would engineer to keep the badge while dodging the audit, so it does not pass.
+		{Provider: "a", Model: "gw-unknown", AttrRank: 1, Wins: 1},
+		// Coverage can never PROMOTE a self-reported claim, however complete it is.
+		{Provider: "a", Model: "sdk", AttrRank: 2, Wins: 1, Verified: NewCoverage(500, 500)},
+		{Provider: "a", Model: "manifest", AttrRank: 3, Wins: 1, Verified: NewCoverage(500, 500)},
 		{Provider: "a", Model: "unset", Wins: 1}, // 0 ⇒ weakest claim, never "verified"
 	}
 	page, err := svcAtSeason(repo, 1).ModelBenchmark(context.Background(), ArenaAll, 1)
@@ -234,7 +249,9 @@ func TestAttributionTierNaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"gw": AttrVerified, "sdk": AttrObserved, "manifest": AttrDeclared, "unset": AttrDeclared,
+		"gw": AttrVerified, "gw-thin": AttrObserved, "gw-partial": AttrPartial,
+		"gw-unknown": AttrObserved,
+		"sdk":        AttrObserved, "manifest": AttrDeclared, "unset": AttrDeclared,
 	}
 	for _, m := range page.Models {
 		if want[m.Model] != m.Attribution {

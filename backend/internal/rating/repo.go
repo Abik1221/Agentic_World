@@ -175,6 +175,12 @@ type ModelStat struct {
 	// board look complete when it is not.
 	Preliminary bool `json:"preliminary"`
 
+	// Verified is how much of this row's play was actually PROVEN LLM-backed, not whether
+	// any of it was. Published because the attribution tier above is derived from it, so a
+	// reader who distrusts our threshold can ignore the label and read the fraction. See
+	// coverage.go for why the denominator is what makes the numerator safe to publish.
+	Verified CoverageStat `json:"verified"`
+
 	// ── time ──────────────────────────────────────────────────────────────────
 	// PlaySeconds is summed REAL match wall-clock; TimedMatches is how many matches
 	// contributed one (the correct denominator — a match with a broken clock must not

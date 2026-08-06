@@ -295,6 +295,21 @@ fact AS (
          b.estimated_cost,
          COALESCE(v.verified_cost,0) AS verified_cost,
          COALESCE(v.calls,0)         AS verified_calls,
+         -- Verified COVERAGE for this seat: distinct decisions proven LLM-backed by a turn
+         -- proof, over decisions actually logged.
+         --
+         -- The tier used to be MIN(attr_rank) alone, so ONE verified call out of thousands of
+         -- decisions labelled a whole model row "verified". That is exploitable in the
+         -- direction that rewards doing less: cost per win is computed from VERIFIED cost, so
+         -- an agent routing 1% of its calls reports 1% of its spend against 100% of its wins
+         -- and tops a cost-efficiency board precisely BECAUSE it declined to be measured.
+         -- Carrying the denominator is what makes the numerator safe to publish.
+         --
+         -- DISTINCT decisions, not calls: an agent may make forty calls for one decision (a
+         -- best-of-N sample, a tool loop), and counting calls would let volume manufacture
+         -- coverage.
+         COALESCE(bd.bound_decisions,0) AS bound_decisions,
+         COALESCE(dl.logged_decisions,0) AS logged_decisions,
          -- Real match wall-clock. NULL (not 0) when the clock is unusable, so a stuck
          -- or aborted match drops out of the DURATION average without also discarding
          -- the tokens it genuinely burned.
@@ -314,6 +329,14 @@ fact AS (
                 -- credit a model for beating engine bots.
                 AND m.rated
   LEFT JOIN agent_match_verified_cost v ON v.match_id = b.match_id AND v.agent_id = b.agent_id
+  LEFT JOIN (
+    SELECT match_id, agent_id, COUNT(DISTINCT round)::bigint AS bound_decisions
+      FROM agent_match_bound_decisions GROUP BY match_id, agent_id
+  ) bd ON bd.match_id = b.match_id AND bd.agent_id = b.agent_id
+  LEFT JOIN (
+    SELECT match_id, agent_id, COUNT(*)::bigint AS logged_decisions
+      FROM agent_match_decisions GROUP BY match_id, agent_id
+  ) dl ON dl.match_id = b.match_id AND dl.agent_id = b.agent_id
   LEFT JOIN decl dc ON dc.agent_public_id = a.public_id
   WHERE ($1 = '' OR b.game = $1)
 )`
@@ -351,6 +374,8 @@ agg AS (
          COALESCE(SUM(estimated_cost),0)::double precision AS est_cost,
          COALESCE(SUM(verified_cost),0)::double precision  AS verified_cost,
          COALESCE(SUM(verified_calls),0)::bigint           AS verified_calls,
+         COALESCE(SUM(bound_decisions),0)::bigint          AS bound_decisions,
+         COALESCE(SUM(logged_decisions),0)::bigint         AS logged_decisions,
          COALESCE(SUM(match_seconds),0)::double precision  AS play_seconds,
          COUNT(match_seconds)::int                         AS timed_matches
   FROM fact
@@ -385,7 +410,9 @@ SELECT a.provider, a.model, COALESCE(a.game,''), a.is_total, a.attr_rank,
        a.decisions, a.legal, a.fallbacks, a.illegal, a.timeouts, a.transport_errors,
        a.latency_sum_ms, a.latency_min_ms, a.latency_max_ms,
        a.tokens, a.prompt_tokens, a.completion_tokens, a.reasoning_tokens, a.cached_tokens,
-       a.est_cost, a.verified_cost, a.verified_calls, a.play_seconds, a.timed_matches
+       a.est_cost, a.verified_cost, a.verified_calls,
+       a.bound_decisions, a.logged_decisions,
+       a.play_seconds, a.timed_matches
 FROM agg a
 LEFT JOIN elo e ON e.provider = a.provider AND e.model = a.model
                 AND e.is_total = a.is_total
@@ -411,6 +438,10 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 			s                        rating.ModelStat
 			latSum                   int64
 			latMin, latMax           int64
+			// Verified coverage counts. Scanned separately because the row publishes the
+			// FRACTION, and building it in one place keeps the clamp and the
+			// unknown-vs-zero distinction out of the SQL.
+			boundDecisions, loggedDecisions int64
 		)
 		if err := rows.Scan(&provider, &model, &rowGame, &isTotal, &s.AttrRank,
 			&s.Agents, &s.Developers, &s.AvgElo, &s.CoinsWon,
@@ -418,10 +449,15 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 			&s.Decisions, &s.Legal, &s.Fallbacks, &s.Illegal, &s.Timeouts, &s.TransportErrors,
 			&latSum, &latMin, &latMax,
 			&s.Tokens, &s.PromptTokens, &s.CompletionTokens, &s.ReasoningTokens, &s.CachedTokens,
-			&s.EstCostUSD, &s.VerifiedCostUSD, &s.VerifiedCalls, &s.PlaySeconds, &s.TimedMatches); err != nil {
+			&s.EstCostUSD, &s.VerifiedCostUSD, &s.VerifiedCalls,
+			&boundDecisions, &loggedDecisions,
+			&s.PlaySeconds, &s.TimedMatches); err != nil {
 			return nil, err
 		}
 		s.Provider, s.Model = provider, model
+		// Coverage first, then the tier FROM coverage: an identification path can only ever
+		// be downgraded by how little of the row it actually covers, never upgraded.
+		s.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
 		s.MinLatencyMs, s.MaxLatencyMs = int(latMin), int(latMax)
 		if s.Decisions > 0 {
 			s.AvgLatencyMs = int(float64(latSum)/float64(s.Decisions) + 0.5)
