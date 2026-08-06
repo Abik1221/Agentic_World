@@ -70,9 +70,43 @@ func SignRequest(secret, timestamp, nonce, method, path string, body []byte) str
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// perAttemptTimeout decides how long one attempt may take.
+//
+// DEADLINE PROPAGATION, the standard RPC contract: the CALLER owns the deadline and the
+// transport honours it. cfg.Timeout is a fallback for callers that set none — not a
+// ceiling that silently overrides one they did set.
+//
+// Getting this backwards is what made the adaptive-window work inert. Play clients are
+// built once at startup with a fixed Timeout, and this method used to apply it
+// unconditionally, so a caller computing a 2m22s window for a slow local model still had
+// its turn cut at the configured constant. The window was correct, adaptive and tested —
+// and could never reach the code that decides when to give up.
+//
+// MaxTimeout remains an absolute ceiling. A caller cannot pin a goroutine and a socket
+// indefinitely by handing in an enormous deadline, however it was computed.
+func (c *Client) perAttemptTimeout(ctx context.Context) time.Duration {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return c.cfg.Timeout // no caller deadline: the configured fallback, as before
+	}
+	remaining := time.Until(dl)
+	if remaining <= 0 {
+		// Already past it. Return a positive sliver so WithTimeout produces a context that
+		// fails cleanly on its own terms rather than one that was never valid.
+		return time.Millisecond
+	}
+	if remaining > c.cfg.MaxTimeout {
+		return c.cfg.MaxTimeout
+	}
+	return remaining
+}
+
 // Config tunes the client. Zero values fall back to sensible defaults in New.
 type Config struct {
-	Timeout      time.Duration // per-attempt deadline (clamped to MaxTimeout)
+	// Timeout is the per-attempt deadline used when the CALLER supplies none. A caller
+	// that sets a deadline on its context overrides this in both directions — see
+	// perAttemptTimeout.
+	Timeout      time.Duration
 	MaxTimeout   time.Duration // hard ceiling on Timeout
 	Retries      int           // additional attempts after the first, on transient errors
 	Backoff      time.Duration // base delay between attempts
@@ -306,7 +340,7 @@ func (c *Client) do(ctx context.Context, method, rawURL, token string, body []by
 }
 
 func (c *Client) attempt(ctx context.Context, method, rawURL, token string, body []byte) (int, []byte, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	reqCtx, cancel := context.WithTimeout(ctx, c.perAttemptTimeout(ctx))
 	defer cancel()
 
 	var rdr io.Reader

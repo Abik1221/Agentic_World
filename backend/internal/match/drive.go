@@ -376,6 +376,19 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, agentID, m
 		DeadlineMs:       v.DeadlineMs,
 	}
 	var move goofspielTurnMove
+	// The turn carries its own deadline, and this is the line that makes the adaptive
+	// window real. The play client's configured Timeout is only a fallback for callers
+	// that set none; without this, every pushed turn is cut at that constant no matter
+	// what window was computed for the agent — which is exactly how the first version of
+	// this work ended up correct, tested and completely inert.
+	//
+	// v.DeadlineMs is what the engine says is LEFT on this seat's clock, so it already
+	// accounts for the adaptive base and any liveness extension granted by the sweeper.
+	if v.DeadlineMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(v.DeadlineMs)*time.Millisecond)
+		defer cancel()
+	}
 	start := time.Now()
 	err := sd.Turn(ctx, req, &move)
 	latencyMS := time.Since(start).Milliseconds()

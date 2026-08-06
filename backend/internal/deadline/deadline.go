@@ -194,3 +194,19 @@ func clamp(v, lo, hi time.Duration) time.Duration {
 	}
 	return v
 }
+
+// MaxCeiling is the largest window any policy can produce.
+//
+// Exported so the transport can size its absolute safety ceiling to match. A client whose
+// MaxTimeout is below this would silently truncate an adaptive window back down — the
+// window would be computed correctly, logged correctly, and then clamped away by a
+// constant nobody thought to keep in step.
+var MaxCeiling = func() time.Duration {
+	max := time.Duration(0)
+	for _, g := range []string{"goofspiel", "mafia", "monopoly"} {
+		if c := DefaultPolicy(g).Ceiling; c > max {
+			max = c
+		}
+	}
+	return max
+}()

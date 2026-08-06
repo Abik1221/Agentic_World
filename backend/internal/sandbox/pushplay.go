@@ -323,6 +323,13 @@ func (p *pushPlayer) turnView(matchID string, v match.AgentView, legal []int) re
 func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, target agentclient.Target, view remoteplay.GoofspielView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
 	legal := view.LegalActions
 	var move remoteplay.GoofspielMove
+	// Same as the ranked drive: the turn carries the seat's remaining clock, so the play
+	// client's configured Timeout applies only when nobody supplied one.
+	if view.DeadlineMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(view.DeadlineMs)*time.Millisecond)
+		defer cancel()
+	}
 	start := time.Now()
 	err := tr.Turn(ctx, view, &move)
 	latencyMS := time.Since(start).Milliseconds()

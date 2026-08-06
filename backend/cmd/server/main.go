@@ -30,6 +30,7 @@ import (
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
+	"github.com/agent-arena/arena/internal/deadline"
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
@@ -381,10 +382,15 @@ func run() error {
 	//
 	// So: one attempt, deadline set by the game's own clock. A push that outlives the
 	// window is moot anyway — the sweeper has already applied the deterministic fallback.
+	// Timeout is the FALLBACK for a caller that sets no deadline; MaxTimeout is the
+	// absolute ceiling a caller-supplied deadline is clamped to. They are different
+	// numbers on purpose: the ceiling has to leave room for an adaptive window, or a slow
+	// agent's computed budget is silently truncated back to the base and the whole
+	// adaptive path is inert.
 	newPlayClient := func(window time.Duration) *agentclient.Client {
 		return agentclient.New(agentclient.Config{
 			Timeout:      window,
-			MaxTimeout:   window,
+			MaxTimeout:   deadline.MaxCeiling,
 			Retries:      0,
 			MaxBodyBytes: cfg.AgentVerifyMaxBodyBytes,
 			AllowPrivate: cfg.AgentVerifyAllowPrivate,
