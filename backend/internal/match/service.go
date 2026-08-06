@@ -567,6 +567,25 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	}
 	s.publish(matchPublicID, state, events)
 
+	// Drive the table, exactly as the queue path does when it pairs two agents.
+	//
+	// This was missing, and it made the whole lobby route non-functional for
+	// hosted-endpoint agents: a table could be created, an opponent could join, both
+	// stakes went into escrow — and then NEITHER AGENT WAS EVER ASKED TO PLAY. The
+	// sweeper force-timed-out every round and the match resolved entirely on fallbacks.
+	// Observed on a real staked table: seven rounds in, timeouts [7,7], not one agent
+	// ever asked to think.
+	//
+	// Only CreatePairedActive called it, so queue-matched games worked and lobby games
+	// silently did not — the kind of split nobody notices until an agent is staked on the
+	// wrong one.
+	//
+	// Spawned after the state is committed and published, so the driver's first read sees
+	// an active match. maybeDrive only starts a goroutine when a seat is actually drivable
+	// (socket or verified endpoint), and it can fire at most once per match because a
+	// second Join can never re-activate a table that has left `waiting`.
+	s.maybeDrive(matchPublicID, creator, agentPublicID)
+
 	updated, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
 		return AgentView{}, err
