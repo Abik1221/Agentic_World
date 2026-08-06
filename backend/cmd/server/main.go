@@ -906,6 +906,10 @@ func run() error {
 	mafiaSvc.SetWebhookEnqueuer(webhookQueue)
 	mafiaSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	mafiaSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
+	// Request-path instrumentation, as for Monopoly: without it a Mafia match played by polling
+	// state and posting actions produces no benchmark fact, no decision log and no board
+	// presence. See OBSERVABILITY_COVERAGE_GAP.md.
+	mafiaSvc.SetActDecisionRecorder(mafiaActRecorder{repo: pindexRepo})
 
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake; escrowed + settled via MonopolyWallet
@@ -2260,5 +2264,21 @@ func (a monopolyActRecorder) RecordActDecision(ctx context.Context, d monopoly.A
 }
 
 func (a monopolyActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
+	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
+}
+
+// mafiaActRecorder adapts the store to the shape mafia asks for, so internal/mafia does not
+// import internal/store. Same reasoning as monopolyActRecorder above.
+type mafiaActRecorder struct{ repo *store.PIndexRepo }
+
+func (a mafiaActRecorder) RecordActDecision(ctx context.Context, d mafia.ActDecision) error {
+	return a.repo.RecordActDecision(ctx, store.ActDecision{
+		MatchID: d.MatchID, AgentPublicID: d.AgentPublicID, Game: "mafia",
+		Seq: d.Seq, Round: d.Round, Action: d.Action, Outcome: d.Outcome,
+		InputJSON: d.InputJSON,
+	})
+}
+
+func (a mafiaActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
 	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agent-arena/arena/internal/benchmark"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
@@ -17,6 +18,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/turnproof"
 )
 
 // Config tunes phase windows and table economics.
@@ -51,8 +53,10 @@ type Service struct {
 	bcast  Broadcaster
 	ver    Verifier
 	finish FinishHook
-	clock  platform.Clock
-	cfg    Config
+	// actDecisions instruments the request path. Nil leaves Act uninstrumented.
+	actDecisions ActDecisionRecorder
+	clock        platform.Clock
+	cfg          Config
 	// defaultStake supplies the admin's cheapest enabled tier for lobby browsing.
 	defaultStake func(context.Context) (int64, bool)
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
@@ -107,6 +111,34 @@ type DecisionTracer interface {
 
 // SetDecisionTracer installs the per-decision tracer (called once at wiring time).
 func (s *Service) SetDecisionTracer(t DecisionTracer) { s.decisionTracer = t }
+
+// ActDecision is one decision made through the REQUEST path.
+//
+// Declared here rather than reusing store.ActDecision so this package does not depend on the
+// persistence layer — a game service defines what it needs and main.go adapts.
+type ActDecision struct {
+	MatchID       string
+	AgentPublicID string
+	Seq           int
+	Round         int
+	Action        string
+	Outcome       string
+	InputJSON     []byte
+}
+
+// ActDecisionRecorder durably records request-path decisions and builds the per-seat facts at
+// match end.
+//
+// Mafia's instrumentation lived only in its push-play driver, so an agent that polls state and
+// posts actions produced no benchmark fact, no decision log and no board presence. See
+// OBSERVABILITY_COVERAGE_GAP.md.
+type ActDecisionRecorder interface {
+	RecordActDecision(ctx context.Context, d ActDecision) error
+	AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error
+}
+
+// SetActDecisionRecorder wires request-path instrumentation. Optional.
+func (s *Service) SetActDecisionRecorder(r ActDecisionRecorder) { s.actDecisions = r }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
@@ -624,7 +656,57 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	if err != nil {
 		return AgentView{}, err
 	}
-	return s.viewFor(ctx, m, agentPublicID), nil
+	view := s.viewFor(ctx, m, agentPublicID)
+	// Instrument AFTER the move commits: an action the engine refused returned above and is not
+	// a decision the agent got to make.
+	//
+	// Keyed by turnproof.MafiaTurn(day, phase), NOT by day. A player acts in both the night and
+	// the voting phase of the same day, so day alone would collide and each decision would
+	// overwrite the previous one — Monopoly can use its engine NextSeq for this, Mafia cannot.
+	// Using the same encoding the turn proof binds to also keeps a decision's identity
+	// consistent with the proof that verifies it.
+	s.recordActDecision(ctx, m, agentPublicID, act, view)
+	return view, nil
+}
+
+// recordActDecision persists one request-path decision, best-effort.
+//
+// Never blocks the move: the action is committed and any coins already moved, so a bookkeeping
+// failure is logged rather than surfaced to the agent.
+//
+// Latency is deliberately not reported — on the request path the platform never observed the
+// agent thinking, it received a finished action, so any figure would be OUR apply time. Zero
+// reads as "not measured", which is true.
+func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, act mf.Action, view AgentView) {
+	if s.actDecisions == nil {
+		return
+	}
+	input, err := json.Marshal(view)
+	if err != nil {
+		input = nil
+	}
+	if err := s.actDecisions.RecordActDecision(ctx, ActDecision{
+		MatchID: m.PublicID, AgentPublicID: agentPublicID,
+		Seq:   turnproof.MafiaTurn(m.State.Day, m.State.Phase),
+		Round: m.State.Day, Action: string(act.Kind),
+		Outcome:   string(benchmark.OutcomeOK),
+		InputJSON: input,
+	}); err != nil {
+		slog.Default().Warn("mafia: could not record act decision",
+			"match", m.PublicID, "agent", agentPublicID, "err", err)
+	}
+	if !m.State.Finished {
+		return
+	}
+	// Match over: build the seat facts the boards read, now that the result is known and every
+	// decision is already persisted.
+	results := make(map[string]string, len(m.Players))
+	for _, p := range m.Players {
+		results[p.AgentPublicID] = string(mafiaSeatResult(m.State, p.Seat))
+	}
+	if err := s.actDecisions.AggregateSeatBenchmark(ctx, m.PublicID, GameName, results); err != nil {
+		slog.Default().Warn("mafia: could not aggregate seat benchmark", "match", m.PublicID, "err", err)
+	}
 }
 
 // nightSubmissionAdded reports whether `after` recorded a new night submission
@@ -1247,4 +1329,22 @@ func (s *Service) rakePct() int {
 		}
 	}
 	return s.cfg.PlatformFeePct
+}
+
+// mafiaSeatResult maps a finished state onto one seat's outcome.
+//
+// Mafia is a TEAM game: the seat's result is its team's result, so a Mafioso and a Villager in
+// the same match never share an outcome and two seats on the same team always do. That is also
+// exactly why Mafia cannot enter the pairwise model board — see internal/modelboard/build.go —
+// but the per-seat result is still needed for win rates, ratings and the P-Index.
+func mafiaSeatResult(st mf.State, seat int) benchmark.Result {
+	if st.Winner == "" {
+		// Finished with no winner recorded: report a draw rather than inventing a loss for
+		// everyone, which is what a zero value would have meant.
+		return benchmark.ResultDraw
+	}
+	if mf.TeamOf(st.Roles[seat]) == st.Winner {
+		return benchmark.ResultWin
+	}
+	return benchmark.ResultLoss
 }
