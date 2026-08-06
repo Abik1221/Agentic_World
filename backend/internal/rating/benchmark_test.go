@@ -190,15 +190,35 @@ func TestModelBenchmarkSeparatesMatchAndGameDenominators(t *testing.T) {
 	}
 }
 
-// Cost columns must divide the GATEWAY-VERIFIED total when one exists — self-reported
-// spend is gameable, and a model whose developer understates it would otherwise win a
-// cost-efficiency column by lying. The basis is published either way.
-func TestCostBasisPrefersVerifiedOverSelfReported(t *testing.T) {
+// Cost columns divide the GATEWAY-VERIFIED total only when COVERAGE says it represents the
+// row; otherwise they divide the complete self-reported total and say so.
+//
+// The rule used to be "verified whenever any verified cost exists", justified by self-reported
+// spend being gameable — true, but only half the picture. An INCOMPLETE verified figure is
+// gameable in the opposite direction and more effectively, because it wears the label a reader
+// trusts most: route 5% of your calls and the gateway honestly reports 5% of your spend against
+// 100% of your wins. For a ratio, completeness beats provenance.
+func TestCostBasisRequiresCoverageBeforeTrustingVerifiedSpend(t *testing.T) {
 	repo := newRollFakeRepo(-1)
 	repo.models = []ModelStat{
-		{Provider: "a", Model: "both", Matches: 4, Wins: 4, EstCostUSD: 1.0, VerifiedCostUSD: 8.0},
+		// Fully covered: verified spend represents the row, so it is the divisor.
+		{Provider: "a", Model: "covered", Matches: 4, Wins: 4,
+			EstCostUSD: 1.0, VerifiedCostUSD: 8.0, Verified: NewCoverage(100, 100)},
+		// THE ATTACK: 5% routed. The gateway's $0.40 is honest and useless as a ratio — it
+		// would report cost-per-win of 0.10 against a real 2.00, and label it "verified".
+		{Provider: "a", Model: "thin", Matches: 4, Wins: 4,
+			EstCostUSD: 8.0, VerifiedCostUSD: 0.40, Verified: NewCoverage(100, 5)},
+		// Verified spend but no measurable denominator: also refused. An unmeasurable
+		// denominator is exactly the state an agent would engineer to keep the label.
+		{Provider: "a", Model: "unknown-coverage", Matches: 4, Wins: 4,
+			EstCostUSD: 8.0, VerifiedCostUSD: 0.40},
 		{Provider: "a", Model: "sdk-only", Matches: 4, Wins: 4, EstCostUSD: 4.0},
 		{Provider: "a", Model: "no-cost", Matches: 4, Wins: 4},
+		// Only a thin verified figure and nothing complete to fall back on. The answer is NO
+		// figure: a known-incomplete cost ratio is worse than a blank, and blank already means
+		// "not measured" here rather than "zero spend".
+		{Provider: "a", Model: "thin-only", Matches: 4, Wins: 4,
+			VerifiedCostUSD: 0.40, Verified: NewCoverage(100, 5)},
 	}
 	page, err := svcAtSeason(repo, 1).ModelBenchmark(context.Background(), ArenaAll, 1)
 	if err != nil {
@@ -208,8 +228,16 @@ func TestCostBasisPrefersVerifiedOverSelfReported(t *testing.T) {
 	for _, m := range page.Models {
 		got[m.Model] = m
 	}
-	if b := got["both"]; b.CostBasis != CostVerified || b.CostPerWin != 2.0 {
-		t.Errorf("both: basis=%q costPerWin=%.2f, want %q / 8.00÷4", b.CostBasis, b.CostPerWin, CostVerified)
+	if b := got["covered"]; b.CostBasis != CostVerified || b.CostPerWin != 2.0 {
+		t.Errorf("covered: basis=%q costPerWin=%.2f, want %q / 8.00÷4", b.CostBasis, b.CostPerWin, CostVerified)
+	}
+	if t2 := got["thin"]; t2.CostBasis != CostSelfReported || t2.CostPerWin != 2.0 {
+		t.Errorf("thin: basis=%q costPerWin=%.2f, want %q / 8.00÷4 — a 5%%-routed row must not "+
+			"report 5%% of its spend as if it were the whole bill", t2.CostBasis, t2.CostPerWin, CostSelfReported)
+	}
+	if u := got["unknown-coverage"]; u.CostBasis != CostSelfReported || u.CostPerWin != 2.0 {
+		t.Errorf("unknown-coverage: basis=%q costPerWin=%.2f, want %q / 8.00÷4",
+			u.CostBasis, u.CostPerWin, CostSelfReported)
 	}
 	if s := got["sdk-only"]; s.CostBasis != CostSelfReported || s.CostPerWin != 1.0 {
 		t.Errorf("sdk-only: basis=%q costPerWin=%.2f, want %q / 4.00÷4", s.CostBasis, s.CostPerWin, CostSelfReported)
@@ -218,45 +246,40 @@ func TestCostBasisPrefersVerifiedOverSelfReported(t *testing.T) {
 	if n := got["no-cost"]; n.CostBasis != "" || n.CostPerWin != 0 {
 		t.Errorf("no-cost: basis=%q costPerWin=%.2f, want empty / 0", n.CostBasis, n.CostPerWin)
 	}
+	if to := got["thin-only"]; to.CostBasis != "" || to.CostPerWin != 0 {
+		t.Errorf("thin-only: basis=%q costPerWin=%.2f, want empty / 0 — a known-incomplete "+
+			"figure must not be published as a cost ratio", to.CostBasis, to.CostPerWin)
+	}
 }
 
-// Attribution tier travels from the store's numeric rank to a name the UI can print — but
-// gated by COVERAGE, so the name reflects how much of the row the tier actually describes.
-//
-// The rank alone used to decide it, which meant a single gateway-verified call out of any
-// number of decisions stamped the whole row "verified". These cases pin the gate: a rank-1 row
-// is verified only when nearly all of its decisions were proven, and a rank-1 row whose
-// coverage cannot be measured reports the weaker, honest tier rather than the flattering one.
-func TestAttributionTierNaming(t *testing.T) {
-	repo := newRollFakeRepo(-1)
-	repo.models = []ModelStat{
-		// Gateway-identified AND nearly fully covered — the only state that earns the badge.
-		{Provider: "a", Model: "gw", AttrRank: 1, Wins: 1, Verified: NewCoverage(13, 13)},
-		// Gateway-identified but only a sliver proven: the inversion, refused.
-		{Provider: "a", Model: "gw-thin", AttrRank: 1, Wins: 1, Verified: NewCoverage(10_000, 1)},
-		// Gateway-identified with a real partial migration in progress: its own tier.
-		{Provider: "a", Model: "gw-partial", AttrRank: 1, Wins: 1, Verified: NewCoverage(100, 50)},
-		// Gateway-identified with NO denominator. Unmeasurable coverage is exactly what an
-		// agent would engineer to keep the badge while dodging the audit, so it does not pass.
-		{Provider: "a", Model: "gw-unknown", AttrRank: 1, Wins: 1},
-		// Coverage can never PROMOTE a self-reported claim, however complete it is.
-		{Provider: "a", Model: "sdk", AttrRank: 2, Wins: 1, Verified: NewCoverage(500, 500)},
-		{Provider: "a", Model: "manifest", AttrRank: 3, Wins: 1, Verified: NewCoverage(500, 500)},
-		{Provider: "a", Model: "unset", Wins: 1}, // 0 ⇒ weakest claim, never "verified"
-	}
-	page, err := svcAtSeason(repo, 1).ModelBenchmark(context.Background(), ArenaAll, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{
-		"gw": AttrVerified, "gw-thin": AttrObserved, "gw-partial": AttrPartial,
-		"gw-unknown": AttrObserved,
-		"sdk":        AttrObserved, "manifest": AttrDeclared, "unset": AttrDeclared,
-	}
-	for _, m := range page.Models {
-		if want[m.Model] != m.Attribution {
-			t.Errorf("%s: attribution = %q, want %q", m.Model, m.Attribution, want[m.Model])
+// A group's cost basis must follow the same rule as the model rows inside it: a basis that
+// means one thing on a model row and another on the group containing it is worse than none.
+// Coverage pools the raw COUNTS, so one tiny fully-covered model cannot carry a large
+// uncovered one over the threshold.
+func TestGroupCoveragePoolsCountsRatherThanAveragingFractions(t *testing.T) {
+	groups := BuildGroups([]ModelStat{
+		{Provider: "p", Model: "tiny-covered", Matches: 1, Wins: 1,
+			EstCostUSD: 1, VerifiedCostUSD: 1, Verified: NewCoverage(10, 10)},
+		{Provider: "p", Model: "huge-uncovered", Matches: 1, Wins: 1,
+			EstCostUSD: 100, VerifiedCostUSD: 1, Verified: NewCoverage(9990, 0)},
+	})
+	var g *GroupStat
+	for i := range groups {
+		if groups[i].Kind == GroupProvider && groups[i].Key == "p" {
+			g = &groups[i]
+			break
 		}
+	}
+	if g == nil {
+		t.Fatal("no provider group built")
+	}
+	// 10 bound of 10000 logged = 0.1%. Averaging the two fractions would have given 50%.
+	if g.Verified.Coverage > 0.01 {
+		t.Fatalf("pooled coverage = %.4f, want ~0.001 — fractions were averaged, not pooled",
+			g.Verified.Coverage)
+	}
+	if g.CostBasis != CostSelfReported {
+		t.Errorf("group basis = %q, want %q at 0.1%% coverage", g.CostBasis, CostSelfReported)
 	}
 }
 

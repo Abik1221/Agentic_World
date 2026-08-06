@@ -644,19 +644,14 @@ func deriveModelStat(m *ModelStat) {
 
 // costBasis is the USD figure the per-match and per-win cost columns divide.
 //
-// Gateway-verified cost when there is any, self-reported otherwise. Verified wins
-// because self-reported cost is gameable — an agent that under-reports its spend
-// would otherwise top a cost-efficiency column by lying. CostBasis records which was
-// used so the UI can say so rather than implying both rows mean the same thing.
+// Delegates to CostForRanking so this and the group rows cannot drift on a rule that decides
+// a published ranking. The rule used to be "verified cost when there is any", which meant one
+// routed call in a thousand made the whole row's cost-per-win 1000x too cheap while labelling
+// it with the tier a reader trusts most. See CostForRanking for both directions of the attack.
 func (m *ModelStat) costBasis() float64 {
-	if m.VerifiedCostUSD > 0 {
-		m.CostBasis = CostVerified
-		return m.VerifiedCostUSD
-	}
-	if m.EstCostUSD > 0 {
-		m.CostBasis = CostSelfReported
-	}
-	return m.EstCostUSD
+	amount, basis := CostForRanking(m.VerifiedCostUSD, m.EstCostUSD, m.Verified)
+	m.CostBasis = basis
+	return amount
 }
 
 // intelligenceScore is the 0..1000 quality composite, using the SAME weights and
