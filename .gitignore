@@ -58,3 +58,8 @@ Super_Admin/
 
 # Local beta test harness (agent + docker db + secrets) — never committed
 test/
+
+# Local lab binaries (built by the docker loop in NEXT_SESSION_PROMPT.md) — 30MB+ each,
+# rebuilt from source on demand and never useful in a commit.
+backend/.lab-server
+backend/.lab-gamelab
