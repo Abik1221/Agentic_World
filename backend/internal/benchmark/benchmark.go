@@ -80,8 +80,12 @@ type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
-	CachedTokens     int `json:"cached_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens,omitempty"`
+	// Prompt-cache READS and WRITES, kept apart because they are separately billed and
+	// point opposite ways (on Anthropic, 0.1x input for a read and 1.25x for a write).
+	// Collapsing them into one number makes the cost unrecoverable from what we stored.
+	CachedTokens      int `json:"cached_tokens,omitempty"`
+	CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
+	TotalTokens       int `json:"total_tokens,omitempty"`
 	// Model/Provider observed for THIS move (SDK-reported from the actual call).
 	// Empty falls back to the seat's manifest-declared model.
 	Model    string `json:"model,omitempty"`
@@ -164,11 +168,12 @@ type SeatSummary struct {
 	LatencyMaxMS    int64  `json:"latency_max_ms"`
 	Result          Result `json:"result,omitempty"` // match outcome for this seat
 	// LLM economics (summed across moves that reported usage; 0 if none did).
-	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64 `json:"completion_tokens,omitempty"`
-	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
-	CachedTokens     int64 `json:"cached_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	PromptTokens      int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int64 `json:"completion_tokens,omitempty"`
+	ReasoningTokens   int64 `json:"reasoning_tokens,omitempty"`
+	CachedTokens      int64 `json:"cached_tokens,omitempty"`
+	CachedWriteTokens int64 `json:"cached_write_tokens,omitempty"`
+	TotalTokens       int64 `json:"total_tokens,omitempty"`
 	// EstimatedCost is the summed USD cost across moves that reported usage, priced
 	// per-move by the versioned pricing table (real per-move model when reported,
 	// else the manifest model). PricingVersion records which table produced it.
@@ -336,6 +341,7 @@ func (r *Recorder) Record(d Decision) {
 		s.CompletionTokens += int64(d.Usage.CompletionTokens)
 		s.ReasoningTokens += int64(d.Usage.ReasoningTokens)
 		s.CachedTokens += int64(d.Usage.CachedTokens)
+		s.CachedWriteTokens += int64(d.Usage.CachedWriteTokens)
 		s.TotalTokens += int64(d.Usage.total())
 		// Price this move now (uncapped, unlike DecisionLog): prefer the real
 		// per-move model, else the seat's manifest model.
@@ -344,7 +350,8 @@ func (r *Recorder) Record(d Decision) {
 			model = s.Model
 		}
 		s.EstimatedCost += pricing.EstimateCost(
-			model, d.Usage.PromptTokens, d.Usage.CompletionTokens, d.Usage.CachedTokens, d.Usage.ReasoningTokens,
+			model, d.Usage.PromptTokens, d.Usage.CompletionTokens,
+			d.Usage.CachedTokens, d.Usage.CachedWriteTokens, d.Usage.ReasoningTokens,
 		)
 		s.PricingVersion = pricing.Version
 	}

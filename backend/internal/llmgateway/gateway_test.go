@@ -144,11 +144,15 @@ func TestProxy_ObservesAnthropicShape(t *testing.T) {
 	if e.Provider != "anthropic" || e.Model != "claude-sonnet-4-5" {
 		t.Errorf("provider/model = %q/%q", e.Provider, e.Model)
 	}
-	if e.PromptTokens != 900 || e.CompletionTokens != 120 {
+	// 900 uncached + 100 cache reads. Anthropic's input_tokens counts only the uncached
+	// remainder, so cache tokens are ADDED to recover billable input — the convention every
+	// consumer downstream assumes. Reading it raw made those 100 reads DISPLACE 100
+	// full-rate tokens instead of adding to them, which understated the bill.
+	if e.PromptTokens != 1000 || e.CompletionTokens != 120 {
 		t.Errorf("anthropic tokens wrong: %+v", e)
 	}
-	// claude-sonnet: 800 input @3 + 100 cached @0.30 + 120 out @15
-	wantCost := (800*3.00 + 100*0.30 + 120*15.00) / 1_000_000
+	// claude-sonnet: 900 input @3 + 100 cache reads @0.30 + 120 out @15
+	wantCost := (900*3.00 + 100*0.30 + 120*15.00) / 1_000_000
 	if abs(e.EstimatedCost-wantCost) > 1e-9 {
 		t.Errorf("cost = %v, want %v", e.EstimatedCost, wantCost)
 	}

@@ -108,3 +108,98 @@ def test_an_unknown_provider_does_not_invent_a_hosted_rate():
     from pyyol import estimate_cost
 
     assert estimate_cost("llama-3.3-70b-versatile", 1000, 200, provider="mystery") == 0.0
+
+
+# --- Prompt-cache accounting ---------------------------------------------------
+#
+# The bug these pin: cache WRITES were never captured, and cache tokens were assumed to
+# be a subset of the reported input count on every provider. Both errors pushed cost
+# DOWN, and hardest for the agents that cache most aggressively — the opposite of what a
+# cost-efficiency ranking needs.
+
+
+def test_cache_write_is_billed_above_input_on_anthropic():
+    """Anthropic surcharges a cache write to 1.25x input. Billing it at the READ rate
+    (0.1x) or at zero understates the expensive half of caching by up to 12.5x."""
+    r = pricing.rate_for("claude-opus-4")
+    assert pricing.cache_write_rate("claude-opus-4") == pytest.approx(r.input * 1.25)
+    assert pricing.cache_write_rate("claude-opus-4") > r.input
+    assert r.cached_input is not None and pricing.cache_write_rate("claude-opus-4") > r.cached_input
+
+
+def test_cache_write_is_free_on_openai():
+    """OpenAI's prompt caching is automatic and writes are not billed. Applying
+    Anthropic's 1.25x surcharge here would invent a charge that does not exist."""
+    assert pricing.cache_write_rate("gpt-4o") == 0.0
+
+
+def test_unknown_model_cache_write_is_not_silently_free():
+    """An unmapped model must not get free caching — that is the flattering direction,
+    and it would let an unrecognised model look cheaper than any known one."""
+    assert pricing.cache_write_rate("some-unreleased-model-2027") > 0.0
+
+
+def test_reads_and_writes_partition_the_input_and_never_double_bill():
+    """Reads come out of the input first, then writes from the remainder, so no token is
+    billed twice and the three portions sum to prompt_tokens."""
+    rate = pricing.rate_for("claude-opus-4")
+    prompt, read, write, completion = 2520, 1500, 600, 90
+    got = pricing.estimate_cost(
+        "claude-opus-4", prompt, completion,
+        cached_tokens=read, cached_write_tokens=write,
+    )
+    full = prompt - read - write  # 420 at full input rate
+    want = (
+        full * rate.input
+        + read * rate.cached_input
+        + write * pricing.cache_write_rate("claude-opus-4")
+        + completion * rate.output
+    ) / 1_000_000.0
+    assert got == pytest.approx(want)
+
+
+def test_old_cache_accounting_understated_a_real_call_by_over_3x():
+    """The regression itself, with the token counts observed from a live gateway call:
+    Anthropic reported input 420, output 90, cache read 1500, cache write 600.
+
+    The OLD path did two things wrong at once. It never read
+    ``cache_creation_input_tokens``, so the 600 written tokens did not exist. And it
+    treated cache reads as a subset of ``input_tokens``, so ``min(1500, 420)`` billed 420
+    tokens at the cheap read rate and threw the other 1080 reads away entirely.
+
+    Both errors point the same way, which is why this matters: the reported cost was 28%
+    of the real one, and the understatement scales with how hard an agent caches.
+    """
+    # What the old code computed: prompt never grew, reads clamped down to it.
+    old = pricing.estimate_cost("claude-opus-4", 420, 90, cached_tokens=420)
+    # What the provider actually bills, on the normalized convention.
+    new = pricing.estimate_cost(
+        "claude-opus-4", 2520, 90, cached_tokens=1500, cached_write_tokens=600
+    )
+    assert old == pytest.approx((420 * 1.50 + 90 * 75.00) / 1_000_000.0)
+    assert new == pytest.approx(
+        (420 * 15.00 + 1500 * 1.50 + 600 * 18.75 + 90 * 75.00) / 1_000_000.0
+    )
+    assert new > 3.5 * old
+
+
+def test_pricing_a_write_at_the_read_rate_is_not_close_enough():
+    """The plausible half-fix — capture writes but bill them like reads — is off by the
+    full 12.5x spread between Anthropic's 1.25x write and 0.1x read."""
+    correct = pricing.estimate_cost(
+        "claude-opus-4", 2520, 90, cached_tokens=1500, cached_write_tokens=600
+    )
+    as_if_read = pricing.estimate_cost(
+        "claude-opus-4", 2520, 90, cached_tokens=2100
+    )  # 1500 reads + 600 writes all at the read rate
+    assert correct - as_if_read == pytest.approx(600 * (18.75 - 1.50) / 1_000_000.0)
+
+
+def test_self_hosted_caching_is_still_free():
+    """A multiplier on a $0 input rate must stay $0 — a locally served model has no
+    bill of any kind, cache or otherwise."""
+    assert pricing.cache_write_rate("llama-3.3-70b", provider="ollama") == 0.0
+    assert pricing.estimate_cost(
+        "llama-3.3-70b", 2520, 90, cached_tokens=1500,
+        cached_write_tokens=600, provider="ollama",
+    ) == 0.0

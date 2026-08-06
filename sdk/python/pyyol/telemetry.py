@@ -160,9 +160,18 @@ class UsageAccumulator:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.reasoning_tokens = 0
+        # Cache READS (0.1x input on Anthropic) and cache WRITES (1.25x) are separate
+        # numbers because they are separate prices pointing opposite ways. Summing them
+        # into one "cached" figure makes a cost unrecoverable from what we stored.
         self.cached_tokens = 0
+        self.cached_write_tokens = 0
         self.estimated_cost = 0.0
         self.calls = 0
+        # Per-call latency, kept as a list so the platform can compute a distribution
+        # rather than only a mean. A turn's WALL time is already measured by the span;
+        # what that cannot separate is one slow call from six quick ones, and "thinks
+        # for 40s" versus "makes 20 round trips" are different things about an agent.
+        self.call_latencies_ms: List[int] = []
         # Turn context (for gateway attribution); set by turn_usage().
         self.match_id = ""
         self.turn = 0
@@ -185,14 +194,19 @@ class UsageAccumulator:
         completion_tokens: int = 0,
         reasoning_tokens: int = 0,
         cached_tokens: int = 0,
+        cached_write_tokens: int = 0,
         estimated_cost: float = 0.0,
+        latency_ms: int = 0,
     ) -> None:
         self.prompt_tokens += max(0, int(prompt_tokens or 0))
         self.completion_tokens += max(0, int(completion_tokens or 0))
         self.reasoning_tokens += max(0, int(reasoning_tokens or 0))
         self.cached_tokens += max(0, int(cached_tokens or 0))
+        self.cached_write_tokens += max(0, int(cached_write_tokens or 0))
         self.estimated_cost += max(0.0, float(estimated_cost or 0.0))
         self.calls += 1
+        if latency_ms:
+            self.call_latencies_ms.append(max(0, int(latency_ms)))
         if model and model not in self.models:
             self.models.append(model)
         if provider and provider not in self.providers:
@@ -219,8 +233,18 @@ class UsageAccumulator:
             usage["reasoning_tokens"] = self.reasoning_tokens
         if self.cached_tokens:
             usage["cached_tokens"] = self.cached_tokens
+        if self.cached_write_tokens:
+            usage["cached_write_tokens"] = self.cached_write_tokens
         if self.estimated_cost:
             usage["estimated_cost"] = round(self.estimated_cost, 8)
+        # How many model calls this ONE decision took, and how long each took. A single
+        # aggregate hides the difference between an agent that answers in one call and
+        # one that runs a twelve-call chain to reach the same move — and that difference
+        # is most of what "efficient" means when comparing two agents on equal footing.
+        if self.calls:
+            usage["model_calls"] = self.calls
+        if self.call_latencies_ms:
+            usage["call_latencies_ms"] = list(self.call_latencies_ms)
         if self.models:
             usage["model"] = self.models[0] if len(self.models) == 1 else self.models
         if self.providers:

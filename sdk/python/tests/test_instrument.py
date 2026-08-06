@@ -44,13 +44,14 @@ def _openai_chat_resp(model="gpt-4o", prompt=1200, completion=80, cached=0, reas
     )
 
 
-def _anthropic_resp(model="claude-sonnet-4-5", inp=900, out=120, cache_read=0):
+def _anthropic_resp(model="claude-sonnet-4-5", inp=900, out=120, cache_read=0, cache_write=0):
     return SimpleNamespace(
         model=model,
         usage=SimpleNamespace(
             input_tokens=inp,
             output_tokens=out,
             cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_write,
         ),
     )
 
@@ -73,6 +74,7 @@ def test_extract_openai_chat():
         "prompt_tokens": 1200,
         "completion_tokens": 80,
         "cached_tokens": 300,
+        "cached_write_tokens": 0,
         "reasoning_tokens": 20,
     }
 
@@ -80,8 +82,30 @@ def test_extract_openai_chat():
 def test_extract_anthropic():
     info = extract_usage(_anthropic_resp(cache_read=100))
     assert info["provider"] == "anthropic"
-    assert info["prompt_tokens"] == 900 and info["completion_tokens"] == 120
+    # 900 uncached + 100 cache reads. Anthropic's `input_tokens` counts only the
+    # uncached remainder, so the cache fields are ADDED to recover billable input —
+    # unlike OpenAI, where `prompt_tokens` already contains them.
+    assert info["prompt_tokens"] == 1000 and info["completion_tokens"] == 120
     assert info["cached_tokens"] == 100
+
+
+def test_openai_cached_tokens_stay_a_subset_and_are_not_double_counted():
+    """The mirror image of the Anthropic case. OpenAI reports cached tokens INSIDE
+    prompt_tokens, so adding them would inflate billable input — the same normalization
+    must not fire here."""
+    info = extract_usage(_openai_chat_resp(prompt=1200, cached=300))
+    assert info["prompt_tokens"] == 1200
+    assert info["cached_tokens"] == 300
+
+
+def test_extract_anthropic_cache_write():
+    """Cache CREATION tokens are billed at 1.25x input and were previously not read at
+    all, so a cache-heavy agent's most expensive tokens were recorded as zero."""
+    info = extract_usage(_anthropic_resp(inp=420, out=90, cache_read=1500, cache_write=600))
+    assert info["cached_write_tokens"] == 600
+    assert info["cached_tokens"] == 1500
+    # Every billable input token is accounted for: 420 uncached + 1500 read + 600 written.
+    assert info["prompt_tokens"] == 2520
 
 
 def test_extract_responses_api():

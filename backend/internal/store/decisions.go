@@ -40,12 +40,13 @@ func DecisionsFromSeat(seat benchmark.SeatSummary, seatProvider, seatModel strin
 			md.CompletionTokens = u.CompletionTokens
 			md.ReasoningTokens = u.ReasoningTokens
 			md.CachedTokens = u.CachedTokens
+			md.CachedWriteTokens = u.CachedWriteTokens
 			md.TotalTokens = u.TotalTokens
 			if md.TotalTokens == 0 {
 				md.TotalTokens = u.PromptTokens + u.CompletionTokens + u.ReasoningTokens
 			}
 			md.EstimatedCost = pricing.EstimateCost(md.Model, u.PromptTokens, u.CompletionTokens,
-				u.CachedTokens, u.ReasoningTokens)
+				u.CachedTokens, u.CachedWriteTokens, u.ReasoningTokens)
 		}
 		out = append(out, md)
 	}

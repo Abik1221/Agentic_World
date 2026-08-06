@@ -410,7 +410,8 @@ func (r *DevTraceRepo) MatchDecisions(
 	rows, err := r.db.Query(ctx,
 		`SELECT d.seq, d.round, d.action, d.outcome, d.latency_ms, d.rationale,
 		        d.provider, d.model, d.prompt_tokens, d.completion_tokens,
-		        d.reasoning_tokens, d.cached_tokens, d.total_tokens, d.estimated_cost,
+		        d.reasoning_tokens, d.cached_tokens, d.cached_write_tokens,
+		        d.total_tokens, d.estimated_cost,
 		        d.input_json, d.input_truncated, d.started_at,
 		        d.skill_regret, d.skill_best
 		   FROM agent_match_decisions d
@@ -431,7 +432,8 @@ func (r *DevTraceRepo) MatchDecisions(
 		var best *string
 		if err := rows.Scan(&d.Seq, &d.Round, &d.Action, &d.Outcome, &d.LatencyMS, &d.Rationale,
 			&d.Provider, &d.Model, &d.PromptTokens, &d.CompletionTokens,
-			&d.ReasoningTokens, &d.CachedTokens, &d.TotalTokens, &d.EstimatedCost,
+			&d.ReasoningTokens, &d.CachedTokens, &d.CachedWriteTokens,
+			&d.TotalTokens, &d.EstimatedCost,
 			&input, &d.InputTruncated, &d.StartedAt,
 			&d.SkillRegret, &best); err != nil {
 			return nil, err

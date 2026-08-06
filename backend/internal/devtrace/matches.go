@@ -152,12 +152,13 @@ type Decision struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 
-	PromptTokens     int     `json:"prompt_tokens"`
-	CompletionTokens int     `json:"completion_tokens"`
-	ReasoningTokens  int     `json:"reasoning_tokens"`
-	CachedTokens     int     `json:"cached_tokens"`
-	TotalTokens      int     `json:"total_tokens"`
-	EstimatedCost    float64 `json:"estimated_cost"`
+	PromptTokens      int     `json:"prompt_tokens"`
+	CompletionTokens  int     `json:"completion_tokens"`
+	ReasoningTokens   int     `json:"reasoning_tokens"`
+	CachedTokens      int     `json:"cached_tokens"`
+	CachedWriteTokens int     `json:"cached_write_tokens"`
+	TotalTokens       int     `json:"total_tokens"`
+	EstimatedCost     float64 `json:"estimated_cost"`
 
 	// SkillRegret is the share of the achievable value this decision gave up, in [0,1]:
 	// 0 played the best action available from this exact state, 1 played the worst. Nil

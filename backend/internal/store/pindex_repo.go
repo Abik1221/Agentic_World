@@ -265,9 +265,12 @@ type MatchDecision struct {
 	PromptTokens     int
 	CompletionTokens int
 	ReasoningTokens  int
-	CachedTokens     int
-	TotalTokens      int
-	EstimatedCost    float64
+	// Cache READS and WRITES, kept apart because they carry different prices in opposite
+	// directions and one merged figure cannot be turned back into a cost.
+	CachedTokens      int
+	CachedWriteTokens int
+	TotalTokens       int
+	EstimatedCost     float64
 
 	// InputJSON is the turn view the agent was handed, already JSON-encoded and
 	// size-capped by the producer. nil when there was none to keep.
@@ -308,21 +311,24 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 		rows = append(rows, []any{
 			matchID, agentID, d.Seq, d.Round, d.Action, d.Outcome, d.LatencyMS, d.Rationale,
 			d.Provider, d.Model, d.PromptTokens, d.CompletionTokens, d.ReasoningTokens,
-			d.CachedTokens, d.TotalTokens, d.EstimatedCost,
+			d.CachedTokens, d.CachedWriteTokens, d.TotalTokens, d.EstimatedCost,
 			// nil (not "null") so an absent view stores SQL NULL rather than the JSON
 			// literal null — the two read back differently and only one is honest.
 			inputOrNil(d.InputJSON), d.InputTruncated, timeOrNil(d.StartedAt),
 		})
 	}
 
-	const cols = 19
+	const cols = 20
+	// Position of input_json within a row, named so the ::jsonb cast below cannot drift
+	// out of step with the column list the way a bare literal silently would.
+	const inputJSONIndex = 17
 	args := make([]any, 0, len(rows)*cols)
 	var b strings.Builder
 	b.WriteString(`INSERT INTO agent_match_decisions (
 		match_id, agent_id, seq, round, action, outcome, latency_ms, rationale,
 		provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
-		cached_tokens, total_tokens, estimated_cost, input_json, input_truncated,
-		started_at) VALUES `)
+		cached_tokens, cached_write_tokens, total_tokens, estimated_cost,
+		input_json, input_truncated, started_at) VALUES `)
 	for i, row := range rows {
 		if i > 0 {
 			b.WriteByte(',')
@@ -334,10 +340,11 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 			}
 			b.WriteByte('$')
 			b.WriteString(strconv.Itoa(i*cols + j + 1))
-			// input_json is column 17 (index 16): pgx sends []byte as bytea unless the
+			// input_json is column 18 (index 17): pgx sends []byte as bytea unless the
 			// placeholder is cast, and a bytea in a jsonb column is a type error at
 			// execute time, not at prepare time — so it would only surface in production.
-			if j == 16 {
+			// This index MUST move whenever a column is added ahead of input_json.
+			if j == inputJSONIndex {
 				b.WriteString("::jsonb")
 			}
 		}
@@ -354,6 +361,7 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 		model = COALESCE(NULLIF(EXCLUDED.model,''), agent_match_decisions.model),
 		prompt_tokens = EXCLUDED.prompt_tokens, completion_tokens = EXCLUDED.completion_tokens,
 		reasoning_tokens = EXCLUDED.reasoning_tokens, cached_tokens = EXCLUDED.cached_tokens,
+		cached_write_tokens = EXCLUDED.cached_write_tokens,
 		total_tokens = EXCLUDED.total_tokens, estimated_cost = EXCLUDED.estimated_cost,
 		-- Same rule as the rationale: a replay that lost the view must not erase a view
 		-- we already captured.

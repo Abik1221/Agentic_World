@@ -386,12 +386,21 @@ func applyUsage(c *Call, body []byte) {
 		c.PromptTokens, c.CompletionTokens = u.PromptTokens, u.CompletionTokens
 		c.CachedReadTokens = u.PromptTokensDetails.CachedTokens
 		c.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
-	case u.InputTokens > 0 || u.OutputTokens > 0: // Anthropic
+	case u.InputTokens > 0 || u.OutputTokens > 0 ||
+		u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0: // Anthropic
 		c.PromptTokens, c.CompletionTokens = u.InputTokens, u.OutputTokens
 		c.CachedReadTokens = u.CacheReadInputTokens
 		// The field the SDK never captured. Billed at 1.25x, so omitting it understates
 		// the cost of every caching agent.
 		c.CachedWriteTokens = u.CacheCreationInputTokens
+		// Anthropic reports both cache counts ALONGSIDE input_tokens, not inside it, so
+		// input_tokens alone is only the uncached remainder. Every consumer downstream —
+		// pricing above all — treats the cache counts as SUBSETS of prompt tokens, which
+		// is true of OpenAI and false here. Storing the raw value would leave a row whose
+		// reads exceed its prompt total, and pricing would clamp the excess away as if it
+		// had never been billed. Normalizing here keeps one convention across both the
+		// observed-call table and the SDK-reported path.
+		c.PromptTokens += u.CacheReadInputTokens + u.CacheCreationInputTokens
 	case s.UsageMetadata.PromptTokenCount > 0: // Google
 		c.PromptTokens = s.UsageMetadata.PromptTokenCount
 		c.CompletionTokens = s.UsageMetadata.CandidatesTokenCount

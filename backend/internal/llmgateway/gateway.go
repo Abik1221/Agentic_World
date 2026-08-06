@@ -257,7 +257,8 @@ func (p *Proxy) observe(provider, agentID string, reqHeader http.Header, latency
 	if !ok {
 		return
 	}
-	cost := pricing.EstimateCost(u.Model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)
+	cost := pricing.EstimateCost(u.Model, u.PromptTokens, u.CompletionTokens,
+		u.CachedTokens, u.CachedWriteTokens, u.ReasoningTokens)
 	match := reqHeader.Get("X-Pyyol-Match")
 	round, _ := strconv.Atoi(reqHeader.Get("X-Pyyol-Turn"))
 
@@ -335,9 +336,12 @@ type usage struct {
 	Model            string
 	PromptTokens     int
 	CompletionTokens int
-	CachedTokens     int
-	ReasoningTokens  int
-	TotalTokens      int
+	// Cache READS and WRITES stay separate: they are separately billed and priced in
+	// opposite directions, so one merged figure cannot be turned back into a cost.
+	CachedTokens      int
+	CachedWriteTokens int
+	ReasoningTokens   int
+	TotalTokens       int
 }
 
 func (u usage) total() int {
@@ -364,7 +368,8 @@ func extractUsage(body []byte) (usage, bool) {
 			CompletionTokensDetails struct {
 				ReasoningTokens int `json:"reasoning_tokens"`
 			} `json:"completion_tokens_details"`
-			CacheReadInputTokens int `json:"cache_read_input_tokens"` // anthropic
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`     // anthropic
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"` // anthropic
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -382,6 +387,18 @@ func extractUsage(body []byte) (usage, bool) {
 	u.CachedTokens = raw.Usage.PromptTokensDetails.CachedTokens
 	if u.CachedTokens == 0 {
 		u.CachedTokens = raw.Usage.CacheReadInputTokens
+	}
+	u.CachedWriteTokens = raw.Usage.CacheCreationInputTokens
+	// Anthropic reports cache reads and writes ALONGSIDE input_tokens, not inside it,
+	// while OpenAI reports cached tokens inside prompt_tokens. Normalize to one
+	// convention — prompt is total billable input, cache counts are subsets of it — so
+	// pricing partitions correctly instead of clamping Anthropic's cache tokens down to
+	// the uncached remainder and dropping the excess.
+	if raw.Usage.PromptTokens == 0 && (u.CachedTokens > 0 || u.CachedWriteTokens > 0) {
+		u.PromptTokens += u.CachedTokens + u.CachedWriteTokens
+		if u.TotalTokens > 0 {
+			u.TotalTokens = u.PromptTokens + u.CompletionTokens
+		}
 	}
 	u.ReasoningTokens = raw.Usage.CompletionTokensDetails.ReasoningTokens
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {

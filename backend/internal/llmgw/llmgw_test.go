@@ -285,8 +285,17 @@ func TestAnthropicCacheWritesAreCaptured(t *testing.T) {
 	if got.CachedReadTokens != 2000 {
 		t.Fatalf("cache reads = %d, want 2000", got.CachedReadTokens)
 	}
-	if got.PromptTokens != 500 || got.CompletionTokens != 120 {
-		t.Fatalf("tokens %d/%d, want 500/120", got.PromptTokens, got.CompletionTokens)
+	// Anthropic reports both cache counts ALONGSIDE input_tokens, so billable input is
+	// 500 uncached + 2000 read + 800 written = 3300. Storing the raw 500 would leave a row
+	// whose reads alone exceed its prompt total, and pricing — which treats the cache
+	// counts as subsets — would clamp the excess away as if it had never been billed.
+	if got.PromptTokens != 3300 || got.CompletionTokens != 120 {
+		t.Fatalf("tokens %d/%d, want 3300/120", got.PromptTokens, got.CompletionTokens)
+	}
+	// The invariant the whole normalization exists to hold.
+	if got.CachedReadTokens+got.CachedWriteTokens > got.PromptTokens {
+		t.Fatalf("cache tokens (%d+%d) exceed prompt total %d — pricing would silently "+
+			"clamp the excess to zero", got.CachedReadTokens, got.CachedWriteTokens, got.PromptTokens)
 	}
 }
 

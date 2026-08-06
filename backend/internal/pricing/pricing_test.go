@@ -35,23 +35,23 @@ func TestUnknownModelUsesFallbackNotZero(t *testing.T) {
 	if IsKnown("totally-made-up") {
 		t.Fatal("expected unknown model to be not-known")
 	}
-	got := EstimateCost("totally-made-up", 1_000_000, 1_000_000, 0, 0)
+	got := EstimateCost("totally-made-up", 1_000_000, 1_000_000, 0, 0, 0)
 	if math.Abs(got-(0.50+1.50)) > 1e-9 {
 		t.Errorf("fallback cost = %v, want %v", got, 2.0)
 	}
 }
 
 func TestOpusSonnetHaikuDistinct(t *testing.T) {
-	opus := EstimateCost("claude-opus-4", 1_000_000, 1_000_000, 0, 0)
-	sonnet := EstimateCost("claude-sonnet-4", 1_000_000, 1_000_000, 0, 0)
-	haiku := EstimateCost("claude-haiku-4-5", 1_000_000, 1_000_000, 0, 0)
+	opus := EstimateCost("claude-opus-4", 1_000_000, 1_000_000, 0, 0, 0)
+	sonnet := EstimateCost("claude-sonnet-4", 1_000_000, 1_000_000, 0, 0, 0)
+	haiku := EstimateCost("claude-haiku-4-5", 1_000_000, 1_000_000, 0, 0, 0)
 	if !(opus > sonnet && sonnet > haiku) {
 		t.Errorf("expected opus > sonnet > haiku, got %v %v %v", opus, sonnet, haiku)
 	}
 }
 
 func TestCostMathInputOutputSplit(t *testing.T) {
-	got := EstimateCost("gpt-4o", 1000, 500, 0, 0)
+	got := EstimateCost("gpt-4o", 1000, 500, 0, 0, 0)
 	want := (1000*2.50 + 500*10.00) / 1_000_000
 	if math.Abs(got-want) > 1e-9 {
 		t.Errorf("cost = %v, want %v", got, want)
@@ -59,23 +59,23 @@ func TestCostMathInputOutputSplit(t *testing.T) {
 }
 
 func TestCachedTokensRateAndClamp(t *testing.T) {
-	got := EstimateCost("gpt-4o", 1000, 0, 400, 0)
+	got := EstimateCost("gpt-4o", 1000, 0, 400, 0, 0)
 	want := (600*2.50 + 400*1.25) / 1_000_000
 	if math.Abs(got-want) > 1e-9 {
 		t.Errorf("cached cost = %v, want %v", got, want)
 	}
 	// cached clamped to prompt
-	clamped := EstimateCost("gpt-4o", 100, 0, 500, 0)
+	clamped := EstimateCost("gpt-4o", 100, 0, 500, 0, 0)
 	if math.Abs(clamped-(100*1.25)/1_000_000) > 1e-9 {
 		t.Errorf("clamped cost = %v", clamped)
 	}
 }
 
 func TestOpenWeightFreeAndZero(t *testing.T) {
-	if EstimateCost("llama-3.3-70b", 1_000_000, 1_000_000, 0, 0) != 0 {
+	if EstimateCost("llama-3.3-70b", 1_000_000, 1_000_000, 0, 0, 0) != 0 {
 		t.Error("open-weight model should be free")
 	}
-	if EstimateCost("gpt-4o", 0, 0, 0, 0) != 0 {
+	if EstimateCost("gpt-4o", 0, 0, 0, 0, 0) != 0 {
 		t.Error("zero tokens should be zero cost")
 	}
 }
@@ -83,5 +83,66 @@ func TestOpenWeightFreeAndZero(t *testing.T) {
 func TestVersionStamped(t *testing.T) {
 	if Version == "" {
 		t.Error("Version must be set")
+	}
+}
+
+// --- Prompt-cache accounting ---------------------------------------------------
+//
+// The bug: cache WRITES were never a parameter, so tokens the gateway now observes and
+// the provider bills at 1.25x input were priced at zero. Every error here pointed the
+// same way — cost DOWN, most for the agents that cache hardest.
+
+func TestCacheWriteIsBilledAboveInputOnAnthropic(t *testing.T) {
+	r := rateFor("claude-opus-4")
+	got := CacheWriteRate("claude-opus-4")
+	if want := r.input * 1.25; got != want {
+		t.Fatalf("cache write rate = %v, want %v (1.25x input)", got, want)
+	}
+	if got <= r.cachedInput {
+		t.Fatalf("a cache WRITE (%v) must cost more than a cache READ (%v)", got, r.cachedInput)
+	}
+}
+
+func TestCacheWriteIsFreeOnOpenAI(t *testing.T) {
+	// OpenAI's prompt caching is automatic and writes are not billed. Applying
+	// Anthropic's surcharge here would invent a charge that does not exist.
+	if got := CacheWriteRate("gpt-4o"); got != 0 {
+		t.Fatalf("openai cache write rate = %v, want 0", got)
+	}
+}
+
+func TestUnknownModelCacheWriteIsNotSilentlyFree(t *testing.T) {
+	// Free is the flattering direction: it would let an unrecognised model look cheaper
+	// than every model we do know.
+	if got := CacheWriteRate("some-unreleased-model-2027"); got <= 0 {
+		t.Fatalf("unknown model cache write rate = %v, want > 0", got)
+	}
+}
+
+func TestCacheReadsAndWritesPartitionInputWithoutDoubleBilling(t *testing.T) {
+	r := rateFor("claude-opus-4")
+	const prompt, read, write, completion = 2520, 1500, 600, 90
+	got := EstimateCost("claude-opus-4", prompt, completion, read, write, 0)
+	full := prompt - read - write // 420 at the full input rate
+	want := (float64(full)*r.input +
+		float64(read)*r.cachedInput +
+		float64(write)*CacheWriteRate("claude-opus-4") +
+		float64(completion)*r.output) / 1_000_000.0
+	if math.Abs(got-want) > 1e-9 {
+		t.Fatalf("cost = %v, want %v", got, want)
+	}
+}
+
+func TestOldCacheAccountingUnderstatedARealCall(t *testing.T) {
+	// Token counts observed from a live gateway call: Anthropic reported input 420,
+	// output 90, cache read 1500, cache write 600.
+	//
+	// The old path never took a write parameter, and treated reads as a subset of the raw
+	// input count — so min(1500, 420) billed 420 tokens at the cheap read rate and threw
+	// the other 1080 reads away. Both errors understated cost.
+	old := EstimateCost("claude-opus-4", 420, 90, 420, 0, 0)
+	updated := EstimateCost("claude-opus-4", 2520, 90, 1500, 600, 0)
+	if updated <= 3.5*old {
+		t.Fatalf("updated cost %v should exceed 3.5x the old %v", updated, old)
 	}
 }

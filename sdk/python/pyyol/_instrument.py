@@ -227,6 +227,7 @@ def _extract_ollama(resp: Any) -> Optional[Dict[str, Any]]:
         "prompt_tokens": int(prompt or 0),
         "completion_tokens": int(completion or 0),
         "cached_tokens": 0,
+        "cached_write_tokens": 0,
         "reasoning_tokens": 0,
     }
 
@@ -250,6 +251,7 @@ def _extract_google(resp: Any) -> Optional[Dict[str, Any]]:
         "prompt_tokens": int(prompt),
         "completion_tokens": int(completion),
         "cached_tokens": int(_get(um, "cached_content_token_count", 0) or 0),
+        "cached_write_tokens": 0,
         "reasoning_tokens": int(_get(um, "thoughts_token_count", 0) or 0),
     }
 
@@ -272,6 +274,7 @@ def _extract_cohere(resp: Any) -> Optional[Dict[str, Any]]:
         "prompt_tokens": int(prompt),
         "completion_tokens": int(completion),
         "cached_tokens": 0,
+        "cached_write_tokens": 0,
         "reasoning_tokens": 0,
     }
 
@@ -308,6 +311,7 @@ def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
         completion = _get(u, "output_tokens", 0)
 
     cached = 0
+    cached_write = 0
     reasoning = 0
     ptd = _get(u, "prompt_tokens_details")
     if ptd is not None:
@@ -315,9 +319,27 @@ def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
     ctd = _get(u, "completion_tokens_details")
     if ctd is not None:
         reasoning = _get(ctd, "reasoning_tokens", 0) or 0
-    if not cached:
-        # Anthropic prompt-cache read tokens.
-        cached = _get(u, "cache_read_input_tokens", 0) or 0
+
+    # Anthropic reports cache activity in two fields, and BOTH sit outside
+    # `input_tokens` rather than inside it. Reading only the first understated cost;
+    # ignoring the second priced the expensive half of caching at zero.
+    anth_read = int(_get(u, "cache_read_input_tokens", 0) or 0)
+    anth_write = int(_get(u, "cache_creation_input_tokens", 0) or 0)
+
+    # Normalize onto ONE convention: prompt_tokens is the total billable input, with
+    # cache reads and writes as subsets of it.
+    #
+    # Providers genuinely disagree here, and the disagreement is silent — both shapes are
+    # a plausible-looking integer, so a wrong assumption shows up only as a cost that is
+    # too low. OpenAI's `prompt_tokens` ALREADY INCLUDES `prompt_tokens_details.cached_
+    # tokens`, so it is a subset and nothing is added. Anthropic's `input_tokens` counts
+    # only the uncached remainder, so cache tokens must be ADDED to recover the real
+    # billable input. Clamping Anthropic's reads to its `input_tokens` (as the subset
+    # assumption did) also discarded every read beyond that count.
+    if anth_read or anth_write:
+        cached = anth_read
+        cached_write = anth_write
+        prompt = int(prompt or 0) + anth_read + anth_write
 
     # Infer provider from the response shape when the patch site didn't say.
     if style_openai_chat:
@@ -333,6 +355,7 @@ def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
         "prompt_tokens": int(prompt or 0),
         "completion_tokens": int(completion or 0),
         "cached_tokens": int(cached or 0),
+        "cached_write_tokens": int(cached_write or 0),
         "reasoning_tokens": int(reasoning or 0),
     }
 
@@ -353,6 +376,7 @@ def record_response(
         info["prompt_tokens"],
         info["completion_tokens"],
         cached_tokens=info["cached_tokens"],
+        cached_write_tokens=info["cached_write_tokens"],
         reasoning_tokens=info["reasoning_tokens"],
         # WHO served it, not just what was served. An open-weight model is free when
         # you run it yourself and billed when a hosted provider serves it, and the
@@ -369,7 +393,9 @@ def record_response(
             completion_tokens=info["completion_tokens"],
             reasoning_tokens=info["reasoning_tokens"],
             cached_tokens=info["cached_tokens"],
+            cached_write_tokens=info["cached_write_tokens"],
             estimated_cost=cost,
+            latency_ms=latency_ms,
         )
     current_span().log_model_call(
         provider=prov,

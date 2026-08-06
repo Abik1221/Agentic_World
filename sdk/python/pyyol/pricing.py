@@ -19,7 +19,7 @@ from typing import Dict, NamedTuple, Optional, Tuple
 
 # Bump this whenever any rate below changes. Stamped onto every estimate so a cost
 # is always reproducible from the exact table that produced it.
-PRICING_VERSION = "2026-07-31"
+PRICING_VERSION = "2026-08-06"
 
 
 class Rate(NamedTuple):
@@ -29,6 +29,36 @@ class Rate(NamedTuple):
     output: float
     # Cost of a cached (prompt-cache read) input token; defaults to input when unset.
     cached_input: Optional[float] = None
+
+
+# Cache-WRITE multipliers, applied to a model's input rate.
+#
+# Writing a prompt into a provider's cache is a separate, separately-billed event from
+# reading it back, and the two go in OPPOSITE directions: Anthropic surcharges a write
+# at 1.25x input and discounts a read to 0.1x, while OpenAI does not bill writes at all.
+# Recording only reads therefore does not merely lose a number — it prices the
+# expensive half of caching at zero, and it does so for the agents that cache hardest.
+#
+# Expressed as a multiplier rather than a per-model rate because that is how providers
+# actually publish it: one ratio for the whole model family. A multiplier also cannot
+# drift out of step with a model's input rate the way a duplicated absolute number can.
+#
+# Keyed by canonical model family prefix, so the multiplier is derived from the same
+# lookup that produced the rate and needs no extra provider argument at the call site.
+_CACHE_WRITE_MULTIPLIER: Tuple[Tuple[str, float], ...] = (
+    ("claude-", 1.25),  # Anthropic bills a cache write at 1.25x input
+    ("gpt-", 0.0),  # OpenAI prompt caching is automatic and writes are not billed
+    ("o1", 0.0),
+    ("o3", 0.0),
+    ("o4", 0.0),
+    ("gemini-", 0.0),  # implicit context caching is free (explicit caching bills storage)
+)
+
+# Multiplier for a model family with no published cache-write behaviour. 1.0 — a write
+# costs what an ordinary input token costs. Neither 0.0 (which would silently make an
+# unknown model's caching free, the flattering direction) nor 1.25 (which would invent
+# a surcharge no provider announced).
+_DEFAULT_CACHE_WRITE_MULTIPLIER = 1.0
 
 
 # Canonical model id -> Rate. Keep names lowercase and provider-agnostic; raw model
@@ -176,27 +206,52 @@ def is_known(model: str, provider: str = "") -> bool:
     return _canonical(model, provider) is not None
 
 
+def cache_write_rate(model: str, provider: str = "") -> float:
+    """USD per 1,000,000 tokens for writing a prompt into the provider's cache."""
+    rate = rate_for(model, provider)
+    # A self-hosted model has no bill of any kind, and multiplying a $0 input rate keeps
+    # that true without a special case.
+    key = _canonical(model, provider) or ""
+    for prefix, mult in _CACHE_WRITE_MULTIPLIER:
+        if key.startswith(prefix):
+            return rate.input * mult
+    return rate.input * _DEFAULT_CACHE_WRITE_MULTIPLIER
+
+
 def estimate_cost(
     model: str,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     *,
     cached_tokens: int = 0,
+    cached_write_tokens: int = 0,
     reasoning_tokens: int = 0,
     provider: str = "",
 ) -> float:
     """USD cost estimate for one model call.
 
-    `cached_tokens` are billed at the cached-input rate and are treated as a SUBSET of
-    `prompt_tokens` (so only `prompt_tokens - cached_tokens` are billed at full input
-    rate). `reasoning_tokens` are billed at the output rate (they are output tokens the
+    `prompt_tokens` is the TOTAL billable input, and `cached_tokens` (cache reads) and
+    `cached_write_tokens` (cache creations) are SUBSETS of it — so the three partition
+    the input into full-rate, read-rate and write-rate portions. Callers are responsible
+    for normalizing onto that convention, which `_instrument.extract_usage` does: some
+    providers report cache tokens inside their input count and some report them
+    alongside it, and pricing must not have to know which.
+
+    `reasoning_tokens` are billed at the output rate (they are output tokens the
     provider bills for) and are treated as a subset of `completion_tokens`.
     """
     rate = rate_for(model, provider)
-    cached = max(0, min(cached_tokens, prompt_tokens))
-    full_input = max(0, prompt_tokens - cached)
-    cached_rate = rate.cached_input if rate.cached_input is not None else rate.input
+    prompt = max(0, prompt_tokens)
+    # Reads are taken out first, then writes from what remains, so the two subsets can
+    # never overlap and bill the same token twice.
+    read = max(0, min(cached_tokens, prompt))
+    write = max(0, min(cached_write_tokens, prompt - read))
+    full_input = prompt - read - write
+    read_rate = rate.cached_input if rate.cached_input is not None else rate.input
     cost = (
-        full_input * rate.input + cached * cached_rate + max(0, completion_tokens) * rate.output
+        full_input * rate.input
+        + read * read_rate
+        + write * cache_write_rate(model, provider)
+        + max(0, completion_tokens) * rate.output
     ) / 1_000_000.0
     return round(cost, 8)
