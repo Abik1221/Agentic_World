@@ -90,6 +90,18 @@ type TokenUsage struct {
 	// Empty falls back to the seat's manifest-declared model.
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	// Scaffold fingerprints the HARNESS this decision ran under — system prompt, tools,
+	// sampling — with the model deliberately excluded. Holding it constant is what turns
+	// "Claude beats GPT" from a confounded observation into a paired comparison.
+	Scaffold string `json:"scaffold,omitempty"`
+	// ScaffoldUnstable means the fingerprint changed mid-turn, which happens when variable
+	// game state sits in the system prompt. Such a decision cannot be paired, and that has
+	// to travel with the data rather than be guessed at later.
+	ScaffoldUnstable bool `json:"scaffold_unstable,omitempty"`
+	// ModelCalls is how many model calls this ONE decision took, and CallLatenciesMS how
+	// long each took. An aggregate cannot separate one slow call from six quick ones.
+	ModelCalls      int   `json:"model_calls,omitempty"`
+	CallLatenciesMS []int `json:"call_latencies_ms,omitempty"`
 }
 
 // total returns the reported total, or the sum of the parts if total is unset.

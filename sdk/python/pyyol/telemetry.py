@@ -184,6 +184,16 @@ class UsageAccumulator:
         # turn usually uses one model, but chains/retries may use several.
         self.models: List[str] = []
         self.providers: List[str] = []
+        # The SCAFFOLD this turn ran under: everything the developer built around the
+        # model, hashed and with the model deliberately left out. It is what makes a
+        # paired model comparison possible — same scaffold, different model, so the
+        # harness cancels. See pyyol/scaffold.py.
+        self.scaffold: str = ""
+        # True when the fingerprint CHANGED between calls in one turn, which happens when
+        # variable game state sits in the system prompt. Such an agent cannot take part in
+        # a paired comparison, and saying so is more useful than silently keeping the
+        # first value seen.
+        self.scaffold_unstable: bool = False
 
     def add(
         self,
@@ -211,6 +221,20 @@ class UsageAccumulator:
             self.models.append(model)
         if provider and provider not in self.providers:
             self.providers.append(provider)
+
+    def observe_scaffold(self, fp: str) -> None:
+        """Record a scaffold fingerprint seen on one call this turn.
+
+        An empty fingerprint means "could not tell" and is ignored rather than treated as a
+        distinct scaffold: a failure to fingerprint is not evidence that the harness
+        changed, and counting it as such would mark honest agents unstable.
+        """
+        if not fp:
+            return
+        if not self.scaffold:
+            self.scaffold = fp
+        elif fp != self.scaffold:
+            self.scaffold_unstable = True
 
     @property
     def total_tokens(self) -> int:
@@ -245,6 +269,12 @@ class UsageAccumulator:
             usage["model_calls"] = self.calls
         if self.call_latencies_ms:
             usage["call_latencies_ms"] = list(self.call_latencies_ms)
+        if self.scaffold:
+            usage["scaffold"] = self.scaffold
+        # Only sent when true. An absent flag and a false one mean the same thing, and
+        # shipping the false case on every move would be noise on the wire.
+        if self.scaffold_unstable:
+            usage["scaffold_unstable"] = True
         if self.models:
             usage["model"] = self.models[0] if len(self.models) == 1 else self.models
         if self.providers:

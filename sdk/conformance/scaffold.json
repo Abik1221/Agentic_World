@@ -1,0 +1,208 @@
+{
+  "_readme": [
+    "Cross-language conformance fixtures for SCAFFOLD FINGERPRINTS.",
+    "",
+    "WHY. A scaffold fingerprint identifies the harness a developer built around a model —",
+    "system prompt, tools, sampling — with the model deliberately excluded. It is what makes",
+    "a paired model comparison possible: same scaffold, different model, so the harness",
+    "cancels and the remaining difference is the model. That pairing is the only causal claim",
+    "about 'is Claude better than GPT' our data can support.",
+    "",
+    "Because the fingerprint is a HASH, any disagreement between the Python and JS SDKs is",
+    "total: the same agent switching SDKs would look like a brand-new scaffold, its history",
+    "would split into two epochs, and it would silently drop out of every paired comparison.",
+    "Nothing about that failure looks like a bug — the agent just quietly stops appearing on",
+    "the model board. So the serialization is specified byte-for-byte and both languages are",
+    "held to these exact fingerprints.",
+    "",
+    "The expected values are NOT hand-computed. They were produced by the Python",
+    "implementation and are asserted by both. What matters is that the two agree and that",
+    "the values are stable over time — a change to any expected fingerprint below means",
+    "every existing agent's history splits, which is a decision to make deliberately.",
+    "",
+    "NUMBER FORMATTING is the subtle trap and has its own cases. Python's str(1.0) is '1.0'",
+    "and JavaScript's String(1.0) is '1'. Left alone, every agent using temperature=1.0 would",
+    "fingerprint differently in the two SDKs. Both now format to six significant figures."
+  ],
+  "scaffold_version": "pyyol-scaffold-v1",
+  "cases": [
+    {
+      "name": "anthropic_system_kwarg",
+      "why": "Anthropic passes the system prompt as a top-level argument, not a message. It must still count as a leading system role so the two providers produce comparable shapes.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "You are a Goofspiel expert. Bid to maximise expected prize value.",
+        "messages": [{ "role": "user", "content": "Round 3. Prize: 7. Your hand: [1,4,9]." }],
+        "max_tokens": 1024,
+        "temperature": 0.2
+      },
+      "expect": {
+        "fingerprint": "sc_2fd2f65436751e0b",
+        "canonical": "pyyol-scaffold-v1\nclient=anthropic.messages\nroles=system,user\nsampling=max_tokens=1024;temperature=0.2\nsystem=9f0b27bbca8e148727390d75831f4761895ab0e1636bfd5dfc7587f2d2801e88"
+      }
+    },
+    {
+      "name": "same_scaffold_different_model",
+      "why": "THE property the whole design rests on. Only the model changed, so the fingerprint must be IDENTICAL to the previous case — otherwise no model swap is ever pairable.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "gpt-5.2",
+        "system": "You are a Goofspiel expert. Bid to maximise expected prize value.",
+        "messages": [{ "role": "user", "content": "Round 3. Prize: 7. Your hand: [1,4,9]." }],
+        "max_tokens": 1024,
+        "temperature": 0.2
+      },
+      "same_fingerprint_as": "anthropic_system_kwarg"
+    },
+    {
+      "name": "different_user_message_same_scaffold",
+      "why": "The user message carries the game state and changes every turn. If it entered the hash, every decision would be its own scaffold and pairing would be impossible.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "You are a Goofspiel expert. Bid to maximise expected prize value.",
+        "messages": [{ "role": "user", "content": "Round 11. Prize: 2. Your hand: [3,5]." }],
+        "max_tokens": 1024,
+        "temperature": 0.2
+      },
+      "same_fingerprint_as": "anthropic_system_kwarg"
+    },
+    {
+      "name": "changed_system_prompt_is_a_new_scaffold",
+      "why": "Editing the system prompt IS changing the harness. It must split the epoch, or a developer could improve their prompt mid-season and have the gain attributed to a model.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "You are a Goofspiel expert. Bid to maximise expected prize value. Think step by step.",
+        "messages": [{ "role": "user", "content": "Round 3. Prize: 7. Your hand: [1,4,9]." }],
+        "max_tokens": 1024,
+        "temperature": 0.2
+      },
+      "differs_from": "anthropic_system_kwarg"
+    },
+    {
+      "name": "changed_temperature_is_a_new_scaffold",
+      "why": "Sampling settings change behaviour, so they are part of the harness. Two temperatures are not a controlled comparison.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "You are a Goofspiel expert. Bid to maximise expected prize value.",
+        "messages": [{ "role": "user", "content": "Round 3. Prize: 7. Your hand: [1,4,9]." }],
+        "max_tokens": 1024,
+        "temperature": 0.9
+      },
+      "differs_from": "anthropic_system_kwarg"
+    },
+    {
+      "name": "integral_temperature_formats_identically",
+      "why": "The number-formatting trap. Python's str(1.0) is '1.0' and JS's String(1.0) is '1'; without canonical formatting this single field would split every agent's history at the language boundary. Both must emit '1'.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "S",
+        "messages": [{ "role": "user", "content": "u" }],
+        "temperature": 1.0
+      },
+      "expect": {
+        "canonical_contains": "sampling=temperature=1"
+      }
+    },
+    {
+      "name": "fractional_temperature_formats_identically",
+      "why": "The other half of the formatting contract: a genuine fraction must survive intact rather than being rounded away.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "S",
+        "messages": [{ "role": "user", "content": "u" }],
+        "temperature": 0.25
+      },
+      "expect": {
+        "canonical_contains": "sampling=temperature=0.25"
+      }
+    },
+    {
+      "name": "openai_system_message_and_tools",
+      "why": "OpenAI puts the system prompt in the messages array and nests tool names under `function`. Tools are sorted so declaring the same set in a different order stays one scaffold.",
+      "endpoint": "openai.chat.completions",
+      "request": {
+        "model": "gpt-5.2",
+        "messages": [
+          { "role": "system", "content": "You play Mafia. Never reveal your role." },
+          { "role": "user", "content": "Day 2 discussion." }
+        ],
+        "tools": [
+          { "type": "function", "function": { "name": "vote" } },
+          { "type": "function", "function": { "name": "accuse" } }
+        ],
+        "temperature": 0.7
+      },
+      "expect": {
+        "canonical_contains": "tools=accuse,vote"
+      }
+    },
+    {
+      "name": "tool_order_does_not_matter",
+      "why": "The same tools declared in the other order is the same harness. Sorting prevents a cosmetic reshuffle from splitting an epoch.",
+      "endpoint": "openai.chat.completions",
+      "request": {
+        "model": "gpt-5.2",
+        "messages": [
+          { "role": "system", "content": "You play Mafia. Never reveal your role." },
+          { "role": "user", "content": "Day 2 discussion." }
+        ],
+        "tools": [
+          { "type": "function", "function": { "name": "accuse" } },
+          { "type": "function", "function": { "name": "vote" } }
+        ],
+        "temperature": 0.7
+      },
+      "same_fingerprint_as": "openai_system_message_and_tools"
+    },
+    {
+      "name": "base_url_does_not_change_the_scaffold",
+      "why": "Routing through the Pyyol gateway must NOT change the fingerprint. If it did, an agent's verified and unverified play would look like two different scaffolds and could never be pooled — the verified tier would be unusable for exactly the comparison it exists to enable.",
+      "endpoint": "anthropic.messages",
+      "request": {
+        "model": "claude-opus-4",
+        "system": "You are a Goofspiel expert. Bid to maximise expected prize value.",
+        "messages": [{ "role": "user", "content": "Round 3. Prize: 7. Your hand: [1,4,9]." }],
+        "max_tokens": 1024,
+        "temperature": 0.2,
+        "base_url": "https://api.pyyol.com/v1/gw/anthropic",
+        "api_key": "sk-should-never-be-hashed",
+        "stream": true
+      },
+      "same_fingerprint_as": "anthropic_system_kwarg"
+    },
+    {
+      "name": "multimodal_image_does_not_change_the_scaffold",
+      "why": "Only text parts contribute. Hashing image bytes would make the fingerprint depend on the board screenshot of the moment, so a vision agent would be unstable every turn.",
+      "endpoint": "openai.chat.completions",
+      "request": {
+        "model": "gpt-5.2",
+        "messages": [
+          { "role": "system", "content": [{ "type": "text", "text": "You play Monopoly." }] },
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "Your move." },
+              { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "canonical_contains": "roles=system,user"
+      }
+    },
+    {
+      "name": "no_messages_yields_no_fingerprint",
+      "why": "An empty result must mean 'unknown', never a hash of nothing. A fingerprint shared by every request that yielded no components would pool unrelated scaffolds into one bogus epoch and publish it as a controlled comparison.",
+      "endpoint": "anthropic.messages",
+      "request": { "model": "claude-opus-4" },
+      "expect": { "fingerprint": "" }
+    }
+  ]
+}

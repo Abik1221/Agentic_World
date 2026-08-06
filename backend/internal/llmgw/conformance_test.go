@@ -53,9 +53,17 @@ func loadConformance(t *testing.T) conformanceDoc {
 	path := filepath.Join("..", "..", "..", "sdk", "conformance", "usage_pricing.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
-		// A missing fixture file must fail loudly rather than skip: an empty conformance
-		// suite that reports "passed" is the exact failure this guards against.
-		t.Fatalf("read shared conformance fixtures at %s: %v", path, err)
+		// Fails loudly rather than skipping. A conformance suite that quietly finds no
+		// fixtures and reports "passed" is the exact failure being guarded against: the
+		// three implementations would drift with nothing objecting.
+		//
+		// The fixtures live in the sibling sdk/ directory because they are shared with the
+		// Python and JS SDKs — that is the point. A checkout or CI job that has backend/
+		// without sdk/ will land here; the fix is to fetch the whole repo, not to relax this
+		// into a skip.
+		t.Fatalf("read shared conformance fixtures at %s: %v\n"+
+			"These fixtures are shared with the Python and JS SDKs and live in the sibling "+
+			"sdk/ directory. Run tests from a full checkout of the repository.", path, err)
 	}
 	var doc conformanceDoc
 	if err := json.Unmarshal(b, &doc); err != nil {

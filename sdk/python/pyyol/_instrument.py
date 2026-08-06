@@ -34,7 +34,7 @@ import inspect
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import pricing, providers
+from . import pricing, providers, scaffold
 from .telemetry import current_span, current_usage
 
 # (class, method_name, original_callable) for uninstrument().
@@ -461,7 +461,26 @@ def _safe_record(resp: Any, provider: str, start: float, resource: Any = None) -
         pass
 
 
-def _patch_method(module_path: str, class_name: str, method: str, provider: str) -> bool:
+def _safe_scaffold(kwargs: Dict[str, Any], endpoint: str) -> None:
+    """Fingerprint the scaffold from the outgoing request, before the model is called.
+
+    Done on the REQUEST rather than the response because the scaffold is the thing the
+    developer wrote — system prompt, tools, sampling — and none of that comes back. Wrapped
+    like every other instrumentation hook: a fingerprinting problem must never be why a
+    developer's model call fails.
+    """
+    try:
+        acc = current_usage()
+        if acc is None:
+            return
+        acc.observe_scaffold(scaffold.from_request(kwargs, endpoint=endpoint))
+    except Exception:  # noqa: BLE001 - instrumentation must never break the dev's call
+        pass
+
+
+def _patch_method(
+    module_path: str, class_name: str, method: str, provider: str, endpoint: str = ""
+) -> bool:
     """Wrap ``module.Class.method`` so its return value is recorded. Handles both sync
     and async originals. Idempotent and fully guarded."""
     try:
@@ -481,6 +500,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             resource = args[0] if args else None
             _inject_gateway_headers(resource, kwargs)
+            _safe_scaffold(kwargs, endpoint)
             start = time.perf_counter()
             resp = await orig(*args, **kwargs)
             _safe_record(resp, provider, start, resource)
@@ -492,6 +512,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             resource = args[0] if args else None
             _inject_gateway_headers(resource, kwargs)
+            _safe_scaffold(kwargs, endpoint)
             start = time.perf_counter()
             resp = orig(*args, **kwargs)
             _safe_record(resp, provider, start, resource)
@@ -558,14 +579,19 @@ def _patch_openai() -> bool:
         ("openai.resources.responses", "Responses"),
         ("openai.resources.responses", "AsyncResponses"),
     ):
-        patched |= _patch_method(module_path, class_name, "create", "openai")
+        endpoint = (
+            "openai.responses" if "responses" in module_path else "openai.chat.completions"
+        )
+        patched |= _patch_method(module_path, class_name, "create", "openai", endpoint)
     return patched
 
 
 def _patch_anthropic() -> bool:
     patched = False
     for class_name in ("Messages", "AsyncMessages"):
-        patched |= _patch_method("anthropic.resources.messages", class_name, "create", "anthropic")
+        patched |= _patch_method(
+            "anthropic.resources.messages", class_name, "create", "anthropic", "anthropic.messages"
+        )
     return patched
 
 
@@ -579,7 +605,9 @@ def _patch_ollama() -> bool:
     patched = False
     for class_name in ("Client", "AsyncClient"):
         for method in ("chat", "generate"):
-            patched |= _patch_method("ollama._client", class_name, method, providers.OLLAMA)
+            patched |= _patch_method(
+                "ollama._client", class_name, method, providers.OLLAMA, f"ollama.{method}"
+            )
     # The module-level conveniences are bound to a default client at import.
     for name in ("chat", "generate"):
         patched |= _patch_bound_module_func("ollama", name, providers.OLLAMA)
@@ -591,13 +619,18 @@ def _patch_google() -> bool:
     patched = False
     for class_name in ("Models", "AsyncModels"):
         patched |= _patch_method(
-            "google.genai.models", class_name, "generate_content", providers.GOOGLE
+            "google.genai.models",
+            class_name,
+            "generate_content",
+            providers.GOOGLE,
+            "google.generate_content",
         )
     patched |= _patch_method(
         "google.generativeai.generative_models",
         "GenerativeModel",
         "generate_content",
         providers.GOOGLE,
+        "google.generate_content",
     )
     return patched
 
@@ -605,7 +638,7 @@ def _patch_google() -> bool:
 def _patch_cohere() -> bool:
     patched = False
     for class_name in ("Client", "AsyncClient", "ClientV2", "AsyncClientV2"):
-        patched |= _patch_method("cohere.client", class_name, "chat", "cohere")
+        patched |= _patch_method("cohere.client", class_name, "chat", "cohere", "cohere.chat")
     return patched
 
 

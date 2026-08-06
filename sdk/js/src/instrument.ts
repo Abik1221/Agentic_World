@@ -17,6 +17,7 @@
 // non-streaming calls for automatic capture.
 
 import { estimateCost } from "./pricing.js";
+import { fromRequest } from "./scaffold.js";
 import * as providers from "./providers.js";
 import { currentSpan, currentUsage } from "./telemetry.js";
 
@@ -335,12 +336,27 @@ export function recordResponse(resp: Any, o: { provider?: string; latencyMs?: nu
 
 /** @internal Wrap `proto[method]` so its resolved return value is recorded.
  *  Idempotent and fully guarded. Exported for tests. */
-export function patchPrototype(proto: Any, method: string, provider: string): boolean {
+export function patchPrototype(
+  proto: Any,
+  method: string,
+  provider: string,
+  endpoint = "",
+): boolean {
   if (proto == null) return false;
   const orig = proto[method];
   if (typeof orig !== "function" || orig._pyyolInstrumented) return false;
   const wrapped = async function (this: Any, ...args: Any[]): Promise<Any> {
     injectGatewayHeaders(this, args);
+    // Fingerprint the scaffold from the OUTGOING request: the system prompt, tools and
+    // sampling are what the developer wrote, and none of that comes back in the response.
+    // Guarded like every other hook — a fingerprinting problem must never be why a
+    // developer's model call fails.
+    try {
+      const req = (args[0] ?? {}) as Record<string, unknown>;
+      currentUsage()?.observeScaffold(fromRequest(req, endpoint));
+    } catch {
+      // instrumentation must never break the dev's call
+    }
     const start = Date.now();
     const resp = await orig.apply(this, args);
     try {
@@ -369,10 +385,14 @@ async function tryImport(spec: string): Promise<Any | null> {
 async function patchOpenAI(): Promise<boolean> {
   let patched = false;
   const chat = await tryImport("openai/resources/chat/completions");
-  if (chat?.Completions?.prototype) patched = patchPrototype(chat.Completions.prototype, "create", "openai") || patched;
+  if (chat?.Completions?.prototype)
+    patched =
+      patchPrototype(chat.Completions.prototype, "create", "openai", "openai.chat.completions") ||
+      patched;
   const responses = await tryImport("openai/resources/responses");
   if (responses?.Responses?.prototype)
-    patched = patchPrototype(responses.Responses.prototype, "create", "openai") || patched;
+    patched =
+      patchPrototype(responses.Responses.prototype, "create", "openai", "openai.responses") || patched;
   return patched;
 }
 
@@ -380,7 +400,9 @@ async function patchAnthropic(): Promise<boolean> {
   let patched = false;
   const messages = await tryImport("@anthropic-ai/sdk/resources/messages");
   if (messages?.Messages?.prototype)
-    patched = patchPrototype(messages.Messages.prototype, "create", "anthropic") || patched;
+    patched =
+      patchPrototype(messages.Messages.prototype, "create", "anthropic", "anthropic.messages") ||
+      patched;
   return patched;
 }
 

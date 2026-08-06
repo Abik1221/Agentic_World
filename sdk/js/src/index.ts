@@ -35,3 +35,12 @@ export { route, enableGateway, disableGateway, gatewayBaseUrl, gatewayHeaders } 
 export type { ExtractedUsage } from "./instrument.js";
 export { estimateCost, rateFor, isKnown, canonical, PRICING_VERSION } from "./pricing.js";
 export type { Rate, CostArgs } from "./pricing.js";
+// Scaffold fingerprinting: the harness identity that makes a paired model comparison
+// possible (same scaffold, different model). Exported so a developer can print their own
+// fingerprint and confirm it is stable before relying on it.
+export {
+  fingerprint as scaffoldFingerprint,
+  fromRequest as scaffoldFromRequest,
+  eligibleForPairing as scaffoldEligibleForPairing,
+  SCAFFOLD_VERSION,
+} from "./scaffold.js";

@@ -41,6 +41,8 @@ func DecisionsFromSeat(seat benchmark.SeatSummary, seatProvider, seatModel strin
 			md.ReasoningTokens = u.ReasoningTokens
 			md.CachedTokens = u.CachedTokens
 			md.CachedWriteTokens = u.CachedWriteTokens
+			md.Scaffold = u.Scaffold
+			md.ScaffoldUnstable = u.ScaffoldUnstable
 			md.TotalTokens = u.TotalTokens
 			if md.TotalTokens == 0 {
 				md.TotalTokens = u.PromptTokens + u.CompletionTokens + u.ReasoningTokens

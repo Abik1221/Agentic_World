@@ -261,6 +261,11 @@ type MatchDecision struct {
 
 	Provider string
 	Model    string
+	// Scaffold fingerprints the harness (system prompt, tools, sampling) with the model
+	// excluded, so decisions sharing one fingerprint form a controlled comparison.
+	// Unstable means it changed mid-turn and the decision cannot be paired.
+	Scaffold         string
+	ScaffoldUnstable bool
 
 	PromptTokens     int
 	CompletionTokens int
@@ -312,23 +317,24 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 			matchID, agentID, d.Seq, d.Round, d.Action, d.Outcome, d.LatencyMS, d.Rationale,
 			d.Provider, d.Model, d.PromptTokens, d.CompletionTokens, d.ReasoningTokens,
 			d.CachedTokens, d.CachedWriteTokens, d.TotalTokens, d.EstimatedCost,
+			d.Scaffold, d.ScaffoldUnstable,
 			// nil (not "null") so an absent view stores SQL NULL rather than the JSON
 			// literal null — the two read back differently and only one is honest.
 			inputOrNil(d.InputJSON), d.InputTruncated, timeOrNil(d.StartedAt),
 		})
 	}
 
-	const cols = 20
+	const cols = 22
 	// Position of input_json within a row, named so the ::jsonb cast below cannot drift
 	// out of step with the column list the way a bare literal silently would.
-	const inputJSONIndex = 17
+	const inputJSONIndex = 19
 	args := make([]any, 0, len(rows)*cols)
 	var b strings.Builder
 	b.WriteString(`INSERT INTO agent_match_decisions (
 		match_id, agent_id, seq, round, action, outcome, latency_ms, rationale,
 		provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
 		cached_tokens, cached_write_tokens, total_tokens, estimated_cost,
-		input_json, input_truncated, started_at) VALUES `)
+		scaffold, scaffold_unstable, input_json, input_truncated, started_at) VALUES `)
 	for i, row := range rows {
 		if i > 0 {
 			b.WriteByte(',')
@@ -362,6 +368,10 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 		prompt_tokens = EXCLUDED.prompt_tokens, completion_tokens = EXCLUDED.completion_tokens,
 		reasoning_tokens = EXCLUDED.reasoning_tokens, cached_tokens = EXCLUDED.cached_tokens,
 		cached_write_tokens = EXCLUDED.cached_write_tokens,
+		-- Never blank a fingerprint we already have: a replayed summary that lost its usage
+		-- block must not silently drop an agent out of every paired comparison.
+		scaffold = COALESCE(NULLIF(EXCLUDED.scaffold,''), agent_match_decisions.scaffold),
+		scaffold_unstable = EXCLUDED.scaffold_unstable OR agent_match_decisions.scaffold_unstable,
 		total_tokens = EXCLUDED.total_tokens, estimated_cost = EXCLUDED.estimated_cost,
 		-- Same rule as the rationale: a replay that lost the view must not erase a view
 		-- we already captured.

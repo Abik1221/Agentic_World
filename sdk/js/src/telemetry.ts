@@ -131,6 +131,10 @@ export interface MoveUsage {
   model_calls?: number;
   /** Latency of each individual call, so a distribution is recoverable and not just a mean. */
   call_latencies_ms?: number[];
+  /** Fingerprint of the harness this decision ran under, with the model excluded. */
+  scaffold?: string;
+  /** Set only when the fingerprint changed mid-turn, which makes the agent unpairable. */
+  scaffold_unstable?: boolean;
   model?: string | string[];
   provider?: string | string[];
 }
@@ -164,6 +168,14 @@ export class UsageAccumulator {
   // ones, and "thinks for 40s" versus "makes 20 round trips" are different things about
   // an agent.
   readonly callLatenciesMs: number[] = [];
+  // The SCAFFOLD this turn ran under: everything the developer built around the model,
+  // hashed with the model deliberately left out. It is what makes a paired model comparison
+  // possible — same scaffold, different model, so the harness cancels. See scaffold.ts.
+  scaffold = "";
+  // True when the fingerprint CHANGED between calls in one turn, which happens when variable
+  // game state sits in the system prompt. Such an agent cannot take part in a paired
+  // comparison, and saying so is more useful than silently keeping the first value seen.
+  scaffoldUnstable = false;
   readonly models: string[] = [];
   readonly providers: string[] = [];
   // Turn context (for gateway attribution); set by runTurnUsage().
@@ -181,6 +193,17 @@ export class UsageAccumulator {
     if (u.latencyMs) this.callLatenciesMs.push(Math.max(0, Math.trunc(u.latencyMs)));
     if (u.model && !this.models.includes(u.model)) this.models.push(u.model);
     if (u.provider && !this.providers.includes(u.provider)) this.providers.push(u.provider);
+  }
+
+  /** Record a scaffold fingerprint seen on one call this turn.
+   *
+   *  An empty fingerprint means "could not tell" and is ignored rather than treated as a
+   *  distinct scaffold: a failure to fingerprint is not evidence that the harness changed,
+   *  and counting it as such would mark honest agents unstable. */
+  observeScaffold(fp: string): void {
+    if (!fp) return;
+    if (!this.scaffold) this.scaffold = fp;
+    else if (fp !== this.scaffold) this.scaffoldUnstable = true;
   }
 
   get totalTokens(): number {
@@ -209,6 +232,10 @@ export class UsageAccumulator {
     // of what "efficient" means when comparing two agents on equal footing.
     if (this.calls) usage.model_calls = this.calls;
     if (this.callLatenciesMs.length) usage.call_latencies_ms = [...this.callLatenciesMs];
+    if (this.scaffold) usage.scaffold = this.scaffold;
+    // Only sent when true. An absent flag and a false one mean the same thing, and shipping
+    // the false case on every move would be noise on the wire.
+    if (this.scaffoldUnstable) usage.scaffold_unstable = true;
     if (this.models.length) usage.model = this.models.length === 1 ? this.models[0] : this.models;
     if (this.providers.length) usage.provider = this.providers.length === 1 ? this.providers[0] : this.providers;
     return usage;

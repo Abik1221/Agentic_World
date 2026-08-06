@@ -51,6 +51,13 @@ __all__ = [
     "rate_for",
     "is_known",
     "PRICING_VERSION",
+    # Scaffold fingerprinting: the harness identity that makes a paired model comparison
+    # possible (same scaffold, different model). Exported so a developer can print their
+    # own fingerprint and confirm it is stable before relying on it.
+    "scaffold_fingerprint",
+    "scaffold_from_request",
+    "scaffold_eligible_for_pairing",
+    "SCAFFOLD_VERSION",
     # Telemetry + signing primitives (parity with the JS SDK).
     "Span",
     "UsageAccumulator",
@@ -100,6 +107,10 @@ _LAZY = {
     "rate_for": "pricing",
     "is_known": "pricing",
     "PRICING_VERSION": "pricing",
+    "SCAFFOLD_VERSION": "scaffold",
+    "scaffold_fingerprint": "scaffold",
+    "scaffold_from_request": "scaffold",
+    "scaffold_eligible_for_pairing": "scaffold",
     "Span": "telemetry",
     "UsageAccumulator": "telemetry",
     "match_trace_id": "telemetry",
