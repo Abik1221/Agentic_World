@@ -87,3 +87,10 @@ func round2(x float64) float64 {
 	}
 	return float64(int64(scaled)) / 100
 }
+
+// Dimensions returns the registered dimensions.
+//
+// Exported so the published methodology is assembled from the SAME list the engine scores
+// with. Deriving the page from a second, hand-maintained list is how a published method
+// starts describing dimensions that no longer exist, or omitting ones that do.
+func (e *Engine) Dimensions() []Dimension { return e.dims }

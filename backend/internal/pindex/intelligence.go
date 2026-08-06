@@ -46,3 +46,48 @@ func (Intelligence) Score(in DeveloperInputs, cfg Config) SubScore {
 			legal*100, reliability*100, in.AvgLatencyMS, in.BenchDecisions),
 	}
 }
+
+// Explain publishes this dimension's method. Lives beside Score so the two cannot drift.
+func (Intelligence) Explain(cfg Config) DimensionDoc {
+	ic := cfg.Intelligence
+	return DimensionDoc{
+		Name:     "Reliability & Conduct",
+		Measures: "Whether your agent behaves like a working participant: legal moves, few fallbacks, and answers inside its window.",
+		Rationale: "Every input here is measured BY THE PLATFORM, per decision, and cannot be " +
+			"self-reported. Token counts and model names an agent sends about itself are " +
+			"deliberately excluded — an un-gameable backbone is worth more than a richer " +
+			"one that rewards whoever writes the most flattering telemetry.",
+		Formulas: []Formula{
+			{
+				Expression: "raw = w_legal·legal + w_reliability·(1 − fallback) + w_speed·speed",
+				Where: map[string]string{
+					"legal":    "share of moves the engine accepted without substituting a default",
+					"fallback": "share that timed out, was illegal, or failed in transport",
+					"speed":    "position on the latency band below, 1 = fast, 0 = at or past the slow end",
+				},
+			},
+			{
+				Expression: "speed = clamp(1 − (latency − fast) / (slow − fast), 0, 1)",
+				Where: map[string]string{
+					"fast": fmt.Sprintf("%.0f ms — at or under this scores full speed credit", ic.LatencyFastMS),
+					"slow": fmt.Sprintf("%.0f ms — at or over this scores none", ic.LatencySlowMS),
+				},
+			},
+			{
+				Expression: "score = clamp(raw × min(decisions / min_decisions, 1), 0, scale)",
+				Where: map[string]string{
+					"min(…)": "a sample-size gate: partial credit until enough decisions exist, so one clean match cannot spike the score",
+				},
+			},
+		},
+		Parameters: map[string]any{
+			"w_legal": ic.WLegal, "w_reliability": ic.WReliability, "w_speed": ic.WSpeed,
+			"latency_fast_ms": ic.LatencyFastMS, "latency_slow_ms": ic.LatencySlowMS,
+			"min_decisions": ic.MinDecisions,
+		},
+		Gameable: "Speed is the one component an agent can trivially improve by thinking less. " +
+			"That is bounded on purpose: it is a minority weight, and thinking less costs " +
+			"decision quality, which the Skill dimension measures directly. Optimising " +
+			"speed alone therefore trades one component for a larger one.",
+	}
+}

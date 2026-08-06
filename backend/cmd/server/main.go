@@ -602,6 +602,13 @@ func run() error {
 	// modular scoring engine and refreshes the season ranking (off the hot path).
 	pindexRepo := store.NewPIndexRepo(st.DB)
 	pindexSvc := pindex.New(pindexRepo, ratingSvc.CurrentSeason, clock, log)
+	// Publish the P-Index method, and version it the way documentation is versioned.
+	//
+	// The methodology endpoint is deliberately public: a reputation number a developer
+	// cannot check the method for is one they are asked to trust. The weights come from the
+	// active config row and the formulas from each dimension's own Explain, so the page
+	// cannot describe a formula the engine is not running.
+	pindexHandler := pindex.NewHandler(pindexRepo, pindex.NewEngine(), authn, cfg.AdminUserIDs)
 	// P-Index Intelligence projection: fold each match.benchmark seat into the
 	// per-match decision-quality aggregate the recompute reads (legal/fallback/
 	// latency). Best-effort: a decode failure never wedges the outbox.
@@ -1581,6 +1588,7 @@ func run() error {
 		mafiaHandler.Register,
 		monopolyHandler.Register,
 		ratingHandler.Register,
+		pindexHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,
 		devTraceHandler.Register,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/events"
+	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/pindex"
 	"github.com/agent-arena/arena/internal/skill"
 	"github.com/jackc/pgx/v5"
@@ -653,4 +654,57 @@ func timeOrNil(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+// ── Admin config surface ─────────────────────────────────────────────────────
+
+// ListConfigs returns every scoring config, newest first.
+func (r *PIndexRepo) ListConfigs(ctx context.Context) ([]pindex.VersionedConfig, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT version, active, params FROM pindex_config ORDER BY version DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pindex.VersionedConfig
+	for rows.Next() {
+		var c pindex.VersionedConfig
+		if err := rows.Scan(&c.Version, &c.Active, &c.Params); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// PutConfig writes a version's params, leaving its active flag untouched.
+//
+// Never activates. Writing a candidate must not change what developers are being scored
+// on — a P-Index change re-ranks everyone at once, so that has to be a separate,
+// deliberate act. Same separation as writing a doc version versus publishing it.
+func (r *PIndexRepo) PutConfig(ctx context.Context, version int, params []byte) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO pindex_config (version, params, active) VALUES ($1, $2, false)
+		 ON CONFLICT (version) DO UPDATE SET params = EXCLUDED.params`,
+		version, params)
+	return err
+}
+
+// ActivateConfig makes exactly one version live.
+//
+// One statement, so there is never an instant with two active configs or none. The table
+// carries a UNIQUE partial index on active, which would reject a two-step deactivate/
+// activate anyway — and an interval with NO active config would leave every recompute
+// unable to score at all.
+func (r *PIndexRepo) ActivateConfig(ctx context.Context, version int) error {
+	var exists bool
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM pindex_config WHERE version = $1)`, version).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return httpx.NewError(404, "not_found", "no such P-Index config version")
+	}
+	_, err := r.db.Exec(ctx, `UPDATE pindex_config SET active = (version = $1)`, version)
+	return err
 }
