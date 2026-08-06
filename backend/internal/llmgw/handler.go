@@ -16,11 +16,23 @@ import (
 //
 // A verified tier is worth nothing if nobody routes through it, and the friction that
 // stops developers is not the concept — it is being told to restructure their code. Every
-// major provider SDK already supports overriding a base URL, so the entire ask should be
-// ONE line:
+// major provider SDK already supports overriding a base URL, so the ask stays small:
 //
-//	client = OpenAI(base_url="https://api.pyyol.com/v1/gw/openai/v1", api_key=my_key)
-//	client = Anthropic(base_url="https://api.pyyol.com/v1/gw/anthropic", api_key=my_key)
+//	client = Anthropic(
+//	    api_key=my_provider_key,                       # still YOUR key, passed through
+//	    base_url="https://api.pyyol.com/v1/gw/anthropic",
+//	    default_headers={"X-Pyyol-Key": my_pyyol_key}, # who is calling
+//	)
+//
+// or, with the SDK doing it for you and adding the per-turn proof:
+//
+//	client = pyyol.route(Anthropic())
+//
+// The Pyyol key CANNOT ride in the standard auth header, and this is worth stating plainly
+// because an earlier draft of this file claimed a one-line base_url change was enough. It is
+// not: that slot is already occupied by the provider's own credential (Anthropic reads
+// x-api-key, OpenAI reads "Authorization: Bearer"), which must reach the upstream untouched.
+// A live agent proved the point by getting 401s from every call.
 //
 // Everything after the provider slug is forwarded verbatim, so the provider's own SDK
 // keeps constructing its own paths, versions and payloads. We proxy bytes, not semantics —
@@ -47,7 +59,7 @@ func NewHandler(gw *Gateway, authn *auth.Authenticator) *Handler {
 
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
-		r.Use(h.authn.Middleware)
+		r.Use(h.identify)
 		// Agent scope: the caller is an agent playing a match, identified by its Pyyol API
 		// key. That identity is the one thing in this flow the agent cannot assert — every
 		// other field is either forwarded verbatim or made trustworthy by the turn proof.
@@ -135,4 +147,48 @@ func (h *Handler) coverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, out)
+}
+
+// identify resolves the caller from X-Pyyol-Key, falling back to a Bearer credential.
+//
+// This replaces auth.Middleware for gateway routes because Middleware reads Authorization,
+// and on a gateway request that header belongs to the PROVIDER: an OpenAI-bound call carries
+// the developer's OpenAI key there and it has to arrive upstream unchanged. Consuming it
+// would have meant either rejecting the developer's own credential as an invalid Pyyol key
+// or overwriting it and breaking the call.
+//
+// X-Pyyol-Key is checked FIRST and wins outright. Only when it is absent does Authorization
+// get tried, which keeps `curl -H "Authorization: Bearer sk_arena_..."` working for someone
+// exploring the gateway by hand without a provider SDK in the way.
+//
+// Like auth.Middleware this authenticates but does not authorize: an unresolvable credential
+// is a 401 here, and the absence of any credential is left to RequireScope, so the failure a
+// developer sees names the right problem.
+func (h *Handler) identify(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimSpace(r.Header.Get(HeaderKey))
+		if raw == "" {
+			// No Pyyol identity header: fall back to Authorization, but only if it looks like
+			// a Pyyol agent key. Treating an arbitrary Bearer token as one would turn a
+			// developer's OpenAI key into a 401 that blames the wrong credential.
+			if b := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(b, "Bearer ") {
+				if tok := strings.TrimSpace(strings.TrimPrefix(b, "Bearer ")); strings.HasPrefix(tok, "sk_arena_") {
+					raw = tok
+				}
+			}
+		}
+		if raw == "" {
+			next.ServeHTTP(w, r) // unauthenticated; RequireScope produces the error
+			return
+		}
+		p, err := h.authn.ResolveCredential(r.Context(), raw)
+		if err != nil {
+			httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "pyyol_unauthorized",
+				"The X-Pyyol-Key header is missing or invalid. This is your PYYOL agent key, "+
+					"not your model provider key — the provider credential stays in the header "+
+					"its own SDK uses and is passed through untouched."))
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.ContextWithPrincipal(r.Context(), p)))
+	})
 }

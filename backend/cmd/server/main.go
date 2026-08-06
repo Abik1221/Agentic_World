@@ -1282,6 +1282,10 @@ func run() error {
 	// Push-play: drive the developer's seat of a sandbox match from their hosted
 	// agent endpoint (manifest push model). Reuses the hardened verification client
 	// and the same match machinery, so the browser watches it live over SSE.
+	// BEFORE EnablePushPlay, which copies the minter onto the pusher. Sandbox mints proofs
+	// for the same reason Mafia and Monopoly do: it is where a developer confirms their
+	// gateway wiring actually earns credit, before anything is at stake.
+	sandboxSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, goofspielPlayClient, log)
 	sandboxSvc.SetWebhookEnqueuer(webhookQueue)
 	sandboxSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected

@@ -55,6 +55,12 @@ type GoofspielView struct {
 	// deterministic fallback. Neither is a decision the platform should have forced.
 	MoveWindowMs int64 `json:"move_window_ms,omitempty"`
 	DeadlineMs   int64 `json:"deadline_ms,omitempty"`
+	// TurnProof binds a gateway LLM call to THIS decision. The SDK attaches it as
+	// X-Pyyol-Proof on every model call it makes while deciding this move, and the gateway
+	// verifies it against (agent, match, round) — so an agent cannot claim a call it did not
+	// make for a turn it was not asked about. Empty when no minter is wired, in which case
+	// nothing here can be counted as LLM-backed.
+	TurnProof string `json:"turn_proof,omitempty"`
 	// Chat is the table talk so far, oldest first.
 	//
 	// The ranked drive shipped this and the sandbox push path did not, which meant an

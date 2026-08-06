@@ -407,26 +407,21 @@ class RuntimeConnector:
         # pyyol.current_span(); if pyyol.instrument() is active, every LLM call is
         # captured into the accumulator automatically. The accumulator is always on
         # (independent of Lens) so usage rides the move to the arena regardless.
-        with (
-            self._tracer.turn_span(
-                match_id=view.get("match_id", ""),
-                game=game,
-                round_no=turn_no,
-                agent_id=self.agent_id,
-            ),
-            turn_usage(
-                match_id=view.get("match_id", ""),
-                turn=turn_no,
-                turn_proof=view.get("turn_proof", ""),
-            ) as usage,
+        # The usage accumulator is installed by Agent._handle_turn, which decide_turn calls,
+        # so BOTH transports get it from one implementation. Wrapping again here would nest
+        # two accumulators: the inner one would absorb every model call and this outer one
+        # would attach an empty `usage` block, quietly losing the data on the path that used
+        # to be the only one that worked.
+        with self._tracer.turn_span(
+            match_id=view.get("match_id", ""),
+            game=game,
+            round_no=turn_no,
+            agent_id=self.agent_id,
         ):
-            status, move = self.agent.decide_turn(view)
+            # Pass the round WE derived: only this side has the monotonic counter Monopoly
+            # needs, and the proof is bound to it.
+            status, move = self.agent.decide_turn(view, turn_no=turn_no)
         ms = int((time.perf_counter() - started) * 1000)
-        # Auto-attach captured model/token/cost to the move so the arena benchmark
-        # records real usage with no developer boilerplate. A dev-supplied `usage`
-        # (manual reporting) always wins — we never overwrite it.
-        if status == 200 and isinstance(move, dict) and not usage.empty and "usage" not in move:
-            move["usage"] = usage.to_move_usage()
         rid = frame.get("id", "")
         # Send the move FIRST, then log — a console flush / log-file write must never
         # sit on the move's latency path (the platform is waiting on this response).

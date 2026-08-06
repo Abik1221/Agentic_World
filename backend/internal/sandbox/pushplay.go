@@ -42,6 +42,9 @@ type RemoteResolver interface {
 // spectator SSE stream. Nil until EnablePushPlay is called.
 type pushPlayer struct {
 	driver Driver
+	// turns mints the per-turn proof that binds a gateway LLM call to ONE decision.
+	// Nil ⇒ views ship without a proof and nothing here counts as LLM-backed.
+	turns  TurnMinter
 	remote RemoteResolver
 	client *agentclient.Client
 	// enqueue is the durable webhook queue for async /event + /game-end. When set
@@ -110,7 +113,10 @@ func (s *Service) EnablePushPlay(driver Driver, remote RemoteResolver, client *a
 	if log == nil {
 		log = slog.Default()
 	}
-	s.pusher = &pushPlayer{driver: driver, remote: remote, client: client, log: log, maxMatch: 3 * time.Minute}
+	s.pusher = &pushPlayer{
+		driver: driver, remote: remote, client: client, log: log,
+		maxMatch: 3 * time.Minute, turns: s.turns,
+	}
 }
 
 // StartPushPlay opens a no-stakes sandbox match and drives the developer's seat
@@ -240,7 +246,7 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			return
 		}
 
-		view := p.turnView(matchID, v, legal)
+		view := p.turnView(agentID, matchID, v, legal)
 		card, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, target, view)
 		rec.Record(benchmark.Decision{
 			Seat: 0, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
@@ -297,7 +303,7 @@ func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, tr agentwire.Trans
 // inspector could show what the agent played but never the state it was looking at,
 // which is the half that makes a move judgeable. The three sibling push paths (ranked
 // drive, Mafia, Monopoly) all recorded it; this one silently did not.
-func (p *pushPlayer) turnView(matchID string, v match.AgentView, legal []int) remoteplay.GoofspielView {
+func (p *pushPlayer) turnView(agentID, matchID string, v match.AgentView, legal []int) remoteplay.GoofspielView {
 	return remoteplay.GoofspielView{
 		Game:         "goofspiel",
 		MatchID:      matchID,
@@ -313,7 +319,12 @@ func (p *pushPlayer) turnView(matchID string, v match.AgentView, legal []int) re
 		// own risk under the forfeit rule, which is only fair if it was told the budget.
 		MoveWindowMs: v.MoveWindowMs,
 		DeadlineMs:   v.DeadlineMs,
-		Chat:         chatFromView(v),
+		// The proof that binds a gateway LLM call to THIS decision. Sandbox was the only
+		// push path that never minted one, so a developer could wire the gateway perfectly,
+		// watch every call get proxied, and still see bound=false on all of them with nothing
+		// to explain it. A live SDK agent found exactly that: 13 calls, 13 unbound.
+		TurnProof: p.mintProof(agentID, matchID, v.Round),
+		Chat:      chatFromView(v),
 	}
 }
 
@@ -430,4 +441,16 @@ func chatFromView(v match.AgentView) []remoteplay.ChatLine {
 		})
 	}
 	return out
+}
+
+// mintProof returns this turn's proof token, or "" when no minter is wired.
+//
+// An empty token is a legitimate state, not an error: with TURN_PROOF_SECRET unset the
+// signer is inert by construction, and a deployment that has not configured verification
+// should ship views without a proof rather than a forgeable placeholder.
+func (p *pushPlayer) mintProof(agentID, matchID string, round int) string {
+	if p.turns == nil {
+		return ""
+	}
+	return p.turns.Mint(agentID, matchID, round)
 }

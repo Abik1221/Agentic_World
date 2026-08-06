@@ -211,6 +211,17 @@ const (
 	HeaderMatch    = "X-Pyyol-Match" // the match the agent claims this call is for
 	HeaderTurn     = "X-Pyyol-Turn"  // the round it claims
 	HeaderProvider = "X-Pyyol-Provider"
+	// HeaderKey carries the caller's PYYOL agent key.
+	//
+	// It cannot be the standard Authorization header, and that is not a stylistic choice: a
+	// gateway request already uses the provider's own credential slot. Anthropic reads
+	// x-api-key, OpenAI reads "Authorization: Bearer", and both must arrive upstream
+	// untouched. Putting Pyyol's identity there would either overwrite a developer's OpenAI
+	// key or be mistaken for one.
+	//
+	// Stripped before forwarding by the x-pyyol- rule in copyUpstreamHeaders, so a Pyyol
+	// credential is never handed to a model provider.
+	HeaderKey = "X-Pyyol-Key"
 )
 
 // Proxy handles one model call: verify, forward, stream back, then record.

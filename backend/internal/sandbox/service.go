@@ -20,7 +20,27 @@ type Service struct {
 	// pusher is set by EnablePushPlay to enable /v1/sandbox/pushplay (the manifest
 	// "push" model). Nil ⇒ push-play returns 501.
 	pusher *pushPlayer
+	// turns mints the per-turn proof that binds a gateway LLM call to ONE decision.
+	// Nil ⇒ views ship without a proof, so no decision here can be counted as LLM-backed.
+	turns TurnMinter
 }
+
+// TurnMinter issues the token that binds a gateway LLM call to one decision. Satisfied by
+// *turnproof.Signer — the same signer every game uses, so one secret covers all of them and
+// the gateway verifies them identically.
+type TurnMinter interface {
+	Mint(agentID, matchID string, round int) string
+}
+
+// SetTurnMinter wires the per-turn proof minter. Call BEFORE EnablePushPlay, which copies it
+// onto the pusher.
+//
+// Sandbox mints proofs deliberately, matching the Mafia and Monopoly push paths. It is the
+// one place a developer can confirm their gateway wiring actually earns credit before any
+// coins are at stake; without a proof here they would discover a broken Verified setup only
+// in ranked play, where it costs them. Sandbox binding carries no reward on its own — the
+// integrity gate reads ranked matches — so this buys confidence, not standing.
+func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
 
 // New constructs the sandbox service. When enabled is false, Start returns a 403
 // so the feature can be turned off per-environment without removing the routes.
