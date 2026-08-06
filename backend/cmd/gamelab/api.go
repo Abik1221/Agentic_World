@@ -126,3 +126,88 @@ func (a *api) waitHealthy(timeout time.Duration) error {
 	}
 	return fmt.Errorf("platform did not become healthy within %s", timeout)
 }
+
+// ── Staked tables ────────────────────────────────────────────────────────────
+//
+// Push-play is free by construction, so the lab could exercise decisions, latency and
+// chat but never the MONEY path — no stake, no escrow, no settlement, and therefore no
+// way to see whether an absent agent actually forfeits its coins to the winner. These
+// three calls close that gap using the same endpoints a real developer's agent uses.
+
+// fundAgent credits an agent's wallet through the dev checkout confirmation.
+//
+// This is the offline DevGateway path the platform already exposes for local work: no
+// real charge, coins credited immediately. It is mounted only when DevMode is on (no
+// Stripe key, non-prod) and re-checks DevMode inside the handler, so it cannot become a
+// minting endpoint in production. Requires the USER token, not the agent key — funding a
+// wallet is an owner action, and the handler verifies the caller owns the agent.
+func (a *api) fundAgent(dashToken, agentPublicID string, coins int64) error {
+	return a.mustDo("fund agent", http.MethodPost, "/v1/admin/dev/confirm-checkout", dashToken,
+		map[string]any{
+			// The DevGateway does not look this up; it only has to be unique so repeated
+			// funding calls are not collapsed as one idempotent top-up.
+			"session_id": fmt.Sprintf("lab_%s_%d", agentPublicID, coins),
+			"agent":      agentPublicID,
+			"coins":      coins,
+		}, nil, http.StatusOK, http.StatusCreated)
+}
+
+// allocateToAgent moves coins from the OWNER's treasury into the agent's playing wallet.
+//
+// The second half of funding, and easy to miss: dev checkout credits the owner's TREASURY
+// (Topup keys on the user id, exactly like the real checkout.session.completed webhook),
+// not the agent. An agent whose owner is rich but whose own wallet is empty still cannot
+// stake — the platform correctly answers "Balance 0 is below the required 550". Two
+// distinct wallets, two distinct steps, and both are the real developer flow.
+//
+// Owner-scoped: funding an agent is an owner action, so this takes the dashboard token
+// rather than the agent key.
+func (a *api) allocateToAgent(dashToken, agentPublicID string, coins int64) error {
+	return a.mustDo("allocate to agent", http.MethodPost, "/v1/wallet/allocate", dashToken,
+		map[string]any{
+			"agent":  agentPublicID,
+			"amount": coins,
+			// Idempotent: a retried allocate must not move the treasury twice.
+			"idempotency_key": fmt.Sprintf("lab_alloc_%s_%d", agentPublicID, coins),
+		}, nil, http.StatusOK, http.StatusCreated)
+}
+
+// walletBalance reads an agent's current coin balance, so the harness can prove what the
+// money path did rather than assume it.
+func (a *api) walletBalance(agentKey string) (int64, error) {
+	var out struct {
+		Balance int64 `json:"balance"`
+		Coins   int64 `json:"coins"`
+	}
+	if err := a.mustDo("wallet", http.MethodGet, "/v1/wallet", agentKey, nil, &out,
+		http.StatusOK); err != nil {
+		return 0, err
+	}
+	if out.Balance != 0 {
+		return out.Balance, nil
+	}
+	return out.Coins, nil
+}
+
+// createStakedTable opens a staked heads-up table and returns its match id. The stake is
+// escrowed from the creator immediately, which is why fundAgent must run first.
+// tier is required rather than a raw bid: the platform enforces fixed stake tiers per
+// game so a table cannot be opened at an arbitrary amount, and the harness must go through
+// the same gate. Coins per tier come from game_stakes (goofspiel low = 500).
+func (a *api) createStakedTable(agentKey, tier string) (string, error) {
+	var out struct {
+		MatchID string `json:"match_id"`
+		ID      string `json:"id"`
+	}
+	if err := a.mustDo("create staked table", http.MethodPost, "/v1/lobby/create", agentKey,
+		map[string]any{"tier": tier}, &out, http.StatusCreated, http.StatusOK); err != nil {
+		return "", err
+	}
+	return firstNonEmpty(out.MatchID, out.ID), nil
+}
+
+// joinStakedTable seats the second agent, escrowing its stake and starting the match.
+func (a *api) joinStakedTable(agentKey, matchID string) error {
+	return a.mustDo("join staked table", http.MethodPost, "/v1/lobby/join", agentKey,
+		map[string]any{"match_id": matchID}, nil, http.StatusOK, http.StatusCreated)
+}

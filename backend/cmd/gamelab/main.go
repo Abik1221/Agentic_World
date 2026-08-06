@@ -36,7 +36,8 @@ const labEndpointSecret = "lab-endpoint-secret" // #nosec G101 -- local lab harn
 
 func main() {
 	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
-	stake := flag.Int64("stake", 500, "coins staked per seat (0 = free practice table)")
+	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
+	tier := flag.String("tier", "", "stake tier for a REAL staked table: low|mid|high (empty = free practice)")
 	basePort := flag.Int("base-port", 9101, "first local port for the agent endpoints")
 	runLabel := flag.String("label", "", "suffix for agent names, so repeat runs are distinguishable")
 	latencyScale := flag.Float64("latency-scale", 1, "multiply every simulated decision latency (8 pushes a reasoning persona past a 60s shot clock)")
@@ -115,17 +116,20 @@ func main() {
 	}
 	lg.Printf("──────────────────────────────────────────────────────────────")
 
-	// Start a driven match per agent. Push-play is free (no stake), which means no
-	// funding step and no certification gate — the fastest way to see real decisions,
-	// real thinking latency, and the live chat feed in the UI.
-	for _, ag := range agents {
-		matchID, err := a.startSandboxPushPlay(ag.AgentKey, "medium")
-		if err != nil {
-			lg.Printf("WARN: %s could not start a match: %v", ag.Persona.Name, err)
-			continue
+	// STAKED or free, and the difference is the whole point of the flag.
+	//
+	// Push-play is free by construction: no stake, no escrow, no settlement. It exercises
+	// decisions, latency and chat but can never show whether an absent agent actually
+	// forfeits its coins — which is the rule the arena is built on. With a stake the lab
+	// funds both wallets and pairs the agents on a real table, so escrow, rake, payout and
+	// forfeit all run for real.
+	if *tier != "" {
+		if err := runStakedTable(a, lg, agents, *tier); err != nil {
+			lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
+			startFreePushPlay(a, lg, agents)
 		}
-		lg.Printf("MATCH STARTED  %-14s  %s", ag.Persona.Name, matchID)
-		lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
+	} else {
+		startFreePushPlay(a, lg, agents)
 	}
 	lg.Printf("")
 
@@ -252,3 +256,66 @@ func readAllLimited(r *http.Request) ([]byte, error) {
 
 // webBase is the UI origin, used only to print watchable links in the log.
 func webBase() string { return envOr("WEB_BASE", "http://localhost:3100") }
+
+// startFreePushPlay opens one free practice match per agent — the original lab behaviour.
+func startFreePushPlay(a *api, lg *log.Logger, agents []*labAgent) {
+	for _, ag := range agents {
+		matchID, err := a.startSandboxPushPlay(ag.AgentKey, "medium")
+		if err != nil {
+			lg.Printf("WARN: %s could not start a match: %v", ag.Persona.Name, err)
+			continue
+		}
+		lg.Printf("MATCH STARTED  %-14s  %s  (free practice)", ag.Persona.Name, matchID)
+		lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
+	}
+}
+
+// runStakedTable funds two agents and seats them on a real staked table.
+//
+// Deliberately the SAME endpoints a developer's agent uses — dev checkout to fund, then
+// lobby create/join — rather than writing rows directly. A harness that seeds the database
+// proves nothing about the paths that run in production; this one exercises escrow, the
+// stake gate, settlement and the absence forfeit exactly as a real table would.
+//
+// Needs at least two agents: a stake is a contest, and a table with one seat never starts.
+func runStakedTable(a *api, lg *log.Logger, agents []*labAgent, tier string) error {
+	if len(agents) < 2 {
+		return fmt.Errorf("need 2 agents for a staked table, have %d", len(agents))
+	}
+	host, guest := agents[0], agents[1]
+
+	// Fund generously so a run of several matches does not stall on an empty wallet
+	// mid-way and look like a platform failure. The tier decides the real stake; this is
+	// simply enough to cover it many times over.
+	const funding = int64(20000)
+	for _, ag := range []*labAgent{host, guest} {
+		// Two steps, because there are two wallets: checkout credits the owner's
+		// treasury, allocate moves it into the agent's playing wallet. Skipping the
+		// second leaves a rich owner with an agent that cannot stake a single coin.
+		if err := a.fundAgent(ag.DashToken, ag.AgentID, funding); err != nil {
+			return fmt.Errorf("fund %s: %w", ag.Persona.Name, err)
+		}
+		if err := a.allocateToAgent(ag.DashToken, ag.AgentID, funding); err != nil {
+			return fmt.Errorf("allocate to %s: %w", ag.Persona.Name, err)
+		}
+		bal, err := a.walletBalance(ag.AgentKey)
+		if err != nil {
+			lg.Printf("   (%s funded; balance read failed: %v)", ag.Persona.Name, err)
+			continue
+		}
+		lg.Printf("FUNDED  %-14s  %d coins", ag.Persona.Name, bal)
+	}
+
+	matchID, err := a.createStakedTable(host.AgentKey, tier)
+	if err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
+	if err := a.joinStakedTable(guest.AgentKey, matchID); err != nil {
+		return fmt.Errorf("join: %w", err)
+	}
+
+	lg.Printf("STAKED MATCH STARTED  %s   %s vs %s   tier=%s",
+		matchID, host.Persona.Name, guest.Persona.Name, tier)
+	lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
+	return nil
+}
