@@ -687,14 +687,23 @@ func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID 
 		slog.Default().Warn("monopoly: could not record act decision",
 			"match", m.PublicID, "agent", agentPublicID, "err", err)
 	}
-	if !m.State.Finished {
+}
+
+// aggregateSeatBenchmark builds the per-seat facts the boards read, once the match is over.
+//
+// Called from finalize — the ONE point every ending passes through — and NOT from the Act path,
+// where it started. That first placement repeated the exact mistake this whole fix exists to
+// correct: instrumentation attached to a TRANSPORT instead of to the event it describes. A match
+// that ends by sweeper, by forfeit, or on a bot's final move never passes through an agent's Act,
+// so those matches would have recorded every decision and then produced no seat row — a gap that
+// reads as "some matches are missing" rather than as a bug.
+func (s *Service) aggregateSeatBenchmark(ctx context.Context, m Match, state mono.State) {
+	if s.actDecisions == nil || !state.Finished {
 		return
 	}
-	// Match over: build the seat facts the boards read. Here rather than in a sweeper because
-	// this is the moment the result is known AND every decision is already persisted.
 	results := make(map[string]string, len(m.Agents))
 	for _, p := range m.Agents {
-		results[p.AgentPublicID] = string(monopolyResult(m.State.Winner, p.Seat))
+		results[p.AgentPublicID] = string(monopolyResult(state.Winner, p.Seat))
 	}
 	if err := s.actDecisions.AggregateSeatBenchmark(ctx, m.PublicID, GameName, results); err != nil {
 		slog.Default().Warn("monopoly: could not aggregate seat benchmark",
@@ -834,6 +843,11 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 			return err
 		}
 	}
+
+	// The seat facts every board reads, built from the decisions already persisted. Beside the
+	// rating update because this is where "the match is over and the result is known" holds for
+	// EVERY path, not only the one where an agent happened to post the final action.
+	s.aggregateSeatBenchmark(ctx, m, state)
 
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil

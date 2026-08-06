@@ -695,14 +695,22 @@ func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID 
 		slog.Default().Warn("mafia: could not record act decision",
 			"match", m.PublicID, "agent", agentPublicID, "err", err)
 	}
-	if !m.State.Finished {
+}
+
+// aggregateSeatBenchmark builds the per-seat facts the boards read, once the match is over.
+//
+// Called from finalize — the one point every ending passes through — and NOT from the Act path.
+// Mafia ends by phase timeout at least as often as by a player's action (a night nobody answers,
+// a vote that expires), so tying this to Act would have lost precisely the matches where agents
+// were least responsive. Same mistake as attaching instrumentation to a driver: the hook belongs
+// on the event, not on one way of reaching it.
+func (s *Service) aggregateSeatBenchmark(ctx context.Context, m Match, state mf.State) {
+	if s.actDecisions == nil || !state.Finished {
 		return
 	}
-	// Match over: build the seat facts the boards read, now that the result is known and every
-	// decision is already persisted.
 	results := make(map[string]string, len(m.Players))
 	for _, p := range m.Players {
-		results[p.AgentPublicID] = string(mafiaSeatResult(m.State, p.Seat))
+		results[p.AgentPublicID] = string(mafiaSeatResult(state, p.Seat))
 	}
 	if err := s.actDecisions.AggregateSeatBenchmark(ctx, m.PublicID, GameName, results); err != nil {
 		slog.Default().Warn("mafia: could not aggregate seat benchmark", "match", m.PublicID, "err", err)
@@ -856,6 +864,10 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 			return err
 		}
 	}
+
+	// The seat facts every board reads. Beside the settlement because this is where the result is
+	// known for EVERY way a match can end, including the timeouts Mafia ends on constantly.
+	s.aggregateSeatBenchmark(ctx, m, state)
 
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil
