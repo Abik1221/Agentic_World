@@ -708,10 +708,18 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 			// withholds when some OTHER seat at the table did prove itself — could flip
 			// the verdict for the humans depending on who else was seated.
 			agents := make([]string, 0, len(humans))
+			// A seat that went dark is exempt: its zero proofs are explained by never
+			// having answered, not by playing without a model. It has already been
+			// punished where it counts — it abstained through every vote and its team
+			// lost ground for it — and if it won ANYWAY, that win is real and gets paid.
+			absent := make(map[string]bool, len(humans))
 			for _, p := range humans {
 				agents = append(agents, p.AgentPublicID)
+				if state.SeatWasAbsent(p.Seat) {
+					absent[p.AgentPublicID] = true
+				}
 			}
-			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, slog.Default())
+			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
 			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
 		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, platformFee, payouts); err != nil {

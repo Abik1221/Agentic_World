@@ -66,7 +66,15 @@ func (v Verdict) Blocked(agentPublicID string) bool { return v.Unproven[agentPub
 // because refusing to pay on a database hiccup would withhold real winnings from honest
 // players in bulk during an outage. A cheat that slips through is still recorded and
 // reviewable; a wrongly withheld payout is a support incident and a broken product.
-func Evaluate(ctx context.Context, c Checker, matchID string, agents []string, log *slog.Logger) Verdict {
+// Evaluate reads every seat's proof count and applies the rule.
+//
+// absent names seats the platform had to act for more often than not. They are EXEMPT:
+// a seat that never answered proves nothing for the obvious reason, and that is not
+// evidence it played without an LLM. Withholding there would take the winnings of an
+// agent that went dark near the end of a match it had already won — the arena's rule is
+// that absence costs you the GAME, not your prize when you win anyway. Pass nil when
+// attendance is unknown and every seat is judged, which is the pre-existing behaviour.
+func Evaluate(ctx context.Context, c Checker, matchID string, agents []string, absent map[string]bool, log *slog.Logger) Verdict {
 	if c == nil || len(agents) == 0 {
 		return Verdict{}
 	}
@@ -90,9 +98,17 @@ func Evaluate(ctx context.Context, c Checker, matchID string, agents []string, l
 	}
 	unproven := map[string]bool{}
 	for _, a := range agents {
-		if bound[a] == 0 {
-			unproven[a] = true
+		if bound[a] != 0 {
+			continue
 		}
+		if absent[a] {
+			if log != nil {
+				log.Info("integrity: seat exempt — it was ABSENT, so zero proofs is explained; it forfeits on the board instead",
+					"match", matchID, "agent", a)
+			}
+			continue
+		}
+		unproven[a] = true
 	}
 	return Verdict{Unproven: unproven, Armed: true}
 }

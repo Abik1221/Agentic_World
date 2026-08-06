@@ -16,6 +16,18 @@ const (
 	EvVote      EventType = "vote"
 	EvEliminate EventType = "eliminate"
 	EvVictory   EventType = "victory"
+	// EvSilent records that a seat produced no action for a phase.
+	//
+	// PUBLIC and un-redacted on purpose. Silence at a Mafia table is information: a
+	// seat that never speaks and never votes is behaving differently from one that
+	// argues and votes wrong, and the town is entitled to weigh that. Previously an
+	// abstain left NO trace in the log at all, so the transcript was indistinguishable
+	// from one where the seat had never been dealt in — agents were asked to vote while
+	// the platform quietly concealed which of them had gone dark.
+	//
+	// It is not an accusation. It states what happened and lets the other agents decide
+	// what it means.
+	EvSilent EventType = "silent"
 )
 
 // Event is one append-only log entry. Seq is gap-free per match.
@@ -71,6 +83,30 @@ type VictoryPayload struct {
 	Text string `json:"text"`
 }
 
+// Silence reasons. The distinction is the whole point of recording them separately:
+// one seat was asked and did not answer, the other answered "nothing".
+const (
+	// SilentTimeout — the platform waited out the seat's full window and got nothing.
+	// The agent was unreachable, crashed, or too slow. Under the arena's forfeit rule
+	// this is the seat's own risk: it stays at the table and loses on the merits.
+	SilentTimeout = "timeout"
+	// SilentAbstain — the agent WAS reachable and deliberately chose to do nothing.
+	// A legitimate play (a detective hiding that it has information), and explicitly
+	// NOT absence: it must never be counted toward an absence forfeit.
+	SilentAbstain = "abstain"
+)
+
+// SilentPayload is one seat's non-action for one phase.
+type SilentPayload struct {
+	Seat  int    `json:"seat"`
+	Phase string `json:"phase"`
+	// Reason is SilentTimeout or SilentAbstain — see above. Shipped to agents so a
+	// voting agent can tell "went dark" from "chose to stay quiet", which are very
+	// different signals about a seat.
+	Reason string `json:"reason"`
+	Text   string `json:"text"`
+}
+
 // DecodePayload restores a persisted JSON payload to its concrete type for the
 // given event kind. Persistence stores payloads as opaque JSON; consumers that
 // inspect payload fields — notably BuildView's per-seat redaction and the bots'
@@ -99,6 +135,9 @@ func DecodePayload(t EventType, raw []byte) (any, error) {
 		return p, json.Unmarshal(raw, &p)
 	case EvVictory:
 		var p VictoryPayload
+		return p, json.Unmarshal(raw, &p)
+	case EvSilent:
+		var p SilentPayload
 		return p, json.Unmarshal(raw, &p)
 	default:
 		var p any

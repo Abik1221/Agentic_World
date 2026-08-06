@@ -69,6 +69,11 @@ type Action struct {
 	Property int    `json:"property,omitempty"`
 	Amount   int    `json:"amount,omitempty"`
 	Trade    *Trade `json:"trade,omitempty"` // only for propose_trade
+	// Forced marks an action the SERVER supplied because the seat missed its window.
+	// Set only by defaultAction via ForceTimeout; the agent-facing decoder never sets
+	// it, so an agent cannot claim absence (nor be punished for a deliberate pass).
+	// Not part of the wire contract — json:"-" keeps it out of replays and payloads.
+	Forced bool `json:"-"`
 }
 
 // Config defines a match's parameters. Defaults model a standard 4-player game.
@@ -283,6 +288,10 @@ func (e *Engine) Step(s State, seat int, a Action, seed []byte) (State, []Event,
 	}
 
 	ns := s.clone()
+	// Attendance, recorded before the phase handlers can reject or short-circuit: this
+	// asks "was the seat there when we needed it", which is true regardless of whether
+	// the action turned out legal.
+	ns.noteAsked(seat, a.Forced)
 	var evs []Event
 	var err error
 	switch ns.Phase {
@@ -328,7 +337,9 @@ func (e *Engine) ForceTimeout(s State, seed []byte) (State, []Event, error) {
 		return s, nil, nil
 	}
 	actor := e.pendingActor(s)
-	return e.Step(s, actor, e.defaultAction(s), seed)
+	a := e.defaultAction(s)
+	a.Forced = true // so Step can record this seat as absent rather than merely passive
+	return e.Step(s, actor, a, seed)
 }
 
 // defaultAction is the safe, deterministic fallback per phase.

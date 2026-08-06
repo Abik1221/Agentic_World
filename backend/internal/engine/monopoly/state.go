@@ -143,6 +143,45 @@ type State struct {
 	// part of State so it snapshots with the match and so every agent view can hand
 	// each seat what the others have said — a negotiation needs both directions.
 	Chat []ChatLine `json:"chat,omitempty"`
+
+	// Timeouts / Asks count, per seat, how often the platform had to act on the seat's
+	// behalf versus how often it was asked at all. Settlement uses the ratio to tell a
+	// seat that went dark from one that played and could not prove its reasoning was
+	// LLM-backed — identical (zero) proof counts, opposite correct outcomes.
+	//
+	// In State rather than derived from the benchmark tables because settlement must not
+	// race the outbox. Absent on states written before this field existed, which reads as
+	// "never timed out" — the conservative direction.
+	Timeouts map[int]int `json:"timeouts,omitempty"`
+	Asks     map[int]int `json:"asks,omitempty"`
+}
+
+// noteAsked records that a seat was asked to act, and whether the platform had to
+// answer for it. Monopoly asks a seat many times per turn (trade window, roll,
+// buy/auction, manage, end turn), so absence is a ratio over decision points rather
+// than a count of turns.
+func (s *State) noteAsked(seat int, forced bool) {
+	if s.Asks == nil {
+		s.Asks = map[int]int{}
+	}
+	s.Asks[seat]++
+	if !forced {
+		return
+	}
+	if s.Timeouts == nil {
+		s.Timeouts = map[int]int{}
+	}
+	s.Timeouts[seat]++
+}
+
+// SeatWasAbsent reports whether the platform played more of a seat's decisions than
+// the agent did. See the note on Timeouts for why settlement needs this.
+func (s *State) SeatWasAbsent(seat int) bool {
+	asked := s.Asks[seat]
+	if asked <= 0 {
+		return false
+	}
+	return s.Timeouts[seat]*2 > asked
 }
 
 // ChatLine is one spoken line, retained so later speakers can read it.
@@ -153,6 +192,17 @@ type ChatLine struct {
 	Kind string `json:"kind"` // "say" | "rationale"
 }
 
+func cloneSeatCounts(m map[int]int) map[int]int {
+	if m == nil {
+		return nil
+	}
+	out := make(map[int]int, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 // clone returns a deep copy so transitions never mutate the caller's State.
 func (s State) clone() State {
 	cp := s
@@ -161,6 +211,8 @@ func (s State) clone() State {
 	cp.Chat = append([]ChatLine(nil), s.Chat...)
 	cp.ChanceOrder = append([]int(nil), s.ChanceOrder...)
 	cp.CCOrder = append([]int(nil), s.CCOrder...)
+	cp.Timeouts = cloneSeatCounts(s.Timeouts)
+	cp.Asks = cloneSeatCounts(s.Asks)
 	if s.Auction != nil {
 		a := *s.Auction
 		a.InAuction = append([]bool(nil), s.Auction.InAuction...)

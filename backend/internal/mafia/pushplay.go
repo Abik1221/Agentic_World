@@ -41,6 +41,11 @@ type PushClient interface {
 	Initialize(ctx context.Context, t agentclient.Target, req agentclient.InitializeRequest) (agentclient.InitializeResponse, error)
 	Event(ctx context.Context, t agentclient.Target, n agentclient.EventNotification) error
 	GameEnd(ctx context.Context, t agentclient.Target, n agentclient.GameEndNotification) error
+	// Health is the liveness probe the transport runs when a turn fails, so a missed
+	// turn on a STAKED table can be classified before it counts toward an absence
+	// forfeit. Required by agentwire.HTTPClient — declaring it here is what makes the
+	// compiler refuse a client this path could not have asked.
+	Health(ctx context.Context, t agentclient.Target) (agentclient.HealthResult, error)
 }
 
 type pushPlayer struct {

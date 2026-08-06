@@ -80,6 +80,19 @@ type State struct {
 	Winner     int           `json:"winner"` // valid only when Finished
 	History    []RoundResult `json:"history"`
 	NextSeq    int           `json:"next_seq"` // next event sequence number (gap-free per match)
+	// Timeouts counts, per seat, the rounds the platform had to play FOR that seat
+	// because it did not answer in time.
+	//
+	// Lives in State rather than being derived at settlement because settlement must
+	// not depend on the benchmark tables: those are written asynchronously through the
+	// outbox and are routinely not yet durable when finalize runs, so reading absence
+	// from them would decide who gets paid off a race. State is committed in the same
+	// transaction as the move that caused it, so this count is exact and crash-safe.
+	//
+	// A zero value on a state persisted before this field existed reads as "never timed
+	// out", which is the safe default: it can only cause the conservative void, never a
+	// wrongful forfeit.
+	Timeouts [2]int `json:"timeouts"`
 	// Chat is the public table talk, oldest first, capped at MaxChatHistory. It is
 	// part of State (not a side buffer) so it snapshots and reconstructs with the
 	// match, and so the agent view can hand every seat what the others have said —

@@ -20,7 +20,7 @@ func (f fake) BoundDecisions(_ context.Context, _, agent string) (int, error) {
 
 func eval(t *testing.T, bound map[string]int, agents ...string) Verdict {
 	t.Helper()
-	return Evaluate(context.Background(), fake{bound: bound}, "mch_1", agents, nil)
+	return Evaluate(context.Background(), fake{bound: bound}, "mch_1", agents, nil, nil)
 }
 
 // The property that makes this safe to ship BEFORE any SDK sends proofs: with nothing
@@ -97,7 +97,7 @@ func TestTheTableStillPaysEveryoneElse(t *testing.T) {
 // FAILS OPEN. Refusing to pay because a database read failed would withhold real winnings
 // from honest players in bulk during an outage.
 func TestFailsOpenWhenTheCountCannotBeRead(t *testing.T) {
-	v := Evaluate(context.Background(), fake{err: errors.New("db down")}, "mch_1", []string{"a", "b"}, nil)
+	v := Evaluate(context.Background(), fake{err: errors.New("db down")}, "mch_1", []string{"a", "b"}, nil, nil)
 	if v.Armed || len(v.Unproven) != 0 {
 		t.Fatalf("armed on an unreadable count: %+v", v)
 	}
@@ -110,7 +110,7 @@ func TestFailsOpenWhenTheCountCannotBeRead(t *testing.T) {
 
 // A nil checker (tests, a deployment without the pipeline) changes nothing.
 func TestNoCheckerIsANoOp(t *testing.T) {
-	v := Evaluate(context.Background(), nil, "mch_1", []string{"a"}, nil)
+	v := Evaluate(context.Background(), nil, "mch_1", []string{"a"}, nil, nil)
 	if v.Armed {
 		t.Fatal("armed with no checker installed")
 	}

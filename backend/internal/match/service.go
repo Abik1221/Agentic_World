@@ -123,6 +123,32 @@ func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
 	s.integrity, s.integrityMinPct = c, minPct
 }
 
+// seatWasAbsent reports whether a seat's failure to prove anything is explained by it
+// having gone dark rather than by it having played unproven.
+//
+// The two are indistinguishable in the proof tables — both score zero — and they call
+// for opposite outcomes:
+//
+//   - PLAYED BUT UNPROVEN is the case the void exists for. Detection is imperfect
+//     (batching, caching, a direct provider call instead of pyyol.route()), so the
+//     conservative answer is to cancel the match and give both stakes back rather than
+//     confiscate a real developer's coins on a false positive.
+//   - WENT DARK is not ambiguous at all. The platform asked, waited out the seat's full
+//     window, got nothing, and played the worst legal card on its behalf. Voiding there
+//     punishes the OPPONENT — who showed up, paid for inference and won — by cancelling
+//     the win, and it hands the absent agent its stake back. Absence is the absent
+//     agent's own risk: it stays at the table, loses on the board, and forfeits.
+//
+// The rule is a simple majority of the seat's own turns: a seat the platform had to play
+// for more often than not was not meaningfully present. One slow round does not strip a
+// match of integrity protection.
+func seatWasAbsent(timeouts, decisions int) bool {
+	if decisions <= 0 {
+		return false
+	}
+	return timeouts*2 > decisions
+}
+
 // rankedIntegrityFailed reports whether a finished ranked match should be VOIDED
 // because a seat cannot show it was played by an LLM, and names the seat if so.
 //
@@ -130,11 +156,14 @@ func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
 // script taking stakes from developers who are genuinely paying for inference is the
 // thing this exists to stop. decisions is how many moves each seat actually made.
 //
+// A seat that was merely ABSENT is never grounds to void — see seatWasAbsent. It loses
+// the match on the board and forfeits its stake, and the opponent is paid.
+//
 // FAILS OPEN. If the count cannot be read the match settles normally, because the
 // alternative — voiding on a database hiccup — would cancel legitimate matches in
 // bulk during an outage. A cheat that slips through is still recorded and reviewable;
 // a wrongly voided match is a broken product for everyone playing at that moment.
-func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions int) (bool, string) {
+func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions int, timeouts [2]int) (bool, string) {
 	if s.integrity == nil || decisions <= 0 {
 		return false, ""
 	}
@@ -153,6 +182,24 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 		}
 		bound[p.AgentPublicID] = n
 		total += n
+	}
+
+	// A seat that went dark is exempt from BOTH rules below. Its zero proofs are fully
+	// explained by never having answered, so they are not evidence of anything, and the
+	// remedy for absence is losing the game — which it already did — not cancelling the
+	// opponent's win. Logged because a silently-skipped integrity check is exactly the
+	// kind of thing that should never be invisible.
+	absent := func(p Player) bool {
+		if p.Seat < 0 || p.Seat >= len(timeouts) {
+			return false
+		}
+		if !seatWasAbsent(timeouts[p.Seat], decisions) {
+			return false
+		}
+		slog.Info("match: integrity check skipped for an ABSENT seat — it forfeits on the board rather than voiding the match",
+			"match", m.PublicID, "agent", p.AgentPublicID, "seat", p.Seat,
+			"timeouts", timeouts[p.Seat], "decisions", decisions)
+		return true
 	}
 
 	// RULE 1 — the zero-proof gate. Always on, and safe to have always on.
@@ -179,7 +226,7 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 	// staked play; only then is "zero proofs" unambiguous.
 	if total > 0 {
 		for _, p := range m.Players {
-			if bound[p.AgentPublicID] == 0 {
+			if bound[p.AgentPublicID] == 0 && !absent(p) {
 				return true, p.AgentPublicID
 			}
 		}
@@ -191,6 +238,9 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 	// honest agents score once proofs are flowing.
 	if s.integrityMinPct > 0 {
 		for _, p := range m.Players {
+			if absent(p) {
+				continue
+			}
 			if bound[p.AgentPublicID]*100 < decisions*s.integrityMinPct {
 				return true, p.AgentPublicID
 			}
@@ -834,11 +884,15 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		// a re-drive after a crash cannot pay out a match that was voided, or void
 		// one that already paid.
 		//
-		// Voiding rather than forfeiting is deliberate. Detection is new and will
-		// have false positives (batching, caching, a model timing out into a
-		// deterministic fallback), and taking a real developer's stake on a false
-		// positive is not recoverable in the way an un-played match is.
-		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History)); failed {
+		// Voiding rather than forfeiting is deliberate FOR A SEAT THAT PLAYED. Detection
+		// is new and will have false positives (batching, caching, a direct provider
+		// call), and taking a real developer's stake on a false positive is not
+		// recoverable in the way an un-played match is.
+		//
+		// A seat that went DARK is the other case entirely and must not reach the void:
+		// it forfeits and the opponent is paid. state.Timeouts carries how many rounds
+		// the platform had to play for each seat, which is what separates the two.
+		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History), state.Timeouts); failed {
 			slog.Warn("match: VOIDED — seat could not prove its decisions were LLM-backed",
 				"match", m.PublicID, "agent", agent, "decisions", len(state.History),
 				"min_pct", s.integrityMinPct)

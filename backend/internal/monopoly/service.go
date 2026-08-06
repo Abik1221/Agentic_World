@@ -676,10 +676,19 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 		// over a proof nobody asked them for would be confiscation.
 		if s.integrity != nil && len(payouts) > 0 && platformFee > 0 {
 			agents := make([]string, 0, len(m.Agents))
+			// A seat that went dark is exempt from the proof rule: it never answered, so
+			// zero proofs says nothing about whether it has a model behind it. Absence is
+			// punished on the board — it declined every purchase and auction, and went
+			// bankrupt on the first debt it could not cover in cash — not by confiscating
+			// a prize it managed to win regardless.
+			absent := make(map[string]bool, len(m.Agents))
 			for _, a := range m.Agents {
 				agents = append(agents, a.AgentPublicID)
+				if state.SeatWasAbsent(a.Seat) {
+					absent[a.AgentPublicID] = true
+				}
 			}
-			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, slog.Default())
+			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
 			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
 		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.GrossPool, platformFee, payouts); err != nil {
