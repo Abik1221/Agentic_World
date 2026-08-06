@@ -48,9 +48,12 @@ type Service struct {
 	finish FinishHook
 	bot    Bot
 	style  StyleRecorder // nil ⇒ style aggregates not recorded (optional, best-effort)
-	driver *driver       // nil ⇒ paired agents self-drive (auto-drive disabled)
-	clock  platform.Clock
-	cfg    Config
+	// windows derives each seat's decision budget from its demonstrated latency.
+	// Nil ⇒ every match uses the configured constant, exactly as before.
+	windows WindowProvider
+	driver  *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
+	clock   platform.Clock
+	cfg     Config
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -255,6 +258,57 @@ type StyleRecorder interface {
 	RecordStyle(ctx context.Context, agentPublicID, game string, aggression, efficiency int) error
 }
 
+// WindowProvider decides how long to wait for one agent's decision.
+//
+// A seam rather than a constant because a single number cannot serve both a 0.9s cloud
+// model and a 95s local one: generous enough for the second and one dead agent stalls
+// every table, tight enough for the first and honest slow agents lose rounds they were
+// winning. See internal/deadline — the window is derived from what the agent has actually
+// demonstrated, floored and ceilinged.
+//
+// Optional. Unset, every match uses cfg.MoveWindow exactly as before, so adopting this
+// changes nothing until a provider is installed.
+type WindowProvider interface {
+	// Window returns the decision budget for this agent in this game. Implementations
+	// must be fast and must never block a turn — a cached or best-effort answer is
+	// correct here, a slow one is not.
+	Window(ctx context.Context, agentPublicID, game string) time.Duration
+}
+
+// SetWindowProvider installs adaptive decision windows. Nil keeps the static config.
+func (s *Service) SetWindowProvider(w WindowProvider) {
+	if w != nil {
+		s.windows = w
+	}
+}
+
+// moveWindow is the budget for a seat's next decision: the provider's answer when one is
+// installed, else the configured constant.
+//
+// Falls back on ANY doubt — no provider, no agent, a non-positive answer. A deadline is on
+// the path of every turn on the platform, so this must degrade to the old behaviour rather
+// than risk a zero window, which would forfeit every decision the instant it was asked.
+func (s *Service) moveWindow(ctx context.Context, agents ...string) time.Duration {
+	base := s.cfg.MoveWindow
+	if s.windows == nil {
+		return base
+	}
+	// A round deadline is SHARED by both seats, so the table runs on the slower agent's
+	// window. Taking the faster one would cut the slower agent off mid-decision through
+	// no fault of its own — it would be forfeiting rounds because of who it was matched
+	// against, which is the one thing a deadline must never depend on.
+	longest := base
+	for _, a := range agents {
+		if a == "" {
+			continue
+		}
+		if w := s.windows.Window(ctx, a, "goofspiel"); w > longest {
+			longest = w
+		}
+	}
+	return longest
+}
+
 // SetStyleRecorder installs the (optional) style aggregator. Nil keeps it off.
 func (s *Service) SetStyleRecorder(r StyleRecorder) {
 	if r != nil {
@@ -441,7 +495,7 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 	if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
 		return "", err
 	}
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
 	in := CreatePairedInput{
 		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.rakePct(),
 		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
@@ -487,7 +541,7 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 	state, events := eng.Init(seed)
 
 	publicID := platform.NewID(platform.PrefixMatch)
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, humanAgent))
 	in := CreatePairedInput{
 		PublicID: publicID, Game: "goofspiel", Mode: ModeSandbox, BotPolicy: policy,
 		Bid: 0, RakePct: 0, TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version,
@@ -558,7 +612,7 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		return AgentView{}, err
 	}
 
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, agentPublicID))
 	joiner := Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: gs.SeatB}
 	if err := s.repo.Activate(ctx, matchPublicID, joiner, state, deadline, events); err != nil {
 		// Activation failed after staking — return both bids so no coins are stuck.

@@ -1214,6 +1214,11 @@ func run() error {
 	// construction, so installing it afterwards would ship views with no proof token.
 	matchSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	matchSvc.SetIntegrityCheck(store.NewPIndexRepo(st.DB), cfg.RankedIntegrityMinPct)
+	// Adaptive decision windows: each seat's budget is derived from the latency it has
+	// actually demonstrated rather than from one constant that has to serve both a 0.9s
+	// cloud model and a 95s local one. Cached per agent and fails open to cfg.MoveWindow,
+	// so a lookup problem degrades to the previous behaviour instead of stalling a turn.
+	matchSvc.SetWindowProvider(store.NewWindowRepo(st.DB, log))
 	if cfg.TurnProofSecret == "" {
 		log.Warn("ranked integrity INERT: no TURN_PROOF_SECRET, so no decision can be proven LLM-backed and a scripted agent can take ranked stakes",
 			"fix", "set TURN_PROOF_SECRET to mint per-turn proof tokens",
