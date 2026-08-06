@@ -2,7 +2,6 @@ package store
 
 import (
 	"github.com/agent-arena/arena/internal/benchmark"
-	"github.com/agent-arena/arena/internal/pricing"
 )
 
 // DecisionsFromSeat projects a seat's in-memory decision log onto the persisted per-round
@@ -48,8 +47,9 @@ func DecisionsFromSeat(seat benchmark.SeatSummary, seatProvider, seatModel strin
 			if md.TotalTokens == 0 {
 				md.TotalTokens = u.PromptTokens + u.CompletionTokens + u.ReasoningTokens
 			}
-			md.EstimatedCost = pricing.EstimateCost(md.Model, u.PromptTokens, u.CompletionTokens,
-				u.CachedTokens, u.CachedWriteTokens, u.ReasoningTokens)
+			// One pricing definition shared with the pull path and the drivers: a cost that
+			// differs by transport is not a cost.
+			md.EstimatedCost = benchmark.PriceUsage(md.Model, u)
 		}
 		out = append(out, md)
 	}

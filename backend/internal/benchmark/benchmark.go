@@ -108,6 +108,26 @@ type TokenUsage struct {
 	CallLatenciesMS []int `json:"call_latencies_ms,omitempty"`
 }
 
+// PriceUsage is the USD cost of one decision's usage, via the versioned price table.
+//
+// One function so the driver path, the pull path and the decision-log projection cannot price
+// the same usage three ways. It previously existed as the same expression written out at each
+// call site, which is how a cache-write parameter gets added in two places and missed in a
+// third — and a cost that differs by transport is not a cost.
+//
+// model is passed separately because a seat's model may be known from the manifest when the
+// per-decision usage did not report one.
+func PriceUsage(model string, u *TokenUsage) float64 {
+	if u == nil {
+		return 0
+	}
+	if model == "" {
+		model = u.Model
+	}
+	return pricing.EstimateCost(model, u.PromptTokens, u.CompletionTokens,
+		u.CachedTokens, u.CachedWriteTokens, u.ReasoningTokens)
+}
+
 // total returns the reported total, or the sum of the parts if total is unset.
 func (u TokenUsage) total() int {
 	if u.TotalTokens > 0 {
