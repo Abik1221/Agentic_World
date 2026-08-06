@@ -1263,6 +1263,9 @@ func run() error {
 	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
 	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
 	llmGateway.SetCoverageReader(llmGatewayRepo)
+	// Lens spans for server-observed calls, so a gateway round trip shows up in the same trace
+	// waterfall as the agent's own handler rather than leaving a hole where the slow part was.
+	llmGateway.SetEmitter(lens)
 	llmGatewayHandler := llmgw.NewHandler(llmGateway, authn)
 	if cfg.TurnProofSecret == "" {
 		log.Warn("LLM gateway will record calls but can PROVE none: TURN_PROOF_SECRET is unset, so no call can be bound to a decision and the verified tier stays empty",

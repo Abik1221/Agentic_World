@@ -54,6 +54,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/agent-arena/arena/internal/benchmark"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
+	"github.com/agent-arena/arena/internal/pricing"
 )
 
 // Recorder persists what the gateway observed. Implemented by store.
@@ -67,6 +71,38 @@ type Recorder interface {
 	// BindDecision marks (match, agent, round) as proven LLM-backed. Only ever called
 	// for a call whose turn proof verified.
 	BindDecision(ctx context.Context, matchID, agentPublicID string, round int) error
+	// RecordVerifiedCost accumulates per-match server-observed spend.
+	//
+	// Separate from RecordCall because it answers a different question and has a different
+	// grain: RecordCall is the per-call audit trail, this is the per-match total the boards
+	// divide. Called on EVERY observed call, bound or not — an unbound call is still a real
+	// call the developer really paid for, and a cost total that omitted them would understate
+	// spend in exactly the direction that flatters the agent.
+	RecordVerifiedCost(ctx context.Context, c VerifiedCost) error
+}
+
+// VerifiedCost is one observed call's contribution to a match's verified spend.
+type VerifiedCost struct {
+	MatchID          string
+	AgentPublicID    string
+	CostUSD          float64
+	Provider         string
+	Model            string
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+// Emitter ships a Lens span for an observed call. Satisfied by *telemetry.Client.
+//
+// Separate from Recorder because the two answer different questions and fail
+// independently: the recorder feeds the boards and the ledger, the emitter feeds the trace
+// waterfall a developer opens when a turn went wrong. Losing one must not cost the other.
+//
+// Optional, like the recorder — a deployment with Lens disabled still records calls.
+type Emitter interface {
+	EmitEvent(telemetry.Event)
+	Enabled() bool
 }
 
 // Verifier checks a turn proof. Satisfied by *turnproof.Signer.
@@ -108,6 +144,10 @@ type Call struct {
 	LatencyMS int64
 	Status    int
 	Streamed  bool
+	// CostUSD is what this call cost, priced from the NORMALIZED token counts by the versioned
+	// table. Computed once here and carried, so the recorder and the Lens span cannot report
+	// two different costs for one call — and so pricing runs once rather than per consumer.
+	CostUSD float64
 }
 
 // Config tunes the gateway.
@@ -173,9 +213,15 @@ type Gateway struct {
 	// coverage answers "how much of this agent's play was verified". Optional: without it
 	// the endpoint reports unavailable rather than inventing a figure.
 	coverage CoverageReader
+	// em ships Lens spans for observed calls. Nil (or disabled) simply skips them.
+	em Emitter
 }
 
 // SetCoverageReader wires verified-coverage reporting. Nil leaves it unavailable.
+// SetEmitter attaches the Lens emitter. Optional: without it calls are still recorded, they
+// just do not appear in the trace waterfall.
+func (g *Gateway) SetEmitter(em Emitter) { g.em = em }
+
 func (g *Gateway) SetCoverageReader(c CoverageReader) {
 	if c != nil {
 		g.coverage = c
@@ -307,6 +353,9 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 	if !call.Streamed && captured.Len() > 0 {
 		applyUsage(&call, captured.Bytes())
 	}
+	// Price once, on the normalized counts, before anything consumes the call.
+	call.CostUSD = pricing.EstimateCost(call.Model, call.PromptTokens, call.CompletionTokens,
+		call.CachedReadTokens, call.CachedWriteTokens, call.ReasoningTokens)
 	if copyErr != nil {
 		g.log.Debug("llmgw: response copy ended early", "agent", agentPublicID, "error", copyErr)
 	}
@@ -320,6 +369,7 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 // debug and never surfaced — rule 1 again, a bookkeeping failure must not become an
 // agent-visible error.
 func (g *Gateway) record(c Call) {
+	g.emit(c)
 	if g.rec == nil {
 		return
 	}
@@ -328,6 +378,19 @@ func (g *Gateway) record(c Call) {
 		defer cancel()
 		if err := g.rec.RecordCall(ctx, c); err != nil {
 			g.log.Debug("llmgw: could not record call", "agent", c.AgentPublicID, "error", err)
+		}
+		// Verified spend, on every observed call within a match. This is where VerifiedCostUSD
+		// on every board comes from; without it the verified cost BASIS is unreachable no
+		// matter how complete an agent's coverage is, because the numerator stays zero.
+		if c.MatchID != "" {
+			if err := g.rec.RecordVerifiedCost(ctx, VerifiedCost{
+				MatchID: c.MatchID, AgentPublicID: c.AgentPublicID, CostUSD: c.CostUSD,
+				Provider: c.Provider, Model: c.Model,
+				PromptTokens: c.PromptTokens, CompletionTokens: c.CompletionTokens,
+				TotalTokens: c.PromptTokens + c.CompletionTokens,
+			}); err != nil {
+				g.log.Debug("llmgw: could not record verified cost", "match", c.MatchID, "error", err)
+			}
 		}
 		// Only a verified call earns the binding. This is the single line that separates
 		// a verified leaderboard from a decorative badge.
@@ -483,4 +546,70 @@ func copyFlushing(dst io.Writer, src io.Reader, w http.ResponseWriter) (int64, e
 			return total, rerr
 		}
 	}
+}
+
+// emit ships one server-observed model call to Lens, correlated to the match trace.
+//
+// This is what makes a gateway call visible in the same waterfall as the agent's own spans:
+// the trace id is match_<match_id> on both sides, so a developer debugging a slow turn sees
+// the provider round trip next to their handler rather than having to infer it.
+//
+// Two fields here are load-bearing and were learned the hard way, so they are set explicitly
+// rather than left to a default:
+//
+//   - SessionID is the ARENA. It is the leaderboard's (agent, game) join key, and without it
+//     verified gateway cost silently contributed $0 to every board — the events existed and
+//     joined to nothing.
+//   - MeterSource=gateway is the STRUCTURAL verified signal. The backend filters verified
+//     economics on that column alone, so an event without it is indistinguishable from a
+//     self-reported one however trustworthy its provenance actually was.
+//
+// Synchronous, unlike the recorder: the emitter is already a non-blocking queue that drops
+// under pressure, so wrapping it in another goroutine would add a scheduling hop and a second
+// place for the same event to be lost.
+func (g *Gateway) emit(c Call) {
+	if g.em == nil || !g.em.Enabled() {
+		return
+	}
+	status := "ok"
+	if c.Status < 200 || c.Status > 299 {
+		status = "error"
+	}
+	total := c.PromptTokens + c.CompletionTokens
+	g.em.EmitEvent(telemetry.Event{
+		TraceID: telemetry.MatchTraceID(c.MatchID),
+		// The canonical constant from benchmark, not a local copy. llmgateway mirrored this
+		// string in its own package; a third copy would be one more place for the cost
+		// analytics query's event filter to silently stop matching.
+		EventType:        benchmark.EventModelCallCompleted,
+		Status:           status,
+		StepName:         "gateway.model_call",
+		SpanType:         "model_call",
+		Operation:        "model_call",
+		ActorID:          c.AgentPublicID,
+		SessionID:        telemetry.GameFromMatchID(c.MatchID),
+		RunID:            c.MatchID,
+		Provider:         c.Provider,
+		Model:            c.Model,
+		PromptTokens:     int64(c.PromptTokens),
+		CompletionTokens: int64(c.CompletionTokens),
+		CachedTokens:     int64(c.CachedReadTokens),
+		ReasoningTokens:  int64(c.ReasoningTokens),
+		TotalTokens:      int64(total),
+		EstimatedCost:    c.CostUSD,
+		PricingVersion:   pricing.Version,
+		Currency:         telemetry.CurrencyUSD,
+		MeterSource:      telemetry.MeterSourceGateway,
+		LatencyMS:        int64(c.LatencyMS),
+		Priority:         telemetry.PriorityHigh,
+		PayloadJSON: map[string]any{
+			"turn": c.Round,
+			// Whether this call is provably the one made for that turn. The ranked integrity
+			// check counts bound calls only, so the distinction has to survive into the trace.
+			"turn_bound": c.Bound,
+			// Cache WRITE tokens, which nothing captured before this session and which bill at
+			// 1.25x input. Carried so a developer can see where a cache-heavy turn's cost went.
+			"cache_write_tokens": c.CachedWriteTokens,
+		},
+	})
 }

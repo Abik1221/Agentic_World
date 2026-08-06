@@ -104,3 +104,17 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// RecordVerifiedCost accumulates one observed call into the match's verified spend.
+//
+// Delegates to the same statement the older gateway used, so the two cannot disagree about how
+// spend accumulates while both exist — and so retiring that gateway changes which code CALLS
+// this, not what it does.
+func (r *LLMGatewayRepo) RecordVerifiedCost(ctx context.Context, c llmgw.VerifiedCost) error {
+	return NewPIndexRepo(r.db).RecordVerifiedCost(ctx, VerifiedCall{
+		MatchID: c.MatchID, AgentPublicID: c.AgentPublicID, CostUSD: c.CostUSD,
+		Provider: c.Provider, Model: c.Model,
+		PromptTokens: int64(c.PromptTokens), CompletionTokens: int64(c.CompletionTokens),
+		TotalTokens: int64(c.TotalTokens),
+	})
+}

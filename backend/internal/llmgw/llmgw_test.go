@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-arena/arena/internal/benchmark"
+	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/turnproof"
 )
 
@@ -18,6 +20,7 @@ type fakeRecorder struct {
 	mu    sync.Mutex
 	calls []Call
 	bound []string
+	costs []VerifiedCost
 }
 
 func (f *fakeRecorder) RecordCall(_ context.Context, c Call) error {
@@ -31,6 +34,17 @@ func (f *fakeRecorder) BindDecision(_ context.Context, matchID, agent string, ro
 	defer f.mu.Unlock()
 	f.bound = append(f.bound, matchID+"|"+agent+"|"+itoa(round))
 	return nil
+}
+func (f *fakeRecorder) RecordVerifiedCost(_ context.Context, c VerifiedCost) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.costs = append(f.costs, c)
+	return nil
+}
+func (f *fakeRecorder) verifiedCosts() []VerifiedCost {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]VerifiedCost(nil), f.costs...)
 }
 func (f *fakeRecorder) snapshot() ([]Call, []string) {
 	f.mu.Lock()
@@ -222,6 +236,9 @@ func (brokenRecorder) RecordCall(context.Context, Call) error {
 func (brokenRecorder) BindDecision(context.Context, string, string, int) error {
 	return context.DeadlineExceeded
 }
+func (brokenRecorder) RecordVerifiedCost(context.Context, VerifiedCost) error {
+	return context.DeadlineExceeded
+}
 
 func TestBookkeepingFailureNeverBreaksTheCall(t *testing.T) {
 	up := jsonUpstream(t, `{"model":"gpt-5.2","usage":{"prompt_tokens":5,"completion_tokens":5}}`)
@@ -368,5 +385,179 @@ func TestStreamedResponsesArePassedThroughUnbuffered(t *testing.T) {
 	c, _ := rec.settle(t, 1)
 	if !c[0].Streamed {
 		t.Fatal("the call was not recorded as streamed")
+	}
+}
+
+// --- Lens correlation -----------------------------------------------------------
+//
+// The gateway is the only observer of a provider round trip, so if it does not emit a span the
+// developer's trace waterfall has a hole exactly where the slow part was. These pin the fields
+// that make the span USEFUL rather than merely present — both of which have silently failed
+// before, and neither of which any type check can protect.
+
+type captureEmitter struct {
+	on     bool
+	events []telemetry.Event
+}
+
+func (c *captureEmitter) Enabled() bool               { return c.on }
+func (c *captureEmitter) EmitEvent(e telemetry.Event) { c.events = append(c.events, e) }
+
+func TestGatewayEmitsACorrelatedLensSpan(t *testing.T) {
+	up := jsonUpstream(t, `{"model":"claude-opus-4","usage":{
+		"input_tokens":420,"output_tokens":90,
+		"cache_read_input_tokens":1500,"cache_creation_input_tokens":600}}`)
+	g, rec := gwFor(t, up, "s")
+	em := &captureEmitter{on: true}
+	g.SetEmitter(em)
+
+	tok := turnproof.New("s").Mint("ag_1", "m_goofspiel_abc", 7)
+	post(g, "ag_1", "m_goofspiel_abc", "7", tok, `{"model":"claude-opus-4"}`)
+	if _, _ = rec.settle(t, 1); len(em.events) != 1 {
+		t.Fatalf("emitted %d spans, want 1", len(em.events))
+	}
+	e := em.events[0]
+
+	// Correlation: the trace id must match the one the engine uses for the same match, or the
+	// gateway's span renders in a waterfall of its own and the developer never sees it beside
+	// their handler.
+	if want := telemetry.MatchTraceID("m_goofspiel_abc"); e.TraceID != want {
+		t.Errorf("trace = %q, want %q", e.TraceID, want)
+	}
+	// SessionID is the ARENA, and it is the leaderboard's (agent, game) join key. Leaving it
+	// empty made verified gateway cost contribute $0 to every board — the events existed and
+	// joined to nothing, which looks exactly like no spend.
+	if e.SessionID == "" {
+		t.Error("session_id (the arena) is empty — verified cost would join to nothing and read as $0")
+	}
+	// MeterSource is the STRUCTURAL verified signal. The backend filters verified economics on
+	// this column alone, so without it a server-observed call is indistinguishable from a
+	// self-reported one however trustworthy it actually was.
+	if e.MeterSource != telemetry.MeterSourceGateway {
+		t.Errorf("meter_source = %q, want %q", e.MeterSource, telemetry.MeterSourceGateway)
+	}
+	if e.EventType != benchmark.EventModelCallCompleted {
+		t.Errorf("event_type = %q, want the canonical %q", e.EventType, benchmark.EventModelCallCompleted)
+	}
+	if e.ActorID != "ag_1" || e.RunID != "m_goofspiel_abc" {
+		t.Errorf("actor/run = %q/%q", e.ActorID, e.RunID)
+	}
+	// Cost must be priced on the NORMALIZED tokens, including the cache write that used to be
+	// invisible. 420 uncached + 1500 read + 600 written = 2520 billable input.
+	if e.PromptTokens != 2520 {
+		t.Errorf("prompt tokens = %d, want 2520 (normalized)", e.PromptTokens)
+	}
+	if e.EstimatedCost <= 0 {
+		t.Errorf("estimated cost = %v, want > 0", e.EstimatedCost)
+	}
+	// turn_bound has to survive into the trace: the ranked integrity check counts bound calls
+	// only, so a developer needs to see which of their calls actually counted.
+	if b, ok := e.PayloadJSON["turn_bound"].(bool); !ok || !b {
+		t.Errorf("turn_bound = %v, want true for a proven call", e.PayloadJSON["turn_bound"])
+	}
+	if w, ok := e.PayloadJSON["cache_write_tokens"].(int); !ok || w != 600 {
+		t.Errorf("cache_write_tokens = %v, want 600", e.PayloadJSON["cache_write_tokens"])
+	}
+}
+
+func TestGatewayMarksAnUnprovenCallUnboundInTheSpan(t *testing.T) {
+	// A forwarded-but-uncredited call must be visibly uncredited. If the span claimed
+	// turn_bound=true the trace would disagree with the ledger, and the trace is what a
+	// developer trusts when they ask why their coverage is low.
+	up := jsonUpstream(t, `{"model":"claude-opus-4","usage":{"input_tokens":10,"output_tokens":5}}`)
+	g, rec := gwFor(t, up, "s")
+	em := &captureEmitter{on: true}
+	g.SetEmitter(em)
+
+	post(g, "ag_1", "m_1", "3", "not-a-real-proof", `{"model":"claude-opus-4"}`)
+	if _, _ = rec.settle(t, 1); len(em.events) != 1 {
+		t.Fatalf("emitted %d spans, want 1", len(em.events))
+	}
+	if b, _ := em.events[0].PayloadJSON["turn_bound"].(bool); b {
+		t.Error("a forged proof was reported as bound in the trace")
+	}
+}
+
+func TestGatewayWithoutAnEmitterStillRecords(t *testing.T) {
+	// Lens is optional. A deployment with telemetry off must still feed the boards, and a nil
+	// or disabled emitter must not panic on the response path.
+	up := jsonUpstream(t, `{"model":"m","usage":{"input_tokens":1,"output_tokens":1}}`)
+	g, rec := gwFor(t, up, "s")
+	g.SetEmitter(&captureEmitter{on: false}) // present but disabled
+	post(g, "ag_1", "m_1", "1", "", `{"model":"m"}`)
+	if c, _ := rec.settle(t, 1); len(c) != 1 {
+		t.Fatalf("recorded %d calls with telemetry disabled, want 1", len(c))
+	}
+}
+
+// Verified spend must be recorded for EVERY observed call inside a match, bound or not.
+//
+// This is where VerifiedCostUSD on every board comes from, and the new gateway did not write it
+// at all: coverage gating made the verified TIER reachable while the verified COST numerator
+// stayed zero, so even a 100%-covered agent fell back to a self-reported cost basis. The bug
+// was invisible because both halves looked correct on their own.
+func TestVerifiedCostIsRecordedForEveryCallInAMatch(t *testing.T) {
+	up := jsonUpstream(t, `{"model":"claude-opus-4","usage":{
+		"input_tokens":420,"output_tokens":90,
+		"cache_read_input_tokens":1500,"cache_creation_input_tokens":600}}`)
+	g, rec := gwFor(t, up, "s")
+
+	// One proven call and one with no proof at all.
+	tok := turnproof.New("s").Mint("ag_1", "m_1", 1)
+	post(g, "ag_1", "m_1", "1", tok, `{"model":"claude-opus-4"}`)
+	post(g, "ag_1", "m_1", "2", "", `{"model":"claude-opus-4"}`)
+	rec.settle(t, 2)
+
+	costs := rec.verifiedCosts()
+	if len(costs) != 2 {
+		t.Fatalf("recorded %d verified-cost entries, want 2 — an UNBOUND call is still a real "+
+			"call the developer paid for, and omitting it understates spend in the direction "+
+			"that flatters the agent", len(costs))
+	}
+	for _, c := range costs {
+		if c.CostUSD <= 0 {
+			t.Errorf("cost %v, want > 0", c.CostUSD)
+		}
+		// Priced on NORMALIZED tokens: 420 uncached + 1500 read + 600 written.
+		if c.PromptTokens != 2520 {
+			t.Errorf("prompt tokens = %d, want 2520", c.PromptTokens)
+		}
+		if c.Model == "" || c.MatchID != "m_1" || c.AgentPublicID != "ag_1" {
+			t.Errorf("attribution wrong: %+v", c)
+		}
+	}
+}
+
+func TestNoVerifiedCostOutsideAMatch(t *testing.T) {
+	// A call with no match has no match spend to accumulate. Recording one under an empty
+	// match id would create a row keyed on "" that every match's totals could collide with.
+	up := jsonUpstream(t, `{"model":"m","usage":{"input_tokens":10,"output_tokens":5}}`)
+	g, rec := gwFor(t, up, "s")
+	post(g, "ag_1", "", "0", "", `{"model":"m"}`)
+	rec.settle(t, 1)
+	if n := len(rec.verifiedCosts()); n != 0 {
+		t.Fatalf("recorded %d verified-cost entries for a matchless call, want 0", n)
+	}
+}
+
+func TestOneCallIsPricedOnceAndReportedIdentically(t *testing.T) {
+	// The recorder and the Lens span must never disagree about what a call cost. They used to
+	// price independently, which is two chances to drift on the same number.
+	up := jsonUpstream(t, `{"model":"claude-opus-4","usage":{
+		"input_tokens":420,"output_tokens":90,"cache_creation_input_tokens":600}}`)
+	g, rec := gwFor(t, up, "s")
+	em := &captureEmitter{on: true}
+	g.SetEmitter(em)
+	post(g, "ag_1", "m_1", "1", turnproof.New("s").Mint("ag_1", "m_1", 1), `{"model":"claude-opus-4"}`)
+	calls, _ := rec.settle(t, 1)
+
+	if len(em.events) != 1 || len(rec.verifiedCosts()) != 1 {
+		t.Fatalf("want one span and one cost entry, got %d/%d", len(em.events), len(rec.verifiedCosts()))
+	}
+	if calls[0].CostUSD != em.events[0].EstimatedCost {
+		t.Errorf("recorder cost %v != span cost %v", calls[0].CostUSD, em.events[0].EstimatedCost)
+	}
+	if rec.verifiedCosts()[0].CostUSD != calls[0].CostUSD {
+		t.Errorf("verified-cost entry %v != call cost %v", rec.verifiedCosts()[0].CostUSD, calls[0].CostUSD)
 	}
 }
