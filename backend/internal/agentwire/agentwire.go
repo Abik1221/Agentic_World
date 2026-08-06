@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
@@ -106,9 +107,29 @@ func (h HTTPTransport) Initialize(ctx context.Context, req agentclient.Initializ
 // Cost: one unauthenticated GET, no game state, NO INFERENCE. Free for the developer,
 // which is why it is safe here when retrying the turn itself is not.
 func (h HTTPTransport) Turn(ctx context.Context, view, out any) error {
+	// Watch the agent while the turn is in flight, and give up early if it dies.
+	//
+	// The obvious design — wait the window, then probe, then extend — is wrong: extending
+	// means PUSHING THE TURN AGAIN, which is a second inference the developer pays for.
+	// That is exactly why retries were removed from this client.
+	//
+	// So the budget is granted upfront (the caller's deadline already carries the seat's
+	// full window) and liveness is used to END the wait early rather than to prolong it.
+	// One push, one charge, and a crashed agent is dropped in seconds instead of holding
+	// a table for the entire window.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopWatch := h.watchLiveness(ctx, cancel)
+
 	_, err := h.Client.Play(ctx, h.Target, view, out)
+	died := stopWatch()
 	if err == nil {
 		return nil
+	}
+	if died {
+		// The watchdog cancelled the push, so the error is our own cancellation rather
+		// than anything the agent did. Report what actually happened.
+		return &TurnFailure{Err: err, Reachability: ReachGone}
 	}
 	reach := ConfirmReachability(ctx, h.Client, h.Target, probeTimeout, h.Log)
 	if h.Log != nil {
@@ -118,6 +139,75 @@ func (h HTTPTransport) Turn(ctx context.Context, view, out any) error {
 	// Wrap rather than replace: callers classify the ORIGINAL failure (timeout vs
 	// transport error) and must keep seeing it. errors.Is/As still reach through.
 	return &TurnFailure{Err: err, Reachability: reach}
+}
+
+// Watchdog tuning. Conservative on purpose: killing a turn that was going to succeed is
+// far worse than waiting out a dead one, because it takes a decision away from an agent
+// that was doing nothing wrong.
+const (
+	// watchGrace is how long to leave the agent alone before probing at all. Most turns
+	// finish inside it and are never probed, so the watchdog costs nothing in the normal
+	// case and cannot interfere with a fast agent.
+	watchGrace = 20 * time.Second
+	// watchEvery is the gap between probes once watching starts.
+	watchEvery = 10 * time.Second
+	// watchFailuresToGiveUp is how many CONSECUTIVE failed probes end the turn.
+	//
+	// Above one deliberately. A simple single-threaded agent — a beginner Flask or
+	// FastAPI handler with one worker — may genuinely be unable to answer /health while
+	// it is busy computing a move. Cancelling such an agent on a single missed probe
+	// would punish it for being unsophisticated rather than for being absent, so it takes
+	// a sustained silence across the better part of a minute to give up.
+	watchFailuresToGiveUp = 3
+)
+
+// watchLiveness polls the endpoint during a turn and cancels it once the agent has been
+// unreachable for several consecutive probes. Returns a stop function that reports whether
+// the watchdog is what ended the turn.
+func (h HTTPTransport) watchLiveness(ctx context.Context, cancel context.CancelFunc) func() bool {
+	if h.Client == nil || h.Target.EndpointURL == "" {
+		return func() bool { return false }
+	}
+	var died atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(watchGrace):
+		}
+		misses := 0
+		ticker := time.NewTicker(watchEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			if ConfirmReachability(ctx, h.Client, h.Target, probeTimeout, nil) == ReachAlive {
+				misses = 0
+				continue
+			}
+			misses++
+			if misses < watchFailuresToGiveUp {
+				continue
+			}
+			if h.Log != nil {
+				h.Log.Info("agent stopped answering mid-turn; ending the wait early rather than holding the table for the full window",
+					"agent", h.AgentID, "game", h.Game, "consecutive_failed_probes", misses)
+			}
+			died.Store(true)
+			cancel()
+			return
+		}
+	}()
+	return func() bool {
+		cancel()
+		<-done
+		return died.Load()
+	}
 }
 
 // probeTimeout bounds the liveness check. Short on purpose: the turn it belongs to has
