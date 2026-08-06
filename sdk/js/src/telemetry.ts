@@ -125,7 +125,12 @@ export interface MoveUsage {
   total_tokens: number;
   reasoning_tokens?: number;
   cached_tokens?: number;
+  cached_write_tokens?: number;
   estimated_cost?: number;
+  /** Model calls made to reach this ONE decision. */
+  model_calls?: number;
+  /** Latency of each individual call, so a distribution is recoverable and not just a mean. */
+  call_latencies_ms?: number[];
   model?: string | string[];
   provider?: string | string[];
 }
@@ -137,7 +142,9 @@ export interface UsageAdd {
   completionTokens?: number;
   reasoningTokens?: number;
   cachedTokens?: number;
+  cachedWriteTokens?: number;
   estimatedCost?: number;
+  latencyMs?: number;
 }
 
 /** Sums token usage + cost across every model call within a single turn. */
@@ -145,9 +152,18 @@ export class UsageAccumulator {
   promptTokens = 0;
   completionTokens = 0;
   reasoningTokens = 0;
+  // Cache READS (0.1x input on Anthropic) and cache WRITES (1.25x) are separate numbers
+  // because they are separate prices pointing opposite ways. Summing them into one
+  // "cached" figure makes the cost unrecoverable from what we stored.
   cachedTokens = 0;
+  cachedWriteTokens = 0;
   estimatedCost = 0;
   calls = 0;
+  // Per-call latency, kept as a list so the platform can compute a distribution rather
+  // than only a mean. A turn's WALL time cannot separate one slow call from six quick
+  // ones, and "thinks for 40s" versus "makes 20 round trips" are different things about
+  // an agent.
+  readonly callLatenciesMs: number[] = [];
   readonly models: string[] = [];
   readonly providers: string[] = [];
   // Turn context (for gateway attribution); set by runTurnUsage().
@@ -159,8 +175,10 @@ export class UsageAccumulator {
     this.completionTokens += Math.max(0, Math.trunc(u.completionTokens ?? 0));
     this.reasoningTokens += Math.max(0, Math.trunc(u.reasoningTokens ?? 0));
     this.cachedTokens += Math.max(0, Math.trunc(u.cachedTokens ?? 0));
+    this.cachedWriteTokens += Math.max(0, Math.trunc(u.cachedWriteTokens ?? 0));
     this.estimatedCost += Math.max(0, u.estimatedCost ?? 0);
     this.calls += 1;
+    if (u.latencyMs) this.callLatenciesMs.push(Math.max(0, Math.trunc(u.latencyMs)));
     if (u.model && !this.models.includes(u.model)) this.models.push(u.model);
     if (u.provider && !this.providers.includes(u.provider)) this.providers.push(u.provider);
   }
@@ -183,7 +201,14 @@ export class UsageAccumulator {
     };
     if (this.reasoningTokens) usage.reasoning_tokens = this.reasoningTokens;
     if (this.cachedTokens) usage.cached_tokens = this.cachedTokens;
+    if (this.cachedWriteTokens) usage.cached_write_tokens = this.cachedWriteTokens;
     if (this.estimatedCost) usage.estimated_cost = Math.round(this.estimatedCost * 1e8) / 1e8;
+    // How many model calls this ONE decision took, and how long each took. A single
+    // aggregate hides the difference between an agent that answers in one call and one
+    // that runs a twelve-call chain to reach the same move — and that difference is most
+    // of what "efficient" means when comparing two agents on equal footing.
+    if (this.calls) usage.model_calls = this.calls;
+    if (this.callLatenciesMs.length) usage.call_latencies_ms = [...this.callLatenciesMs];
     if (this.models.length) usage.model = this.models.length === 1 ? this.models[0] : this.models;
     if (this.providers.length) usage.provider = this.providers.length === 1 ? this.providers[0] : this.providers;
     return usage;

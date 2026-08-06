@@ -161,7 +161,11 @@ export interface ExtractedUsage {
   provider: string;
   promptTokens: number;
   completionTokens: number;
+  /** Prompt-cache READ tokens. */
   cachedTokens: number;
+  /** Prompt-cache WRITE/creation tokens. Billed at 1.25x input on Anthropic, so an
+   *  agent's most expensive tokens were previously recorded as zero. */
+  cachedWriteTokens: number;
   reasoningTokens: number;
 }
 
@@ -181,6 +185,7 @@ function extractOllama(resp: Any): ExtractedUsage | null {
     promptTokens: Math.trunc(prompt || 0),
     completionTokens: Math.trunc(completion || 0),
     cachedTokens: 0,
+    cachedWriteTokens: 0,
     reasoningTokens: 0,
   };
 }
@@ -198,6 +203,9 @@ function extractGoogle(resp: Any): ExtractedUsage | null {
     promptTokens: Math.trunc(prompt),
     completionTokens: Math.trunc(completion),
     cachedTokens: Math.trunc(get(um, "cachedContentTokenCount", get(um, "cached_content_token_count", 0)) || 0),
+    // Gemini reports cached content INSIDE promptTokenCount, and its implicit caching is
+    // free, so there is no separate write figure to record.
+    cachedWriteTokens: 0,
     reasoningTokens: Math.trunc(get(um, "thoughtsTokenCount", get(um, "thoughts_token_count", 0)) || 0),
   };
 }
@@ -215,6 +223,7 @@ function extractCohere(resp: Any): ExtractedUsage | null {
     promptTokens: Math.trunc(prompt),
     completionTokens: Math.trunc(completion),
     cachedTokens: 0,
+    cachedWriteTokens: 0,
     reasoningTokens: 0,
   };
 }
@@ -240,12 +249,33 @@ export function extractUsage(resp: Any): ExtractedUsage | null {
   if (completion === undefined) completion = get(u, "output_tokens", 0);
 
   let cached = 0;
+  let cachedWrite = 0;
   let reasoning = 0;
   const ptd = get(u, "prompt_tokens_details");
   if (ptd != null) cached = get(ptd, "cached_tokens", 0) || 0;
   const ctd = get(u, "completion_tokens_details");
   if (ctd != null) reasoning = get(ctd, "reasoning_tokens", 0) || 0;
-  if (!cached) cached = get(u, "cache_read_input_tokens", 0) || 0;
+
+  // Anthropic reports cache activity in two fields, and BOTH sit outside `input_tokens`
+  // rather than inside it. Reading only the first understated cost; ignoring the second
+  // priced the expensive half of caching at zero.
+  const anthRead = Math.trunc(get(u, "cache_read_input_tokens", 0) || 0);
+  const anthWrite = Math.trunc(get(u, "cache_creation_input_tokens", 0) || 0);
+
+  // Normalize onto ONE convention: promptTokens is the total billable input, with cache
+  // reads and writes as subsets of it.
+  //
+  // Providers genuinely disagree here, and the disagreement is silent — both shapes are a
+  // plausible-looking integer, so a wrong assumption shows up only as a cost that is too
+  // low. OpenAI's `prompt_tokens` ALREADY INCLUDES `prompt_tokens_details.cached_tokens`,
+  // so it is a subset and nothing is added. Anthropic's `input_tokens` counts only the
+  // uncached remainder, so cache tokens must be ADDED to recover the real billable input.
+  // Clamping Anthropic's reads to its `input_tokens` also discarded every read beyond it.
+  if (anthRead || anthWrite) {
+    cached = anthRead;
+    cachedWrite = anthWrite;
+    prompt = Math.trunc(prompt || 0) + anthRead + anthWrite;
+  }
 
   let provider = "";
   if (styleOpenAiChat) provider = "openai";
@@ -257,6 +287,7 @@ export function extractUsage(resp: Any): ExtractedUsage | null {
     promptTokens: Math.trunc(prompt || 0),
     completionTokens: Math.trunc(completion || 0),
     cachedTokens: Math.trunc(cached || 0),
+    cachedWriteTokens: Math.trunc(cachedWrite || 0),
     reasoningTokens: Math.trunc(reasoning || 0),
   };
 }
@@ -276,6 +307,7 @@ export function recordResponse(resp: Any, o: { provider?: string; latencyMs?: nu
     promptTokens: info.promptTokens,
     completionTokens: info.completionTokens,
     cachedTokens: info.cachedTokens,
+    cachedWriteTokens: info.cachedWriteTokens,
     reasoningTokens: info.reasoningTokens,
   });
   currentUsage()?.add({
@@ -285,7 +317,9 @@ export function recordResponse(resp: Any, o: { provider?: string; latencyMs?: nu
     completionTokens: info.completionTokens,
     reasoningTokens: info.reasoningTokens,
     cachedTokens: info.cachedTokens,
+    cachedWriteTokens: info.cachedWriteTokens,
     estimatedCost: cost,
+    latencyMs: o.latencyMs ?? 0,
   });
   currentSpan().logModelCall({
     provider,

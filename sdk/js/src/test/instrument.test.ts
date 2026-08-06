@@ -21,8 +21,16 @@ function openaiChat(model = "gpt-4o", prompt = 1200, completion = 80, cached = 0
   };
 }
 
-function anthropic(model = "claude-sonnet-4-5", inp = 900, out = 120, cacheRead = 0) {
-  return { model, usage: { input_tokens: inp, output_tokens: out, cache_read_input_tokens: cacheRead } };
+function anthropic(model = "claude-sonnet-4-5", inp = 900, out = 120, cacheRead = 0, cacheWrite = 0) {
+  return {
+    model,
+    usage: {
+      input_tokens: inp,
+      output_tokens: out,
+      cache_read_input_tokens: cacheRead,
+      cache_creation_input_tokens: cacheWrite,
+    },
+  };
 }
 
 function responsesApi(model = "gpt-4.1", inp = 500, out = 40) {
@@ -39,16 +47,41 @@ test("extract OpenAI chat usage", () => {
     promptTokens: 1200,
     completionTokens: 80,
     cachedTokens: 300,
+    cachedWriteTokens: 0,
     reasoningTokens: 20,
   });
+});
+
+test("OpenAI cached tokens stay a subset and are not double counted", () => {
+  // The mirror image of the Anthropic case. OpenAI reports cached tokens INSIDE
+  // prompt_tokens, so adding them would inflate billable input — the normalization that
+  // fires for Anthropic must not fire here.
+  const info = extractUsage(openaiChat("gpt-4o", 1200, 80, 300, 0))!;
+  assert.equal(info.promptTokens, 1200);
+  assert.equal(info.cachedTokens, 300);
 });
 
 test("extract Anthropic usage", () => {
   const info = extractUsage(anthropic("claude-sonnet-4-5", 900, 120, 100))!;
   assert.equal(info.provider, "anthropic");
-  assert.equal(info.promptTokens, 900);
+  // 900 uncached + 100 cache reads. Anthropic's `input_tokens` counts only the uncached
+  // remainder, so the cache fields are ADDED to recover billable input — unlike OpenAI,
+  // where prompt_tokens already contains them.
+  assert.equal(info.promptTokens, 1000);
   assert.equal(info.completionTokens, 120);
   assert.equal(info.cachedTokens, 100);
+});
+
+test("extract Anthropic cache writes", () => {
+  // Cache CREATION tokens are billed at 1.25x input and were previously not read at all,
+  // so a cache-heavy agent's most expensive tokens were recorded as zero.
+  const info = extractUsage(anthropic("claude-opus-4", 420, 90, 1500, 600))!;
+  assert.equal(info.cachedWriteTokens, 600);
+  assert.equal(info.cachedTokens, 1500);
+  // Every billable input token accounted for: 420 uncached + 1500 read + 600 written.
+  assert.equal(info.promptTokens, 2520);
+  // The invariant pricing depends on: the cache portions never exceed the input total.
+  assert.ok(info.cachedTokens + info.cachedWriteTokens <= info.promptTokens);
 });
 
 test("extract Responses API usage", () => {

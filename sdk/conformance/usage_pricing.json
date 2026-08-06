@@ -1,0 +1,197 @@
+{
+  "_readme": [
+    "Cross-language conformance fixtures for token normalization and cost.",
+    "",
+    "WHY THIS FILE EXISTS. The same logic is implemented three times: the Python SDK",
+    "(pyyol/_instrument.py + pricing.py), the JS SDK (src/instrument.ts + pricing.ts) and",
+    "the Go backend (internal/llmgw/llmgw.go + internal/pricing). Nothing in any of them",
+    "forces the three to agree. If they drift, the same provider response yields a",
+    "different cost depending on which SDK a developer happened to install — and because",
+    "the model and agent boards rank on cost efficiency, that drift becomes a silent bias",
+    "in a public ranking rather than a visible bug. It would also be invisible to every",
+    "per-language test suite, since each would still pass against its own expectations.",
+    "",
+    "So the expectations live HERE, once, and all three read this file. A divergence fails",
+    "a test in the language that drifted.",
+    "",
+    "SCOPE. OpenAI-chat and Anthropic-messages shapes only. Those are the two that carry",
+    "prompt-cache semantics, which is what this guards. Google, Cohere and Ollama native",
+    "shapes are deliberately excluded: their field names differ between each vendor's raw",
+    "JSON and each vendor's SDK objects (camelCase vs snake_case, nested vs flat), so a",
+    "single raw-JSON fixture cannot represent them faithfully in all three languages.",
+    "Those shapes are covered by each language's own extractor tests.",
+    "",
+    "THE CONVENTION UNDER TEST. prompt_tokens is the TOTAL billable input, and",
+    "cached_read_tokens and cached_write_tokens are SUBSETS of it. Providers disagree",
+    "about whether cache counts sit inside their reported input field — OpenAI's",
+    "prompt_tokens already contains them, Anthropic's input_tokens does not — and the",
+    "disagreement is silent, because both shapes are a plausible integer. Every case below",
+    "asserts read + write <= prompt.",
+    "",
+    "Costs are USD, computed from pricing_version's table. When a rate changes, bump the",
+    "table in all three languages AND the expectations here — that is the point."
+  ],
+  "pricing_version": "2026-08-06",
+  "cases": [
+    {
+      "name": "openai_chat_cache_read_is_a_subset",
+      "why": "OpenAI reports cached tokens INSIDE prompt_tokens. Adding them would inflate billable input, so the Anthropic normalization must not fire here.",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "response": {
+        "model": "gpt-4o",
+        "usage": {
+          "prompt_tokens": 1200,
+          "completion_tokens": 80,
+          "total_tokens": 1280,
+          "prompt_tokens_details": { "cached_tokens": 300 },
+          "completion_tokens_details": { "reasoning_tokens": 20 }
+        }
+      },
+      "expect": {
+        "prompt_tokens": 1200,
+        "completion_tokens": 80,
+        "cached_read_tokens": 300,
+        "cached_write_tokens": 0,
+        "reasoning_tokens": 20,
+        "cost_usd": 0.003425,
+        "cost_breakdown": "900 full @2.50 + 300 read @1.25 + 80 out @10.00"
+      }
+    },
+    {
+      "name": "anthropic_read_and_write_are_additive",
+      "why": "The exact token counts observed from a live gateway call. Anthropic's input_tokens counts only the uncached remainder, so both cache fields are ADDED. The old code read input_tokens raw and clamped reads to it, reporting 28% of the real bill.",
+      "model": "claude-opus-4",
+      "provider": "anthropic",
+      "response": {
+        "model": "claude-opus-4",
+        "usage": {
+          "input_tokens": 420,
+          "output_tokens": 90,
+          "cache_read_input_tokens": 1500,
+          "cache_creation_input_tokens": 600
+        }
+      },
+      "expect": {
+        "prompt_tokens": 2520,
+        "completion_tokens": 90,
+        "cached_read_tokens": 1500,
+        "cached_write_tokens": 600,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.02655,
+        "cost_breakdown": "420 full @15.00 + 1500 read @1.50 + 600 write @18.75 + 90 out @75.00"
+      }
+    },
+    {
+      "name": "anthropic_cache_write_only",
+      "why": "First call against a fresh cache: everything is written, nothing is read. This is the case the old code priced entirely at zero.",
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "response": {
+        "model": "claude-sonnet-4-5",
+        "usage": {
+          "input_tokens": 1000,
+          "output_tokens": 50,
+          "cache_creation_input_tokens": 800
+        }
+      },
+      "expect": {
+        "prompt_tokens": 1800,
+        "completion_tokens": 50,
+        "cached_read_tokens": 0,
+        "cached_write_tokens": 800,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.00675,
+        "cost_breakdown": "1000 full @3.00 + 800 write @3.75 + 50 out @15.00"
+      }
+    },
+    {
+      "name": "anthropic_fully_cached_zero_input_tokens",
+      "why": "A fully cached prompt reports input_tokens: 0. An extractor that only fires when input_tokens > 0 would skip this response entirely and record a free call — so the branch condition has to consider the cache fields too.",
+      "model": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "response": {
+        "model": "claude-haiku-4-5",
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 40,
+          "cache_read_input_tokens": 5000
+        }
+      },
+      "expect": {
+        "prompt_tokens": 5000,
+        "completion_tokens": 40,
+        "cached_read_tokens": 5000,
+        "cached_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.00056,
+        "cost_breakdown": "0 full + 5000 read @0.08 + 40 out @4.00"
+      }
+    },
+    {
+      "name": "anthropic_no_cache_baseline",
+      "why": "The uncached baseline, so a normalization bug cannot hide behind cases that all involve caching.",
+      "model": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "response": {
+        "model": "claude-sonnet-4-5",
+        "usage": { "input_tokens": 900, "output_tokens": 120 }
+      },
+      "expect": {
+        "prompt_tokens": 900,
+        "completion_tokens": 120,
+        "cached_read_tokens": 0,
+        "cached_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.0045,
+        "cost_breakdown": "900 full @3.00 + 120 out @15.00"
+      }
+    },
+    {
+      "name": "openai_reasoning_tokens_are_not_double_billed",
+      "why": "Reasoning tokens are output tokens the provider already counted in completion_tokens. Billing them again would roughly double the cost of every reasoning model.",
+      "model": "o1",
+      "provider": "openai",
+      "response": {
+        "model": "o1",
+        "usage": {
+          "prompt_tokens": 100,
+          "completion_tokens": 900,
+          "completion_tokens_details": { "reasoning_tokens": 700 }
+        }
+      },
+      "expect": {
+        "prompt_tokens": 100,
+        "completion_tokens": 900,
+        "cached_read_tokens": 0,
+        "cached_write_tokens": 0,
+        "reasoning_tokens": 700,
+        "cost_usd": 0.0555,
+        "cost_breakdown": "100 full @15.00 + 900 out @60.00 (the 700 reasoning are inside the 900)"
+      }
+    },
+    {
+      "name": "self_hosted_openai_compatible_is_free_even_when_caching",
+      "why": "Ollama, vLLM and llama.cpp all speak the OpenAI wire format, so the response shape says nothing about who served it. A multiplier applied to a $0 input rate must stay $0 — there is no per-token bill to discount or surcharge.",
+      "model": "llama-3.3-70b",
+      "provider": "ollama",
+      "response": {
+        "model": "llama-3.3-70b",
+        "usage": {
+          "prompt_tokens": 2520,
+          "completion_tokens": 90,
+          "prompt_tokens_details": { "cached_tokens": 1500 }
+        }
+      },
+      "expect": {
+        "prompt_tokens": 2520,
+        "completion_tokens": 90,
+        "cached_read_tokens": 1500,
+        "cached_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.0,
+        "cost_breakdown": "self-hosted: no per-token bill of any kind"
+      }
+    }
+  ]
+}
