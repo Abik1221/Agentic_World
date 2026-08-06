@@ -551,6 +551,8 @@ func (r *RatingRepo) ModelRunners(ctx context.Context, season int, game, provide
 // which it must show: a rank is only meaningful next to the arena it is a rank in.
 func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentPublicID string) (rating.Standing, bool, error) {
 	var s rating.Standing
+	var attrRank int
+	var boundDecisions, loggedDecisions int64
 	s.Season = season
 	s.AgentPublicID = agentPublicID
 	err := r.db.QueryRow(ctx,
@@ -566,11 +568,43 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		   -- Referencing one made this whole query fail with "column m.agent_id does not
 		   -- exist", so /v1/rankings/standing answered 500 for every agent and the
 		   -- console's "your rank this season" card silently never rendered.
-		   COALESCE((SELECT model_provider FROM agent_manifests m WHERE m.agent_public_id = a.public_id
-		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
-		   COALESCE((SELECT model_name FROM agent_manifests m WHERE m.agent_public_id = a.public_id
-		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), '')
+		   -- Provider/model resolved by TRUST, best source first, mirroring the model board:
+		   -- what the gateway saw the provider return, then what the SDK reported per call,
+		   -- then the manifest. This used to read the manifest alone and present it untagged,
+		   -- so a model the developer merely typed looked exactly like one we had confirmed.
+		   COALESCE(gw.provider, NULLIF(bm.observed_provider,''),
+		            (SELECT model_provider FROM agent_manifests m WHERE m.agent_public_id = a.public_id
+		               AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
+		   COALESCE(gw.model, NULLIF(bm.observed_model,''),
+		            (SELECT model_name FROM agent_manifests m WHERE m.agent_public_id = a.public_id
+		               AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
+		   -- Which of the three answered (1=gateway, 2=SDK, 3=manifest). Coverage downgrades
+		   -- it afterwards; it can never promote it.
+		   CASE WHEN gw.model IS NOT NULL THEN 1
+		        WHEN NULLIF(bm.observed_model,'') IS NOT NULL THEN 2 ELSE 3 END,
+		   COALESCE(cov.bound_decisions,0), COALESCE(cov.logged_decisions,0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
+		 -- The most recent model the GATEWAY observed on a bound call. Bound only: an unbound
+		 -- call proves nothing about which model decided a move, and this is the top tier.
+		 LEFT JOIN LATERAL (
+		   SELECT mc.provider, mc.model FROM agent_model_calls mc
+		    WHERE mc.agent_id = a.id AND mc.bound AND mc.model <> ''
+		    ORDER BY mc.id DESC LIMIT 1
+		 ) gw ON true
+		 -- The most recent model the SDK reported for a real match.
+		 LEFT JOIN LATERAL (
+		   SELECT b.observed_provider, b.observed_model FROM agent_match_benchmark b
+		    WHERE b.agent_id = a.id AND COALESCE(b.observed_model,'') <> ''
+		    ORDER BY b.updated_at DESC LIMIT 1
+		 ) bm ON true
+		 -- Coverage over this agent's whole logged history, so the tier reflects how much of
+		 -- its play was proven rather than that any single call was.
+		 LEFT JOIN LATERAL (
+		   SELECT (SELECT COUNT(DISTINCT (bd.match_id, bd.round)) FROM agent_match_bound_decisions bd
+		            WHERE bd.agent_id = a.id) AS bound_decisions,
+		          (SELECT COUNT(*) FROM agent_match_decisions dd
+		            WHERE dd.agent_id = a.id) AS logged_decisions
+		 ) cov ON true
 		 WHERE r.season = $1 AND a.public_id = $2 AND ($3 = '' OR r.game = $3)
 		 -- With no arena requested, the agent's most-played arena wins. Most-played
 		 -- rather than highest-ELO on purpose: showing someone their best rating from an
@@ -579,13 +613,16 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		 LIMIT 1`,
 		season, agentPublicID, game).
 		Scan(&s.Game, &s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
-			&s.Rank, &s.Total, &s.Provider, &s.Model)
+			&s.Rank, &s.Total, &s.Provider, &s.Model,
+			&attrRank, &boundDecisions, &loggedDecisions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return rating.Standing{}, false, nil
 	}
 	if err != nil {
 		return rating.Standing{}, false, err
 	}
+	s.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
+	s.Attribution = rating.Tier(attrRank, s.Verified)
 	return s, true, nil
 }
 
@@ -694,7 +731,13 @@ SELECT u.public_id, COALESCE(u.username::text,''), COALESCE(u.display_name,''), 
        COUNT(*) FILTER (WHERE f.result = 'draw')::int    AS ties,
        COALESCE(SUM(f.tokens),0)::bigint                 AS tokens,
        COALESCE(SUM(f.estimated_cost),0)::double precision AS est_cost,
-       COALESCE(SUM(f.verified_cost),0)::double precision  AS verified_cost
+       COALESCE(SUM(f.verified_cost),0)::double precision  AS verified_cost,
+       -- Verified coverage, so the cost columns below can tell a complete self-reported
+       -- total from a partial gateway-observed slice. Without it a developer with one
+       -- thinly-routed model and several unrouted ones produced a CostUSD that mixed the two
+       -- and then divided it by every win.
+       COALESCE(SUM(f.bound_decisions),0)::bigint          AS bound_decisions,
+       COALESCE(SUM(f.logged_decisions),0)::bigint         AS logged_decisions
 FROM fact f
 JOIN agents a ON a.id = f.agent_id
 JOIN users  u ON u.id = a.owner_user_id
@@ -712,11 +755,14 @@ func (r *RatingRepo) DeveloperModelSplit(ctx context.Context, season int, game s
 	var out []rating.DevModelRow
 	for rows.Next() {
 		var d rating.DevModelRow
+		var boundDecisions, loggedDecisions int64
 		if err := rows.Scan(&d.UserPublicID, &d.Username, &d.DisplayName, &d.AvatarURL,
 			&d.Provider, &d.Model, &d.Agents, &d.Matches, &d.Wins, &d.Losses, &d.Ties,
-			&d.Tokens, &d.EstCostUSD, &d.VerifiedCostUSD); err != nil {
+			&d.Tokens, &d.EstCostUSD, &d.VerifiedCostUSD,
+			&boundDecisions, &loggedDecisions); err != nil {
 			return nil, err
 		}
+		d.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
 		out = append(out, d)
 	}
 	return out, rows.Err()

@@ -295,6 +295,17 @@ type Standing struct {
 	Streak        int    `json:"current_streak"`
 	Provider      string `json:"provider,omitempty"`
 	Model         string `json:"model,omitempty"`
+	// Attribution is where Provider/Model came from, and it is not decoration.
+	//
+	// This card used to read them straight out of agent_manifests — the developer's own YAML —
+	// and print them with no tag, so a model nobody ever confirmed looked identical to one the
+	// provider's API named. The model board has always been careful to call that "claimed";
+	// the agent's own standing was not.
+	Attribution string `json:"attribution,omitempty"`
+	// Verified is how much of this agent's play was proven LLM-backed. Published for the same
+	// reason as on the model board: the tier is a summary of a threshold, and a reader who
+	// cannot see the fraction is being asked to take the threshold on trust.
+	Verified CoverageStat `json:"verified"`
 }
 
 // RatingState is an agent's persisted rating for one arena, spanning both
