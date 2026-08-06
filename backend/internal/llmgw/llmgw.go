@@ -137,6 +137,32 @@ func DefaultUpstreams() map[string]string {
 	}
 }
 
+// UpstreamsFromEnv parses a "slug=url,slug=url" override list onto the defaults.
+//
+// Exists for three real reasons, not for tests: a self-hosted deployment may front its own
+// vLLM or Ollama; an enterprise may require provider traffic to leave through their own
+// egress proxy; and a provider changing a hostname must not need a Pyyol release. Entries
+// merge onto the defaults, so overriding one provider does not silently remove the rest.
+//
+// Still an allowlist afterwards — this widens what an OPERATOR permits, never what an agent
+// can request. An agent naming its own upstream would be an SSRF pivot and an open relay.
+func UpstreamsFromEnv(raw string) map[string]string {
+	out := DefaultUpstreams()
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		slug, url, ok := strings.Cut(pair, "=")
+		slug, url = strings.ToLower(strings.TrimSpace(slug)), strings.TrimSpace(url)
+		if !ok || slug == "" || url == "" {
+			continue // a malformed entry is ignored, never turned into a wildcard
+		}
+		out[slug] = url
+	}
+	return out
+}
+
 // Gateway proxies model calls and records what it saw.
 type Gateway struct {
 	cfg      Config
@@ -144,6 +170,16 @@ type Gateway struct {
 	verifier Verifier
 	client   *http.Client
 	log      *slog.Logger
+	// coverage answers "how much of this agent's play was verified". Optional: without it
+	// the endpoint reports unavailable rather than inventing a figure.
+	coverage CoverageReader
+}
+
+// SetCoverageReader wires verified-coverage reporting. Nil leaves it unavailable.
+func (g *Gateway) SetCoverageReader(c CoverageReader) {
+	if c != nil {
+		g.coverage = c
+	}
 }
 
 func New(cfg Config, rec Recorder, v Verifier, log *slog.Logger) *Gateway {

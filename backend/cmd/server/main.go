@@ -47,6 +47,7 @@ import (
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/liveness"
 	"github.com/agent-arena/arena/internal/llmgateway"
+	"github.com/agent-arena/arena/internal/llmgw"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/manifest"
 	"github.com/agent-arena/arena/internal/match"
@@ -1253,6 +1254,21 @@ func run() error {
 		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, goofspielPlayClient, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
+	// The LLM Gateway: a pass-through proxy that turns "which model did this agent use"
+	// from a claim into an observation. The developer brings their own provider key, so
+	// they cannot name a model they are not being billed for — verification is
+	// incentive-compatible rather than trust-based. A call is CREDITED only when its
+	// per-turn proof verifies for the exact decision it claims, which is what stops one
+	// cheap call buying a verified badge for a whole match.
+	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
+	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
+	llmGateway.SetCoverageReader(llmGatewayRepo)
+	llmGatewayHandler := llmgw.NewHandler(llmGateway, authn)
+	if cfg.TurnProofSecret == "" {
+		log.Warn("LLM gateway will record calls but can PROVE none: TURN_PROOF_SECRET is unset, so no call can be bound to a decision and the verified tier stays empty",
+			"fix", "set TURN_PROOF_SECRET")
+	}
+
 	matchHandler := match.NewHandler(matchSvc, authn)
 	// Honour the admin-configured stake tiers on direct table creation too. Without
 	// this, /v1/lobby/create accepted an arbitrary bid while /v1/queue and
@@ -1589,6 +1605,7 @@ func run() error {
 		monopolyHandler.Register,
 		ratingHandler.Register,
 		pindexHandler.Register,
+		llmGatewayHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,
 		devTraceHandler.Register,
