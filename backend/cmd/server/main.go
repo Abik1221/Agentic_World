@@ -1219,6 +1219,12 @@ func run() error {
 	// cloud model and a 95s local one. Cached per agent and fails open to cfg.MoveWindow,
 	// so a lookup problem degrades to the previous behaviour instead of stalling a turn.
 	matchSvc.SetWindowProvider(store.NewWindowRepo(st.DB, log))
+	// The other half of the adaptive deadline: at expiry, ask whether the agent is still
+	// there. Alive means it is thinking and earns bounded extra time; gone means stop
+	// waiting now instead of burning the rest of the window on a dead process.
+	matchSvc.SetLivenessProber(store.EndpointProber{
+		Resolve: manifestSvc.PlayTarget, Client: manifestProbe, Log: log,
+	})
 	if cfg.TurnProofSecret == "" {
 		log.Warn("ranked integrity INERT: no TURN_PROOF_SECRET, so no decision can be proven LLM-backed and a scripted agent can take ranked stakes",
 			"fix", "set TURN_PROOF_SECRET to mint per-turn proof tokens",

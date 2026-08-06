@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/agent-arena/arena/internal/deadline"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/liveness"
@@ -51,9 +52,13 @@ type Service struct {
 	// windows derives each seat's decision budget from its demonstrated latency.
 	// Nil ⇒ every match uses the configured constant, exactly as before.
 	windows WindowProvider
-	driver  *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
-	clock   platform.Clock
-	cfg     Config
+	// livecheck gates deadline extensions. Nil ⇒ a deadline expires as it always did.
+	// Distinct from the `liveness` tracker above, which records agent online state for
+	// presence; this one answers "is it answering RIGHT NOW" for one specific decision.
+	livecheck LivenessProber
+	driver    *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
+	clock     platform.Clock
+	cfg       Config
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -307,6 +312,75 @@ func (s *Service) moveWindow(ctx context.Context, agents ...string) time.Duratio
 		}
 	}
 	return longest
+}
+
+// LivenessProber reports whether an agent's endpoint is answering right now.
+//
+// Satisfied by a small adapter over agentwire.ConfirmReachability. Optional: unset, a
+// deadline expires exactly as it always did.
+type LivenessProber interface {
+	// Alive answers "is anything listening" for this agent. Must be fast and must never
+	// block a sweep — it runs while a round is being decided. Any doubt should answer
+	// false, because a false "alive" stalls a table while a false "gone" only forfeits a
+	// turn the agent was already failing to answer.
+	Alive(ctx context.Context, agentPublicID string) bool
+}
+
+// SetLivenessProber enables liveness-gated deadline extensions. Nil keeps them off.
+func (s *Service) SetLivenessProber(p LivenessProber) {
+	if p != nil {
+		s.livecheck = p
+	}
+}
+
+// tryExtend gives a still-alive agent more time instead of forfeiting its turn.
+//
+// This is the half of the adaptive-deadline design that makes a single window unnecessary.
+// A constant has to be simultaneously generous enough for a 95s local model and tight
+// enough that a dead agent does not stall a table — impossible, because it cannot tell
+// the two apart. A probe can: /health is free, involves no inference, and answers exactly
+// the question the deadline was guessing at.
+//
+// Alive means it is genuinely still thinking, so extend. Gone means stop waiting now
+// rather than burning the remainder of the window on a process that will never answer.
+//
+// Bounded by the policy ceiling, so a hung-but-responsive endpoint cannot extend forever.
+// Extensions granted so far are DERIVED from elapsed time rather than tracked in a column:
+// the ceiling is what actually bounds this, and a counter would be one more piece of state
+// to keep consistent across a crash for no added safety.
+//
+// Returns true when the deadline was pushed out and the caller should NOT force a timeout.
+func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) bool {
+	if s.livecheck == nil || len(unsealed) == 0 || m.RoundDeadline == nil {
+		return false
+	}
+	pol := deadline.DefaultPolicy(m.Game)
+	window := s.moveWindow(ctx, unsealed...)
+	elapsed := s.clock.Now().Sub(m.RoundDeadline.Add(-window))
+	granted := 0
+	if elapsed > window && pol.Extension > 0 {
+		granted = int((elapsed - window) / pol.Extension)
+	}
+	ext, ok := deadline.Extend(pol, elapsed, granted)
+	if !ok {
+		return false // ceiling or extension cap reached: the turn is genuinely over
+	}
+	// Only extend for a seat that is actually THERE. One dead seat must not buy the
+	// table more time, or a crashed agent stalls every round to the ceiling.
+	for _, agent := range unsealed {
+		if !s.livecheck.Alive(ctx, agent) {
+			return false
+		}
+	}
+	next := s.clock.Now().Add(ext)
+	if err := s.repo.ExtendDeadline(ctx, m.PublicID, next); err != nil {
+		slog.Debug("match: could not extend a deadline; forfeiting the turn as before",
+			"match", m.PublicID, "error", err)
+		return false
+	}
+	slog.Info("match: deadline extended — the agent is still answering /health, so it is thinking rather than gone",
+		"match", m.PublicID, "extension", ext, "elapsed", elapsed)
+	return true
 }
 
 // SetStyleRecorder installs the (optional) style aggregator. Nil keeps it off.
@@ -1155,6 +1229,19 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	}
 	if m.RoundDeadline == nil || s.clock.Now().Before(*m.RoundDeadline) {
 		return nil // not actually expired (raced with a real action)
+	}
+
+	// Before forfeiting anyone's turn, find out whether they are actually gone.
+	var unsealed []string
+	for seat := 0; seat < 2; seat++ {
+		if m.State.Sealed[seat] == nil && !(m.Mode == ModeSandbox && seat == HouseSeat) {
+			if p := m.playerBySeat(seat); p != nil {
+				unsealed = append(unsealed, p.AgentPublicID)
+			}
+		}
+	}
+	if s.tryExtend(ctx, m, unsealed) {
+		return nil // still thinking; the sweeper will come back at the new deadline
 	}
 
 	eng := s.engine(m)

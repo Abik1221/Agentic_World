@@ -467,3 +467,18 @@ func mustJSON(v any) string {
 	}
 	return string(b)
 }
+
+// ExtendDeadline pushes the current round's deadline out without touching state.
+//
+// Guarded on status='active' so a match that finished between the sweeper's read and this
+// write cannot have a deadline resurrected onto it. Deliberately does NOT bump the state
+// revision: an extension is not a game event — the board is unchanged, an agent is simply
+// still thinking — and writing a revision for it would put a non-move into the replay and
+// invalidate the OCC token a concurrent real move is holding.
+func (r *MatchRepo) ExtendDeadline(ctx context.Context, matchPublicID string, deadline time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE matches SET round_deadline = $2, updated_at = now()
+		  WHERE public_id = $1 AND status = 'active'`,
+		matchPublicID, deadline)
+	return err
+}

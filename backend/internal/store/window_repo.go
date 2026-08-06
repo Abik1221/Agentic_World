@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-arena/arena/internal/agentclient"
+	"github.com/agent-arena/arena/internal/agentwire"
 	"github.com/agent-arena/arena/internal/deadline"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -114,4 +116,37 @@ func (r *WindowRepo) compute(ctx context.Context, agentPublicID, game string) ti
 		return 0 // not enough evidence; the configured constant is the honest answer
 	}
 	return deadline.For(deadline.DefaultPolicy(game), samples)
+}
+
+// ── Liveness gate ────────────────────────────────────────────────────────────
+
+// EndpointProber answers "is this agent's endpoint listening right now", for the
+// deadline-extension gate. Implements match.LivenessProber.
+//
+// The probe is /health: unauthenticated, no game state, NO INFERENCE. That is what makes
+// it safe to run at a deadline when retrying the turn itself is not — it costs the
+// developer nothing.
+type EndpointProber struct {
+	Resolve func(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
+	Client  agentwire.Prober
+	Log     *slog.Logger
+}
+
+// Alive reports whether the endpoint answered.
+//
+// ANY doubt answers false. A false "alive" stalls a table by extending a deadline for an
+// agent that will never reply; a false "gone" only forfeits a turn the agent was already
+// failing to answer. The costs are not symmetric, so the tie goes to forfeiting.
+func (p EndpointProber) Alive(ctx context.Context, agentPublicID string) bool {
+	if p.Resolve == nil || p.Client == nil || agentPublicID == "" {
+		return false
+	}
+	target, ok, err := p.Resolve(ctx, agentPublicID)
+	if err != nil || !ok || target.EndpointURL == "" {
+		// No hosted endpoint: a socket-connected agent's liveness is the gateway's
+		// business, not this probe's, and it must not be granted an extension on the
+		// strength of a check that never ran.
+		return false
+	}
+	return agentwire.ConfirmReachability(ctx, p.Client, target, 3*time.Second, p.Log) == agentwire.ReachAlive
 }

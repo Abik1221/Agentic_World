@@ -36,6 +36,11 @@ type Repo interface {
 	// Advance appends events and updates the snapshot + next deadline for an
 	// in-progress match (one transaction).
 	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error
+	// ExtendDeadline pushes the current round's deadline out WITHOUT touching state or
+	// the event log. Separate from Advance because an extension is not a game event: the
+	// board has not changed, an agent is simply still thinking, and writing a state
+	// revision for it would put a non-move into the replay.
+	ExtendDeadline(ctx context.Context, matchPublicID string, deadline time.Time) error
 
 	// Finish appends the final events, writes the terminal snapshot, sets status,
 	// winner, per-player results, and the replay hash (one transaction). When
