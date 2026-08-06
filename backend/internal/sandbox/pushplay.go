@@ -237,10 +237,14 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			return
 		}
 
-		card, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, matchID, v, legal)
+		view := p.turnView(matchID, v, legal)
+		card, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, target, view)
 		rec.Record(benchmark.Decision{
 			Seat: 0, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
 			Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
+			// The INPUT half of the record: the exact view that was POSTed to the agent,
+			// not a reconstruction of it. Serialized and size-capped by the Recorder.
+			View: view,
 		})
 		if outcome.Fallback() {
 			fallbacks++
@@ -273,11 +277,16 @@ func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, tr agentwire.Trans
 	return highest
 }
 
-// decide asks the agent for a card over the transport and validates it against
-// the legal set, falling back to the lowest legal card on any error or illegal
-// response — so an absent/slow agent can never wedge the match.
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
-	view := remoteplay.GoofspielView{
+// turnView builds the exact payload this seat is handed for the round.
+//
+// Lifted out of decide so the caller can BOTH push it and record it as the input half
+// of the decision trace. Previously the view existed only inside decide, so
+// agent_match_decisions.input_json was left NULL on every sandbox match — the decision
+// inspector could show what the agent played but never the state it was looking at,
+// which is the half that makes a move judgeable. The three sibling push paths (ranked
+// drive, Mafia, Monopoly) all recorded it; this one silently did not.
+func (p *pushPlayer) turnView(matchID string, v match.AgentView, legal []int) remoteplay.GoofspielView {
+	return remoteplay.GoofspielView{
 		Game:         "goofspiel",
 		MatchID:      matchID,
 		Seat:         0, // developer is always seat A in a sandbox match
@@ -288,13 +297,26 @@ func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID
 		Scores:       [2]int{v.You.Score, v.Opponent.Score},
 		LegalActions: legal,
 		History:      historyFromView(v), // self-contained: every resolved round so far
+		// The shot clock, so the agent can size its own thinking. Absence is the agent's
+		// own risk under the forfeit rule, which is only fair if it was told the budget.
+		MoveWindowMs: v.MoveWindowMs,
+		DeadlineMs:   v.DeadlineMs,
 	}
+}
+
+// decide asks the agent for a card over the transport and validates it against
+// the legal set, falling back to the lowest legal card on any error or illegal
+// response — so an absent/slow agent can never wedge the match.
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, target agentclient.Target, view remoteplay.GoofspielView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+	legal := view.LegalActions
 	var move remoteplay.GoofspielMove
 	start := time.Now()
 	err := tr.Turn(ctx, view, &move)
 	latencyMS := time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
+		// The reachability probe now lives in agentwire.HTTPTransport.Turn, so EVERY
+		// hosted-endpoint path gets it — including the staked ones this driver is not.
 		return lowestInt(legal), benchmark.ClassifyError(err, false), latencyMS, move.Rationale, move.Usage
 	case !containsInt(legal, move.Card):
 		return lowestInt(legal), benchmark.OutcomeIllegal, latencyMS, move.Rationale, move.Usage

@@ -43,6 +43,18 @@ type GoofspielView struct {
 	Scores       [2]int      `json:"scores"`
 	LegalActions []int       `json:"legal_actions"`
 	History      []RoundView `json:"history"`
+	// MoveWindowMs is the full budget for one decision — the shot clock. DeadlineMs is
+	// what is actually LEFT of it by the time this request reaches the agent, which is
+	// the number to plan against: it already has the network hop and any platform queueing
+	// subtracted, so an agent that budgets against it cannot be surprised.
+	//
+	// These were missing from the pushed payload entirely. The window was published on the
+	// polling view and in the docs, but an agent driven over its hosted endpoint — the
+	// path every serious developer uses — was handed a turn with no clock on it and had to
+	// guess. Guessing low wastes model quality; guessing high loses the round to a
+	// deterministic fallback. Neither is a decision the platform should have forced.
+	MoveWindowMs int64 `json:"move_window_ms,omitempty"`
+	DeadlineMs   int64 `json:"deadline_ms,omitempty"`
 }
 
 // RoundView is one resolved round from a seat's perspective. your_card/opp_card

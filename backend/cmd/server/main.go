@@ -68,6 +68,7 @@ import (
 	"github.com/agent-arena/arena/internal/sdkstats"
 	"github.com/agent-arena/arena/internal/secretbox"
 	"github.com/agent-arena/arena/internal/seedadmin"
+	"github.com/agent-arena/arena/internal/skill"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/solanadeposit"
 	"github.com/agent-arena/arena/internal/spectator"
@@ -359,6 +360,48 @@ func run() error {
 		MaxBodyBytes: cfg.AgentVerifyMaxBodyBytes,
 		AllowPrivate: cfg.AgentVerifyAllowPrivate,
 	})
+	// Playing a turn is NOT probing an endpoint, and the two must not share a client.
+	//
+	// manifestProbe is tuned for verification: AGENT_VERIFY_TIMEOUT (5s) per attempt,
+	// AGENT_VERIFY_RETRIES (2) attempts. Correct for /health and /handshake, which are
+	// cheap and idempotent. It used to drive live match turns as well, and that was wrong
+	// twice over:
+	//
+	//   1. It capped every decision at ~15s (3 × 5s + backoff) no matter what the game's
+	//      shot clock said. With MOVE_WINDOW_SECONDS=60 configured, 19 of 26 recorded lab
+	//      decisions were still logged as `timeout` at ~15.16s. Any model that thinks for
+	//      longer than 5s — which is most reasoning models — had its real move silently
+	//      replaced by a legal fallback. That then feeds the ranked integrity gate, which
+	//      reads "no provably LLM-backed decisions" and voids the match or withholds the
+	//      payout. A slow model is not a cheating model.
+	//   2. It retried. A turn push is not idempotent from the agent's side: each attempt
+	//      carries a fresh nonce and timestamp (see agentclient.attempt), so the SDK's
+	//      replay dedupe cannot collapse them and the developer is billed for inference
+	//      three times over for one turn.
+	//
+	// So: one attempt, deadline set by the game's own clock. A push that outlives the
+	// window is moot anyway — the sweeper has already applied the deterministic fallback.
+	newPlayClient := func(window time.Duration) *agentclient.Client {
+		return agentclient.New(agentclient.Config{
+			Timeout:      window,
+			MaxTimeout:   window,
+			Retries:      0,
+			MaxBodyBytes: cfg.AgentVerifyMaxBodyBytes,
+			AllowPrivate: cfg.AgentVerifyAllowPrivate,
+		})
+	}
+	// Mafia's clock is per-phase rather than per-move; discussion is the longest, so it
+	// sets the ceiling. An explicit MAFIA_PHASE_WINDOW_SECONDS override wins when set.
+	mafiaPlayWindow := cfg.MafiaPhaseWindow
+	if mafiaPlayWindow <= 0 {
+		mafiaPlayWindow = mafiaengine.DiscussionDuration
+	}
+	goofspielPlayClient := newPlayClient(cfg.MoveWindow)
+	mafiaPlayClient := newPlayClient(mafiaPlayWindow)
+	monopolyPlayClient := newPlayClient(cfg.MonopolyMoveWindow)
+	log.Info("agent play clients configured (separate from the verification probe)",
+		"goofspiel", cfg.MoveWindow, "mafia", mafiaPlayWindow, "monopoly", cfg.MonopolyMoveWindow,
+		"retries", 0)
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
 	// Benchmark agent metadata: resolve each agent's active manifest at match time so
@@ -600,6 +643,17 @@ func run() error {
 	eventBus.On(events.TypeRatingUpdated, pindexSvc.OnRatingUpdated)
 	launch("pindex-recompute", pindex.NewWorker(pindexSvc, log, 5*time.Second).Run)
 
+	// Decision-quality scoring. Runs OFF the match path deliberately: it is a pure
+	// function of columns already persisted (input_json + action), so computing it inline
+	// would add a CPU-heavy regret-matching solve to a live turn for an answer that is
+	// identical whenever it is produced. As a batch it also back-fills every historical
+	// decision and can rescore everything on a scorer improvement (bump skill.ScorerVersion)
+	// with no migration and no replay.
+	//
+	// Feeds the P-Index "skill" dimension, which ships at weight 0 — the scores are
+	// measured and shown but change nobody's ranking until an operator weights them.
+	launch("skill-scoring", skill.NewWorker(store.NewSkillRepo(st.DB), skill.WorkerConfig{}, log).Run)
+
 	// Public developer reputation surface (@handle profile, P-Index transparency,
 	// match history, developer follow graph), aggregated across a developer's agents.
 	devProfileRepo := store.NewDevProfileRepo(st.DB)
@@ -806,7 +860,7 @@ func run() error {
 	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected})
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
 	// fill the rest. Reuses the same match machinery + SSE spectating.
-	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
+	monopolySvc.EnablePushPlay(manifestSvc, monopolyPlayClient, log)
 	monopolySvc.SetWebhookEnqueuer(webhookQueue)
 	monopolySvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	monopolySvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
@@ -828,7 +882,7 @@ func run() error {
 			OwnerPublicID: "usr_system",
 		})
 	}
-	mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, mafiaHouseBots, log)
+	mafiaSvc.EnablePushPlay(manifestSvc, mafiaPlayClient, mafiaHouseBots, log)
 	mafiaSvc.SetWebhookEnqueuer(webhookQueue)
 	mafiaSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	mafiaSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
@@ -1172,7 +1226,7 @@ func run() error {
 	if cfg.RankedAutoDrive {
 		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
 		// default (auto-plays real staked matches) — enable post integration test.
-		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, manifestProbe, lens, benchPersist, benchMeta, log)
+		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, goofspielPlayClient, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
 	matchHandler := match.NewHandler(matchSvc, authn)
@@ -1188,7 +1242,7 @@ func run() error {
 	// Push-play: drive the developer's seat of a sandbox match from their hosted
 	// agent endpoint (manifest push model). Reuses the hardened verification client
 	// and the same match machinery, so the browser watches it live over SSE.
-	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, manifestProbe, log)
+	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, goofspielPlayClient, log)
 	sandboxSvc.SetWebhookEnqueuer(webhookQueue)
 	sandboxSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	sandboxSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
