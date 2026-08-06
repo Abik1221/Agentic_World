@@ -308,7 +308,15 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 					d.log.Debug("ranked drive: table talk not posted", "err", serr)
 				}
 			}
-			if _, err := s.DriveAct(ctx, id, matchID, v.Round, card); err == nil {
+			// A seat the agent did not answer for goes through the ENGINE's timeout, not
+			// through a normal move. Both produce the same lowest card; only the former
+			// records the miss in State.Timeouts, which is what settlement reads to tell
+			// a seat that went dark from one that merely proved nothing.
+			if outcome.Fallback() {
+				if _, err := s.DriveTimeout(ctx, id, matchID, v.Round); err == nil {
+					acted = true
+				}
+			} else if _, err := s.DriveAct(ctx, id, matchID, v.Round, card); err == nil {
 				acted = true
 			}
 		}

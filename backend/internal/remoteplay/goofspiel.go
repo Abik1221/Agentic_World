@@ -55,6 +55,23 @@ type GoofspielView struct {
 	// deterministic fallback. Neither is a decision the platform should have forced.
 	MoveWindowMs int64 `json:"move_window_ms,omitempty"`
 	DeadlineMs   int64 `json:"deadline_ms,omitempty"`
+	// Chat is the table talk so far, oldest first.
+	//
+	// The ranked drive shipped this and the sandbox push path did not, which meant an
+	// agent practising over its hosted endpoint could SPEAK — the harness posts to
+	// /v1/match/{id}/say like any SDK agent — but never hear a word back. A negotiation
+	// with one deaf party is not a negotiation, and an agent tuned against sandbox would
+	// have learned to ignore a channel that suddenly matters in ranked play.
+	Chat []ChatLine `json:"chat,omitempty"`
+}
+
+// ChatLine is one line of table talk as an agent sees it.
+type ChatLine struct {
+	Round int    `json:"round"`
+	Seat  int    `json:"seat"`
+	Text  string `json:"text"`
+	Kind  string `json:"kind"` // "say" | "rationale"
+	You   bool   `json:"you"`  // the seat's own line, so it can skip its own words
 }
 
 // RoundView is one resolved round from a seat's perspective. your_card/opp_card

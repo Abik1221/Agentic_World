@@ -598,6 +598,60 @@ func (s *Service) DriveAct(ctx context.Context, agentPublicID, matchPublicID str
 	return s.act(ctx, agentPublicID, matchPublicID, round, card, "", true)
 }
 
+// DriveTimeout applies the ENGINE's deterministic timeout for a seat whose agent did not
+// answer, and records the miss.
+//
+// Why this exists rather than the driver just submitting the fallback card through
+// DriveAct: State.Timeouts — the per-seat absence tally that settlement uses to tell a
+// seat that went dark from one that played and could not prove itself — is incremented
+// only by the engine's ForceTimeout. A driver that computes the same lowest card and
+// submits it as an ordinary move produces an identical board and a tally that never moves.
+//
+// That was the shipped behaviour, and it was silently fatal to the absence rule: a
+// hosted-endpoint agent could go dark for ten straight rounds and still finish with
+// timeouts=[0,0], so seatWasAbsent always answered false and the forfeit could never
+// arm on the very path most real agents use. Verified against a live match before the
+// fix — 13 rounds, an agent dark from round 4, tally [0,0].
+//
+// Idempotent and race-safe on the same terms as DriveAct: a seat that has already sealed
+// this round is returned unchanged rather than double-counted.
+func (s *Service) DriveTimeout(ctx context.Context, agentPublicID, matchPublicID string, round int) (AgentView, error) {
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
+	}
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if m.Status != StatusActive {
+		return AgentView{}, ErrNotActive
+	}
+	p := m.playerByAgent(agentPublicID)
+	if p == nil {
+		return AgentView{}, ErrNotPlayer
+	}
+	if round != m.State.Round {
+		return AgentView{}, ErrWrongRound
+	}
+	if m.State.Sealed[p.Seat] != nil {
+		return s.view(m, agentPublicID), nil // already acted; nothing to force
+	}
+
+	eng := s.engine(m)
+	state, events, err := eng.ForceTimeout(m.State, p.Seat)
+	if err != nil {
+		return AgentView{}, mapEngineErr(err)
+	}
+	updated, err := s.commit(ctx, m, eng, state, events)
+	if err != nil {
+		return AgentView{}, err
+	}
+	return s.view(updated, agentPublicID), nil
+}
+
 func (s *Service) act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string, platformDriven bool) (AgentView, error) {
 	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
 		if !ok {

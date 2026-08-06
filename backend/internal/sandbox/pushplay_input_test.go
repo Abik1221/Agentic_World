@@ -32,10 +32,11 @@ func viewFromJSON(t *testing.T, doc string) match.AgentView {
 // scriptedDriver replays a fixed sequence of views, one per State call, and records
 // the cards submitted through Act. The last view is repeated if the loop asks again.
 type scriptedDriver struct {
-	mu    sync.Mutex
-	views []match.AgentView
-	calls int
-	acted []int
+	mu     sync.Mutex
+	views  []match.AgentView
+	calls  int
+	acted  []int
+	forced int
 }
 
 func (d *scriptedDriver) State(context.Context, string, string, bool, time.Duration) (match.AgentView, error) {
@@ -47,6 +48,15 @@ func (d *scriptedDriver) State(context.Context, string, string, bool, time.Durat
 	}
 	d.calls++
 	return d.views[i], nil
+}
+
+// DriveTimeout records a forced miss the way the real service does: no card is chosen by
+// the agent, so `acted` stays empty and the absence is what gets counted.
+func (d *scriptedDriver) DriveTimeout(_ context.Context, _, _ string, _ int) (match.AgentView, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.forced++
+	return match.AgentView{}, nil
 }
 
 func (d *scriptedDriver) Act(_ context.Context, _, _ string, _, card int, _ string) (match.AgentView, error) {

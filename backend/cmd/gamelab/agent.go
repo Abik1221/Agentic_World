@@ -89,11 +89,39 @@ func (p persona) thinkTime(matchID string, round, seat int) time.Duration {
 	if ms < 400 {
 		ms = 400
 	}
-	if ms > 26000 {
-		ms = 26000 // below every game's phase window, so the lab shows play, not forfeits
+	// Stress knobs. Off by default (scale 1, cap 26s) so an ordinary lab run still shows
+	// play rather than forfeits; raised deliberately to exercise the shot clock, the
+	// fallback path and the absence forfeit against a REAL server rather than a fake.
+	ms *= LatencyScale
+	if ms > LatencyCapMS {
+		ms = LatencyCapMS
+	}
+	if ms < 400 {
+		ms = 400
 	}
 	return time.Duration(ms) * time.Millisecond
 }
+
+// LatencyScale multiplies every simulated decision latency. 1 is the honest persona
+// model; 8 pushes a reasoning persona's tail past a 60s shot clock, which is what proves
+// the platform waits the full window instead of cutting the agent off early.
+var LatencyScale = 1.0
+
+// LatencyCapMS bounds the sample so a lab run cannot hang. Raised alongside LatencyScale
+// when the point of the run IS to blow the deadline.
+var LatencyCapMS = 26000.0
+
+// GoDarkAfterRound makes an agent stop answering entirely from this round on: the handler
+// hangs rather than replying, which is what a crashed or wedged agent looks like from the
+// platform's side. 0 disables it.
+//
+// A hang, not a 500, on purpose — an error is answered instantly and exercises the
+// transport-error path, while silence is what actually drives the shot clock to expire
+// and the absence forfeit to arm.
+var GoDarkAfterRound = 0
+
+// GoDarkSeat selects which seat goes dark. -1 means every seat.
+var GoDarkSeat = -1
 
 // tokens fabricates a plausible usage report: prompt grows with how much history the
 // view carried, completion tracks how long the agent "thought".

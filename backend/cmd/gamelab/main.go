@@ -39,7 +39,14 @@ func main() {
 	stake := flag.Int64("stake", 500, "coins staked per seat (0 = free practice table)")
 	basePort := flag.Int("base-port", 9101, "first local port for the agent endpoints")
 	runLabel := flag.String("label", "", "suffix for agent names, so repeat runs are distinguishable")
+	latencyScale := flag.Float64("latency-scale", 1, "multiply every simulated decision latency (8 pushes a reasoning persona past a 60s shot clock)")
+	latencyCap := flag.Float64("latency-cap-ms", 26000, "cap on a sampled latency; raise it when the point of the run is to blow the deadline")
+	goDark := flag.Int("go-dark-after", 0, "from this round on, an agent stops answering entirely (0 = never)")
+	goDarkSeat := flag.Int("go-dark-seat", -1, "which seat goes dark (-1 = all of them)")
 	flag.Parse()
+
+	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
+	GoDarkAfterRound, GoDarkSeat = *goDark, *goDarkSeat
 
 	base := envOr("API_BASE", "http://localhost:8090")
 	agentHost := envOr("AGENT_HOST", "host.docker.internal")

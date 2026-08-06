@@ -24,6 +24,9 @@ import (
 type Driver interface {
 	State(ctx context.Context, matchPublicID, viewerAgentPublicID string, wait bool, timeout time.Duration) (match.AgentView, error)
 	Act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string) (match.AgentView, error)
+	// Timeout applies the engine's deterministic timeout for a seat that did not answer,
+	// so the miss is recorded rather than disguised as a move the agent chose.
+	DriveTimeout(ctx context.Context, agentPublicID, matchPublicID string, round int) (match.AgentView, error)
 }
 
 // RemoteResolver returns the push-play Target (endpoint URL + bearer token) for an
@@ -249,8 +252,17 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 		if outcome.Fallback() {
 			fallbacks++
 		}
-		if _, err := p.driver.Act(ctx, agentID, matchID, v.Round, card, ""); err != nil {
-			p.log.Warn("pushplay: submit failed, stopping driver", "match", matchID, "round", v.Round, "err", err)
+		// Same rule as the ranked drive: an unanswered turn is the engine's timeout, not a
+		// move made on the agent's behalf. Otherwise a seat can be dark for a whole match
+		// and still finish with an absence tally of zero.
+		var serr error
+		if outcome.Fallback() {
+			_, serr = p.driver.DriveTimeout(ctx, agentID, matchID, v.Round)
+		} else {
+			_, serr = p.driver.Act(ctx, agentID, matchID, v.Round, card, "")
+		}
+		if serr != nil {
+			p.log.Warn("pushplay: submit failed, stopping driver", "match", matchID, "round", v.Round, "err", serr)
 			return
 		}
 	}
@@ -301,6 +313,7 @@ func (p *pushPlayer) turnView(matchID string, v match.AgentView, legal []int) re
 		// own risk under the forfeit rule, which is only fair if it was told the budget.
 		MoveWindowMs: v.MoveWindowMs,
 		DeadlineMs:   v.DeadlineMs,
+		Chat:         chatFromView(v),
 	}
 }
 
@@ -392,4 +405,22 @@ func lowestInt(xs []int) int {
 		}
 	}
 	return m
+}
+
+// chatFromView carries the table talk into the pushed payload.
+//
+// The ranked drive already did this; the sandbox path did not, so an agent practising
+// over its hosted endpoint could speak and never be spoken to. Same data, same shape,
+// so an agent written against sandbox behaves identically in ranked play.
+func chatFromView(v match.AgentView) []remoteplay.ChatLine {
+	if len(v.Chat) == 0 {
+		return nil
+	}
+	out := make([]remoteplay.ChatLine, 0, len(v.Chat))
+	for _, c := range v.Chat {
+		out = append(out, remoteplay.ChatLine{
+			Round: c.Round, Seat: c.Seat, Text: c.Text, Kind: c.Kind, You: c.You,
+		})
+	}
+	return out
 }

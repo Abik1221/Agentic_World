@@ -56,14 +56,14 @@ func (a *labAgent) handlePlay(w http.ResponseWriter, r *http.Request) {
 
 	switch probe.Game {
 	case "goofspiel", "":
-		a.playGoofspiel(w, raw)
+		a.playGoofspiel(w, r, raw)
 	default:
 		a.log.Printf("unhandled game %q on /play — returning empty move", probe.Game)
 		writeJSON(w, map[string]any{})
 	}
 }
 
-func (a *labAgent) playGoofspiel(w http.ResponseWriter, raw []byte) {
+func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []byte) {
 	var v goofspielView
 	if err := json.Unmarshal(raw, &v); err != nil {
 		http.Error(w, "bad view", http.StatusBadRequest)
@@ -81,6 +81,17 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, raw []byte) {
 	// ── think ────────────────────────────────────────────────────────────────
 	// The sleep is the whole point: it makes the platform's shot clock, "waiting on
 	// seat N" indicator, and long-poll paths behave as they will in production.
+	// GO DARK: from this round on the agent simply stops answering. Modelled as a HANG
+	// rather than an error because that is what a crashed or wedged agent looks like from
+	// the platform's side, and only silence actually drives the shot clock to expire and
+	// the absence forfeit to arm. An error would be answered instantly.
+	if GoDarkAfterRound > 0 && v.Round >= GoDarkAfterRound &&
+		(GoDarkSeat < 0 || GoDarkSeat == v.Seat) {
+		a.log.Printf("round %2d  GONE DARK — not answering (simulating a crashed agent)", v.Round)
+		<-r.Context().Done() // hold the connection open until the platform gives up on us
+		return
+	}
+
 	think := a.Persona.thinkTime(v.MatchID, v.Round, v.Seat)
 	a.log.Printf("round %2d  prize %2d (pool %2d)  scores %d-%d  hand %v  thinking %.1fs…",
 		v.Round, v.CurrentPrize, v.PrizePool, v.Scores[0], v.Scores[1], v.YourHand, think.Seconds())
