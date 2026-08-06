@@ -561,3 +561,107 @@ func TestOneCallIsPricedOnceAndReportedIdentically(t *testing.T) {
 		t.Errorf("verified-cost entry %v != call cost %v", rec.verifiedCosts()[0].CostUSD, calls[0].CostUSD)
 	}
 }
+
+// --- The "Verified" badge -------------------------------------------------------
+
+type fakeAwarder struct {
+	mu     sync.Mutex
+	agents []string
+	fail   bool
+}
+
+func (a *fakeAwarder) AwardVerified(_ context.Context, agent string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.fail {
+		return context.DeadlineExceeded
+	}
+	a.agents = append(a.agents, agent)
+	return nil
+}
+func (a *fakeAwarder) seen() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.agents...)
+}
+
+func TestBadgeRequiresAProvenDecisionNotJustARoutedCall(t *testing.T) {
+	// The retired gateway awarded this on ANY observed call, so the badge meant "routed a
+	// request through us" — the decoration the coverage work exists to replace. A proof binds a
+	// call to one (agent, match, round), so a bound call is the smallest thing that shows the
+	// pipeline actually worked.
+	up := jsonUpstream(t, `{"model":"m","usage":{"input_tokens":10,"output_tokens":5}}`)
+	g, rec := gwFor(t, up, "s")
+	aw := &fakeAwarder{}
+	g.SetAwarder(aw)
+
+	// Unproven: forwarded (rule 1), but earns nothing.
+	post(g, "ag_1", "m_1", "1", "forged-proof", `{"model":"m"}`)
+	rec.settle(t, 1)
+	if n := len(aw.seen()); n != 0 {
+		t.Fatalf("badge awarded %d times on an unproven call, want 0", n)
+	}
+
+	// Proven: earns it.
+	post(g, "ag_1", "m_1", "2", turnproof.New("s").Mint("ag_1", "m_1", 2), `{"model":"m"}`)
+	rec.settle(t, 2)
+	if got := aw.seen(); len(got) != 1 || got[0] != "ag_1" {
+		t.Fatalf("badge awards = %v, want exactly [ag_1]", got)
+	}
+}
+
+func TestBadgeIsAwardedOncePerAgent(t *testing.T) {
+	up := jsonUpstream(t, `{"model":"m","usage":{"input_tokens":10,"output_tokens":5}}`)
+	g, rec := gwFor(t, up, "s")
+	aw := &fakeAwarder{}
+	g.SetAwarder(aw)
+	for round := 1; round <= 4; round++ {
+		post(g, "ag_1", "m_1", itoa(round), turnproof.New("s").Mint("ag_1", "m_1", round), `{"model":"m"}`)
+	}
+	rec.settle(t, 4)
+	if got := aw.seen(); len(got) != 1 {
+		t.Fatalf("badge awarded %d times across 4 proven calls, want 1", len(got))
+	}
+}
+
+func TestAFailedAwardIsRetriedOnTheNextCall(t *testing.T) {
+	// The dedup entry must be released on failure. Keeping it would let one transient database
+	// error permanently deny a badge the agent earned, with nothing ever looking again.
+	up := jsonUpstream(t, `{"model":"m","usage":{"input_tokens":10,"output_tokens":5}}`)
+	g, rec := gwFor(t, up, "s")
+	aw := &fakeAwarder{fail: true}
+	g.SetAwarder(aw)
+
+	post(g, "ag_1", "m_1", "1", turnproof.New("s").Mint("ag_1", "m_1", 1), `{"model":"m"}`)
+	rec.settle(t, 1)
+	if n := len(aw.seen()); n != 0 {
+		t.Fatalf("award recorded %d despite failing, want 0", n)
+	}
+
+	aw.mu.Lock()
+	aw.fail = false
+	aw.mu.Unlock()
+	post(g, "ag_1", "m_1", "2", turnproof.New("s").Mint("ag_1", "m_1", 2), `{"model":"m"}`)
+	rec.settle(t, 2)
+	if got := aw.seen(); len(got) != 1 {
+		t.Fatalf("badge awards after recovery = %v, want one — a failed award must be retryable", got)
+	}
+}
+
+func TestAFailingBindDoesNotAwardTheBadge(t *testing.T) {
+	// The badge stands for a RECORDED proven decision. Awarding it when the binding failed would
+	// leave a developer holding a badge the boards cannot corroborate.
+	up := jsonUpstream(t, `{"model":"m","usage":{"input_tokens":10,"output_tokens":5}}`)
+	aw := &fakeAwarder{}
+	g := New(Config{Upstreams: map[string]string{"openai": up.URL, "anthropic": up.URL}},
+		brokenRecorder{}, turnproof.New("s"), slog.New(slog.DiscardHandler))
+	g.SetAwarder(aw)
+	rr := post(g, "ag_1", "m_1", "1", turnproof.New("s").Mint("ag_1", "m_1", 1), `{"model":"m"}`)
+	if rr.Code != 200 {
+		t.Fatalf("code = %d, want 200 — bookkeeping failure must never break the call", rr.Code)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := len(aw.seen()); n != 0 {
+		t.Fatalf("badge awarded %d times despite a failed binding, want 0", n)
+	}
+}

@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -46,7 +45,6 @@ import (
 	"github.com/agent-arena/arena/internal/invoices"
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/liveness"
-	"github.com/agent-arena/arena/internal/llmgateway"
 	"github.com/agent-arena/arena/internal/llmgw"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/manifest"
@@ -1266,6 +1264,20 @@ func run() error {
 	// Lens spans for server-observed calls, so a gateway round trip shows up in the same trace
 	// waterfall as the agent's own handler rather than leaving a hole where the slow part was.
 	llmGateway.SetEmitter(lens)
+	// The developer-visible "Verified" badge, granted on an agent's first PROVEN decision.
+	// The retired gateway granted it on any observed call, which made it mean "routed a request
+	// through us"; a bound call is the smallest thing that shows the pipeline actually worked.
+	// An EVENT rather than a direct badge write: badge award is already idempotent and driven
+	// off the event stream, so going through it keeps one path for granting badges instead of
+	// two that can disagree about who has one.
+	llmGateway.SetAwarder(awarderFunc(func(ctx context.Context, agentPublicID string) error {
+		payload, err := json.Marshal(map[string]string{"agent_id": agentPublicID})
+		if err != nil {
+			return err
+		}
+		_, err = store.InsertEvent(ctx, st.DB, events.TypeAgentGatewayVerified, payload)
+		return err
+	}))
 	llmGatewayHandler := llmgw.NewHandler(llmGateway, authn)
 	if cfg.TurnProofSecret == "" {
 		log.Warn("LLM gateway will record calls but can PROVE none: TURN_PROOF_SECRET is unset, so no call can be bound to a decision and the verified tier stays empty",
@@ -1638,48 +1650,17 @@ func run() error {
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
 	}
-	if cfg.LLMGatewayEnabled {
-		// Verified tier: observe ranked agents' real model/token/cost by proxying
-		// their LLM calls (/gw/*). Off by default; agent-key auth via idSvc.
-		// On the first observed call per agent, emit agent.gateway_verified → awards
-		// the "Verified" badge (dual-badge model). Deduped in-process to one event
-		// per agent per instance; the badge award is idempotent anyway.
-		var gwSeen sync.Map
-		gwVerified := func(ctx context.Context, c llmgateway.VerifiedCall) {
-			// Bound = this call is provably the one made for (MatchID, Round). Recorded
-			// so ranked integrity can count decisions that were genuinely LLM-backed;
-			// it does not change how cost is accumulated, since an unbound call is
-			// still a real call the developer really paid for.
-			if c.Bound {
-				if err := pindexRepo.RecordBoundDecision(context.Background(), c.MatchID, c.AgentID, c.Round); err != nil {
-					log.Warn("gateway: could not record bound decision", "agent", c.AgentID, "match", c.MatchID, "round", c.Round, "err", err)
-				}
-			}
-			// Accumulate per-match verified economics on EVERY observed call (unfakeable
-			// input for the P-Index cost-efficiency dimension, and the only model
-			// attribution on the platform that the agent cannot misreport — the model
-			// name here came out of the provider's own response).
-			if err := pindexRepo.RecordVerifiedCost(context.Background(), store.VerifiedCall{
-				MatchID: c.MatchID, AgentPublicID: c.AgentID, CostUSD: c.CostUSD,
-				Provider: c.Provider, Model: c.Model,
-				PromptTokens: c.PromptTokens, CompletionTokens: c.CompletionTokens, TotalTokens: c.TotalTokens,
-			}); err != nil {
-				log.Warn("gateway: could not record verified cost", "agent", c.AgentID, "match", c.MatchID, "err", err)
-			}
-			// Award the "Verified" badge ONCE per agent (dedup in-process; idempotent
-			// award makes at-least-once safe anyway).
-			if _, seen := gwSeen.LoadOrStore(c.AgentID, struct{}{}); seen {
-				return
-			}
-			payload, _ := json.Marshal(map[string]string{"agent_id": c.AgentID})
-			if _, err := store.InsertEvent(context.Background(), st.DB, events.TypeAgentGatewayVerified, payload); err != nil {
-				gwSeen.Delete(c.AgentID) // let a later call retry
-				log.Warn("gateway: could not emit agent.gateway_verified", "agent", c.AgentID, "err", err)
-			}
-		}
-		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, turnproof.New(cfg.TurnProofSecret), log))
-		log.Info("Pyyol LLM Gateway mounted at /gw/*")
-	}
+	// internal/llmgateway (mounted at /gw/*) is RETIRED. internal/llmgw at
+	// /v1/gw/{provider}/* replaced it and is wired above with everything the old one did —
+	// turn-proof binding, per-match verified cost, the Lens span, the "Verified" badge — plus
+	// what it never had: separated prompt-cache read/write accounting, a coverage endpoint, and
+	// a coverage-gated verified tier.
+	//
+	// Two gateways writing two different verified stores was the actual defect: the boards read
+	// only the older one, so an agent with every decision proven through the new path was still
+	// reported as merely SDK-observed. agent_match_verified_cost held zero rows platform-wide
+	// at the time of removal, so there was no history to migrate — the old path had never
+	// produced a verified row on this deployment.
 	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)
 	srv := httpx.NewServer(cfg, router, log)
 
@@ -2246,4 +2227,11 @@ func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
 		})
 	}
 	return a.r.Rate(ctx, res)
+}
+
+// awarderFunc adapts a plain function to llmgw.Awarder.
+type awarderFunc func(ctx context.Context, agentPublicID string) error
+
+func (f awarderFunc) AwardVerified(ctx context.Context, agentPublicID string) error {
+	return f(ctx, agentPublicID)
 }

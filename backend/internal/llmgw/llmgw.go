@@ -53,6 +53,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agent-arena/arena/internal/benchmark"
@@ -91,6 +92,20 @@ type VerifiedCost struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+}
+
+// Awarder grants the developer-visible "Verified" badge, once, the first time an agent proves
+// a decision was LLM-backed.
+//
+// On the FIRST BOUND CALL, not the first observed one. The older gateway awarded it on any
+// observed call, which made the badge mean "routed at least one request through us" — the same
+// decoration the coverage work exists to replace. A proof binds a call to a specific
+// (agent, match, round), so a bound call is the smallest thing that actually demonstrates the
+// pipeline works end to end, and it is the least a badge should stand for.
+//
+// Optional: a deployment without it simply does not award badges.
+type Awarder interface {
+	AwardVerified(ctx context.Context, agentPublicID string) error
 }
 
 // Emitter ships a Lens span for an observed call. Satisfied by *telemetry.Client.
@@ -215,12 +230,20 @@ type Gateway struct {
 	coverage CoverageReader
 	// em ships Lens spans for observed calls. Nil (or disabled) simply skips them.
 	em Emitter
+	// award grants the "Verified" badge on an agent's first proven decision. Nil disables it.
+	award Awarder
+	// awarded dedups the badge in-process. The award itself is idempotent, so this is a
+	// courtesy to the database rather than a correctness requirement.
+	awarded sync.Map
 }
 
 // SetCoverageReader wires verified-coverage reporting. Nil leaves it unavailable.
 // SetEmitter attaches the Lens emitter. Optional: without it calls are still recorded, they
 // just do not appear in the trace waterfall.
 func (g *Gateway) SetEmitter(em Emitter) { g.em = em }
+
+// SetAwarder attaches the "Verified" badge granter. Optional.
+func (g *Gateway) SetAwarder(a Awarder) { g.award = a }
 
 func (g *Gateway) SetCoverageReader(c CoverageReader) {
 	if c != nil {
@@ -399,7 +422,9 @@ func (g *Gateway) record(c Call) {
 		}
 		if err := g.rec.BindDecision(ctx, c.MatchID, c.AgentPublicID, c.Round); err != nil {
 			g.log.Debug("llmgw: could not bind decision", "match", c.MatchID, "error", err)
+			return
 		}
+		g.awardVerified(ctx, c.AgentPublicID)
 	}()
 }
 
@@ -612,4 +637,22 @@ func (g *Gateway) emit(c Call) {
 			"cache_write_tokens": c.CachedWriteTokens,
 		},
 	})
+}
+
+// awardVerified grants the badge once per agent per process.
+//
+// On failure the dedup entry is REMOVED so a later call retries. Keeping it would mean one
+// transient database error permanently denies a badge the agent earned, and nothing would ever
+// look at it again — a silent, unrecoverable loss for the developer.
+func (g *Gateway) awardVerified(ctx context.Context, agentPublicID string) {
+	if g.award == nil || agentPublicID == "" {
+		return
+	}
+	if _, seen := g.awarded.LoadOrStore(agentPublicID, struct{}{}); seen {
+		return
+	}
+	if err := g.award.AwardVerified(ctx, agentPublicID); err != nil {
+		g.awarded.Delete(agentPublicID)
+		g.log.Debug("llmgw: could not award verified badge", "agent", agentPublicID, "error", err)
+	}
 }
