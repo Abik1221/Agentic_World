@@ -250,18 +250,88 @@ def fingerprint(components: Dict[str, str]) -> str:
     return "sc_" + _digest(canonical(components))[:16]
 
 
-def from_request(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
-    """Fingerprint one provider request, or "" if there was nothing to go on.
+# Why a request could not be fingerprinted, as a stable CODE rather than prose.
+#
+# A code on the wire and prose at the point of reading, deliberately. The reason repeats on
+# every decision of every non-qualifying agent, so shipping and storing the sentence would
+# duplicate it thousands of times per match. A code is also aggregatable — "how many agents
+# are ineligible, and why" is a question worth being able to ask — and it can change wording
+# later without a migration.
+ISSUE_NO_SYSTEM_PROMPT = "no_system_prompt"
+ISSUE_NO_MESSAGES = "no_messages"
 
-    An empty result means "unknown", never a hash of nothing — a fingerprint shared by
-    every request that failed to yield components would silently pool unrelated scaffolds
-    into one bogus epoch.
+# Prose for each code. Read by the CLI and the dev-facing trace; never stored.
+ISSUE_EXPLANATIONS: Dict[str, str] = {
+    ISSUE_NO_SYSTEM_PROMPT: (
+        "This request's instructions live in the user turn, mixed with the game state, where "
+        "they cannot be told apart from it. Move your standing instructions into a system "
+        "message to make this agent eligible for paired model comparison."
+    ),
+    ISSUE_NO_MESSAGES: (
+        "No messages were observed on this request, so there was nothing to fingerprint."
+    ),
+}
+
+
+def issue(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
+    """Code for why this request yields no usable fingerprint, or "" when it does.
+
+    Separate from ``from_request`` so the reason can reach a developer without the hot path
+    building a string on every call.
+    """
+    try:
+        comps = extract(kwargs, endpoint=endpoint)
+    except Exception:  # noqa: BLE001
+        return ISSUE_NO_MESSAGES
+    if not comps.get("roles"):
+        return ISSUE_NO_MESSAGES
+    if not comps.get("system"):
+        return ISSUE_NO_SYSTEM_PROMPT
+    return ""
+
+
+def explain(code: str) -> str:
+    """Human-readable reason for an issue code, or "" for no issue / an unknown code."""
+    return ISSUE_EXPLANATIONS.get(code, "")
+
+
+def diagnose(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
+    """Prose reason this request cannot be fingerprinted, or "" when it can.
+
+    Convenience for local developer output; the wire carries ``issue`` codes.
+    """
+    return explain(issue(kwargs, endpoint=endpoint))
+
+
+def from_request(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
+    """Fingerprint one provider request, or "" when it cannot be fingerprinted.
+
+    An empty result means "unknown", never a hash of nothing — a fingerprint shared by every
+    request that failed to yield components would silently pool unrelated scaffolds into one
+    bogus epoch and publish it as a controlled comparison.
+
+    # A system prompt is REQUIRED, and this is the sharp edge of the whole design
+
+    Without one, the hashable surface is ``client`` + ``roles`` + sampling — none of which
+    move when the developer rewrites the instructions they actually steer the model with,
+    because those instructions are sitting in a user message alongside the game state.
+
+    That is worse than having no fingerprint at all. It is a FALSE CERTIFICATE: an agent
+    could replace its entire strategy prompt mid-season, keep reporting the same scaffold
+    id, and have the resulting improvement attributed to whatever model it happened to swap
+    to. The fingerprint would be actively manufacturing the confound it exists to remove.
+
+    There is no way to fix this by hashing more: the instructions and the game state are the
+    same string, and hashing that string produces a new fingerprint every turn. So the
+    honest answer is that a scaffold whose instructions live in the user turn cannot be
+    identified, and such an agent is not eligible for paired comparison until it moves them
+    into a system message. ``diagnose`` returns that explanation.
     """
     try:
         comps = extract(kwargs, endpoint=endpoint)
     except Exception:  # noqa: BLE001 - fingerprinting must never break a model call
         return ""
-    if not comps.get("system") and not comps.get("roles"):
+    if not comps.get("system"):
         return ""
     return fingerprint(comps)
 

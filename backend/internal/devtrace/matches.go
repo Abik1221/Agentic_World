@@ -161,10 +161,13 @@ type Decision struct {
 	// developers so they can see their own fingerprint and confirm it is stable — an unstable
 	// one silently disqualifies them from every paired model comparison, and a badge you
 	// discover you have lost is a support ticket.
-	Scaffold         string  `json:"scaffold"`
-	ScaffoldUnstable bool    `json:"scaffold_unstable"`
-	TotalTokens      int     `json:"total_tokens"`
-	EstimatedCost    float64 `json:"estimated_cost"`
+	Scaffold         string `json:"scaffold"`
+	ScaffoldUnstable bool   `json:"scaffold_unstable"`
+	// ScaffoldIssue is a short code for why there is no fingerprint. The UI turns it into the
+	// actionable sentence; storing prose per decision would duplicate it endlessly.
+	ScaffoldIssue string  `json:"scaffold_issue"`
+	TotalTokens   int     `json:"total_tokens"`
+	EstimatedCost float64 `json:"estimated_cost"`
 
 	// SkillRegret is the share of the achievable value this decision gave up, in [0,1]:
 	// 0 played the best action available from this exact state, 1 played the worst. Nil

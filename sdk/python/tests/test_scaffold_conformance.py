@@ -43,7 +43,7 @@ def _canonical(case: Dict[str, Any]) -> str:
 
 def test_fixture_file_is_not_empty():
     """A suite that silently finds zero cases would report success while testing nothing."""
-    assert len(_CASES) >= 12
+    assert len(_CASES) >= 15
 
 
 def test_scaffold_version_matches_the_fixtures():
@@ -145,3 +145,54 @@ def test_pairing_eligibility_refuses_unknowns():
     assert not scaffold.eligible_for_pairing(["sc_a", ""])
     assert not scaffold.eligible_for_pairing([None])
     assert not scaffold.eligible_for_pairing([])
+
+
+def test_a_prompt_in_the_user_turn_is_not_a_scaffold():
+    """The flaw this rule exists to close, found by reading our own shipped example.
+
+    With no system prompt the hashable surface is client + roles + sampling, none of which
+    move when the developer rewrites the instructions they actually steer the model with.
+    A fingerprint there is a FALSE CERTIFICATE: the agent could replace its whole strategy
+    mid-season, keep reporting one scaffold id, and have the gain credited to a model swap.
+    """
+    a = {"messages": [{"role": "user", "content": "Bid low early."}]}
+    b = {"messages": [{"role": "user", "content": "Always bid your highest card."}]}
+    assert scaffold.from_request(a, endpoint="openai.chat.completions") == ""
+    assert scaffold.from_request(b, endpoint="openai.chat.completions") == ""
+
+
+def test_the_developer_is_told_why_and_what_to_do():
+    """An agent that silently fails to qualify files a support ticket; one that is told
+    'move your instructions into a system message' fixes it in a line."""
+    note = scaffold.diagnose(
+        {"messages": [{"role": "user", "content": "Bid low."}]}, endpoint="x"
+    )
+    assert "system message" in note
+    # And no note once it is fixed, so the field is a signal rather than decoration.
+    assert (
+        scaffold.diagnose(
+            {
+                "messages": [
+                    {"role": "system", "content": "Bid low."},
+                    {"role": "user", "content": "state"},
+                ]
+            },
+            endpoint="x",
+        )
+        == ""
+    )
+
+
+def test_moving_the_prompt_into_a_system_message_makes_a_rewrite_visible():
+    """The payoff of the rule: once instructions are in a system message, changing them
+    correctly registers as a NEW scaffold instead of hiding inside an unchanged id."""
+    base = {"messages": [{"role": "user", "content": "Round 3."}]}
+    one = scaffold.from_request(
+        {**base, "messages": [{"role": "system", "content": "Bid low early."}] + base["messages"]},
+        endpoint="x",
+    )
+    two = scaffold.from_request(
+        {**base, "messages": [{"role": "system", "content": "Bid high always."}] + base["messages"]},
+        endpoint="x",
+    )
+    assert one and two and one != two

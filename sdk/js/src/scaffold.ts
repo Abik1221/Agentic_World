@@ -195,11 +195,66 @@ export function fingerprint(c: Components): string {
   return "sc_" + digest(canonical(c)).slice(0, 16);
 }
 
-/** Fingerprint one provider request, or "" if there was nothing to go on.
+/** Why a request could not be fingerprinted, as a stable CODE rather than prose.
+ *
+ *  A code on the wire and prose at the point of reading, deliberately. The reason repeats on
+ *  every decision of every non-qualifying agent, so shipping and storing the sentence would
+ *  duplicate it thousands of times per match. A code is also aggregatable — "how many agents
+ *  are ineligible, and why" is a question worth being able to ask — and its wording can change
+ *  later without a migration. */
+export const ISSUE_NO_SYSTEM_PROMPT = "no_system_prompt";
+export const ISSUE_NO_MESSAGES = "no_messages";
+
+/** Prose for each code. Read by the CLI and the dev-facing trace; never stored. */
+export const ISSUE_EXPLANATIONS: Readonly<Record<string, string>> = {
+  [ISSUE_NO_SYSTEM_PROMPT]:
+    "This request's instructions live in the user turn, mixed with the game state, where " +
+    "they cannot be told apart from it. Move your standing instructions into a system " +
+    "message to make this agent eligible for paired model comparison.",
+  [ISSUE_NO_MESSAGES]: "No messages were observed on this request, so there was nothing to fingerprint.",
+};
+
+/** Code for why this request yields no usable fingerprint, or "" when it does. */
+export function issue(kwargs: Record<string, unknown>, endpoint = ""): string {
+  let c: Components;
+  try {
+    c = extract(kwargs, endpoint);
+  } catch {
+    return ISSUE_NO_MESSAGES;
+  }
+  if (!c.roles) return ISSUE_NO_MESSAGES;
+  if (!c.system) return ISSUE_NO_SYSTEM_PROMPT;
+  return "";
+}
+
+/** Human-readable reason for an issue code, or "" for no issue / an unknown code. */
+export function explain(code: string): string {
+  return ISSUE_EXPLANATIONS[code] ?? "";
+}
+
+/** Prose reason this request cannot be fingerprinted, or "" when it can.
+ *
+ *  Convenience for local developer output; the wire carries `issue` codes. */
+export function diagnose(kwargs: Record<string, unknown>, endpoint = ""): string {
+  return explain(issue(kwargs, endpoint));
+}
+
+/** Fingerprint one provider request, or "" when it cannot be fingerprinted.
  *
  *  An empty result means "unknown", never a hash of nothing — a fingerprint shared by every
  *  request that failed to yield components would silently pool unrelated scaffolds into one
- *  bogus epoch. */
+ *  bogus epoch and publish it as a controlled comparison.
+ *
+ *  A SYSTEM PROMPT IS REQUIRED, and this is the sharp edge of the whole design. Without one,
+ *  the hashable surface is `client` + `roles` + sampling — none of which move when the
+ *  developer rewrites the instructions they actually steer the model with, because those
+ *  instructions sit in a user message alongside the game state.
+ *
+ *  That is worse than having no fingerprint. It is a FALSE CERTIFICATE: an agent could
+ *  replace its entire strategy prompt mid-season, keep reporting the same scaffold id, and
+ *  have the improvement attributed to whatever model it swapped to — the fingerprint would be
+ *  manufacturing the confound it exists to remove. Hashing more cannot fix it, because the
+ *  instructions and the game state are the same string. See `diagnose`. */
 export function fromRequest(kwargs: Record<string, unknown>, endpoint = ""): string {
   let c: Components;
   try {
@@ -207,7 +262,7 @@ export function fromRequest(kwargs: Record<string, unknown>, endpoint = ""): str
   } catch {
     return ""; // fingerprinting must never break a model call
   }
-  if (!c.system && !c.roles) return "";
+  if (!c.system) return "";
   return fingerprint(c);
 }
 

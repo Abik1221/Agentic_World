@@ -71,7 +71,7 @@ func TestDecisionLogRoundTripIntegration(t *testing.T) {
 		PromptTokens: 2520, CompletionTokens: 90, ReasoningTokens: 0,
 		CachedTokens: 1500, CachedWriteTokens: 600, TotalTokens: 2610,
 		EstimatedCost: 0.02655,
-		Scaffold:      "sc_2fd2f65436751e0b", ScaffoldUnstable: false,
+		Scaffold:      "sc_2fd2f65436751e0b", ScaffoldUnstable: false, ScaffoldIssue: "",
 		InputJSON: view, InputTruncated: false, StartedAt: started,
 	}
 	if err := repo.RecordMatchDecisions(ctx, matchID, agentPublic, []MatchDecision{want}); err != nil {
@@ -84,13 +84,13 @@ func TestDecisionLogRoundTripIntegration(t *testing.T) {
 		`SELECT seq, round, action, outcome, latency_ms, rationale, provider, model,
 		        prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens,
 		        cached_write_tokens, total_tokens, estimated_cost, scaffold, scaffold_unstable,
-		        input_json, input_truncated
+		        scaffold_issue, input_json, input_truncated
 		   FROM agent_match_decisions WHERE match_id = $1 AND agent_id = $2 AND seq = 1`,
 		matchID, agentID).Scan(
 		&got.Seq, &got.Round, &got.Action, &got.Outcome, &got.LatencyMS, &got.Rationale,
 		&got.Provider, &got.Model, &got.PromptTokens, &got.CompletionTokens,
 		&got.ReasoningTokens, &got.CachedTokens, &got.CachedWriteTokens, &got.TotalTokens,
-		&got.EstimatedCost, &got.Scaffold, &got.ScaffoldUnstable,
+		&got.EstimatedCost, &got.Scaffold, &got.ScaffoldUnstable, &got.ScaffoldIssue,
 		&readBack, &got.InputTruncated); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
@@ -159,5 +159,30 @@ func TestDecisionLogRoundTripIntegration(t *testing.T) {
 	if keptRationale != want.Rationale {
 		t.Errorf("a replay without a rationale erased the stored one (%q -> %q)",
 			want.Rationale, keptRationale)
+	}
+
+	// An INELIGIBLE decision: no fingerprint, but a code saying why. The whole point is that a
+	// developer whose agent silently drops out of paired comparison can see the reason and fix
+	// it, rather than filing a ticket asking why their agent is missing from a board.
+	ineligible := want
+	ineligible.Seq = 2
+	ineligible.Scaffold = ""
+	ineligible.ScaffoldIssue = "no_system_prompt"
+	if err := repo.RecordMatchDecisions(ctx, matchID, agentPublic, []MatchDecision{ineligible}); err != nil {
+		t.Fatalf("record ineligible decision: %v", err)
+	}
+	var gotScaffold, gotIssue string
+	if err := pool.QueryRow(ctx,
+		`SELECT scaffold, scaffold_issue FROM agent_match_decisions
+		  WHERE match_id = $1 AND agent_id = $2 AND seq = 2`,
+		matchID, agentID).Scan(&gotScaffold, &gotIssue); err != nil {
+		t.Fatalf("read ineligible: %v", err)
+	}
+	if gotScaffold != "" {
+		t.Errorf("scaffold = %q, want empty — an unfingerprintable decision must not carry one", gotScaffold)
+	}
+	if gotIssue != "no_system_prompt" {
+		t.Errorf("scaffold_issue = %q, want %q — without it the developer cannot tell why the "+
+			"agent is excluded from the model board", gotIssue, "no_system_prompt")
 	}
 }

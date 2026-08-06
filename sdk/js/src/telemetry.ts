@@ -135,6 +135,8 @@ export interface MoveUsage {
   scaffold?: string;
   /** Set only when the fingerprint changed mid-turn, which makes the agent unpairable. */
   scaffold_unstable?: boolean;
+  /** Code for why no fingerprint was produced, when none was — so the developer can act. */
+  scaffold_issue?: string;
   model?: string | string[];
   provider?: string | string[];
 }
@@ -176,6 +178,12 @@ export class UsageAccumulator {
   // game state sits in the system prompt. Such an agent cannot take part in a paired
   // comparison, and saying so is more useful than silently keeping the first value seen.
   scaffoldUnstable = false;
+  // CODE for why no fingerprint could be computed, when none could (see scaffold ISSUE_*).
+  // Carried to the developer rather than dropped: an agent that silently fails to qualify for
+  // the model board files a support ticket, where one told "move your instructions into a
+  // system message" fixes it in a line. A code rather than prose so it is small on the wire
+  // and aggregatable.
+  scaffoldIssue = "";
   readonly models: string[] = [];
   readonly providers: string[] = [];
   // Turn context (for gateway attribution); set by runTurnUsage().
@@ -200,8 +208,12 @@ export class UsageAccumulator {
    *  An empty fingerprint means "could not tell" and is ignored rather than treated as a
    *  distinct scaffold: a failure to fingerprint is not evidence that the harness changed,
    *  and counting it as such would mark honest agents unstable. */
-  observeScaffold(fp: string): void {
-    if (!fp) return;
+  observeScaffold(fp: string, issue = ""): void {
+    if (!fp) {
+      // First reason wins; later calls in the same turn usually repeat it.
+      if (issue && !this.scaffoldIssue) this.scaffoldIssue = issue;
+      return;
+    }
     if (!this.scaffold) this.scaffold = fp;
     else if (fp !== this.scaffold) this.scaffoldUnstable = true;
   }
@@ -236,6 +248,8 @@ export class UsageAccumulator {
     // Only sent when true. An absent flag and a false one mean the same thing, and shipping
     // the false case on every move would be noise on the wire.
     if (this.scaffoldUnstable) usage.scaffold_unstable = true;
+    // Only when there is no fingerprint: with one, the code would be noise.
+    if (!this.scaffold && this.scaffoldIssue) usage.scaffold_issue = this.scaffoldIssue;
     if (this.models.length) usage.model = this.models.length === 1 ? this.models[0] : this.models;
     if (this.providers.length) usage.provider = this.providers.length === 1 ? this.providers[0] : this.providers;
     return usage;

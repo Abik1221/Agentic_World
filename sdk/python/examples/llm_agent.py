@@ -36,17 +36,30 @@ class LLMGoofspiel(Adapter):
     name = "llm-goofspiel"
     supported_games = ["goofspiel"]
 
+    # Standing instructions go in a SYSTEM message; only the changing game state goes in
+    # the user turn. This is not just style — it is what makes the agent eligible for the
+    # model board. Pyyol fingerprints your scaffold (system prompt, tools, sampling) with
+    # the model excluded, so it can compare two models across the SAME harness. Instructions
+    # buried in the user turn cannot be told apart from the game state, so an agent that
+    # mixes them cannot be fingerprinted and is left out of paired comparison. Your trace
+    # will say so under `scaffold_note` if that happens.
+    SYSTEM = (
+        "You are playing Goofspiel. Win prizes by bidding your cards wisely. "
+        "Reply with ONLY the card number to play."
+    )
+
     def step(self, view: GoofspielView) -> GoofspielMove:
-        prompt = (
-            "You are playing Goofspiel. Win prizes by bidding your cards wisely.\n"
+        state = (
             f"Prize this round: {view.current_prize}. Prize pool left: {view.prize_pool}.\n"
             f"Your hand: {view.your_hand}. Legal cards: {view.legal_actions}. "
-            f"Scores (you are seat {view.seat}): {view.scores}.\n"
-            "Reply with ONLY the card number to play."
+            f"Scores (you are seat {view.seat}): {view.scores}."
         )
         resp = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": self.SYSTEM},
+                {"role": "user", "content": state},
+            ],
         )
         try:
             card = int(resp.choices[0].message.content.strip())

@@ -266,6 +266,9 @@ type MatchDecision struct {
 	// Unstable means it changed mid-turn and the decision cannot be paired.
 	Scaffold         string
 	ScaffoldUnstable bool
+	// ScaffoldIssue is a short code for why there is no fingerprint (e.g.
+	// "no_system_prompt"). Empty when one was produced.
+	ScaffoldIssue string
 
 	PromptTokens     int
 	CompletionTokens int
@@ -317,24 +320,25 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 			matchID, agentID, d.Seq, d.Round, d.Action, d.Outcome, d.LatencyMS, d.Rationale,
 			d.Provider, d.Model, d.PromptTokens, d.CompletionTokens, d.ReasoningTokens,
 			d.CachedTokens, d.CachedWriteTokens, d.TotalTokens, d.EstimatedCost,
-			d.Scaffold, d.ScaffoldUnstable,
+			d.Scaffold, d.ScaffoldUnstable, d.ScaffoldIssue,
 			// nil (not "null") so an absent view stores SQL NULL rather than the JSON
 			// literal null — the two read back differently and only one is honest.
 			inputOrNil(d.InputJSON), d.InputTruncated, timeOrNil(d.StartedAt),
 		})
 	}
 
-	const cols = 22
+	const cols = 23
 	// Position of input_json within a row, named so the ::jsonb cast below cannot drift
 	// out of step with the column list the way a bare literal silently would.
-	const inputJSONIndex = 19
+	const inputJSONIndex = 20
 	args := make([]any, 0, len(rows)*cols)
 	var b strings.Builder
 	b.WriteString(`INSERT INTO agent_match_decisions (
 		match_id, agent_id, seq, round, action, outcome, latency_ms, rationale,
 		provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
 		cached_tokens, cached_write_tokens, total_tokens, estimated_cost,
-		scaffold, scaffold_unstable, input_json, input_truncated, started_at) VALUES `)
+		scaffold, scaffold_unstable, scaffold_issue,
+		input_json, input_truncated, started_at) VALUES `)
 	for i, row := range rows {
 		if i > 0 {
 			b.WriteByte(',')
@@ -372,6 +376,7 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 		-- block must not silently drop an agent out of every paired comparison.
 		scaffold = COALESCE(NULLIF(EXCLUDED.scaffold,''), agent_match_decisions.scaffold),
 		scaffold_unstable = EXCLUDED.scaffold_unstable OR agent_match_decisions.scaffold_unstable,
+		scaffold_issue = EXCLUDED.scaffold_issue,
 		total_tokens = EXCLUDED.total_tokens, estimated_cost = EXCLUDED.estimated_cost,
 		-- Same rule as the rationale: a replay that lost the view must not erase a view
 		-- we already captured.

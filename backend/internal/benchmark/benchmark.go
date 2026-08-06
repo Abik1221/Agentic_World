@@ -98,6 +98,10 @@ type TokenUsage struct {
 	// game state sits in the system prompt. Such a decision cannot be paired, and that has
 	// to travel with the data rather than be guessed at later.
 	ScaffoldUnstable bool `json:"scaffold_unstable,omitempty"`
+	// ScaffoldIssue is a short code for why no fingerprint was produced (e.g.
+	// "no_system_prompt"), so an agent excluded from paired comparison is told why rather
+	// than left to discover it. A code, not prose: the reason repeats on every decision.
+	ScaffoldIssue string `json:"scaffold_issue,omitempty"`
 	// ModelCalls is how many model calls this ONE decision took, and CallLatenciesMS how
 	// long each took. An aggregate cannot separate one slow call from six quick ones.
 	ModelCalls      int   `json:"model_calls,omitempty"`

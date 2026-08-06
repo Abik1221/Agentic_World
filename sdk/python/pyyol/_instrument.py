@@ -473,7 +473,8 @@ def _safe_scaffold(kwargs: Dict[str, Any], endpoint: str) -> None:
         acc = current_usage()
         if acc is None:
             return
-        acc.observe_scaffold(scaffold.from_request(kwargs, endpoint=endpoint))
+        fp = scaffold.from_request(kwargs, endpoint=endpoint)
+        acc.observe_scaffold(fp, "" if fp else scaffold.issue(kwargs, endpoint=endpoint))
     except Exception:  # noqa: BLE001 - instrumentation must never break the dev's call
         pass
 

@@ -194,6 +194,12 @@ class UsageAccumulator:
         # a paired comparison, and saying so is more useful than silently keeping the
         # first value seen.
         self.scaffold_unstable: bool = False
+        # CODE for why no fingerprint could be computed, when none could (see
+        # scaffold.ISSUE_*). Carried to the developer rather than dropped: an agent that
+        # silently fails to qualify for the model board files a support ticket, where one
+        # told "move your instructions into a system message" fixes it in a line. A code
+        # rather than prose so it is small on the wire and aggregatable.
+        self.scaffold_issue: str = ""
 
     def add(
         self,
@@ -222,7 +228,7 @@ class UsageAccumulator:
         if provider and provider not in self.providers:
             self.providers.append(provider)
 
-    def observe_scaffold(self, fp: str) -> None:
+    def observe_scaffold(self, fp: str, issue: str = "") -> None:
         """Record a scaffold fingerprint seen on one call this turn.
 
         An empty fingerprint means "could not tell" and is ignored rather than treated as a
@@ -230,6 +236,9 @@ class UsageAccumulator:
         changed, and counting it as such would mark honest agents unstable.
         """
         if not fp:
+            # First reason wins; later calls in the same turn usually repeat it.
+            if issue and not self.scaffold_issue:
+                self.scaffold_issue = issue
             return
         if not self.scaffold:
             self.scaffold = fp
@@ -275,6 +284,9 @@ class UsageAccumulator:
         # shipping the false case on every move would be noise on the wire.
         if self.scaffold_unstable:
             usage["scaffold_unstable"] = True
+        # Only when there is no fingerprint: with one, the code would be noise.
+        if not self.scaffold and self.scaffold_issue:
+            usage["scaffold_issue"] = self.scaffold_issue
         if self.models:
             usage["model"] = self.models[0] if len(self.models) == 1 else self.models
         if self.providers:

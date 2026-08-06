@@ -17,7 +17,7 @@
 // non-streaming calls for automatic capture.
 
 import { estimateCost } from "./pricing.js";
-import { fromRequest } from "./scaffold.js";
+import { fromRequest, issue } from "./scaffold.js";
 import * as providers from "./providers.js";
 import { currentSpan, currentUsage } from "./telemetry.js";
 
@@ -353,7 +353,8 @@ export function patchPrototype(
     // developer's model call fails.
     try {
       const req = (args[0] ?? {}) as Record<string, unknown>;
-      currentUsage()?.observeScaffold(fromRequest(req, endpoint));
+      const fp = fromRequest(req, endpoint);
+      currentUsage()?.observeScaffold(fp, fp ? "" : issue(req, endpoint));
     } catch {
       // instrumentation must never break the dev's call
     }
