@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/agent-arena/arena/internal/benchmark"
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
@@ -50,8 +51,10 @@ type Service struct {
 	wallet Wallet
 	bcast  Broadcaster
 	finish FinishHook
-	clock  platform.Clock
-	cfg    Config
+	// actDecisions instruments the request path. Nil leaves Act uninstrumented.
+	actDecisions ActDecisionRecorder
+	clock        platform.Clock
+	cfg          Config
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -102,6 +105,39 @@ type DecisionTracer interface {
 
 // SetDecisionTracer installs the per-decision tracer (called once at wiring time).
 func (s *Service) SetDecisionTracer(t DecisionTracer) { s.decisionTracer = t }
+
+// ActDecision is one decision made through the REQUEST path.
+//
+// Declared here rather than reusing store.ActDecision so this package does not depend on the
+// persistence layer: a game service defines what it needs and main.go adapts it. The alternative
+// compiles but inverts the layering, and every future field would then be added in a store type
+// that the engine has no business knowing about.
+type ActDecision struct {
+	MatchID       string
+	AgentPublicID string
+	Seq           int
+	Round         int
+	Action        string
+	Outcome       string
+	InputJSON     []byte
+}
+
+// ActDecisionRecorder durably records request-path decisions and builds the per-seat facts at
+// match end.
+//
+// The drive loops fold decisions into an in-memory benchmark.Recorder and flush a summary. An
+// agent that polls State and posts Act touches none of that, so before this hook such a match
+// produced no benchmark fact, no decision log and no board presence — and since the pull path is
+// the common one here, every figure the platform published was a Goofspiel figure.
+// See OBSERVABILITY_COVERAGE_GAP.md.
+type ActDecisionRecorder interface {
+	RecordActDecision(ctx context.Context, d ActDecision) error
+	AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error
+}
+
+// SetActDecisionRecorder wires request-path instrumentation. Optional: without it, matches driven
+// through Act stay invisible to the boards exactly as before.
+func (s *Service) SetActDecisionRecorder(r ActDecisionRecorder) { s.actDecisions = r }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
@@ -613,7 +649,57 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	if err != nil {
 		return AgentView{}, err
 	}
-	return s.view(m, agentPublicID), nil
+	view := s.view(m, agentPublicID)
+	// Instrument AFTER the move is committed, and only then: an action the engine rejected
+	// returned ErrIllegalAction above and is not a decision the agent got to make.
+	//
+	// Keyed by the PRE-move NextSeq, which the engine guarantees gap-free and monotonic, so a
+	// retried Act at the same state reuses its seq and refreshes one row rather than inventing a
+	// second decision that never happened.
+	s.recordActDecision(ctx, m, agentPublicID, signSeq, act.Kind, view)
+	return view, nil
+}
+
+// recordActDecision persists one request-path decision, best-effort.
+//
+// Never returns an error and never blocks the move: the action is already committed and any coins
+// already moved, so a bookkeeping failure must not surface to the agent as a failed move. Same
+// rule the gateway follows for the same reason.
+//
+// LATENCY IS DELIBERATELY NOT REPORTED. On the request path the platform never observed the agent
+// thinking — it received a finished action — so any figure here would be the time WE spent
+// applying it, which is not what the latency column means anywhere else on the boards. Left at
+// zero, which reads as "not measured" and is true.
+func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, seq int, action string, view AgentView) {
+	if s.actDecisions == nil {
+		return
+	}
+	input, err := json.Marshal(view)
+	if err != nil {
+		input = nil
+	}
+	if err := s.actDecisions.RecordActDecision(ctx, ActDecision{
+		MatchID: m.PublicID, AgentPublicID: agentPublicID,
+		Seq: seq, Round: m.State.TurnCount, Action: action,
+		Outcome:   string(benchmark.OutcomeOK),
+		InputJSON: input,
+	}); err != nil {
+		slog.Default().Warn("monopoly: could not record act decision",
+			"match", m.PublicID, "agent", agentPublicID, "err", err)
+	}
+	if !m.State.Finished {
+		return
+	}
+	// Match over: build the seat facts the boards read. Here rather than in a sweeper because
+	// this is the moment the result is known AND every decision is already persisted.
+	results := make(map[string]string, len(m.Agents))
+	for _, p := range m.Agents {
+		results[p.AgentPublicID] = string(monopolyResult(m.State.Winner, p.Seat))
+	}
+	if err := s.actDecisions.AggregateSeatBenchmark(ctx, m.PublicID, GameName, results); err != nil {
+		slog.Default().Warn("monopoly: could not aggregate seat benchmark",
+			"match", m.PublicID, "err", err)
+	}
 }
 
 // drive plays every pending BOT seat with the engine's deterministic bots,

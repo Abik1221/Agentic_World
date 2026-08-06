@@ -881,6 +881,14 @@ func run() error {
 	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
 	monopolySvc.SetIntegrityChecker(store.NewPIndexRepo(st.DB))
 	monopolySvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
+	// Request-path instrumentation. Without this, a Monopoly match played by polling State and
+	// posting Act produces no benchmark fact, no decision log and no board presence — which is
+	// why 2067 finished Monopoly matches contributed nothing to any board while Goofspiel, whose
+	// ranked play is always platform-driven, looked fine. See OBSERVABILITY_COVERAGE_GAP.md.
+	//
+	// The adapter lives here rather than the service importing store: a game service defines the
+	// shape it needs and main.go translates, so the engine never depends on the persistence layer.
+	monopolySvc.SetActDecisionRecorder(monopolyActRecorder{repo: pindexRepo})
 
 	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
 	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
@@ -2234,4 +2242,23 @@ type awarderFunc func(ctx context.Context, agentPublicID string) error
 
 func (f awarderFunc) AwardVerified(ctx context.Context, agentPublicID string) error {
 	return f(ctx, agentPublicID)
+}
+
+// monopolyActRecorder adapts the store to the shape monopoly asks for.
+//
+// A translation layer of two methods, so internal/monopoly does not import internal/store. The
+// alternative compiles and inverts the layering, and every field added later would then live in a
+// persistence type the engine has no business knowing about.
+type monopolyActRecorder struct{ repo *store.PIndexRepo }
+
+func (a monopolyActRecorder) RecordActDecision(ctx context.Context, d monopoly.ActDecision) error {
+	return a.repo.RecordActDecision(ctx, store.ActDecision{
+		MatchID: d.MatchID, AgentPublicID: d.AgentPublicID, Game: "monopoly",
+		Seq: d.Seq, Round: d.Round, Action: d.Action, Outcome: d.Outcome,
+		InputJSON: d.InputJSON,
+	})
+}
+
+func (a monopolyActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
+	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
 }
