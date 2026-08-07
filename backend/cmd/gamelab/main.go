@@ -49,6 +49,7 @@ func main() {
 	// platform reaches an agent it shares no network with, and that nothing on the turn path
 	// quietly assumes a docker hostname or a local port.
 	publicURL := flag.String("public-url", "", "external base URL for seat 0 (e.g. a tunnel); empty = all agents local")
+	churn := flag.Int("churn", 0, "run the queue-churn test for N ticks: a mixed population of autoplay, one-shot, underfunded and late-joining agents")
 	flag.Parse()
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
@@ -73,6 +74,11 @@ func main() {
 	}
 
 	n := seatsFor(*game)
+	if *churn > 0 && n < 5 {
+		// autoplay x2, one-shot, underfunded, latecomer — the smallest population in which the
+		// four behaviours can actually interfere with each other.
+		n = 5
+	}
 	agents := make([]*labAgent, 0, n)
 	for i := 0; i < n; i++ {
 		p := personas[i%len(personas)]
@@ -156,6 +162,18 @@ func main() {
 	// forfeits its coins — which is the rule the arena is built on. With a stake the lab
 	// funds both wallets and pairs the agents on a real table, so escrow, rake, payout and
 	// forfeit all run for real.
+	if *churn > 0 {
+		// Churn needs a real stake, or none of the money-driven removals can happen.
+		t := *tier
+		if t == "" {
+			t = "low"
+		}
+		if err := runChurn(a, lg, agents, t, *churn); err != nil {
+			lg.Fatalf("CHURN FAILED: %v", err)
+		}
+		lg.Printf("churn passed")
+		return
+	}
 	if *tier != "" {
 		if err := runStakedTable(a, lg, agents, *tier); err != nil {
 			lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)

@@ -211,3 +211,60 @@ func (a *api) joinStakedTable(agentKey, matchID string) error {
 	return a.mustDo("join staked table", http.MethodPost, "/v1/lobby/join", agentKey,
 		map[string]any{"match_id": matchID}, nil, http.StatusOK, http.StatusCreated)
 }
+
+// ── ranked queue, for the churn test ──────────────────────────────────────────
+
+// enqueueRanked puts an agent into the ranked queue at a tier.
+func (a *api) enqueueRanked(agentKey, tier string) (int, string, error) {
+	return a.do(http.MethodPost, "/v1/queue", agentKey, map[string]any{"tier": tier}, nil)
+}
+
+// queueStatus reports whether an agent is currently queued, and its state.
+//
+// Returns ("", nil) when the agent has no entry at all — which is the state a non-autoplay
+// agent MUST reach after its match, and the single most important observation in the churn
+// test. A silent re-queue and a deliberate one look identical from the outside otherwise.
+func (a *api) queueStatus(agentKey string) (status, matchID string, err error) {
+	var out struct {
+		Status  string `json:"status"`
+		MatchID string `json:"match_id"`
+	}
+	code, body, err := a.do(http.MethodGet, "/v1/queue", agentKey, nil, &out)
+	if err != nil {
+		return "", "", err
+	}
+	if code == http.StatusNotFound {
+		return "", "", nil // no entry: the agent is not in the queue
+	}
+	if code != http.StatusOK {
+		return "", "", fmt.Errorf("queue status: HTTP %d — %s", code, body)
+	}
+	return out.Status, out.MatchID, nil
+}
+
+// leaveQueue removes an agent's entry (the explicit "I do not want another match").
+func (a *api) leaveQueue(agentKey string) error {
+	code, body, err := a.do(http.MethodDelete, "/v1/queue", agentKey, nil, nil)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK && code != http.StatusNoContent && code != http.StatusNotFound {
+		return fmt.Errorf("leave queue: HTTP %d — %s", code, body)
+	}
+	return nil
+}
+
+// agentBalance reads an agent's coin balance, so the test can watch a seat run itself broke.
+func (a *api) agentBalance(agentKey string) (int64, error) { return a.walletBalance(agentKey) }
+
+// setAutoplay turns autoplay on for an agent — the "keep playing after this match" setting.
+//
+// The churn test's whole autoplay half depends on this. Without it the harness enqueued once by
+// hand and then asserted only that a match happened, which passes on the manual entry alone and
+// proves nothing about re-entry. An agent that plays exactly one match looks identical to one
+// that re-queues correctly, unless you require MORE than one distinct match.
+func (a *api) setAutoplay(agentKey string, enabled bool, mode string, bid int64, games []string) (int, string, error) {
+	return a.do(http.MethodPut, "/v1/agent/autoplay", agentKey, map[string]any{
+		"enabled": enabled, "mode": mode, "bid": bid, "games": games,
+	}, nil)
+}

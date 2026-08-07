@@ -1380,6 +1380,12 @@ func run() error {
 	// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after the
 	// tiers were seeded and continuing for two days without a single error.
 	matchmakingSvc.SetStakeFloor(gameStakesSvc)
+	// Clear ranked-queue entries when a match ends. Without this an entry stayed 'matched'
+	// forever — live rows were still 'matched' against matches finished an hour earlier — and
+	// autoplay, which counts 'matched' as still-queued, never re-entered the agent. An autoplay
+	// agent played exactly one ranked match and then wedged, reporting "in a ranked match or
+	// waiting in the queue" the whole time.
+	matchSvc.SetQueueClearer(rankedQueueAdapter{mm: matchmakingSvc})
 	// So a developer learns at SET time that their own max_bid locks them out of ranked play,
 	// rather than from a 409 at join time long after the setting was saved and forgotten.
 	idHandler.SetStakeSource(gameStakesSvc)

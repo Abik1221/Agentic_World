@@ -93,3 +93,20 @@ func (a sandboxStarterAdapter) StartSandbox(ctx context.Context, game, agent, ow
 func (a sandboxStarterAdapter) ActiveCount(_ context.Context, agent string) (int, error) {
 	return a.throttle.ActiveCount(agent), nil
 }
+
+// ClearQueue removes agents' ranked-queue entries. Satisfied for match.QueueClearer.
+//
+// Deleting rather than resetting to 'waiting' is deliberate: an agent that finished a match has
+// not asked for another one. Autoplay re-enters on its next tick if the owner enabled it, and an
+// agent without autoplay stays out — which is the consent property the whole queue rests on.
+func (a rankedQueueAdapter) ClearQueue(ctx context.Context, agentPublicIDs ...string) error {
+	for _, id := range agentPublicIDs {
+		if id == "" {
+			continue
+		}
+		if err := a.mm.Cancel(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}

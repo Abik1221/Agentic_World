@@ -39,7 +39,8 @@ type Config struct {
 // Service drives the match lifecycle. It is stateless; all state lives in the
 // repo (snapshot + event log) and mutations are serialized by a per-match lock.
 type Service struct {
-	stakes StakeFloor // rejects a stake the game does not offer; see StakeFloor
+	queue  QueueClearer // clears ranked-queue entries when a match ends; see QueueClearer
+	stakes StakeFloor   // rejects a stake the game does not offer; see StakeFloor
 	repo   Repo
 	lock   Locker
 	limits Limits
@@ -477,6 +478,27 @@ func (s *Service) Lobby(ctx context.Context, game string, bid int64, ownerPublic
 }
 
 // CreateOpen opens a new waiting match seated by the creator at seat A.
+// QueueClearer removes finished players' ranked-queue entries.
+//
+// # The bug this closes
+//
+// A queue entry was set to 'matched' at pairing and then never cleared. Live rows were still
+// 'matched' against matches that had finished an hour earlier. autoplay's Queued() treats
+// 'matched' as still-queued, so an autoplay agent played exactly ONE ranked match and then
+// wedged forever — reporting "in a ranked match or waiting in the queue", which is the most
+// reassuring possible way to be stuck. The orphaned entries are also unpairable (pairing selects
+// 'waiting'), so they crowd the queue and newcomers starve behind them.
+//
+// Cleared at FINALIZE because that is the authoritative moment the match ends. Anywhere later is
+// a sweeper racing the next autoplay tick; anywhere earlier and a crash mid-settlement would drop
+// an agent out of a queue it is still legitimately in.
+type QueueClearer interface {
+	ClearQueue(ctx context.Context, agentPublicIDs ...string) error
+}
+
+// SetQueueClearer wires ranked-queue cleanup on match completion.
+func (s *Service) SetQueueClearer(q QueueClearer) { s.queue = q }
+
 // StakeFloor validates that a coin amount is a stake the game actually offers.
 //
 // Enforced HERE, at the service that escrows, rather than only in the HTTP handler. The handler
@@ -1173,6 +1195,22 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		if err != nil {
 			return nil, err
 		}
+	}
+	// Clear both seats from the ranked queue. Best-effort and AFTER the terminal write: the
+	// match is over either way, and failing a completed match because a queue row would not
+	// delete would be strictly worse than a stale row the next enqueue overwrites anyway.
+	if s.queue != nil {
+		ids := make([]string, 0, len(m.Players))
+		for _, p := range m.Players {
+			ids = append(ids, p.AgentPublicID)
+		}
+		defer func() {
+			if err := s.queue.ClearQueue(ctx, ids...); err != nil {
+				slog.Warn("match: ranked queue entries not cleared; an autoplay agent may not "+
+					"re-enter until its next enqueue overwrites the row",
+					"match", m.PublicID, "error", err)
+			}
+		}()
 	}
 	if err := s.repo.Finish(ctx, m.PublicID, state, winnerAgent, hash, players, newEvents, finishedEvent); err != nil {
 		return nil, err
