@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/agent-arena/arena/internal/ledger"
@@ -294,4 +295,80 @@ func resolveWallet(ctx context.Context, tx pgx.Tx, ref ledger.WalletRef) (int64,
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// AuditLedger recomputes the double-entry invariants straight from the rows.
+//
+// Deliberately recomputes rather than trusting any counter the writer maintains: a bug in the
+// posting path must not be able to silence the check that would catch it. Read-only, no locks,
+// safe to run against production — and it repairs nothing, because an audit that also fixed
+// things would destroy the evidence of how the imbalance arose.
+//
+// Each check is capped at 20 identifiers. An alert that dumps ten thousand ids is one nobody
+// reads, and the count is reported in full regardless.
+func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error) {
+	rep := ledger.AuditReport{Healthy: true}
+
+	if err := r.db.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM ledger_transactions),
+		(SELECT count(*) FROM ledger_entries),
+		(SELECT count(*) FROM wallets)`).
+		Scan(&rep.Transactions, &rep.Entries, &rep.Wallets); err != nil {
+		return rep, fmt.Errorf("ledger audit: counting rows: %w", err)
+	}
+
+	checks := []struct{ name, severity, query string }{
+		{
+			// Every posting must sum to zero across its entries. A non-zero sum is coins minted
+			// or burned by that single transaction — the gravest finding here, because a payout
+			// could be funded from nowhere.
+			"unbalanced_transactions", ledger.SeverityCritical,
+			`SELECT count(*), coalesce(string_agg(txn_id::text, ',' ORDER BY txn_id), '')
+			   FROM (SELECT txn_id FROM ledger_entries
+			          GROUP BY txn_id HAVING sum(amount) <> 0 LIMIT 20) x`,
+		},
+		{
+			// The stored balance must equal the sum of that wallet's entries. Entries are the
+			// record of truth; balance is a cache of them, so drift means the number a user SEES
+			// is wrong even when the history behind it is right.
+			"wallet_balance_drift", ledger.SeverityHigh,
+			`SELECT count(*), coalesce(string_agg(id::text, ',' ORDER BY id), '')
+			   FROM (SELECT w.id FROM wallets w
+			         LEFT JOIN ledger_entries e ON e.wallet_id = w.id
+			         GROUP BY w.id, w.balance
+			         HAVING w.balance <> coalesce(sum(e.amount), 0) LIMIT 20) y`,
+		},
+		{
+			// The schema forbids this. A row here means the CHECK was bypassed by a direct write,
+			// or dropped by a migration and never restored.
+			"negative_agent_or_escrow_balance", ledger.SeverityCritical,
+			`SELECT count(*), coalesce(string_agg(id::text, ',' ORDER BY id), '')
+			   FROM (SELECT id FROM wallets
+			         WHERE kind IN ('agent','escrow') AND balance < 0 LIMIT 20) z`,
+		},
+		{
+			// An entry whose transaction is gone is a coin move with no recorded reason.
+			"orphan_entries", ledger.SeverityCritical,
+			`SELECT count(*), coalesce(string_agg(eid::text, ',' ORDER BY eid), '')
+			   FROM (SELECT e.id AS eid FROM ledger_entries e
+			         LEFT JOIN ledger_transactions t ON t.id = e.txn_id
+			         WHERE t.id IS NULL LIMIT 20) o`,
+		},
+	}
+
+	for _, c := range checks {
+		var n int64
+		var detail string
+		if err := r.db.QueryRow(ctx, c.query).Scan(&n, &detail); err != nil {
+			return rep, fmt.Errorf("ledger audit: %s: %w", c.name, err)
+		}
+		if n == 0 {
+			continue
+		}
+		rep.Healthy = false
+		rep.Findings = append(rep.Findings, ledger.AuditFinding{
+			Check: c.name, Count: n, Detail: detail, Severity: c.severity,
+		})
+	}
+	return rep, nil
 }

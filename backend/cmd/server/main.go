@@ -629,6 +629,13 @@ func run() error {
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
+	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
+	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
+	// about one afternoon. An imbalance is SILENT — per-wallet balances still add up, the UI still
+	// renders, and the first external symptom is a user disputing a payout. Read-only; it reports
+	// and never repairs, because writing to a ledger that has just been proved untrustworthy would
+	// destroy the evidence of how it broke.
+	launch("ledger-audit", ledger.NewAuditWorker(ledgerSvc, 15*time.Minute, log).Run)
 	// P-Index Intelligence projection: fold each match.benchmark seat into the
 	// per-match decision-quality aggregate the recompute reads (legal/fallback/
 	// latency). Best-effort: a decode failure never wedges the outbox.
