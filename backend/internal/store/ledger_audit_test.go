@@ -32,6 +32,15 @@ func TestLedgerAuditAgainstLiveDatabase(t *testing.T) {
 	}
 	t.Logf("audited %d transactions / %d entries / %d wallets",
 		rep.Transactions, rep.Entries, rep.Wallets)
+	// Escrow is logged even when healthy: a held balance is correct behaviour but it is money the
+	// platform is sitting on, and a figure nobody prints is a queue nobody works.
+	t.Logf("escrow: balance=%d held_for_review=%d open_matches=%d",
+		rep.EscrowBalance, rep.EscrowHeld, rep.EscrowOpen)
+	if rep.EscrowBalance != rep.EscrowHeld+rep.EscrowOpen {
+		t.Errorf("escrow does not reconcile: balance %d != held %d + open %d (difference %d is "+
+			"money with no story)", rep.EscrowBalance, rep.EscrowHeld, rep.EscrowOpen,
+			rep.EscrowBalance-rep.EscrowHeld-rep.EscrowOpen)
+	}
 
 	// An audit over an EMPTY ledger proves nothing and would pass trivially. Say so rather than
 	// letting a green tick stand in for a check that had no rows to examine.

@@ -356,6 +356,46 @@ func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error
 		},
 	}
 
+	// Escrow reconciliation, computed before the row checks so the figures are reported even when
+	// a later check errors. Every coin in escrow must be explained by a match that has not settled
+	// — either still open, or finished with a payout hold recorded against it.
+	const escrowSQL = `
+		WITH staked AS (
+		  SELECT metadata->>'match' AS mid FROM ledger_transactions WHERE kind = 'stake'),
+		closed AS (
+		  SELECT DISTINCT metadata->>'match' AS mid FROM ledger_transactions
+		   WHERE kind IN ('settle','refund')),
+		unsettled AS (
+		  SELECT m.id, m.status,
+		         m.bid * (SELECT count(*) FROM match_players mp WHERE mp.match_id = m.id) AS stake
+		    FROM staked s JOIN matches m ON m.public_id = s.mid
+		   WHERE NOT EXISTS (SELECT 1 FROM closed c WHERE c.mid = s.mid))
+		SELECT
+		  (SELECT coalesce(sum(balance),0) FROM wallets WHERE kind = 'escrow'),
+		  coalesce(sum(stake) FILTER (
+		    WHERE EXISTS (SELECT 1 FROM payout_holds h
+		                   WHERE h.match_id = unsettled.id AND h.status = 'held')), 0),
+		  coalesce(sum(stake) FILTER (
+		    WHERE status NOT IN ('finished','aborted','cancelled')), 0),
+		  coalesce(sum(stake) FILTER (
+		    WHERE status IN ('finished','aborted','cancelled')
+		      AND NOT EXISTS (SELECT 1 FROM payout_holds h
+		                       WHERE h.match_id = unsettled.id AND h.status = 'held')), 0)
+		FROM unsettled`
+	var unexplained int64
+	if err := r.db.QueryRow(ctx, escrowSQL).
+		Scan(&rep.EscrowBalance, &rep.EscrowHeld, &rep.EscrowOpen, &unexplained); err != nil {
+		return rep, fmt.Errorf("ledger audit: escrow reconciliation: %w", err)
+	}
+	if unexplained != 0 {
+		rep.Healthy = false
+		rep.Findings = append(rep.Findings, ledger.AuditFinding{
+			Check: "escrow_unexplained", Count: unexplained, Severity: ledger.SeverityCritical,
+			Detail: "coins in escrow for a terminal match with no payout hold recorded — " +
+				"the stake was taken and there is no story for where it went",
+		})
+	}
+
 	for _, c := range checks {
 		var n int64
 		var detail string

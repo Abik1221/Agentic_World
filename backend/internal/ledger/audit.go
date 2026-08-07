@@ -59,6 +59,22 @@ type AuditReport struct {
 	Transactions int64          `json:"transactions"`
 	Entries      int64          `json:"entries"`
 	Wallets      int64          `json:"wallets"`
+
+	// Escrow reconciliation. Reported on EVERY run, healthy or not.
+	//
+	// This exists because a large escrow balance has two completely different meanings and the
+	// ledger invariants cannot tell them apart: coins conserved perfectly while 46,700 sat in
+	// escrow, because the antifraud gate was holding payouts exactly as designed. Nothing logged
+	// it. The only way to learn that the platform was sitting on held money was to query the
+	// database and work backwards, which is not a thing anyone does before a user complains.
+	//
+	// So the held figure is published as NORMAL OUTPUT, not as a finding: a hold is correct
+	// behaviour and a review queue is a workload, not a defect. What IS a defect is escrow that
+	// no open match and no recorded hold can account for — that is money the platform has taken
+	// and has no story for.
+	EscrowBalance int64 `json:"escrow_balance"`
+	EscrowHeld    int64 `json:"escrow_held"`
+	EscrowOpen    int64 `json:"escrow_open"`
 }
 
 // Auditor is the read side of the audit. Satisfied by *store.LedgerRepo.
@@ -134,8 +150,13 @@ func (w *AuditWorker) Run(ctx context.Context) {
 			// outage.
 			w.log.Error("ledger audit could not run", "error", err)
 		case rep.Healthy:
+			// Escrow figures on the clean path too. Held money is not a defect, but it is a
+			// WORKLOAD, and one nobody can see is one nobody works — which is how a review queue
+			// becomes a pile of coins the platform is quietly sitting on.
 			w.log.Info("ledger audit clean",
-				"transactions", rep.Transactions, "entries", rep.Entries, "wallets", rep.Wallets)
+				"transactions", rep.Transactions, "entries", rep.Entries, "wallets", rep.Wallets,
+				"escrow_balance", rep.EscrowBalance, "escrow_held_for_review", rep.EscrowHeld,
+				"escrow_open_matches", rep.EscrowOpen)
 		default:
 			for _, f := range rep.Findings {
 				// ERROR level for every finding, including the "high" ones: a wallet whose stored
