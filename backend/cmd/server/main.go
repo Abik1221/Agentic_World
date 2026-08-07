@@ -134,6 +134,10 @@ func run() error {
 	log = slog.New(telemetry.NewLogHandler(log.Handler(), lens, parseLensLogLevel(cfg.PyyolLensLogLevel)))
 	slog.SetDefault(log)
 	log.Info("starting agent-arena", "env", cfg.Env, "version", version, "port", cfg.Port, "telemetry", lens.Enabled())
+	// Outbound TLS trust, checked before anything relies on it. A container with no CA bundle
+	// starts clean and passes every health check while failing every https call — which surfaced
+	// as "endpoint not verified" on agent onboarding and read as the developer's fault.
+	platform.CheckTLSTrust(log)
 
 	// 3. Signal-aware root context: SIGINT/SIGTERM begin graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
