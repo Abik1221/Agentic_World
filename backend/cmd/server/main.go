@@ -52,6 +52,7 @@ import (
 	"github.com/agent-arena/arena/internal/matchmaking"
 	"github.com/agent-arena/arena/internal/media"
 	"github.com/agent-arena/arena/internal/middleware"
+	"github.com/agent-arena/arena/internal/modelboard"
 	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
@@ -608,6 +609,20 @@ func run() error {
 	// active config row and the formulas from each dimension's own Explain, so the page
 	// cannot describe a formula the engine is not running.
 	pindexHandler := pindex.NewHandler(pindexRepo, pindex.NewEngine(), authn, cfg.AdminUserIDs)
+
+	// The MODEL board: which model plays best with the developer's harness held constant.
+	//
+	// Refreshed on an interval rather than per request. One fit is a regularized optimization plus
+	// a thousand bootstrap replicates — seconds of CPU that grow with the season — so computing it
+	// per reader would make the board its own denial of service. A snapshot also means every reader
+	// in a window sees the SAME fit, so two people comparing screenshots are not looking at two
+	// different boards.
+	//
+	// 90 days of matches: long enough for the within-harness pairings the estimator needs, short
+	// enough that a model's rating reflects how it plays now rather than a year ago.
+	modelBoardSvc := modelboard.NewService(store.NewModelBoardRepo(st.DB), 90*24*time.Hour, log)
+	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
+	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
 	// P-Index Intelligence projection: fold each match.benchmark seat into the
 	// per-match decision-quality aggregate the recompute reads (legal/fallback/
 	// latency). Best-effort: a decode failure never wedges the outbox.
@@ -1636,6 +1651,7 @@ func run() error {
 		monopolyHandler.Register,
 		ratingHandler.Register,
 		pindexHandler.Register,
+		modelBoardHandler.Register,
 		llmGatewayHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,
