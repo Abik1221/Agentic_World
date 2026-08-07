@@ -226,10 +226,14 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 		item := lobby[0]
 		if item.SeatsFilled < item.SeatsTotal {
 			a := r.next(idx)
-			view, err := r.mafia.Join(ctx, a.PublicID, a.OwnerPublicID, item.PublicID)
-			if err == nil {
-				r.playMafia(ctx, a, view.MatchID)
-			}
+			// Seat one and RETURN. Deliberately no driving from here.
+			//
+			// Two attempts failed before this. Driving unconditionally burned the whole tick on a
+			// table that could not start, and even gated on "this join completes the roster" the
+			// lobby path still starves the create path: while any partial table exists the bot
+			// only ever adds a single seat per tick, so it never gets to build a full one in a
+			// single pass. The create path below fills all 12 at once, and drives what it filled.
+			_, _ = r.mafia.Join(ctx, a.PublicID, a.OwnerPublicID, item.PublicID)
 		}
 		return
 	}
@@ -260,25 +264,55 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 		}
 		seated++
 	}
-	for _, ag := range r.agents[:min(len(r.agents), mf.RosterSize)] {
-		r.playMafia(ctx, ag, mid)
-	}
+	r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], mid)
 }
 
-func (r *Runner) playMafia(ctx context.Context, a demo.Agent, matchID string) {
-	for step := 0; step < 8; step++ {
-		view, err := r.mafia.State(ctx, matchID, a.PublicID, false, 0)
-		if err != nil || view.Status == mafia.StatusFinished {
-			return
+// driveMafia carries a table to its conclusion by cycling EVERY seat each round.
+//
+// # The bug this replaces
+//
+// playMafia gave each agent a private budget of 8 steps and was called once per agent in
+// sequence. It returned the moment PickMafiaAction found nothing to do — which is immediately,
+// because a Mafia phase requires ALL living seats to act before it advances. So seat 1 acted
+// once and returned, seat 2 acted once and returned, and after one pass the phase advanced with
+// nobody left to play it. Every table sat in 'active' until it timed out.
+//
+// It looked like a budget that was too small. It was the wrong shape: a per-seat loop cannot
+// drive a game whose progress condition is collective.
+//
+// Nine tables were reaching a full 12 seats and starting; all-time finished stayed at 1.
+func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID string) {
+	// Generous, because a 12-player game runs several days of night/discussion/voting, and the
+	// no-progress exit below is what actually ends the loop in the normal case.
+	const maxRounds = 200
+	for round := 0; round < maxRounds; round++ {
+		progressed := false
+		for _, a := range agents {
+			view, err := r.mafia.State(ctx, matchID, a.PublicID, false, 0)
+			if err != nil {
+				continue // one unreadable seat must not abandon the table
+			}
+			if view.Status == mafia.StatusFinished {
+				return
+			}
+			act, ok := PickMafiaAction(view)
+			if !ok {
+				continue // nothing pending for THIS seat right now; others may still act
+			}
+			// platform-driven bot: no stale-phase guard, no per-move signature
+			if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act, 0, "", "", true); err != nil {
+				continue
+			}
+			progressed = true
 		}
-		act, ok := PickMafiaAction(view)
-		if !ok {
-			return
-		}
-		if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act, 0, "", "", true); err != nil { // platform-driven bot: no stale-phase guard, no per-move signature
+		if !progressed {
+			// No seat could act anywhere on the table. That is a phase waiting on a timer rather
+			// than on us, so spinning would burn CPU without moving the game.
 			return
 		}
 	}
+	slog.Warn("bot: mafia table hit the round cap without finishing",
+		"match", matchID, "rounds", maxRounds)
 }
 
 func (r *Runner) next(idx *int) demo.Agent {
