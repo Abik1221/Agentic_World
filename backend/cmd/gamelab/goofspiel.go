@@ -57,8 +57,15 @@ func (a *labAgent) handlePlay(w http.ResponseWriter, r *http.Request) {
 	switch probe.Game {
 	case "goofspiel", "":
 		a.playGoofspiel(w, r, raw)
+	case "monopoly":
+		a.playMonopoly(w, r, raw)
 	default:
-		a.log.Printf("unhandled game %q on /play — returning empty move", probe.Game)
+		// LOUD, and it used to be quiet. Monopoly and Mafia both fell here while the lab
+		// advertised support for them, so every such match was the platform's legal fallback
+		// playing itself — a forfeit and a decision look identical on the wire, which is why it
+		// went unnoticed. Anything still landing here is not being played by this agent.
+		a.log.Printf("NOT PLAYING %q — this agent has no policy for it, so the platform will "+
+			"apply its legal fallback and the match will NOT measure agent decisions", probe.Game)
 		writeJSON(w, map[string]any{})
 	}
 }
