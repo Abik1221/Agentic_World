@@ -172,9 +172,10 @@ func (a *labAgent) serve() error {
 	mux.HandleFunc("/handshake", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"accepted": true, "sdkVersion": "1.9.0",
-			// Advertise only what this agent actually plays. Listing mafia here while /play answered
-			// it with an empty object is what let fallback-driven matches look like agent matches.
-			"supportedGames": []string{"goofspiel", "monopoly"},
+			// Advertise only what this agent actually plays — every entry here has a branch in
+			// handlePlay. Listing a game while answering it with an empty object is what let
+			// fallback-driven matches look like agent matches.
+			"supportedGames": []string{"goofspiel", "monopoly", "mafia"},
 		})
 	})
 	mux.HandleFunc("/play", a.handlePlay)

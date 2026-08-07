@@ -59,6 +59,8 @@ func (a *labAgent) handlePlay(w http.ResponseWriter, r *http.Request) {
 		a.playGoofspiel(w, r, raw)
 	case "monopoly":
 		a.playMonopoly(w, r, raw)
+	case "mafia":
+		a.playMafia(w, r, raw)
 	default:
 		// LOUD, and it used to be quiet. Monopoly and Mafia both fell here while the lab
 		// advertised support for them, so every such match was the platform's legal fallback
