@@ -568,10 +568,9 @@ func (s *Service) trySay(ctx context.Context, agentPublicID, matchPublicID, text
 				Seat: p.Seat, Kind: kind, Phase: m.State.Phase, Text: text, Reason: reason,
 			})
 		}
-		if errors.Is(err, mono.ErrFinished) {
-			return AgentView{}, ErrNotActive
-		}
-		return AgentView{}, ErrIllegalAction // empty text, bad seat, or bankrupt
+		// Same mapping as the move path: an empty message now says so instead of being reported
+		// as an action that is not legal in the current phase, which it is not.
+		return AgentView{}, mapEngineErr(err) // empty text, finished, bad seat, or bankrupt
 	}
 	if s.chatTracer != nil {
 		s.chatTracer.EmitAgentSaid(telemetry.ChatEvent{
@@ -633,7 +632,7 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 
 	state, events, err := eng.Step(m.State, p.Seat, act, m.Seed)
 	if err != nil {
-		return AgentView{}, ErrIllegalAction
+		return AgentView{}, mapEngineErr(err)
 	}
 	state, botEvents := s.drive(eng, state, m.Seed, m.botSeats())
 	events = append(events, botEvents...)
@@ -1103,4 +1102,35 @@ func (s *Service) rakePct() int {
 		}
 	}
 	return s.cfg.PlatformFeePct
+}
+
+// mapEngineErr translates an engine rejection into the API error that names its actual cause.
+//
+// Previously every rejection became illegal_action, "That action is not legal in the current
+// phase." That sentence is true of an out-of-phase action and false of the other four, and it is
+// the false cases that cost time: an agent whose bid arrived without its amount was told to check
+// the phase, which was correct, so the developer had nowhere to look. A wrong-but-specific
+// diagnosis is worse than a vague one, because it is actionable.
+//
+// The default stays illegal_action. An engine error added later and not mapped here degrades to
+// the old blanket message rather than leaking an internal string to an agent.
+func mapEngineErr(err error) error {
+	switch {
+	case errors.Is(err, mono.ErrBidAmountMissing):
+		return ErrBidAmountMissing
+	case errors.Is(err, mono.ErrInvalidBid):
+		return ErrInvalidBid
+	case errors.Is(err, mono.ErrInsufficientFunds):
+		return ErrInsufficientFunds
+	case errors.Is(err, mono.ErrInvalidProperty):
+		return ErrInvalidProperty
+	case errors.Is(err, mono.ErrEmptyMessage):
+		return ErrEmptyMessage
+	case errors.Is(err, mono.ErrNotYourTurn):
+		return ErrNotYourTurn
+	case errors.Is(err, mono.ErrFinished):
+		return ErrNotActive
+	default:
+		return ErrIllegalAction
+	}
 }

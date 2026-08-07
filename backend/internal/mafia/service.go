@@ -1253,7 +1253,13 @@ func mapEngineErr(err error) error {
 		return ErrIllegalAction
 	case errors.Is(err, mf.ErrFinished):
 		return ErrNotActive
+	case errors.Is(err, mf.ErrNotAlive):
+		return ErrSeatEliminated
+	case errors.Is(err, mf.ErrNotPending):
+		return ErrNoPendingAction
 	default:
+		// ErrUnknownSeat stays here deliberately: a seat index the engine does not recognise is
+		// not an agent mistake to explain, and echoing it back would confirm which indices exist.
 		return ErrIllegalAction
 	}
 }

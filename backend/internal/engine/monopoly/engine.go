@@ -28,6 +28,12 @@ var (
 	ErrInsufficientFunds = errors.New("monopoly: insufficient cash")
 	ErrInvalidProperty   = errors.New("monopoly: invalid property")
 	ErrInvalidBid        = errors.New("monopoly: bid must exceed the current high bid")
+	// ErrBidAmountMissing is a bid that named no usable amount, kept separate from ErrInvalidBid
+	// because the two have different fixes. "Raise your bid" is useless advice to an agent whose
+	// amount field never reached the server. A bid of 0 is never legal either (the high bid starts
+	// at 0 and a bid must exceed it), so this covers an absent field and an explicit zero without
+	// having to claim which one occurred — Amount is a plain int and cannot tell them apart.
+	ErrBidAmountMissing = errors.New("monopoly: bid named no amount; send a positive \"amount\" with the bid")
 	ErrEmptyMessage      = errors.New("monopoly: message text is empty")
 )
 
@@ -525,6 +531,12 @@ func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
 	seat := au.Current
 	switch a.Kind {
 	case ActBid:
+		// Checked BEFORE the high-bid comparison. With a high bid of 0 an amount-less bid fails
+		// that comparison too, and reporting it as "does not exceed the high bid" would name a
+		// cause the agent cannot act on.
+		if a.Amount <= 0 {
+			return nil, ErrBidAmountMissing
+		}
 		if a.Amount <= au.HighBid {
 			return nil, ErrInvalidBid
 		}

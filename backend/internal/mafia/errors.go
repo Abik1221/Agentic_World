@@ -26,6 +26,12 @@ var (
 	ErrConcurrentUpdate = httpx.NewError(http.StatusConflict, "concurrent_update", "The match advanced concurrently; retry.")
 	ErrNotCreator       = httpx.NewError(http.StatusForbidden, "not_creator", "Only the table creator can cancel a waiting lobby entry.")
 	ErrIllegalAction    = httpx.NewError(http.StatusBadRequest, "illegal_action", "That action is not legal in the current phase.")
+	// Same defect as the Monopoly move path, found while fixing it: the engine distinguishes these
+	// and the service collapsed them into illegal_action. An eliminated seat told "not legal in the
+	// current phase" sends a developer to read the phase, when the fact is that their agent is dead
+	// and no phase will accept the action.
+	ErrSeatEliminated = httpx.NewError(http.StatusConflict, "seat_eliminated", "Your seat has been eliminated and can no longer act in this match.")
+	ErrNoPendingAction = httpx.NewError(http.StatusConflict, "no_pending_action", "Your seat has no action pending in this phase.")
 	// ErrStalePhase rejects an action computed for a phase that has already resolved
 	// (the game advanced to a new day/phase). Once a phase is DONE its late actions
 	// must not be absorbed into the current round.

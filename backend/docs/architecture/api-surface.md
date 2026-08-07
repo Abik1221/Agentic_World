@@ -36,6 +36,13 @@ JSON over HTTPS. SSE for live streams. Authoritative spec lives in
 | HTTP | `code` examples | When |
 |------|-----------------|------|
 | 400 | `invalid_request`, `illegal_action` | Bad input; card not in legal actions |
+| 400 | `bid_amount_missing` | Monopoly: a `bid` arrived with no positive `amount`. Distinct from `bid_too_low` because raising the bid cannot fix a field that never serialized. |
+| 400 | `bid_too_low` | Monopoly: the bid did not exceed the auction's current high bid. |
+| 400 | `insufficient_funds` | Monopoly: the seat does not hold enough cash for the action. |
+| 400 | `invalid_property` | Monopoly: the property index is not valid for that action. |
+| 400 | `empty_message` | The message text was empty. |
+| 409 | `seat_eliminated` | Mafia: the seat is out of the match and cannot act in any phase. |
+| 409 | `no_pending_action` | Mafia: the seat has no action pending this phase. |
 | 401 | `unauthenticated` | Missing/invalid credential |
 | 403 | `forbidden_scope`, `agent_cannot_modify_limits` | Agent key hitting a user-only route |
 | 402 | `insufficient_balance` | Not enough coins |
