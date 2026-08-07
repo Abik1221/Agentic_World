@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/agent-arena/arena/internal/deadline"
@@ -38,6 +39,7 @@ type Config struct {
 // Service drives the match lifecycle. It is stateless; all state lives in the
 // repo (snapshot + event log) and mutations are serialized by a per-match lock.
 type Service struct {
+	stakes StakeFloor // rejects a stake the game does not offer; see StakeFloor
 	repo   Repo
 	lock   Locker
 	limits Limits
@@ -475,7 +477,47 @@ func (s *Service) Lobby(ctx context.Context, game string, bid int64, ownerPublic
 }
 
 // CreateOpen opens a new waiting match seated by the creator at seat A.
+// StakeFloor validates that a coin amount is a stake the game actually offers.
+//
+// Enforced HERE, at the service that escrows, rather than only in the HTTP handler. The handler
+// was already correct — it called ResolveStake and would have rejected a free-form bid because
+// goofspiel has tiers. But internal/bot/runner.go calls CreateOpen directly with a hardcoded
+// bid := int64(50), and so never met that check. 870 matches were staked at 50 and 100 coins
+// against a configured floor of 500, beginning two seconds after the tiers were seeded and
+// continuing for two days without one error.
+//
+// The lesson is about PLACEMENT, not about the missing check: a guard beside one caller is one
+// new caller away from being bypassed. Money is escrowed here, so the floor belongs here.
+type StakeFloor interface {
+	ValidStake(ctx context.Context, game string, coins int64) (ok bool, lowest int64, err error)
+}
+
+// SetStakeFloor wires tier enforcement into the service that escrows.
+func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
+
+// checkStake rejects a stake the game does not offer. Fails CLOSED: an unreadable tier table is
+// not permission to escrow an arbitrary amount, which is the exact failure mode that let
+// sub-floor matches run unnoticed.
+func (s *Service) checkStake(ctx context.Context, bid int64) error {
+	if s.stakes == nil || bid <= 0 {
+		return nil
+	}
+	ok, lowest, err := s.stakes.ValidStake(ctx, "goofspiel", bid)
+	if err != nil {
+		return httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable",
+			"Stake tiers could not be read, so the stake cannot be verified. Try again shortly.")
+	}
+	if !ok {
+		return httpx.NewError(http.StatusBadRequest, "stake_not_offered",
+			fmt.Sprintf("A stake of %d coins is not offered for goofspiel. The lowest available stake is %d coins.", bid, lowest))
+	}
+	return nil
+}
+
 func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
+	if err := s.checkStake(ctx, bid); err != nil {
+		return "", err
+	}
 	if bid <= 0 {
 		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
 	}
@@ -537,6 +579,9 @@ func (s *Service) Cancel(ctx context.Context, agentPublicID, matchPublicID strin
 // deals the match, and persists it active in one step — no waiting window, so it
 // never appears in the open lobby. Returns the new match's public id.
 func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, bid int64) (string, error) {
+	if err := s.checkStake(ctx, bid); err != nil {
+		return "", err
+	}
 	if bid <= 0 {
 		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
 	}

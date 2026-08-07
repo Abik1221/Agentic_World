@@ -1330,6 +1330,9 @@ func run() error {
 	// /v1/group-queue rejected free-form stakes for the same game — so tier config was
 	// unenforceable across half the ranked surface.
 	matchHandler.SetStakeResolver(gameStakesSvc)
+	// AND on the service. internal/bot/runner.go calls CreateOpen directly with a hardcoded bid,
+	// so the handler's resolver never saw it — the floor has to sit where the escrow happens.
+	matchSvc.SetStakeFloor(gameStakesSvc)
 
 	// Sandbox: risk-free practice vs the seeded house agents, played through the
 	// same match endpoints. Only starting a match is new.
@@ -1369,6 +1372,11 @@ func run() error {
 	matchmakingSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
+	// AND on the service itself. The handler check is not enough: autoplay and the pairing driver
+	// call Enqueue directly, so their bids never reached it — which is how 870 matches came to be
+	// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after the
+	// tiers were seeded and continuing for two days without a single error.
+	matchmakingSvc.SetStakeFloor(gameStakesSvc)
 
 	// Group matchmaking: the N-player sibling of the 2-player queue above. Gives Mafia
 	// (12) and Monopoly (a configured seat count) the same skill-banded staked play by
@@ -1398,6 +1406,7 @@ func run() error {
 	groupSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	groupHandler := groupmatch.NewHandler(groupSvc, authn)
 	groupHandler.SetStakeResolver(gameStakesSvc)
+	groupSvc.SetStakeFloor(gameStakesSvc)
 
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
@@ -1538,7 +1547,7 @@ func run() error {
 					log.Warn("demo agent certify failed", "agent", a.PublicID, "error", err)
 				}
 			}
-			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).Run)
+			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).WithStakes(gameStakesSvc).Run)
 			// NOTE: mafia push-play is now enabled unconditionally above with dedicated
 			// kind='house' filler bots, so it no longer depends on these demo agents.
 		}

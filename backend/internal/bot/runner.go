@@ -15,7 +15,15 @@ import (
 
 // Runner drives rule-based demo agents (no LLM). Users bring real agents in prod;
 // this fills tables locally so matches run end-to-end.
+// StakeSource exposes the lowest enabled tier for a game. Satisfied by *gamestakes.Service.
+type StakeSource interface {
+	LowestEnabledCoins(ctx context.Context, game string) (int64, bool)
+}
+
 type Runner struct {
+	// stakes supplies the game's configured tiers so house tables stake an amount the platform
+	// actually offers. Optional (nil = fall back to the default floor).
+	stakes   StakeSource
 	match    *match.Service
 	mafia    *mafia.Service
 	monopoly *monopoly.Service
@@ -139,7 +147,12 @@ func PickMonopolyAction(legal []string) mono.Action {
 }
 
 func (r *Runner) tickGoofspiel(ctx context.Context, idx *int) {
-	bid := int64(50)
+	// The stake comes from the game's tier table, not from a constant here. It WAS `int64(50)`,
+	// against a configured floor of 500, and because this runner calls CreateOpen directly it
+	// never met the handler's tier check — 711 goofspiel tables were opened at a stake the game
+	// does not offer. A house bot advertising an impossible stake is also a lie to any developer
+	// browsing the lobby.
+	bid := r.lowestStake(ctx, "goofspiel", 500)
 	lobby, err := r.match.Lobby(ctx, "goofspiel", bid, "")
 	if err != nil {
 		return
@@ -204,7 +217,7 @@ func (r *Runner) playGoofspiel(ctx context.Context, agentID, matchID string) {
 }
 
 func (r *Runner) tickMafia(ctx context.Context, idx *int) {
-	entry := int64(100)
+	entry := r.lowestStake(ctx, "mafia", 500) // was int64(100); see tickGoofspiel
 	lobby, err := r.mafia.Lobby(ctx, entry, "")
 	if err != nil {
 		return
@@ -322,3 +335,23 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// lowestStake returns the game's lowest enabled tier, falling back to def when no tier source is
+// wired or the table cannot be read.
+//
+// The fallback is the DEFAULT FLOOR rather than a cheap constant on purpose: if the tiers cannot
+// be read, the safe direction is a stake the platform is known to accept, not one it is known to
+// reject. Erring cheap is what produced the sub-floor tables in the first place.
+func (r *Runner) lowestStake(ctx context.Context, game string, def int64) int64 {
+	if r.stakes == nil {
+		return def
+	}
+	if lowest, ok := r.stakes.LowestEnabledCoins(ctx, game); ok && lowest > 0 {
+		return lowest
+	}
+	return def
+}
+
+// WithStakes wires the tier table so house tables use a stake the game actually offers.
+// Chainable, matching WithMonopoly.
+func (r *Runner) WithStakes(src StakeSource) *Runner { r.stakes = src; return r }

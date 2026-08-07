@@ -14,6 +14,7 @@
 package groupmatch
 
 import (
+	"fmt"
 	"context"
 	"log/slog"
 	"net/http"
@@ -202,7 +203,15 @@ type clock interface{ Now() time.Time }
 
 // Service is the agent-facing group queue API (enqueue / status / cancel). Pairing
 // runs in the background Matcher.
+// StakeFloor validates a coin amount against the game's enabled tiers. See the identical port
+// in matchmaking for why this is enforced on the service rather than the handler.
+type StakeFloor interface {
+	ValidStake(ctx context.Context, game string, coins int64) (ok bool, lowest int64, err error)
+}
+
 type Service struct {
+	stakes StakeFloor
+
 	repo     Repo
 	creators map[string]TableCreator // game -> its table creator (also carries SeatTarget)
 	rating   RatingSource
@@ -234,6 +243,19 @@ func (s *Service) SetLiveness(l Liveness)           { s.live = l }
 // affordability, reachability) so a broke/uncertified/offline agent never pollutes a
 // pool waiting for a table it could never join.
 func (s *Service) Enqueue(ctx context.Context, agentPublicID, ownerPublicID, game string, bid int64) (Entry, error) {
+	// Same enforcement as the ranked queue: the stake must be a tier the game offers. Placed on
+	// the service because autoplay enqueues directly and never passes through the handler.
+	if s.stakes != nil && bid > 0 {
+		ok, lowest, err := s.stakes.ValidStake(ctx, game, bid)
+		if err != nil {
+			return Entry{}, httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable",
+				"Stake tiers could not be read, so the queue cannot verify your stake. Try again shortly.")
+		}
+		if !ok {
+			return Entry{}, httpx.NewError(http.StatusBadRequest, "stake_not_offered",
+				fmt.Sprintf("A stake of %d coins is not offered for %s. The lowest available stake is %d coins.", bid, game, lowest))
+		}
+	}
 	if bid <= 0 {
 		return Entry{}, httpx.NewError(http.StatusBadRequest, "invalid_request", "bid must be > 0")
 	}
@@ -358,3 +380,6 @@ func newMetrics(reg *prometheus.Registry) *metrics {
 	}
 	return m
 }
+
+// SetStakeFloor wires tier enforcement into the group queue itself.
+func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
