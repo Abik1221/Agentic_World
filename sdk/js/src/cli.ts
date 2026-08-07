@@ -949,8 +949,101 @@ async function cmdDoctor(a: Args): Promise<number> {
     allOk = allOk && ok;
     console.log(`  ${ok ? OK : BAD} ${name.padEnd(20)} ${detail}`);
   }
+  // Verified-tier readiness. Separate from the checks above because none of these is a failure of
+  // the agent: it will run, it just will not be RANKED. Conflating the two trains people to ignore
+  // a red mark that sometimes means nothing.
+  //
+  // Mirrors the Python SDK's section deliberately, down to the wording, because a developer must
+  // not get a different answer about their own eligibility depending on which SDK they installed.
+  await printVerifiedReadiness(base, c, cfg);
+
   console.log("\n" + (allOk ? "✓ ready — `pyyol dev` to practice, `pyyol play <arena>` to compete." : "fix the ✗ items above."));
   return allOk ? 0 : 1;
+}
+
+/** True if the agent's entry file appears to send a system prompt, false if not, null if unknown.
+ *
+ *  A shallow source scan, deliberately: it recognises Anthropic's `system=` and OpenAI's system /
+ *  developer roles. Being approximate is fine because a wrong answer here is a HINT, not a
+ *  decision — the authoritative value is the `scaffold` field on a real decision, which is what the
+ *  unknown case points at.
+ *
+ *  "developer" is included because it is OpenAI's newer name for the system role, and missing it
+ *  would tell a correctly built agent it is ineligible — worse than saying nothing. */
+export async function scaffoldHint(entry: string | undefined): Promise<boolean | null> {
+  if (!entry) return null;
+  const path = String(entry).split(":")[0];
+  try {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(path, "utf8");
+    return ["system:", "system =", '"system"', "'system'", '"developer"', "'developer'"].some((n) =>
+      src.includes(n),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Report whether this agent will actually earn Verified, and if not, exactly why.
+ *
+ *  Three things decide it and each fails silently on its own: routing (without it the platform sees
+ *  no calls at all), a system prompt (without one the harness cannot be fingerprinted, so the agent
+ *  is excluded from paired model comparison), and coverage (the share of decisions actually proven,
+ *  against the threshold the verified tier requires).
+ *
+ *  An agent can run perfectly and earn nothing. Nothing else in the toolchain says so, and learning
+ *  it from an empty leaderboard row weeks later is the failure this prevents. */
+export async function printVerifiedReadiness(
+  base: string,
+  c: { accessToken?: string } | null,
+  cfg: { entry?: string } | null,
+): Promise<void> {
+  const { gatewayBaseUrl } = await import("./instrument.js");
+  const { explain, ISSUE_NO_SYSTEM_PROMPT } = await import("./scaffold.js");
+
+  console.log("\nverified tier");
+
+  const routed = Boolean(gatewayBaseUrl("anthropic") || gatewayBaseUrl("openai"));
+  console.log(
+    `  ${routed ? OK : WARN} ${"gateway routing".padEnd(20)} ` +
+      (routed
+        ? "on — model calls are server-observed"
+        : "off — call pyyol.route(client) after pyyol.instrument(); without it no decision can be " +
+          "proven and this agent cannot appear on the model board"),
+  );
+
+  const hint = await scaffoldHint(cfg?.entry);
+  if (hint === null) {
+    console.log(
+      `  ${WARN} ${"system prompt".padEnd(20)} could not inspect the agent source; run \`pyyol dev\` ` +
+        "and check `scaffold` on a decision in the trace",
+    );
+  } else if (hint) {
+    console.log(
+      `  ${OK} ${"system prompt".padEnd(20)} found — the harness can be fingerprinted, so this ` +
+        "agent is eligible for paired model comparison",
+    );
+  } else {
+    // The shared explanation, never a paraphrase: the SDKs, the trace and this command have to give
+    // a developer the same sentence about one rule.
+    console.log(`  ${WARN} ${"system prompt".padEnd(20)} none found. ${explain(ISSUE_NO_SYSTEM_PROMPT)}`);
+  }
+
+  if (base && c?.accessToken) {
+    const [st, body] = await apiGet(`${base}/v1/gw/coverage`, c.accessToken);
+    const b = body as { decisions?: number; bound_decisions?: number; coverage?: number } | null;
+    if (st === 200 && b?.decisions) {
+      const cov = Number(b.coverage ?? 0);
+      const mark = cov >= 0.9 ? OK : WARN;
+      console.log(
+        `  ${mark} ${"coverage".padEnd(20)} ${b.bound_decisions ?? 0}/${b.decisions} decisions ` +
+          `proven (${(cov * 100).toFixed(1)}%)` +
+          (cov >= 0.9 ? "" : " — below the 90% the verified tier requires"),
+      );
+    } else if (st === 200) {
+      console.log(`  ${WARN} ${"coverage".padEnd(20)} no decisions recorded yet — play a match first`);
+    }
+  }
 }
 
 async function cmdUpdate(): Promise<number> {
