@@ -105,8 +105,9 @@ test("expired access token refreshes and reconnects with the new token", async (
   let calls = 0;
   let ws2!: FakeWS;
   const persisted: { access?: string; refresh?: string } = {};
-  let conn!: RuntimeConnector;
-  conn = new RuntimeConnector(goofAgent(), {
+  // Declared and assigned together: the onFeed callback below captures `conn` lazily, so it
+  // resolves after this statement completes and needs no forward declaration.
+  const conn = new RuntimeConnector(goofAgent(), {
     url: "ws://x", agentId: "ag", token: "expired",
     refreshToken: "old-rt", apiUrl: "http://api",
     refreshHttp: async (api, rt) => {
