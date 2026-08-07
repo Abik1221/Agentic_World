@@ -2303,6 +2303,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for name, ok, detail in checks:
         all_ok = all_ok and ok
         print(f"  {OK if ok else BAD} {name:<20} {detail}")
+
+    # --- Verified-tier readiness -----------------------------------------------
+    #
+    # Separate from the checks above because these are not errors: an agent can run perfectly
+    # while earning nothing. That is exactly the failure this section exists to prevent — the
+    # platform ranks VERIFIED play, and an agent whose calls are never proven is invisible to the
+    # model board no matter how well it plays. A developer should learn that here, in one second,
+    # rather than from an empty row on a leaderboard weeks later.
+    _print_verified_readiness(base, creds, cfg)
+
     ready = all_ok
     print(
         "\n"
@@ -2313,6 +2323,85 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
     )
     return 0 if ready else 1
+
+
+def _print_verified_readiness(base: str, creds, cfg) -> None:
+    """Report whether this agent will actually earn Verified, and if not, exactly why.
+
+    Three things decide it, and each fails silently on its own:
+
+      1. ROUTING — model calls have to go through the Pyyol gateway. Without it the platform sees
+         no calls at all and every decision is unproven.
+      2. A SYSTEM PROMPT — the scaffold fingerprint is what lets the model board compare two models
+         across ONE harness. Instructions that live in the user turn cannot be told apart from the
+         game state, so such an agent is excluded from paired comparison entirely.
+      3. COVERAGE — the share of decisions actually proven. A badge earned on 5% of play is the
+         thing coverage gating exists to refuse.
+
+    Printed rather than returned as a check because none of these is a failure of the agent: it
+    will run, it just will not be ranked, and conflating the two would train people to ignore a
+    red mark that sometimes means nothing.
+    """
+    from . import _instrument, scaffold
+
+    print("\nverified tier")
+
+    routed = bool(_instrument.gateway_base_url("anthropic") or _instrument.gateway_base_url("openai"))
+    print(
+        f"  {OK if routed else WARN} {'gateway routing':<20} "
+        + (
+            "on — model calls are server-observed"
+            if routed
+            else "off — call pyyol.route(client) after pyyol.instrument(); without it no decision "
+            "can be proven and this agent cannot appear on the model board"
+        )
+    )
+
+    # The scaffold is read from the agent's own source rather than guessed: a developer asking
+    # "why am I not on the board" needs the answer for THEIR code, not for a generic example.
+    hint = _scaffold_hint(cfg)
+    if hint is None:
+        print(f"  {WARN} {'system prompt':<20} could not inspect the agent source; run `pyyol dev` "
+              "and check `scaffold` on a decision in the trace")
+    elif hint:
+        print(f"  {OK} {'system prompt':<20} found — the harness can be fingerprinted, so this "
+              "agent is eligible for paired model comparison")
+    else:
+        print(f"  {WARN} {'system prompt':<20} none found. {scaffold.explain(scaffold.ISSUE_NO_SYSTEM_PROMPT)}")
+
+    if base and creds and creds.access_token:
+        st, body = _api_get(f"{base}/v1/gw/coverage", token=creds.access_token)
+        if st == 200 and isinstance(body, dict) and body.get("decisions"):
+            cov = float(body.get("coverage") or 0)
+            bound, total = body.get("bound_decisions", 0), body.get("decisions", 0)
+            mark = OK if cov >= 0.90 else WARN
+            print(f"  {mark} {'coverage':<20} {bound}/{total} decisions proven ({cov * 100:.1f}%)"
+                  + ("" if cov >= 0.90 else " — below the 90% the verified tier requires"))
+        elif st == 200:
+            print(f"  {WARN} {'coverage':<20} no decisions recorded yet — play a match first")
+
+
+def _scaffold_hint(cfg) -> Optional[bool]:
+    """True if the agent's source appears to send a system prompt, False if not, None if unknown.
+
+    A source scan, deliberately shallow: it looks for the shapes the two provider SDKs use for a
+    system prompt. Being approximate is acceptable because the consequence of a wrong answer here
+    is a hint, not a decision — the authoritative answer is the `scaffold` field on a real
+    decision, which is what the message points at when this cannot tell.
+    """
+    if cfg is None or not getattr(cfg, "entry", ""):
+        return None
+    path = str(cfg.entry).split(":", 1)[0]
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return None
+    # Anthropic passes `system=`; OpenAI uses a message with role "system" (or "developer").
+    for needle in ('system=', '"system"', "'system'", '"developer"', "'developer'"):
+        if needle in src:
+            return True
+    return False
 
 
 def cmd_update(args: argparse.Namespace) -> int:
