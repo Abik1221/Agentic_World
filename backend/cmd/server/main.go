@@ -1380,6 +1380,9 @@ func run() error {
 	// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after the
 	// tiers were seeded and continuing for two days without a single error.
 	matchmakingSvc.SetStakeFloor(gameStakesSvc)
+	// So a developer learns at SET time that their own max_bid locks them out of ranked play,
+	// rather than from a 409 at join time long after the setting was saved and forgotten.
+	idHandler.SetStakeSource(gameStakesSvc)
 
 	// Group matchmaking: the N-player sibling of the 2-player queue above. Gives Mafia
 	// (12) and Monopoly (a configured seat count) the same skill-banded staked play by
