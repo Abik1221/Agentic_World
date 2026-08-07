@@ -238,11 +238,27 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 	if err != nil {
 		return
 	}
+	// Fill the roster. A failure here used to `return` silently, abandoning a table with ONE
+	// seat that then sat until it timed out and aborted — 190 aborted mafia tables against 1
+	// finished, every abort holding exactly 1 seat, and no log line anywhere saying why.
+	//
+	// The seating is still all-or-nothing (Mafia cannot start short), but the reason is now
+	// recorded and the half-filled table is cancelled instead of left to expire. A table nobody
+	// can join should not sit in the lobby advertising a game that will never start.
+	seated := 1
 	for i := 0; i < mf.RosterSize-1; i++ {
 		b := r.next(idx)
 		if _, err := r.mafia.Join(ctx, b.PublicID, b.OwnerPublicID, mid); err != nil {
+			slog.Warn("bot: mafia roster could not be filled; abandoning the table",
+				"match", mid, "seated", seated, "need", mf.RosterSize, "entry_fee", entry,
+				"error", err)
+			if cerr := r.mafia.Cancel(ctx, a.PublicID, mid); cerr != nil {
+				slog.Warn("bot: half-filled mafia table could not be cancelled and will sit "+
+					"in the lobby until it expires", "match", mid, "error", cerr)
+			}
 			return
 		}
+		seated++
 	}
 	for _, ag := range r.agents[:min(len(r.agents), mf.RosterSize)] {
 		r.playMafia(ctx, ag, mid)
