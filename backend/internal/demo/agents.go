@@ -47,10 +47,42 @@ func DevAgentName(i int) string {
 // Unused but documents intent — agents are code-driven, not LLM-backed.
 const FrameworkLabel = "rules-engine"
 
-// MintCoins tops up an agent wallet for dev play.
+// MintCoins funds an agent wallet for dev play, once.
+//
+// The key is fixed on purpose: seeding must not re-mint on every restart. Use TopUp for the
+// recurring case.
 func MintCoins(ctx context.Context, mint *wallet.Service, agentPublicID string, amount int64) error {
 	key := "demo:mint:" + agentPublicID
 	return mint.Mint(ctx, agentPublicID, amount, key)
+}
+
+// HouseFloat is what a house bot is topped back up to. Twenty minimum-stake matches, so a bot
+// can lose a run of tables without dropping below the entry it needs to seat the next one.
+const HouseFloat int64 = 10_000
+
+// TopUp restores a house bot to HouseFloat when it has fallen below one stake plus its reserve.
+//
+// # Why house bots need this at all
+//
+// They play each other at STAKED tables, and the platform takes a rake from every pot. A closed
+// population paying a percentage to the house on every match is a strictly shrinking pool: the
+// bots do not go broke because of bad play, they go broke by construction. Seeding minted 10,000
+// once, with a fixed idempotency key that could never fire again, so the drain was one-way.
+//
+// It surfaced as Mafia being unplayable — "Balance 171 is below the required 550" — after the
+// concurrency limit that was masking it got fixed. Two settings that were each fine alone: a
+// 500-coin floor, and house bots funded for the era when a table cost 100.
+//
+// The key rotates per round so a top-up can recur, while staying idempotent inside a round.
+func TopUp(ctx context.Context, mint *wallet.Service, agentPublicID string, balance, round int64) (bool, error) {
+	if balance >= 550 { // one minimum stake plus the standard 50 reserve
+		return false, nil
+	}
+	key := fmt.Sprintf("demo:topup:%s:%d", agentPublicID, round)
+	if err := mint.Mint(ctx, agentPublicID, HouseFloat-balance, key); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // NewOwnerID generates a fresh user public id for dev seeding.
