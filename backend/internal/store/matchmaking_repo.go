@@ -161,3 +161,33 @@ func (r *MatchmakingRepo) MarkMatched(ctx context.Context, agentA, agentB, match
 		[]string{agentA, agentB}, matchPublicID)
 	return err
 }
+
+// SweepOrphanedEntries deletes queue rows whose match has already reached a terminal state.
+//
+// # Why a reconciler and not a tighter hook
+//
+// match.finalize clears both seats when a match ends, and that is the right primary mechanism.
+// It cannot be the only one. A match can finish in about a second (an instant void), which is
+// quick enough to complete BEFORE the pairing transaction that marked the queue rows 'matched'
+// has committed. The clear then deletes nothing, the pairing commits afterwards, and the row is
+// orphaned — with timestamps that make it look like it was written first, because updated_at is
+// statement time and not commit time.
+//
+// No amount of reordering fixes that; it is two transactions racing, not a missing call. So the
+// invariant is restated as something checkable after the fact: a queue entry pointing at a
+// terminal match is always garbage, whatever sequence produced it.
+//
+// Deleting (not resetting to 'waiting') matches the finalize hook: an agent whose match is over
+// has not asked for another one. Autoplay re-enters on its next tick if the owner enabled it.
+func (r *MatchmakingRepo) SweepOrphanedEntries(ctx context.Context) (int64, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM matchmaking_queue q
+		  USING matches m
+		  WHERE m.public_id = q.match_id
+		    AND q.status = 'matched'
+		    AND m.status IN ('finished', 'aborted', 'cancelled')`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

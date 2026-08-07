@@ -1358,8 +1358,9 @@ func run() error {
 	// over wait time (never same-owner) and seats them in an already-active match —
 	// making ratings load-bearing and removing the deterministic-rendezvous collusion
 	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
+	matchmakingRepo := store.NewMatchmakingRepo(st.DB)
 	matchmakingSvc := matchmaking.New(
-		store.NewMatchmakingRepo(st.DB),
+		matchmakingRepo,
 		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
@@ -1380,6 +1381,11 @@ func run() error {
 	// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after the
 	// tiers were seeded and continuing for two days without a single error.
 	matchmakingSvc.SetStakeFloor(gameStakesSvc)
+	// Reconciler for queue entries the finalize hook could not clear. A match that ends in about
+	// a second can finish BEFORE the pairing transaction that marked its rows 'matched' commits,
+	// so the clear deletes nothing and the row is orphaned afterwards. That is two transactions
+	// racing, not a missing call, so the invariant is restated as a periodic check instead.
+	launch("queue-orphan-sweep", matchmaking.NewSweepWorker(matchmakingRepo, time.Minute, log).Run)
 	// Clear ranked-queue entries when a match ends. Without this an entry stayed 'matched'
 	// forever — live rows were still 'matched' against matches finished an hour earlier — and
 	// autoplay, which counts 'matched' as still-queued, never re-entered the agent. An autoplay

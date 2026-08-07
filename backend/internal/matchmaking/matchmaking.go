@@ -7,8 +7,8 @@
 package matchmaking
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -282,4 +282,54 @@ func newMetrics(reg *prometheus.Registry) *metrics {
 	}
 	reg.MustRegister(m.enqueued, m.paired, m.depth)
 	return m
+}
+
+// OrphanSweeper is the reconciler side of queue cleanup. Satisfied by *store.MatchmakingRepo.
+type OrphanSweeper interface {
+	SweepOrphanedEntries(ctx context.Context) (int64, error)
+}
+
+// SweepWorker deletes queue entries left pointing at terminal matches.
+//
+// The primary cleanup is in match.finalize; this exists because that hook cannot win a race
+// against the pairing transaction it is trying to undo. An entry orphaned this way is not
+// cosmetic: autoplay counts 'matched' as still-queued, so the agent stops re-entering entirely,
+// and the row is unpairable, so it crowds the queue and starves newcomers.
+type SweepWorker struct {
+	sweeper  OrphanSweeper
+	interval time.Duration
+	log      *slog.Logger
+}
+
+func NewSweepWorker(s OrphanSweeper, interval time.Duration, log *slog.Logger) *SweepWorker {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &SweepWorker{sweeper: s, interval: interval, log: log}
+}
+
+// Run sweeps until ctx is cancelled, once immediately on start.
+func (w *SweepWorker) Run(ctx context.Context) {
+	w.log.Info("matchmaking orphan sweeper started", "interval", w.interval.String())
+	t := time.NewTicker(w.interval)
+	defer t.Stop()
+	for {
+		n, err := w.sweeper.SweepOrphanedEntries(ctx)
+		switch {
+		case err != nil:
+			w.log.Error("matchmaking orphan sweep failed", "error", err)
+		case n > 0:
+			// Logged whenever it fires. A steady trickle means the finalize hook is losing the
+			// race more often than expected, and that is worth seeing rather than silently
+			// papering over on a timer.
+			w.log.Warn("swept ranked-queue entries left on terminal matches",
+				"deleted", n, "note", "primary cleanup is match.finalize; a nonzero count here "+
+					"means it lost a race with the pairing commit")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
