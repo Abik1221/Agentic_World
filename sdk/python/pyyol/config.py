@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
 
 CONFIG_NAME = "pyyol.toml"
 KNOWN_ARENAS = ("goofspiel", "mafia", "monopoly")
@@ -64,7 +63,7 @@ class Config:
         return (mod or "agent.py", var or "agent")
 
 
-def find(start: str = "") -> Optional[str]:
+def find(start: str = "") -> str | None:
     """Locate ``pyyol.toml`` from ``start`` (or cwd) walking up to the filesystem root."""
     d = os.path.abspath(start or os.getcwd())
     while True:
@@ -130,7 +129,7 @@ def _load_dict(path: str) -> dict:
     return out
 
 
-def load(path: str = "") -> Optional[Config]:
+def load(path: str = "") -> Config | None:
     """Load a ``pyyol.toml`` (explicit path, or discovered from cwd). None if absent."""
     p = path or find()
     if not p or not os.path.isfile(p):

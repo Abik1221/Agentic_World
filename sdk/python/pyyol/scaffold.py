@@ -58,7 +58,8 @@ them to it.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Iterable, Sequence
 
 # Bump only for a change that intentionally invalidates existing fingerprints. It is part
 # of the hashed payload, so a bump splits every agent's history into a new epoch — which
@@ -72,7 +73,7 @@ SCAFFOLD_VERSION = "pyyol-scaffold-v1"
 # `model` is absent on purpose. So are base_url, api_key, timeout and stream: the first
 # two would make gateway routing look like a new scaffold, and the last two do not affect
 # what the model decides.
-SAMPLING_KEYS: Tuple[str, ...] = (
+SAMPLING_KEYS: tuple[str, ...] = (
     "frequency_penalty",
     "max_completion_tokens",
     "max_output_tokens",
@@ -151,15 +152,15 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def extract(kwargs: Dict[str, Any], *, endpoint: str = "") -> Dict[str, str]:
+def extract(kwargs: dict[str, Any], *, endpoint: str = "") -> dict[str, str]:
     """The fingerprint components observable in one provider request.
 
     Never raises: a fingerprinting problem must not break a developer's model call, and a
     turn that decides correctly while going unfingerprinted is strictly better than one
     that fails. On any surprise the affected component is simply absent.
     """
-    roles: List[str] = []
-    system_parts: List[str] = []
+    roles: list[str] = []
+    system_parts: list[str] = []
 
     # Anthropic carries the system prompt as a top-level argument rather than a message.
     # Treated as a leading system role so the two providers produce comparable shapes.
@@ -188,12 +189,12 @@ def extract(kwargs: Dict[str, Any], *, endpoint: str = "") -> Dict[str, str]:
             if role in ("system", "developer"):
                 system_parts.append(_text_of(content))
 
-    sampling: List[str] = []
+    sampling: list[str] = []
     for key in SAMPLING_KEYS:
         if key in kwargs and kwargs[key] is not None:
             sampling.append(f"{key}={_scalar(kwargs[key])}")
 
-    tools: List[str] = []
+    tools: list[str] = []
     for t in kwargs.get("tools") or []:
         name = ""
         if isinstance(t, dict):
@@ -220,7 +221,7 @@ def extract(kwargs: Dict[str, Any], *, endpoint: str = "") -> Dict[str, str]:
     return out
 
 
-def canonical(components: Dict[str, str]) -> str:
+def canonical(components: dict[str, str]) -> str:
     """The exact string that gets hashed.
 
     Specified rather than incidental: the JS SDK builds the same string, and a shared
@@ -239,7 +240,7 @@ def canonical(components: Dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def fingerprint(components: Dict[str, str]) -> str:
+def fingerprint(components: dict[str, str]) -> str:
     """Short, prefixed id for a scaffold. 16 hex chars of SHA-256 (64 bits).
 
     Short enough to read in a UI and to group by in SQL. Collisions are irrelevant here in
@@ -261,7 +262,7 @@ ISSUE_NO_SYSTEM_PROMPT = "no_system_prompt"
 ISSUE_NO_MESSAGES = "no_messages"
 
 # Prose for each code. Read by the CLI and the dev-facing trace; never stored.
-ISSUE_EXPLANATIONS: Dict[str, str] = {
+ISSUE_EXPLANATIONS: dict[str, str] = {
     ISSUE_NO_SYSTEM_PROMPT: (
         "This request's instructions live in the user turn, mixed with the game state, where "
         "they cannot be told apart from it. Move your standing instructions into a system "
@@ -273,7 +274,7 @@ ISSUE_EXPLANATIONS: Dict[str, str] = {
 }
 
 
-def issue(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
+def issue(kwargs: dict[str, Any], *, endpoint: str = "") -> str:
     """Code for why this request yields no usable fingerprint, or "" when it does.
 
     Separate from ``from_request`` so the reason can reach a developer without the hot path
@@ -295,7 +296,7 @@ def explain(code: str) -> str:
     return ISSUE_EXPLANATIONS.get(code, "")
 
 
-def diagnose(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
+def diagnose(kwargs: dict[str, Any], *, endpoint: str = "") -> str:
     """Prose reason this request cannot be fingerprinted, or "" when it can.
 
     Convenience for local developer output; the wire carries ``issue`` codes.
@@ -303,7 +304,7 @@ def diagnose(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
     return explain(issue(kwargs, endpoint=endpoint))
 
 
-def from_request(kwargs: Dict[str, Any], *, endpoint: str = "") -> str:
+def from_request(kwargs: dict[str, Any], *, endpoint: str = "") -> str:
     """Fingerprint one provider request, or "" when it cannot be fingerprinted.
 
     An empty result means "unknown", never a hash of nothing — a fingerprint shared by every
@@ -349,7 +350,7 @@ class ScaffoldTracker:
     def __init__(self) -> None:
         self.first: str = ""
         self.unstable: bool = False
-        self._seen: List[str] = []
+        self._seen: list[str] = []
 
     def observe(self, fp: str) -> None:
         if not fp:
@@ -366,7 +367,7 @@ class ScaffoldTracker:
         return tuple(self._seen)
 
 
-def eligible_for_pairing(fingerprints: Iterable[Optional[str]]) -> bool:
+def eligible_for_pairing(fingerprints: Iterable[str | None]) -> bool:
     """True when a set of observations can support a within-scaffold model comparison.
 
     Requires exactly one known scaffold. An unknown ("") fingerprint disqualifies rather

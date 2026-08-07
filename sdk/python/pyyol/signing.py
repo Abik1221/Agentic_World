@@ -20,7 +20,7 @@ import hashlib
 import hmac
 import threading
 import time
-from typing import Mapping, Optional
+from collections.abc import Mapping
 
 SIGNATURE_VERSION = "v1"
 SIGNATURE_HEADER = "X-Arena-Signature"
@@ -116,8 +116,8 @@ def verify_request(
     body: bytes,
     *,
     skew_seconds: int = DEFAULT_SKEW_SECONDS,
-    replay_guard: Optional[ReplayGuard] = None,
-    now: Optional[float] = None,
+    replay_guard: ReplayGuard | None = None,
+    now: float | None = None,
 ) -> None:
     """Verify a signed request or raise :class:`VerificationError`.
 
@@ -148,7 +148,7 @@ def verify_request(
         raise VerificationError("bad_signature", "signature mismatch")
 
 
-def _parse_rfc3339(value: str) -> Optional[float]:
+def _parse_rfc3339(value: str) -> float | None:
     """Parse an RFC3339/ISO-8601 UTC timestamp to epoch seconds (best-effort)."""
     v = value.strip()
     if v.endswith("Z"):

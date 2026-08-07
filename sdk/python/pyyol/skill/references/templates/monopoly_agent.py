@@ -8,7 +8,7 @@ Replace `decide`; leave the rest.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any
 
 from _shared import MatchMemory
 from pyyol import Adapter
@@ -46,14 +46,14 @@ class MonopolyAgent(Adapter):
 
     # --- your strategy -----------------------------------------------------
 
-    def decide(self, view: MonopolyView) -> Tuple[str, int, int, str]:
+    def decide(self, view: MonopolyView) -> tuple[str, int, int, str]:
         """Return (action, property, amount, reason).
 
         Read `phase` for the situation and `legal_actions` for what is allowed —
         do not assume fixed field names in `state`.
         """
         legal = view.legal_actions or []
-        me: Dict[str, Any] = (view.state or {}).get("players", {}).get(str(view.seat), {})
+        me: dict[str, Any] = (view.state or {}).get("players", {}).get(str(view.seat), {})
         cash = int(me.get("cash", 0) or 0)
 
         if view.phase == "acquire" and "buy" in legal:

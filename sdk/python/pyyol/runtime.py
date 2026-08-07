@@ -22,16 +22,18 @@ no game logic — your ``@agent.on_turn`` handler returns the move.
 
 from __future__ import annotations
 
+from . import _urlguard
+
 import json
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import __version__
 from .console import Console
-from .telemetry import Tracer, turn_usage
+from .telemetry import Tracer
 
 log = logging.getLogger("pyyol")
 
@@ -78,7 +80,7 @@ def _default_refresh_http(api_url: str, refresh_token: str):
         url, data=body, method="POST", headers={"content-type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 — our own API
+        with _urlguard.urlopen(req, timeout=10) as resp:
             if resp.status != 200:
                 return None
             data = json.loads(resp.read().decode("utf-8"))
@@ -105,12 +107,12 @@ class RuntimeConnector:
         agent_id: str = "",
         token: str = "",
         name: str = "pyyol-agent",
-        games: Optional[List[str]] = None,
+        games: list[str] | None = None,
         version: str = "1.0.0",
         heartbeat_interval: float = 10.0,
         reconnect: bool = True,
         max_backoff: float = 30.0,
-        console: Optional[Console] = None,
+        console: Console | None = None,
         refresh_token: str = "",
         api_url: str = "",
         on_tokens=None,  # callback(access, refresh) to persist a rotated pair
@@ -244,7 +246,7 @@ class RuntimeConnector:
             ws = connect(self.url, open_timeout=10)
         send_lock = threading.Lock()
 
-        def send(frame: Dict[str, Any]) -> None:
+        def send(frame: dict[str, Any]) -> None:
             with send_lock:
                 ws.send(json.dumps(frame))
 
@@ -352,7 +354,7 @@ class RuntimeConnector:
 
     # --- frame dispatch -------------------------------------------------------
 
-    def _dispatch(self, frame: Dict[str, Any], send) -> None:
+    def _dispatch(self, frame: dict[str, Any], send) -> None:
         t = frame.get("t")
         if t == PING:
             send({"t": PONG, "id": frame.get("id", "")})
@@ -393,7 +395,7 @@ class RuntimeConnector:
         else:
             log.debug("ignoring frame %r", t)
 
-    def _handle_turn(self, frame: Dict[str, Any], send) -> None:
+    def _handle_turn(self, frame: dict[str, Any], send) -> None:
         view = frame.get("payload") or {}
         self._turn_no += 1
         game = view.get("game", "")
@@ -438,7 +440,7 @@ class RuntimeConnector:
             self._emit("error", f"turn {self._turn_no}: {detail} → fallback", level=logging.WARNING)
 
     @staticmethod
-    def _event_dict(frame: Dict[str, Any]) -> Dict[str, Any]:
+    def _event_dict(frame: dict[str, Any]) -> dict[str, Any]:
         # Gateway event frames use `kind` for the sub-type; EventNotification uses `type`.
         return {
             "match_id": frame.get("match_id", ""),
@@ -449,7 +451,7 @@ class RuntimeConnector:
         }
 
 
-def _recv(ws) -> Dict[str, Any]:
+def _recv(ws) -> dict[str, Any]:
     msg = ws.recv()
     if isinstance(msg, (bytes, bytearray)):
         msg = msg.decode("utf-8")

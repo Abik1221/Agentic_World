@@ -10,7 +10,7 @@ name = "pyyol"
 dynamic = ["version"]
 description = "Official Python SDK for pyyol — run AI game-playing agents locally over a WebSocket (Beta)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 # TODO(email): add `email = "..."` once a public contact address is chosen.
@@ -20,7 +20,6 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -66,22 +65,48 @@ pyyol = ["py.typed", "rules/*.md", "rules/*.txt", "skill/*.md", "skill/reference
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-# Extend ruff's defaults (E4/E7/E9 + pyflakes F) with the bug-catching rules the
-# source already satisfies: bugbear (B) and blind-except (BLE, matching the existing
-# `# noqa: BLE001`). We intentionally do NOT enable pyupgrade (UP): it rewrites to
-# py3.10+ syntax (e.g. `Optional[X]` → `X | None`) which breaks our 3.9 support.
-extend-select = ["B", "BLE"]
+# EXPLICIT, not extend-select. The previous config extended ruff's defaults and stated in a
+# comment that pyupgrade was "intentionally not enabled" — but extend-select can only ADD, and a
+# later ruff release moved UP into the default set. The rule the comment forbade had been running
+# for some time, and nothing failed, because the intent lived in prose the tool never read.
+#
+# A pinned list means the enforced set changes when THIS file changes and not when a dependency
+# ships a new default.
+#
+#   B, BLE  bugbear and blind-except, matching the existing `# noqa: BLE001`
+#   UP      safe now that the floor is 3.10; it was the 3.9 floor that made it unsafe
+#   S       bandit. Kept because this SDK handles API keys, HMAC turn proofs and signing keys,
+#           and S310 caught a real one: urlopen honoured any scheme from a user-supplied API
+#           base, so `file:///etc/passwd` was a readable "API response". See _urlopen in cli.py.
+select = ["E4", "E7", "E9", "F", "B", "BLE", "UP", "S"]
+
+# S110 (try-except-pass) is deliberate in the instrumentation paths: telemetry must never break a
+# live match, so a failed emit is swallowed by design. Ignored with the reason recorded rather
+# than left to fire and be tuned out — a lint pile everyone scrolls past protects nothing.
+ignore = [
+  "S110",
+  # S310 flags urlopen AND urllib.request.Request, so it fires on every request CONSTRUCTION
+  # even though the only code that opens a socket is _urlguard.urlopen, which checks the scheme
+  # first. Rather than scatter ~19 noqa comments (which would also silence a genuinely unguarded
+  # call added later in the same file), the rule is off here and replaced by
+  # tests/test_url_guard.py::test_no_module_calls_urlopen_directly — a stronger check, because it
+  # fails on the thing that actually matters instead of on the shape of a constructor call.
+  "S310",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests legitimately catch broad exceptions and re-raise without chaining.
-"tests/*" = ["B904", "BLE001"]
+# S101 assert is the point of a test; S105/S106 are fixture strings named "access_token" and
+# friends, not credentials; S603 is a subprocess call on a path this repo controls.
+"tests/*" = ["B904", "BLE001", "S101", "S105", "S106", "S603"]
 
 [tool.mypy]
-# mypy's own analysis floor is 3.10 even though the package runs on 3.9+.
+# Matches requires-python. These were out of step while the floor was 3.9: mypy analysed at
+# 3.10, so nothing in CI actually verified the 3.9 support the metadata advertised.
 python_version = "3.10"
 files = ["pyyol"]
 # Pragmatic strictness for a shipped-but-not-fully-annotated SDK: type-check what IS

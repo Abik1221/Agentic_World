@@ -34,7 +34,7 @@ def test_unknown_model_uses_fallback_not_zero():
     assert pricing.is_known("totally-made-up-model") is False
     # Fallback is a real mid-tier rate, so unknown models are never silently free.
     cost = pricing.estimate_cost("totally-made-up-model", 1_000_000, 1_000_000)
-    assert cost == pytest.approx((0.50 + 1.50))  # $ per 1M in + 1M out
+    assert cost == pytest.approx(0.50 + 1.50)  # $ per 1M in + 1M out
 
 
 def test_opus_and_sonnet_are_distinct():

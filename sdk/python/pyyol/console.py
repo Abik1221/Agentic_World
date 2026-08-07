@@ -16,7 +16,7 @@ import json
 import os
 import sys
 import time
-from typing import Any, Dict, Optional, TextIO
+from typing import Any, TextIO
 
 # kind → (symbol, ANSI color). Colors: green ok, amber idle, cyan match, dim
 # event, magenta decision, red error.
@@ -62,7 +62,7 @@ class PrettyConsole(Console):
     """Human-readable colored feed."""
 
     def __init__(
-        self, color: Optional[bool] = None, quiet: bool = False, stream: Optional[TextIO] = None
+        self, color: bool | None = None, quiet: bool = False, stream: TextIO | None = None
     ):
         self.stream = stream or sys.stdout
         self.quiet = quiet
@@ -99,7 +99,7 @@ class PrettyConsole(Console):
 class JsonConsole(Console):
     """One JSON object per line — machine-readable for piping/log shippers."""
 
-    def __init__(self, stream: Optional[TextIO] = None):
+    def __init__(self, stream: TextIO | None = None):
         self.stream = stream or sys.stdout
 
     def banner(self, name: str, url: str) -> None:
@@ -109,7 +109,7 @@ class JsonConsole(Console):
         self._write(kind, msg, **fields)
 
     def _write(self, kind: str, msg: str, **fields: Any) -> None:
-        rec: Dict[str, Any] = {
+        rec: dict[str, Any] = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "event": kind,
         }
@@ -121,7 +121,7 @@ class JsonConsole(Console):
 
 
 def build_console(
-    mode: str = "pretty", quiet: bool = False, color: Optional[bool] = None
+    mode: str = "pretty", quiet: bool = False, color: bool | None = None
 ) -> Console:
     """Factory used by the CLI: mode is ``pretty`` | ``json``."""
     if mode == "json":

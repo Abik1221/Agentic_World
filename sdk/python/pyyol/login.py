@@ -58,7 +58,7 @@ def _page(title: str, body: str, accent: str) -> bytes:
         "text-transform:uppercase;color:#5a5a70}"
         "</style>"
         f"<body><main class=card>{body}<div class=mark>pyyol</div></main>"
-    ).encode("utf-8")
+    ).encode()
 
 
 _OK_PAGE = _page(

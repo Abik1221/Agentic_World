@@ -27,7 +27,6 @@ and saying "unknown" there would price it as if it did.
 from __future__ import annotations
 
 import ipaddress
-from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 # Canonical provider keys. These are the strings the backend taxonomy classifies, so
@@ -41,7 +40,7 @@ SELF_HOSTED = "self-hosted"
 
 # host substring -> provider key. Matched against the URL's hostname, longest first so
 # a more specific host cannot be shadowed by a shorter one.
-_HOST_RULES: Tuple[Tuple[str, str], ...] = (
+_HOST_RULES: tuple[tuple[str, str], ...] = (
     ("api.openai.com", OPENAI),
     ("openai.azure.com", "azure"),
     ("api.anthropic.com", ANTHROPIC),
@@ -83,7 +82,7 @@ _LOCAL_PORTS = {
 
 # module-name substring -> provider key, for native SDKs. Order matters: "openai" is
 # checked LAST because several packages embed it in their module path.
-_MODULE_RULES: Tuple[Tuple[str, str], ...] = (
+_MODULE_RULES: tuple[tuple[str, str], ...] = (
     ("ollama", OLLAMA),
     ("anthropic", ANTHROPIC),
     ("groq", GROQ),
@@ -96,7 +95,7 @@ _MODULE_RULES: Tuple[Tuple[str, str], ...] = (
 )
 
 
-def _hostname(base_url: str) -> Tuple[str, Optional[int]]:
+def _hostname(base_url: str) -> tuple[str, int | None]:
     """(hostname, port) from a base URL, or ("", None) if unparseable."""
     if not base_url:
         return "", None
@@ -117,7 +116,8 @@ def is_local_host(host: str) -> bool:
     """
     if not host:
         return False
-    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"):
+    # noqa S104: this COMPARES a host against the loopback set, it does not bind one.
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"):  # noqa: S104
         return True
     if host.endswith(".local") or host.endswith(".internal"):
         return True

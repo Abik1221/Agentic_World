@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -23,21 +23,21 @@ from pyyol import scaffold
 _FIXTURES = Path(__file__).resolve().parents[2] / "conformance" / "scaffold.json"
 
 
-def _load() -> Dict[str, Any]:
+def _load() -> dict[str, Any]:
     assert _FIXTURES.is_file(), f"scaffold fixtures not found at {_FIXTURES}"
     return json.loads(_FIXTURES.read_text())
 
 
 _DOC = _load()
-_CASES: List[Dict[str, Any]] = _DOC["cases"]
+_CASES: list[dict[str, Any]] = _DOC["cases"]
 _BY_NAME = {c["name"]: c for c in _CASES}
 
 
-def _fp(case: Dict[str, Any]) -> str:
+def _fp(case: dict[str, Any]) -> str:
     return scaffold.from_request(case["request"], endpoint=case["endpoint"])
 
 
-def _canonical(case: Dict[str, Any]) -> str:
+def _canonical(case: dict[str, Any]) -> str:
     return scaffold.canonical(scaffold.extract(case["request"], endpoint=case["endpoint"]))
 
 
@@ -51,7 +51,7 @@ def test_scaffold_version_matches_the_fixtures():
 
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["name"] for c in _CASES])
-def test_expected_values(case: Dict[str, Any]):
+def test_expected_values(case: dict[str, Any]):
     exp = case.get("expect")
     if not exp:
         pytest.skip("relational case, checked below")
@@ -70,7 +70,7 @@ def test_expected_values(case: Dict[str, Any]):
     [c for c in _CASES if "same_fingerprint_as" in c],
     ids=[c["name"] for c in _CASES if "same_fingerprint_as" in c],
 )
-def test_cases_that_must_share_a_fingerprint(case: Dict[str, Any]):
+def test_cases_that_must_share_a_fingerprint(case: dict[str, Any]):
     other = _BY_NAME[case["same_fingerprint_as"]]
     mine, theirs = _fp(case), _fp(other)
     assert mine, "an empty fingerprint cannot satisfy a sameness claim"
@@ -82,7 +82,7 @@ def test_cases_that_must_share_a_fingerprint(case: Dict[str, Any]):
     [c for c in _CASES if "differs_from" in c],
     ids=[c["name"] for c in _CASES if "differs_from" in c],
 )
-def test_cases_that_must_differ(case: Dict[str, Any]):
+def test_cases_that_must_differ(case: dict[str, Any]):
     other = _BY_NAME[case["differs_from"]]
     assert _fp(case) != _fp(other), case["why"]
 

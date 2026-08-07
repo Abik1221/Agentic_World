@@ -35,7 +35,8 @@ import json
 import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Coroutine, Dict, Optional, Tuple, cast
+from typing import Any, cast
+from collections.abc import Callable, Coroutine
 
 from . import __version__
 from .models import (
@@ -52,7 +53,7 @@ from .signing import ReplayGuard, VerificationError, verify_request
 log = logging.getLogger("pyyol")
 
 # (status_code, json_body) — what every dispatch returns.
-Response = Tuple[int, Dict[str, Any]]
+Response = tuple[int, dict[str, Any]]
 
 
 class Agent:
@@ -69,7 +70,7 @@ class Agent:
         supported_games=None,
         name: str = "pyyol-agent",
         skew_seconds: int = 300,
-        verify: Optional[bool] = None,
+        verify: bool | None = None,
     ):
         self.secret = secret
         self.supported_games = list(supported_games or SUPPORTED_GAMES)
@@ -78,15 +79,15 @@ class Agent:
         self._verify = bool(secret) if verify is None else verify
         self._replay = ReplayGuard()
 
-        self._turn_handlers: Dict[str, Callable[[Any], Any]] = {}
-        self._default_turn: Optional[Callable[[Any], Any]] = None
-        self._on_initialize: Optional[Callable[[InitializeRequest], Any]] = None
-        self._on_event: Optional[Callable[[EventNotification], Any]] = None
-        self._on_game_end: Optional[Callable[[GameEndNotification], Any]] = None
+        self._turn_handlers: dict[str, Callable[[Any], Any]] = {}
+        self._default_turn: Callable[[Any], Any] | None = None
+        self._on_initialize: Callable[[InitializeRequest], Any] | None = None
+        self._on_event: Callable[[EventNotification], Any] | None = None
+        self._on_game_end: Callable[[GameEndNotification], Any] | None = None
 
     # --- handler registration (decorators) ---
 
-    def on_turn(self, game: Optional[str] = None):
+    def on_turn(self, game: str | None = None):
         """Register the per-turn decision handler. Pass a game name to scope it;
         omit it for a catch-all used when no game-specific handler is set."""
 
@@ -172,7 +173,7 @@ class Agent:
         # Anything else POSTed is the turn handler (the manifest endpoint.url).
         return self._handle_turn(data)
 
-    def _handle_turn(self, data: Dict[str, Any], turn_no: Optional[int] = None) -> Response:
+    def _handle_turn(self, data: dict[str, Any], turn_no: int | None = None) -> Response:
         game = data.get("game", "")
         handler = self._turn_handlers.get(game) or self._default_turn
         if handler is None:
@@ -225,7 +226,7 @@ class Agent:
     # --- shared handler invocation (used by both the HTTP path and the socket
     # RuntimeConnector, so both transports run identical decision logic) ---
 
-    def decide_turn(self, view_data: Dict[str, Any], turn_no: Optional[int] = None) -> Response:
+    def decide_turn(self, view_data: dict[str, Any], turn_no: int | None = None) -> Response:
         """Run the turn handler for a raw view dict; return ``(status, move)``.
 
         ``turn_no`` lets the socket runtime supply the round it already derived. Only the
@@ -237,18 +238,18 @@ class Agent:
         """
         return self._handle_turn(view_data, turn_no=turn_no)
 
-    def ack_initialize(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def ack_initialize(self, data: dict[str, Any]) -> dict[str, Any]:
         """Run the initialize handler and return the ack dict."""
         ack = (
             self._on_initialize(InitializeRequest.from_dict(data)) if self._on_initialize else None
         )
         return ack if isinstance(ack, dict) else {"ready": True, "display_name": self.name}
 
-    def notify_event(self, data: Dict[str, Any]) -> None:
+    def notify_event(self, data: dict[str, Any]) -> None:
         if self._on_event:
             self._on_event(EventNotification.from_dict(data))
 
-    def notify_game_end(self, data: Dict[str, Any]) -> None:
+    def notify_game_end(self, data: dict[str, Any]) -> None:
         if self._on_game_end:
             self._on_game_end(GameEndNotification.from_dict(data))
 
@@ -343,7 +344,7 @@ class Adapter:
     supported_games = list(SUPPORTED_GAMES)
     secret: str = ""
 
-    def initialize(self, ctx: "InitializeRequest") -> Any:  # noqa: D401
+    def initialize(self, ctx: InitializeRequest) -> Any:  # noqa: D401
         """Called at match start — but NOT guaranteed, and NOT once per match.
 
         You may be handed a match already in progress (after a reconnect, or when the
@@ -363,12 +364,12 @@ class Adapter:
         """Decide one move for ``view`` and return it. REQUIRED."""
         raise NotImplementedError("implement step(self, view) -> move")
 
-    def shutdown(self, result: "GameEndNotification") -> None:
+    def shutdown(self, result: GameEndNotification) -> None:
         """Called when a match ends. Optional. Like ``initialize``, not guaranteed —
         a dropped connection ends the match without it."""
         return None
 
-    def on_event(self, event: "EventNotification") -> None:
+    def on_event(self, event: EventNotification) -> None:
         """Async match events (round results, opponent actions). Optional.
 
         This used to be unreachable: ``to_agent`` wired the transport's event hook to
@@ -378,7 +379,7 @@ class Adapter:
         """
         return None
 
-    def to_agent(self) -> "Agent":
+    def to_agent(self) -> Agent:
         """Build the underlying :class:`Agent` that drives the real transport."""
         a = Agent(
             secret=self.secret or os.environ.get("PYYOL_SECRET", ""),
@@ -412,7 +413,7 @@ def as_agent(obj: Any) -> Agent:
     )
 
 
-def _load_json(body: bytes) -> Dict[str, Any]:
+def _load_json(body: bytes) -> dict[str, Any]:
     if not body:
         return {}
     try:
@@ -421,7 +422,7 @@ def _load_json(body: bytes) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {}
 
-def _turn_number(data: Dict[str, Any]) -> int:
+def _turn_number(data: dict[str, Any]) -> int:
     """The round this view is asking about.
 
     Read defensively across the names the platform has used for it: a turn proof is bound to

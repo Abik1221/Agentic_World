@@ -32,13 +32,13 @@ import functools
 import importlib
 import inspect
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from . import pricing, providers, scaffold
 from .telemetry import current_span, current_usage
 
 # (class, method_name, original_callable) for uninstrument().
-_PATCHED: List[Tuple[Any, str, Any]] = []
+_PATCHED: list[tuple[Any, str, Any]] = []
 
 # --- Verified-tier gateway routing (Phase 4c) ---------------------------------
 # When routing is enabled, the instrument wrapper injects the Pyyol identity headers
@@ -47,7 +47,7 @@ _PATCHED: List[Tuple[Any, str, Any]] = []
 # base_url at the gateway. Together they make ranked LLM traffic flow through the
 # gateway with a single opt-in line, and the gateway measures the REAL model/cost.
 
-_gateway: Dict[str, str] = {}  # {"key": agent_key, "base": gateway_base_url}
+_gateway: dict[str, str] = {}  # {"key": agent_key, "base": gateway_base_url}
 
 
 def enable_gateway(agent_key: str, base_url: str) -> None:
@@ -80,7 +80,7 @@ def gateway_base_url(provider: str) -> str:
     return base + path if base and path else ""
 
 
-def gateway_headers() -> Dict[str, str]:
+def gateway_headers() -> dict[str, str]:
     """The X-Pyyol-* identity headers for the current turn (empty if routing off)."""
     if not _gateway.get("key"):
         return {}
@@ -100,7 +100,7 @@ def gateway_headers() -> Dict[str, str]:
     return h
 
 
-def route(client: Any, provider: Optional[str] = None) -> Any:
+def route(client: Any, provider: str | None = None) -> Any:
     """Point a provider client at the Pyyol Gateway (sets its base_url). Explicit,
     robust opt-in — operates on the instance the developer hands us, so it doesn't
     depend on provider-internal layout. Returns the same client for chaining. A no-op
@@ -210,7 +210,7 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
-def _extract_ollama(resp: Any) -> Optional[Dict[str, Any]]:
+def _extract_ollama(resp: Any) -> dict[str, Any] | None:
     """Ollama's native response shape, which has no ``usage`` object at all.
 
     Counts live at the top level as ``prompt_eval_count`` / ``eval_count``. Without
@@ -232,7 +232,7 @@ def _extract_ollama(resp: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def _extract_google(resp: Any) -> Optional[Dict[str, Any]]:
+def _extract_google(resp: Any) -> dict[str, Any] | None:
     """Google Gemini (google-genai / google-generativeai): counts hang off
     ``usage_metadata`` with their own field names."""
     um = _get(resp, "usage_metadata")
@@ -256,7 +256,7 @@ def _extract_google(resp: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def _extract_cohere(resp: Any) -> Optional[Dict[str, Any]]:
+def _extract_cohere(resp: Any) -> dict[str, Any] | None:
     """Cohere nests counts under ``meta.tokens``."""
     meta = _get(resp, "meta")
     if meta is None:
@@ -279,7 +279,7 @@ def _extract_cohere(resp: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
+def extract_usage(resp: Any) -> dict[str, Any] | None:
     """Pull normalized usage from a provider response, or None if it has none.
 
     Handles OpenAI Chat Completions (``prompt_tokens``/``completion_tokens`` with
@@ -362,7 +362,7 @@ def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
 
 def record_response(
     resp: Any, *, provider: str = "", latency_ms: int = 0
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Record usage from a provider response: compute cost, add to the turn
     accumulator, and emit a Lens ``model_call`` span. Returns the extracted usage (or
     None). Also the public manual hook for clients this module doesn't auto-wrap.
@@ -433,7 +433,7 @@ def _targets_gateway(resource: Any) -> bool:
     return bool(base) and base.startswith(gw)
 
 
-def _inject_gateway_headers(resource: Any, kwargs: Dict[str, Any]) -> None:
+def _inject_gateway_headers(resource: Any, kwargs: dict[str, Any]) -> None:
     """Merge the Pyyol identity headers into the call's extra_headers (both OpenAI and
     Anthropic accept extra_headers). Dev-supplied headers win. No-op when routing off OR
     when the call does not target the gateway — the credential never leaves for a
@@ -461,7 +461,7 @@ def _safe_record(resp: Any, provider: str, start: float, resource: Any = None) -
         pass
 
 
-def _safe_scaffold(kwargs: Dict[str, Any], endpoint: str) -> None:
+def _safe_scaffold(kwargs: dict[str, Any], endpoint: str) -> None:
     """Fingerprint the scaffold from the outgoing request, before the model is called.
 
     Done on the REQUEST rather than the response because the scaffold is the thing the
@@ -656,12 +656,12 @@ _PATCHERS = {
 }
 
 
-def instrument(providers: Optional[List[str]] = None) -> List[str]:
+def instrument(providers: list[str] | None = None) -> list[str]:
     """Auto-capture LLM usage from installed providers. Pass e.g. ``["openai"]`` to
     limit which are patched; default patches every supported backend that is
     installed. Returns the list actually instrumented. Safe to call more than once."""
     want = set(providers) if providers is not None else set(_PATCHERS)
-    done: List[str] = []
+    done: list[str] = []
     for name, patch in _PATCHERS.items():
         if name in want and patch():
             done.append(name)

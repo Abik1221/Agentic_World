@@ -22,6 +22,8 @@ Manual API for agent authors, inside an ``on_turn`` handler::
 
 from __future__ import annotations
 
+from . import _urlguard
+
 import contextvars
 import json
 import os
@@ -29,13 +31,13 @@ import queue
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib import request as _request
 
 SCHEMA_VERSION = "2026-04-17"
 
 # The active span, so handler code can reach it via current_span().
-_current: "contextvars.ContextVar[Optional[Span]]" = contextvars.ContextVar(
+_current: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
     "pyyol_current_span", default=None
 )
 
@@ -49,7 +51,7 @@ class Span:
     """A live span. Records child model/tool calls and free-form logs. All methods
     are safe no-ops when telemetry is disabled."""
 
-    def __init__(self, tracer: "Tracer", trace_id: str, span_id: str, base: Dict[str, Any]):
+    def __init__(self, tracer: Tracer, trace_id: str, span_id: str, base: dict[str, Any]):
         self._t = tracer
         self.trace_id = trace_id
         self.span_id = span_id
@@ -148,7 +150,7 @@ def current_span() -> Span:
 # reaches the arena benchmark EVEN WHEN Lens is disabled. This is intentionally
 # decoupled from the Tracer's enabled flag.
 
-_current_usage: "contextvars.ContextVar[Optional[UsageAccumulator]]" = contextvars.ContextVar(
+_current_usage: contextvars.ContextVar[UsageAccumulator | None] = contextvars.ContextVar(
     "pyyol_current_usage", default=None
 )
 
@@ -171,7 +173,7 @@ class UsageAccumulator:
         # rather than only a mean. A turn's WALL time is already measured by the span;
         # what that cannot separate is one slow call from six quick ones, and "thinks
         # for 40s" versus "makes 20 round trips" are different things about an agent.
-        self.call_latencies_ms: List[int] = []
+        self.call_latencies_ms: list[int] = []
         # Turn context (for gateway attribution); set by turn_usage().
         self.match_id = ""
         self.turn = 0
@@ -182,8 +184,8 @@ class UsageAccumulator:
         self.turn_proof = ""
         # Ordered, de-duplicated list of models/providers seen this turn. A single
         # turn usually uses one model, but chains/retries may use several.
-        self.models: List[str] = []
-        self.providers: List[str] = []
+        self.models: list[str] = []
+        self.providers: list[str] = []
         # The SCAFFOLD this turn ran under: everything the developer built around the
         # model, hashed and with the model deliberately left out. It is what makes a
         # paired model comparison possible — same scaffold, different model, so the
@@ -253,11 +255,11 @@ class UsageAccumulator:
     def empty(self) -> bool:
         return self.calls == 0
 
-    def to_move_usage(self) -> Dict[str, Any]:
+    def to_move_usage(self) -> dict[str, Any]:
         """The `usage` block attached to a move — matches the arena's TokenUsage
         decode (prompt/completion/reasoning/total), plus SDK-side model/provider/cost
         the Lens pipeline understands."""
-        usage: Dict[str, Any] = {
+        usage: dict[str, Any] = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -294,7 +296,7 @@ class UsageAccumulator:
         return usage
 
 
-def current_usage() -> Optional[UsageAccumulator]:
+def current_usage() -> UsageAccumulator | None:
     """The accumulator for the turn in progress, or None outside a turn. The
     instrumentation calls this to record real usage; it no-ops when None."""
     return _current_usage.get()
@@ -328,12 +330,12 @@ class _TurnSpanCtx:
     """Context manager that brackets a turn span (started → completed/failed) and
     installs it as the current span for the duration."""
 
-    def __init__(self, tracer: "Tracer", trace_id: str, base: Dict[str, Any]):
+    def __init__(self, tracer: Tracer, trace_id: str, base: dict[str, Any]):
         self._t = tracer
         self._trace_id = trace_id
         self._base = base
-        self._span: Optional[Span] = None
-        self._token: Optional[contextvars.Token] = None
+        self._span: Span | None = None
+        self._token: contextvars.Token | None = None
         self._start = 0.0
 
     def __enter__(self) -> Span:
@@ -385,16 +387,16 @@ class Tracer:
         self._flush_interval = flush_interval
         self._max_batch = max_batch
         self._timeout = timeout
-        self._q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=buffer_size)
+        self._q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=buffer_size)
         self._stop = threading.Event()
         self.dropped = 0
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         if self.enabled:
             self._thread = threading.Thread(target=self._loop, name="pyyol-lens", daemon=True)
             self._thread.start()
 
     @classmethod
-    def from_env(cls, *, agent_id: str = "", service: str = "pyyol-agent") -> "Tracer":
+    def from_env(cls, *, agent_id: str = "", service: str = "pyyol-agent") -> Tracer:
         return cls(
             endpoint=os.environ.get("PYYOL_LENS_ENDPOINT", ""),
             api_key=os.environ.get("PYYOL_LENS_API_KEY", ""),
@@ -423,7 +425,7 @@ class Tracer:
         }
         return _TurnSpanCtx(self, trace_id, base)
 
-    def _emit(self, ev: Dict[str, Any]) -> None:
+    def _emit(self, ev: dict[str, Any]) -> None:
         if not self.enabled or self._stop.is_set():
             return
         ev.setdefault("event_id", _id())
@@ -441,7 +443,7 @@ class Tracer:
             self.dropped += 1
 
     def _loop(self) -> None:
-        batch: List[Dict[str, Any]] = []
+        batch: list[dict[str, Any]] = []
         while not self._stop.is_set():
             timeout = self._flush_interval
             try:
@@ -461,7 +463,7 @@ class Tracer:
                 batch = []
         self._flush(batch)
 
-    def _flush(self, batch: List[Dict[str, Any]]) -> None:
+    def _flush(self, batch: list[dict[str, Any]]) -> None:
         if not batch:
             return
         body = json.dumps({"events": batch}).encode("utf-8")
@@ -473,7 +475,7 @@ class Tracer:
         )
         for attempt in range(3):
             try:
-                with _request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
+                with _urlguard.urlopen(req, timeout=self._timeout) as resp:
                     if 200 <= resp.status < 300:
                         return
             except Exception:  # noqa: BLE001 - telemetry must never raise into the app

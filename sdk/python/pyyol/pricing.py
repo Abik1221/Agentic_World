@@ -15,7 +15,7 @@ the table that produced it.
 
 from __future__ import annotations
 
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple
 
 # Bump this whenever any rate below changes. Stamped onto every estimate so a cost
 # is always reproducible from the exact table that produced it.
@@ -28,7 +28,7 @@ class Rate(NamedTuple):
     input: float
     output: float
     # Cost of a cached (prompt-cache read) input token; defaults to input when unset.
-    cached_input: Optional[float] = None
+    cached_input: float | None = None
 
 
 # Cache-WRITE multipliers, applied to a model's input rate.
@@ -45,7 +45,7 @@ class Rate(NamedTuple):
 #
 # Keyed by canonical model family prefix, so the multiplier is derived from the same
 # lookup that produced the rate and needs no extra provider argument at the call site.
-_CACHE_WRITE_MULTIPLIER: Tuple[Tuple[str, float], ...] = (
+_CACHE_WRITE_MULTIPLIER: tuple[tuple[str, float], ...] = (
     ("claude-", 1.25),  # Anthropic bills a cache write at 1.25x input
     ("gpt-", 0.0),  # OpenAI prompt caching is automatic and writes are not billed
     ("o1", 0.0),
@@ -63,7 +63,7 @@ _DEFAULT_CACHE_WRITE_MULTIPLIER = 1.0
 
 # Canonical model id -> Rate. Keep names lowercase and provider-agnostic; raw model
 # strings are normalized onto these keys by `_canonical()`.
-_TABLE: Dict[str, Rate] = {
+_TABLE: dict[str, Rate] = {
     # --- OpenAI ---
     "gpt-4o": Rate(2.50, 10.00, 1.25),
     "gpt-4o-mini": Rate(0.15, 0.60, 0.075),
@@ -106,7 +106,7 @@ _FALLBACK = Rate(0.50, 1.50)
 
 # Ordered (substring, canonical) rules. First match wins, so put more specific
 # substrings before more general ones (e.g. "4o-mini" before "4o").
-_RULES: Tuple[Tuple[str, str], ...] = (
+_RULES: tuple[tuple[str, str], ...] = (
     ("gpt-4o-mini", "gpt-4o-mini"),
     ("gpt-4o", "gpt-4o"),
     ("4o-mini", "gpt-4o-mini"),
@@ -148,7 +148,7 @@ _RULES: Tuple[Tuple[str, str], ...] = (
 # would have billed self-hosted users for compute they never bought; the test suite
 # caught exactly that. So the provider scopes the lookup, and only an explicitly
 # provider-attributed call gets a hosted rate.
-_PROVIDER_RULES: Dict[str, list] = {
+_PROVIDER_RULES: dict[str, list] = {
     "groq": [
         ("llama-3.1-8b", "groq-llama-8b"),
         ("llama-3.1-70b", "groq-llama-70b"),
@@ -158,7 +158,7 @@ _PROVIDER_RULES: Dict[str, list] = {
 }
 
 
-def _canonical(model: str, provider: str = "") -> Optional[str]:
+def _canonical(model: str, provider: str = "") -> str | None:
     """Map a raw model string ("us.anthropic.claude-opus-4-1-20250805", "gpt-4o-2024-08-06")
     to a canonical table key, or None if unknown."""
     m = (model or "").strip().lower()

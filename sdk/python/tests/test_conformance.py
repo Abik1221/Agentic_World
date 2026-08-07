@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -24,7 +24,7 @@ from pyyol._instrument import extract_usage
 _FIXTURES = Path(__file__).resolve().parents[2] / "conformance" / "usage_pricing.json"
 
 
-def _load() -> Dict[str, Any]:
+def _load() -> dict[str, Any]:
     # A missing fixture file must fail loudly rather than silently skip: an empty
     # conformance suite that reports "passed" is the exact failure this guards against.
     assert _FIXTURES.is_file(), f"conformance fixtures not found at {_FIXTURES}"
@@ -32,7 +32,7 @@ def _load() -> Dict[str, Any]:
 
 
 _DOC = _load()
-_CASES: List[Dict[str, Any]] = _DOC["cases"]
+_CASES: list[dict[str, Any]] = _DOC["cases"]
 
 
 def test_fixture_file_is_not_empty():
@@ -47,7 +47,7 @@ def test_pricing_version_matches_the_fixtures():
 
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["name"] for c in _CASES])
-def test_usage_extraction_matches_shared_fixture(case: Dict[str, Any]):
+def test_usage_extraction_matches_shared_fixture(case: dict[str, Any]):
     info = extract_usage(case["response"])
     assert info is not None, f"{case['name']}: extractor returned nothing — {case['why']}"
     want = case["expect"]
@@ -63,7 +63,7 @@ def test_usage_extraction_matches_shared_fixture(case: Dict[str, Any]):
 
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["name"] for c in _CASES])
-def test_the_subset_invariant_holds(case: Dict[str, Any]):
+def test_the_subset_invariant_holds(case: dict[str, Any]):
     """read + write <= prompt, in every case. Violating it means pricing silently clamps
     the excess to zero, which reads as a cheaper call rather than as an error."""
     info = extract_usage(case["response"])
@@ -75,7 +75,7 @@ def test_the_subset_invariant_holds(case: Dict[str, Any]):
 
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["name"] for c in _CASES])
-def test_cost_matches_shared_fixture(case: Dict[str, Any]):
+def test_cost_matches_shared_fixture(case: dict[str, Any]):
     info = extract_usage(case["response"])
     assert info is not None
     got = pricing.estimate_cost(
