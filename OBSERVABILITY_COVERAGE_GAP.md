@@ -1,6 +1,6 @@
 # The benchmark recorder is attached to the driver, not to the match
 
-**Status:** open, high priority. Root cause established; fix not attempted.
+**Status:** FIXED and verified end to end (2026-08-07). Kept for the reasoning and the evidence.
 **Found:** 2026-08-06, while wiring the model board's data path.
 
 ## The finding in one line
@@ -106,3 +106,40 @@ Until this is fixed, **two of three games contribute nothing to any board**, and
 platform publishes is a Goofspiel figure. The model board surface (handler, snapshot job,
 methodology page) is deliberately **blocked** on this: publishing a page that describes a
 game-theoretic model board fitted on Goofspiel-only data would misrepresent what it measures.
+
+---
+
+## Resolution
+
+Fixed across `7e84731` (store layer), `dc057e0` (Monopoly Act), `33a36b9` (Mafia Act) and
+`20bf6cc` (aggregation moved to `finalize`).
+
+Verified on a live Monopoly match played entirely through the request path — 269 actions, zero
+rejections, played to a genuine finish:
+
+| check | result |
+| --- | --- |
+| decisions recorded | **269** (this table was always empty for Monopoly) |
+| seat benchmark row | **present**, `result = loss` |
+| aggregate vs decision log | 269 decisions / 269 legal — reconciles exactly |
+| `latency_sum_ms` | **0**, correct: request-path latency is deliberately not reported |
+| platform-wide Monopoly benchmark rows | **0 → 566** |
+
+Two things this exercise caught that no test would have:
+
+- **The aggregation was initially hooked to `Act`**, so any match ending by sweeper, forfeit,
+  deadline or a bot's final move recorded every decision and then produced no seat row. That
+  repeated the very mistake this document describes — instrumentation bound to a transport rather
+  than to the event it describes — and was found by asking "can a match finish without an `Act`?",
+  not by a failing test. Now in `finalize`, the one point every ending passes through.
+- **A stale binary.** Two verification rounds ran against a server built before the fix, which is
+  why an earlier finished match showed no row. Rebuild before believing a live result.
+
+### Still worth doing
+
+- A reusable Monopoly conformance driver. The one used here is written against the engine's real
+  phase model (every phase has a chosen action; `bid`/`build`/`mortgage` need extra fields) and
+  finishes reliably by never acquiring, but it lives in a scratch directory.
+- The auction error message: `bid` is listed legal, but a bid without an `amount` is refused with
+  "That action is not legal in the current phase" — the message blames the phase when the real
+  problem is a missing field. It cost a debugging round here and will cost developers the same.
