@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/agent-arena/arena/internal/httpx"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -46,6 +48,7 @@ type Config struct {
 
 // Service drives the Mafia match lifecycle.
 type Service struct {
+	stakes StakeFloor // rejects an entry fee mafia does not offer; see StakeFloor
 	repo   Repo
 	lock   Locker
 	limits Limits
@@ -253,9 +256,43 @@ func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID strin
 	return s.repo.ListWaiting(ctx, entryFee, ownerPublicID, 50)
 }
 
+// StakeFloor validates that a coin amount is a stake the game actually offers.
+//
+// Same port, same reason, as match.StakeFloor: the handler resolves tiers correctly, but
+// CreateTable is also reached directly — by the house-bot runner, and by the service's own
+// DefaultEntryFee of 100 substituted whenever a fee is absent. Both sat below the configured
+// 500-coin floor, so mafia had a second, independent route to a stake the game does not offer.
+type StakeFloor interface {
+	ValidStake(ctx context.Context, game string, coins int64) (ok bool, lowest int64, err error)
+}
+
+// SetStakeFloor wires tier enforcement into the service that escrows.
+func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
+
+// checkStake rejects a stake mafia does not offer. Fails CLOSED — an unreadable tier table is
+// not permission to escrow an arbitrary amount. A zero fee is a practice table and is exempt.
+func (s *Service) checkStake(ctx context.Context, entryFee int64) error {
+	if s.stakes == nil || entryFee <= 0 {
+		return nil
+	}
+	ok, lowest, err := s.stakes.ValidStake(ctx, GameName, entryFee)
+	if err != nil {
+		return httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable",
+			"Stake tiers could not be read, so the stake cannot be verified. Try again shortly.")
+	}
+	if !ok {
+		return httpx.NewError(http.StatusBadRequest, "stake_not_offered",
+			fmt.Sprintf("An entry fee of %d coins is not offered for mafia. The lowest available stake is %d coins.", entryFee, lowest))
+	}
+	return nil
+}
+
 func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID string, entryFee int64) (string, error) {
 	if entryFee < 0 {
 		entryFee = 0
+	}
+	if err := s.checkStake(ctx, entryFee); err != nil {
+		return "", err
 	}
 	// A zero-fee table is a no-stakes practice/sandbox table (nothing staked, no
 	// payout, no rating change): skip the spending-limit and certification gates,

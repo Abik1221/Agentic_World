@@ -875,6 +875,9 @@ func run() error {
 	mafiaSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
+	// AND on the service: the bot runner calls CreateTable directly, and mafia's own
+	// DefaultEntryFee of 100 is substituted when no fee is given — both below the 500 floor.
+	mafiaSvc.SetStakeFloor(gameStakesSvc)
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
 	// Monopoly (turn-based property game) on the same patterns as Mafia: pure
