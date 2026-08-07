@@ -63,3 +63,6 @@ test/
 # rebuilt from source on demand and never useful in a commit.
 backend/.lab-server
 backend/.lab-gamelab
+# Stray output from `go build ./cmd/gamelab` with no -o. The lab binaries the docker
+# workflow uses are backend/.lab-server and backend/.lab-gamelab.
+backend/gamelab
