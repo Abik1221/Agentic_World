@@ -33,13 +33,48 @@ type Service struct {
 	fit    Config
 	window time.Duration
 
+	history HistoryWriter
+
 	mu       sync.RWMutex
 	snapshot *Snapshot
 }
 
+// SetHistoryWriter attaches per-day history persistence. Optional.
+func (s *Service) SetHistoryWriter(h HistoryWriter) { s.history = h }
+
 // SeatSource reads the seats a board is fitted from. Satisfied by *store.ModelBoardRepo.
 type SeatSource interface {
 	Seats(ctx context.Context, game string, start, end time.Time) ([]Seat, error)
+}
+
+// HistoryWriter persists one day's fitted board so a rating can be shown as a series.
+//
+// Optional: a deployment without it still serves a current board, it just accrues no history.
+// Separate from SeatSource because reading and writing fail independently — a history write that
+// errors must not cost the reader the board that was just computed.
+type HistoryWriter interface {
+	RecordBoardHistory(ctx context.Context, day time.Time, windowDays int, ratings []Rating) error
+}
+
+// HistoryPoint is one day of one model's series.
+//
+// Carries the INTERVAL, not only the point estimate: a rating line without its uncertainty invites
+// reading a four-point move as a change when the interval is forty points wide. It carries
+// separability for the same reason — a rating that rose while separability fell is a statement
+// about one developer rather than about the model.
+type HistoryPoint struct {
+	Day           string  `json:"day"`
+	Elo           float64 `json:"elo"`
+	EloLow        float64 `json:"elo_low"`
+	EloHigh       float64 `json:"elo_high"`
+	Rank          int     `json:"rank"`
+	RankStability float64 `json:"rank_stability"`
+	Comparisons   int     `json:"comparisons"`
+	Wins          int     `json:"wins"`
+	Losses        int     `json:"losses"`
+	Draws         int     `json:"draws"`
+	Separability  float64 `json:"separability"`
+	Provisional   bool    `json:"provisional"`
 }
 
 // Snapshot is one computed board plus the provenance a reader needs to judge it.
@@ -101,6 +136,17 @@ func (s *Service) Refresh(ctx context.Context) error {
 	s.mu.Lock()
 	s.snapshot = snap
 	s.mu.Unlock()
+
+	// History AFTER the snapshot is published, and never fatal: the board a reader is about to get
+	// is already correct, and losing a day of the series is a smaller harm than failing a refresh
+	// that succeeded. History is also the one thing that cannot be backfilled, so the failure is
+	// logged loudly rather than swallowed.
+	if s.history != nil && len(board.Ratings) > 0 {
+		if err := s.history.RecordBoardHistory(ctx, start, snap.WindowDays, board.Ratings); err != nil {
+			s.log.Error("model board history not recorded — this day of the series cannot be "+
+				"recovered later", "error", err)
+		}
+	}
 	s.log.Info("model board refreshed", "summary", board.Summary(), "took_ms", snap.TookMS)
 	return nil
 }

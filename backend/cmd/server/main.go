@@ -621,7 +621,13 @@ func run() error {
 	// 90 days of matches: long enough for the within-harness pairings the estimator needs, short
 	// enough that a model's rating reflects how it plays now rather than a year ago.
 	modelBoardSvc := modelboard.NewService(store.NewModelBoardRepo(st.DB), 90*24*time.Hour, log)
+	modelBoardRepo := store.NewModelBoardRepo(st.DB)
+	// Per-day history, so a rating can be shown as a series. Wired now rather than when the chart
+	// is built: history is the one thing that cannot be backfilled — a fit describes the matches
+	// that existed at a moment, and that moment does not come again.
+	modelBoardSvc.SetHistoryWriter(modelBoardRepo)
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
+	modelBoardHandler.SetHistoryReader(modelBoardRepo)
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
 	// P-Index Intelligence projection: fold each match.benchmark seat into the
 	// per-match decision-quality aggregate the recompute reads (legal/fallback/

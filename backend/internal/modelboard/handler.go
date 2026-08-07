@@ -1,7 +1,10 @@
 package modelboard
 
 import (
+	"context"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
@@ -13,13 +16,71 @@ import (
 // is a claim strong enough that publishing the number without the method would be irresponsible —
 // so the methodology is served from the SAME constants the estimator runs on, and cannot describe
 // a threshold the fit is not using.
-type Handler struct{ svc *Service }
+type Handler struct {
+	svc     *Service
+	history HistoryReader
+}
+
+// HistoryReader serves one model's per-day series. Satisfied by *store.ModelBoardRepo.
+type HistoryReader interface {
+	BoardHistory(ctx context.Context, model string, since time.Time) ([]HistoryPoint, error)
+}
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 
+// SetHistoryReader enables the series endpoint. Optional: without it the board still serves its
+// current state, there is simply no history to plot.
+func (h *Handler) SetHistoryReader(r HistoryReader) { h.history = r }
+
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/benchmark/modelboard", h.board)
+	r.Get("/v1/benchmark/modelboard/history", h.seriesHandler)
 	r.Get("/v1/benchmark/modelboard/methodology", h.methodology)
+}
+
+// seriesHandler serves one model's rating over time.
+//
+// Returns the INTERVAL at every point, not only the estimate. A rating line drawn without its
+// uncertainty invites reading a four-point move as a change when the interval is forty points
+// wide — the misreading arena boards publish a ± to prevent, which a chart can undo in one stroke
+// if it plots the centre line alone.
+func (h *Handler) seriesHandler(w http.ResponseWriter, r *http.Request) {
+	model := r.URL.Query().Get("model")
+	if model == "" {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "model_required",
+			"Pass ?model=provider/name — the series is per model."))
+		return
+	}
+	if h.history == nil {
+		httpx.Error(w, httpx.NewError(http.StatusNotImplemented, "history_unavailable",
+			"Rating history is not enabled on this deployment."))
+		return
+	}
+	days := 90
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 365 {
+			days = n
+		}
+	}
+	since := time.Now().AddDate(0, 0, -days)
+	points, err := h.history.BoardHistory(r.Context(), model, since)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"model": model,
+		"days":  days,
+		// Explicit, because an empty array has two meanings a chart must not conflate: a model
+		// nobody has run, and a board too new to have history. The second is the current state.
+		"points": points,
+		// Stated on the response, not only in docs: the single most likely misreading of this
+		// series is that the interval is a range the rating moved through, the way a candlestick
+		// wick would be. It is not — there is ONE fit per day, and the interval is uncertainty in
+		// that estimate.
+		"note": "Each point is one day's fit with its 95% bootstrap interval. The interval is " +
+			"uncertainty in the estimate, NOT a range the rating moved through during the day.",
+	})
 }
 
 // board serves the current snapshot.
