@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -155,12 +156,22 @@ type labAgent struct {
 	// Host is the address the PLATFORM uses to reach this agent. In the lab the backend
 	// runs in a container, so this is the container-network hostname, not localhost.
 	Host string
-	api  *api
-	srv  *http.Server
-	log  *log.Logger
+	// PublicURL, when set, is used INSTEAD of Host:Port — a full externally-reachable base URL
+	// (e.g. a tunnel). It models the real deployment shape: the developer's agent lives somewhere
+	// on the internet and the platform reaches it over TLS, with no shared docker network, no
+	// host.docker.internal, and a hostname the backend has never seen before.
+	PublicURL string
+	api       *api
+	srv       *http.Server
+	log       *log.Logger
 }
 
-func (a *labAgent) endpointURL() string { return fmt.Sprintf("http://%s:%d/play", a.Host, a.Port) }
+func (a *labAgent) endpointURL() string {
+	if a.PublicURL != "" {
+		return strings.TrimRight(a.PublicURL, "/") + "/play"
+	}
+	return fmt.Sprintf("http://%s:%d/play", a.Host, a.Port)
+}
 
 // serve starts the agent's endpoint. /health and /handshake are what manifest
 // verification calls; /play is the turn protocol.

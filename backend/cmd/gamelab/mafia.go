@@ -257,7 +257,6 @@ func heaviestVoteTarget(tally map[int]int, alive []int, exclude map[int]bool) (i
 	return best, best >= 0
 }
 
-
 // mafiaChatLine is what this seat says in discussion.
 //
 // Built from the seat's OWN knowledge only. A Mafia seat deflects toward a seat it knows is

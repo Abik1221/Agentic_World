@@ -345,7 +345,6 @@ func developedCount(st *mono.State) int {
 	return n
 }
 
-
 // buildTradeOffer constructs a complete, well-formed offer, or reports that none is worth making.
 //
 // Returns ok=false rather than a half-filled Trade: the engine validates the payload, and an

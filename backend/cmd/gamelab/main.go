@@ -44,6 +44,11 @@ func main() {
 	latencyCap := flag.Float64("latency-cap-ms", 26000, "cap on a sampled latency; raise it when the point of the run is to blow the deadline")
 	goDark := flag.Int("go-dark-after", 0, "from this round on, an agent stops answering entirely (0 = never)")
 	goDarkSeat := flag.Int("go-dark-seat", -1, "which seat goes dark (-1 = all of them)")
+	// A public base URL for seat 0, so one agent is genuinely DEPLOYED (reached over the internet
+	// through a tunnel) while the rest stay local. That asymmetry is the point: it proves the
+	// platform reaches an agent it shares no network with, and that nothing on the turn path
+	// quietly assumes a docker hostname or a local port.
+	publicURL := flag.String("public-url", "", "external base URL for seat 0 (e.g. a tunnel); empty = all agents local")
 	flag.Parse()
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
@@ -75,14 +80,42 @@ func main() {
 			Persona: p,
 			Port:    *basePort + i,
 			Host:    agentHost,
-			api:     a,
-			log:     log.New(os.Stdout, fmt.Sprintf("[%-14s] ", p.Name), log.Ltime),
+			PublicURL: func() string {
+				if i == 0 {
+					return *publicURL
+				}
+				return ""
+			}(),
+			api: a,
+			log: log.New(os.Stdout, fmt.Sprintf("[%-14s] ", p.Name), log.Ltime),
 		}
 		if err := ag.serve(); err != nil {
 			lg.Fatalf("FATAL: agent %s could not listen on :%d: %v", p.Name, ag.Port, err)
 		}
 		lg.Printf("agent endpoint up: %s → %s", p.Name, ag.endpointURL())
 		agents = append(agents, ag)
+	}
+
+	// A publicly-deployed agent must be REACHABLE before it registers.
+	//
+	// Without this the lab registered its tunnel URL roughly one second after binding the port,
+	// and the platform's verification probe arrived before the tunnel had routed a single
+	// request — onboarding failed with "endpoint not verified", which reads as a platform fault
+	// and is not one. A real deployment is already serving by the time a developer registers it;
+	// the lab was modelling a sequence nobody actually performs.
+	//
+	// Measured: the first request through a fresh tunnel takes ~2s, subsequent ones ~0.5s.
+	for _, ag := range agents {
+		if ag.PublicURL == "" {
+			continue
+		}
+		if err := waitPublicReachable(ag.endpointURL(), 90*time.Second); err != nil {
+			lg.Fatalf("FATAL: %s is registered at %s but that URL never became reachable: %v\n"+
+				"The platform verifies an endpoint by calling it, so an unreachable deployment "+
+				"cannot be onboarded — check the tunnel/proxy before blaming the platform.",
+				ag.Persona.Name, ag.endpointURL(), err)
+		}
+		lg.Printf("public endpoint reachable: %s", ag.endpointURL())
 	}
 
 	// Onboard each agent exactly as a developer would: sign up, submit a manifest that
@@ -318,4 +351,34 @@ func runStakedTable(a *api, lg *log.Logger, agents []*labAgent, tier string) err
 		matchID, host.Persona.Name, guest.Persona.Name, tier)
 	lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
 	return nil
+}
+
+// waitPublicReachable polls an agent's own public URL until it answers, or gives up.
+//
+// Polls /health rather than /play: /play needs a real turn payload, and a 400 from it would say
+// nothing about whether the deployment is routable. This is the same question the platform's
+// verifier asks, asked first, so a tunnel that is not yet routing fails HERE with a message about
+// the tunnel instead of surfacing later as "endpoint not verified".
+func waitPublicReachable(playURL string, timeout time.Duration) error {
+	healthURL := strings.TrimSuffix(playURL, "/play") + "/health"
+	deadline := time.Now().Add(timeout)
+	var last error
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, healthURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			last = fmt.Errorf("HTTP %d", resp.StatusCode)
+		} else {
+			last = err
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("no 200 from %s within %s (last: %v)", healthURL, timeout, last)
 }
