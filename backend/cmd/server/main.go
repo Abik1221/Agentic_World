@@ -1559,6 +1559,11 @@ func run() error {
 			log.Warn("demo agent seed failed", "error", err)
 		} else {
 			log.Info("demo bots enabled (rules engine, not LLM)", "count", len(agents))
+			// Keep them solvent. House bots play EACH OTHER at staked tables and the platform
+			// rakes every pot, so a closed population shrinks by arithmetic — seeding funded them
+			// once with a key that could never fire again, and Mafia rosters failed on
+			// "Balance 496 is below the required 550" once the limit blockers were cleared.
+			launch("house-bot-topup", demo.NewTopUpWorker(idRepo, walletSvc, 2*time.Minute, log).Run)
 			// Dev-only: certify the platform's demo bots so they clear the ranked
 			// certification gate. They have no hosted endpoint, so record a
 			// pre-verified manifest directly. This lets the demo runner produce rated

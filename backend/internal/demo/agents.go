@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/agent-arena/arena/internal/identity"
 	"github.com/agent-arena/arena/internal/platform"
@@ -87,3 +88,75 @@ func TopUp(ctx context.Context, mint *wallet.Service, agentPublicID string, bala
 
 // NewOwnerID generates a fresh user public id for dev seeding.
 func NewOwnerID() string { return platform.NewID(platform.PrefixUser) }
+
+// TopUpSource lists house bots and their balances. Satisfied by *store.IdentityRepo.
+type TopUpSource interface {
+	HouseBotBalances(ctx context.Context) (map[string]int64, error)
+}
+
+// TopUpWorker keeps house bots solvent on an interval.
+//
+// # Why this cannot be a boot-time job
+//
+// Seeding funded them once, with a fixed idempotency key that could never fire again, and the
+// population drains continuously: house bots play EACH OTHER at staked tables and the platform
+// rakes every pot, so the pool shrinks by arithmetic rather than by bad play. A top-up at boot
+// buys a few minutes and then the same wall returns — which is exactly what happened after the
+// limit fixes landed: tables climbed from 1 seat to 12, then failed again on "Balance 496 is
+// below the required 550".
+//
+// # Why a shrinking pool is not a symptom to work around
+//
+// It is the correct behaviour of the rake meeting a closed population. Nothing here is leaking
+// coins — the ledger stays balanced and every drained coin is in platform_revenue. Topping up is
+// how infrastructure is maintained, not a patch over a bug.
+type TopUpWorker struct {
+	src      TopUpSource
+	mint     *wallet.Service
+	interval time.Duration
+	log      *slog.Logger
+}
+
+func NewTopUpWorker(src TopUpSource, mint *wallet.Service, interval time.Duration, log *slog.Logger) *TopUpWorker {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &TopUpWorker{src: src, mint: mint, interval: interval, log: log}
+}
+
+// Run tops up until ctx is cancelled, once immediately on start.
+func (w *TopUpWorker) Run(ctx context.Context) {
+	w.log.Info("house bot top-up worker started", "interval", w.interval.String(), "float", HouseFloat)
+	t := time.NewTicker(w.interval)
+	defer t.Stop()
+	for {
+		balances, err := w.src.HouseBotBalances(ctx)
+		if err != nil {
+			// Logged, not fatal. A failed read is not a reason to stop maintaining the pool, and
+			// the next tick retries.
+			w.log.Error("house bot balances could not be read", "error", err)
+		}
+		topped := 0
+		for agentID, bal := range balances {
+			// Round key on the interval so a restart inside the same window does not double-mint,
+			// while a genuinely later window can.
+			round := time.Now().Unix() / int64(w.interval.Seconds())
+			ok, err := TopUp(ctx, w.mint, agentID, bal, round)
+			if err != nil {
+				w.log.Warn("house bot top-up failed", "agent", agentID, "balance", bal, "error", err)
+				continue
+			}
+			if ok {
+				topped++
+			}
+		}
+		if topped > 0 {
+			w.log.Info("house bots topped up", "count", topped, "of", len(balances), "to", HouseFloat)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}

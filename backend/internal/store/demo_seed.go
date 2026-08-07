@@ -185,3 +185,30 @@ func (r *IdentityRepo) insertDevAgent(ctx context.Context, slug, name string, li
 	}
 	return agentPublicID, ownerPublicID, nil
 }
+
+// HouseBotBalances returns every house bot's agent-wallet balance, keyed by agent public id.
+//
+// Reads the wallet rather than any cached figure: the top-up decision is about what the bot can
+// actually stake right now, and a stale number would either starve a broke bot or mint for one
+// that is fine.
+func (r *IdentityRepo) HouseBotBalances(ctx context.Context) (map[string]int64, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id, coalesce(w.balance, 0)
+		   FROM agents a
+		   LEFT JOIN wallets w ON w.agent_id = a.id AND w.kind = 'agent'
+		  WHERE a.slug LIKE 'demo%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var bal int64
+		if err := rows.Scan(&id, &bal); err != nil {
+			return nil, err
+		}
+		out[id] = bal
+	}
+	return out, rows.Err()
+}
