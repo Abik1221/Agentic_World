@@ -234,7 +234,7 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 			// one table stuck for an hour while nothing else started.
 			//
 			// A table that cannot move is not worth a tick; fall through and start a fresh one.
-			if r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], lm.MatchID) {
+			if r.driveMafia(ctx, r.agentsByID(lm.Agents), lm.MatchID) {
 				return // it progressed — driving is the work, not a preamble to more of it
 			}
 		}
@@ -270,8 +270,9 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 				}
 				filled++
 			}
-			// Complete: drive it, exactly as the create path drives what it filled.
-			r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], item.PublicID)
+			// Complete: drive exactly the seats now at the table, for the same reason as the
+			// create path — see agentsByID.
+			r.driveMafia(ctx, r.agentsByID(nil), item.PublicID)
 		}
 		return
 	}
@@ -280,6 +281,9 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 	if err != nil {
 		return
 	}
+	// Collect WHO is seated, not how many. The driver must act for these exact agents; handing
+	// it the first twelve of the pool played agents who were not at the table. See agentsByID.
+	seatedAgents := []demo.Agent{a}
 	// Fill the roster. A failure here used to `return` silently, abandoning a table with ONE
 	// seat that then sat until it timed out and aborted — 190 aborted mafia tables against 1
 	// finished, every abort holding exactly 1 seat, and no log line anywhere saying why.
@@ -301,8 +305,9 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 			return
 		}
 		seated++
+		seatedAgents = append(seatedAgents, b)
 	}
-	r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], mid)
+	r.driveMafia(ctx, seatedAgents, mid)
 }
 
 // driveMafia carries a table to its conclusion by cycling EVERY seat each round.
@@ -468,3 +473,40 @@ func min(a, b int) int {
 // Raising the bot's stake to the 500 tier, which I did earlier in this session, was pushing
 // house bots deeper into paid play in exactly the direction this reverses.
 func (r *Runner) houseStake() int64 { return 0 }
+
+// agentsByID resolves seated agent ids to the pool entries that can act for them.
+//
+// # Why this exists
+//
+// The driver used to be handed r.agents[:RosterSize] — the FIRST twelve of the pool — while
+// tables are filled with r.next(idx), which CYCLES. A table's twelve seats can easily be pool
+// entries 3..14 wrapped around, so the driver was playing agents who were not at the table and
+// never asking the ones who were.
+//
+// Those unasked seats could not speak, s.Messages never reached the living-seat count,
+// discussionReady() stayed false forever, and the table wedged at its discussion phase. It read
+// like a policy gap — some view PickMafiaAction could not answer — and it was an identity
+// mismatch: the right policy asked on behalf of the wrong agents.
+//
+// An empty or unknown list falls back to the whole pool, which is the old behaviour and still
+// correct when the caller cannot say who is seated: driving a superset merely wastes calls on
+// seats that are not ours, where driving a subset silently strands the ones that are.
+func (r *Runner) agentsByID(ids []string) []demo.Agent {
+	if len(ids) == 0 {
+		return r.agents[:min(len(r.agents), mf.RosterSize)]
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make([]demo.Agent, 0, len(ids))
+	for _, a := range r.agents {
+		if want[a.PublicID] {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
+		return r.agents[:min(len(r.agents), mf.RosterSize)]
+	}
+	return out
+}
