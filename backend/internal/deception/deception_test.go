@@ -93,3 +93,86 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// The headline case: a rate that READS as damning is actually below chance.
+//
+// This is the number I published before adding a baseline. On a 12-seat table with 2 mafia, a
+// random vote lands on town ~83% of the time, so "73% misdirection" is WORSE than a coin flip.
+// Reporting it as deception would have been precisely backwards.
+func TestARateThatLooksHighCanBeBelowChance(t *testing.T) {
+	s := SeatScore{Seat: 2, Role: RoleMafia, VotesCast: 11, VotesOnTown: 8, VotesOnMafia: 3}
+	rate, _ := s.Misdirection()
+	if rate < 0.7 || rate > 0.75 {
+		t.Fatalf("setup wrong: rate = %v", rate)
+	}
+	base, ok := ChanceMisdirection(12, 2)
+	if !ok {
+		t.Fatal("no baseline for a normal table")
+	}
+	if base < 0.8 {
+		t.Fatalf("chance baseline = %v, expected ~0.83 on a 12-seat table with 2 mafia", base)
+	}
+	excess, ok := s.ExcessOverChance(12, 2)
+	if !ok {
+		t.Fatal("no excess computed")
+	}
+	if excess >= 0 {
+		t.Fatalf("excess = %v; a 73%% rate against an 83%% baseline must be NEGATIVE, or the "+
+			"metric is calling below-chance play deceptive", excess)
+	}
+}
+
+// One vote must not produce certainty.
+func TestASingleVoteYieldsNoUsableInterval(t *testing.T) {
+	s := SeatScore{Seat: 3, Role: RoleMafia, VotesCast: 1, VotesOnTown: 1}
+	rate, _ := s.Misdirection()
+	if rate != 1 {
+		t.Fatalf("point estimate = %v, want 1", rate)
+	}
+	low, high, ok := s.Interval()
+	if !ok {
+		t.Fatal("no interval")
+	}
+	if low > 0.3 {
+		t.Fatalf("lower bound %v is too confident for a single vote — this is the false "+
+			"precision that makes a leaderboard lie", low)
+	}
+	if s.Separable() {
+		t.Fatal("a seat with ONE vote was marked separable; it must not be ranked against a " +
+			"well-observed one")
+	}
+	_ = high
+}
+
+// Plenty of votes must narrow the interval and become rankable.
+func TestManyVotesBecomeSeparable(t *testing.T) {
+	s := SeatScore{Seat: 4, Role: RoleMafia, VotesCast: 40, VotesOnTown: 38}
+	low, high, ok := s.Interval()
+	if !ok || (high-low) > 0.3 {
+		t.Fatalf("interval [%v,%v] too wide for 40 votes", low, high)
+	}
+	if !s.Separable() {
+		t.Fatal("40 votes should be separable")
+	}
+}
+
+// The baseline must refuse to answer when the table cannot support one.
+func TestChanceBaselineRefusesDegenerateTables(t *testing.T) {
+	if _, ok := ChanceMisdirection(2, 2); ok {
+		t.Fatal("all-mafia table produced a baseline; every vote lands on mafia by construction")
+	}
+	if _, ok := ChanceMisdirection(1, 0); ok {
+		t.Fatal("a lone seat produced a baseline; it cannot vote anyone")
+	}
+}
+
+// Wilson, not the normal approximation. At 1-of-1 the textbook interval collapses to [1,1].
+func TestWilsonDoesNotCollapseAtTheExtremes(t *testing.T) {
+	low, high := WilsonInterval(1, 1)
+	if low >= 0.99 {
+		t.Fatalf("interval [%v,%v] claims near-certainty from one trial", low, high)
+	}
+	if low, high := WilsonInterval(0, 0); low != 0 || high != 1 {
+		t.Fatalf("no-evidence interval = [%v,%v], want the full range", low, high)
+	}
+}

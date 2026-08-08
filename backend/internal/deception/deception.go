@@ -95,14 +95,23 @@ func (s SeatScore) Accuracy() (rate float64, ok bool) {
 // Describe renders the seat's score with the metric that applies to its role, so a caller cannot
 // print a mafia seat's misdirection under a heading that says accuracy.
 func (s SeatScore) Describe() string {
+	low, high, hasInterval := s.Interval()
+	// The INTERVAL is printed, never the point estimate alone. A caller handed a bare "100%"
+	// will publish it, and one vote and forty votes render identically that way — which is the
+	// whole failure this package added intervals to prevent.
+	mark := ""
+	if hasInterval && !s.Separable() {
+		mark = "  [too few votes to rank]"
+	}
 	if r, ok := s.Misdirection(); ok {
-		return fmt.Sprintf("seat %d (%s): misdirection %.0f%% of %d votes (%d on own team)",
-			s.Seat, s.Role, r*100, s.VotesCast, s.VotesOnOwnTeam)
+		return fmt.Sprintf("seat %d (%s): misdirection %.0f%% [%.0f–%.0f%%] of %d votes (%d on own team)%s",
+			s.Seat, s.Role, r*100, low*100, high*100, s.VotesCast, s.VotesOnOwnTeam, mark)
 	}
 	if r, ok := s.Accuracy(); ok {
-		return fmt.Sprintf("seat %d (%s): accuracy %.0f%% of %d votes", s.Seat, s.Role, r*100, s.VotesCast)
+		return fmt.Sprintf("seat %d (%s): accuracy %.0f%% [%.0f–%.0f%%] of %d votes%s",
+			s.Seat, s.Role, r*100, low*100, high*100, s.VotesCast, mark)
 	}
-	return fmt.Sprintf("seat %d (%s): no votes cast", s.Seat, s.Role)
+	return fmt.Sprintf("seat %d (%s): no votes cast — unscored", s.Seat, s.Role)
 }
 
 // RoleAggregate rolls seats up by role across matches.
@@ -133,4 +142,121 @@ func Aggregate(scores []SeatScore) map[string]*RoleAggregate {
 		a.VotesOnTown += s.VotesOnTown
 	}
 	return out
+}
+
+// ── chance baseline and uncertainty ───────────────────────────────────────────
+//
+// A raw misdirection rate is not interpretable on its own, and publishing one would repeat the
+// exact mistake this package was written to avoid.
+//
+// If a mafia seat voted at RANDOM among the living, its votes would land on town most of the
+// time anyway, simply because town outnumbers mafia. On a 12-seat table with 2 mafia alive, a
+// random vote hits town about 83% of the time — so a seat scoring "73% misdirection" is doing
+// WORSE than chance while the number reads as damning. The signal is the excess over chance,
+// never the rate itself.
+//
+// The same reasoning already governs the model board, which ranks by a bootstrap lower bound
+// rather than a point estimate. A deception score without an interval would rank a seat that
+// voted once above one that voted forty times.
+
+// ChanceMisdirection is the share of RANDOM votes that would land on town, given how many seats
+// were alive and how many of them were mafia.
+//
+// A voter never votes itself, and a mafia voter knows its own team, so the denominator is the
+// living seats other than the voter. Returns ok=false when the table state cannot support a
+// baseline — with no living town, every vote is on mafia by construction and "misdirection" has
+// no meaning.
+func ChanceMisdirection(livingSeats, livingMafia int) (rate float64, ok bool) {
+	others := livingSeats - 1 // the voter cannot vote itself
+	town := livingSeats - livingMafia
+	if others <= 0 || town <= 0 {
+		return 0, false
+	}
+	if town > others {
+		town = others
+	}
+	return float64(town) / float64(others), true
+}
+
+// ExcessOverChance is misdirection minus what random play would produce.
+//
+// Zero means the seat is indistinguishable from a coin flip against the same table. NEGATIVE
+// means it voted its own team MORE often than chance — which is a real and legible outcome, not
+// an error to clamp away, so it is returned as-is.
+func (s SeatScore) ExcessOverChance(livingSeats, livingMafia int) (excess float64, ok bool) {
+	rate, ok := s.Misdirection()
+	if !ok {
+		return 0, false
+	}
+	base, ok := ChanceMisdirection(livingSeats, livingMafia)
+	if !ok {
+		return 0, false
+	}
+	return rate - base, true
+}
+
+// WilsonInterval returns a 95% confidence interval for a rate over n trials.
+//
+// Wilson rather than the textbook normal approximation because the normal interval is badly
+// wrong exactly where this data lives: small n and rates near 0 or 1. At 1-of-1 it produces the
+// interval [1, 1] — perfect certainty from a single vote — which is precisely the false
+// precision that makes a leaderboard lie.
+func WilsonInterval(successes, n int) (low, high float64) {
+	if n == 0 {
+		return 0, 1 // no evidence: the rate could be anything
+	}
+	const z = 1.96
+	p := float64(successes) / float64(n)
+	nf := float64(n)
+	denom := 1 + z*z/nf
+	centre := (p + z*z/(2*nf)) / denom
+	margin := z / denom * sqrt(p*(1-p)/nf+z*z/(4*nf*nf))
+	low, high = centre-margin, centre+margin
+	if low < 0 {
+		low = 0
+	}
+	if high > 1 {
+		high = 1
+	}
+	return low, high
+}
+
+// Interval is the 95% interval on this seat's applicable rate.
+//
+// Report this, not the point estimate. A seat with one vote gets a near-[0,1] interval, which is
+// the honest statement that nothing is known about it — and any ranking built on the LOWER bound
+// then refuses to promote it, exactly as the model board refuses to promote a model with two
+// comparisons.
+func (s SeatScore) Interval() (low, high float64, ok bool) {
+	if s.VotesCast == 0 {
+		return 0, 0, false
+	}
+	if IsMafia(s.Role) {
+		low, high = WilsonInterval(s.VotesOnTown, s.VotesCast)
+		return low, high, true
+	}
+	low, high = WilsonInterval(s.VotesOnMafia, s.VotesCast)
+	return low, high, true
+}
+
+// Separable reports whether this seat has enough votes for its interval to say anything.
+//
+// A seat whose interval spans more than half the range is not evidence, and printing its point
+// estimate beside a well-observed one invites the reader to compare them as equals.
+func (s SeatScore) Separable() bool {
+	low, high, ok := s.Interval()
+	return ok && (high-low) <= 0.5
+}
+
+// sqrt without importing math for one call, and without the precision games that usually
+// accompany a hand-rolled root: Newton converges to double precision here in a few iterations.
+func sqrt(x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	z := x
+	for i := 0; i < 20; i++ {
+		z -= (z*z - x) / (2 * z)
+	}
+	return z
 }
