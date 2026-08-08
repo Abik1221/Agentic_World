@@ -15,15 +15,7 @@ import (
 
 // Runner drives rule-based demo agents (no LLM). Users bring real agents in prod;
 // this fills tables locally so matches run end-to-end.
-// StakeSource exposes the lowest enabled tier for a game. Satisfied by *gamestakes.Service.
-type StakeSource interface {
-	LowestEnabledCoins(ctx context.Context, game string) (int64, bool)
-}
-
 type Runner struct {
-	// stakes supplies the game's configured tiers so house tables stake an amount the platform
-	// actually offers. Optional (nil = fall back to the default floor).
-	stakes   StakeSource
 	match    *match.Service
 	mafia    *mafia.Service
 	monopoly *monopoly.Service
@@ -152,7 +144,7 @@ func (r *Runner) tickGoofspiel(ctx context.Context, idx *int) {
 	// never met the handler's tier check — 711 goofspiel tables were opened at a stake the game
 	// does not offer. A house bot advertising an impossible stake is also a lie to any developer
 	// browsing the lobby.
-	bid := r.lowestStake(ctx, "goofspiel", 500)
+	bid := r.houseStake()
 	lobby, err := r.match.Lobby(ctx, "goofspiel", bid, "")
 	if err != nil {
 		return
@@ -217,7 +209,7 @@ func (r *Runner) playGoofspiel(ctx context.Context, agentID, matchID string) {
 }
 
 func (r *Runner) tickMafia(ctx context.Context, idx *int) {
-	entry := r.lowestStake(ctx, "mafia", 500) // was int64(100); see tickGoofspiel
+	entry := r.houseStake()
 	lobby, err := r.mafia.Lobby(ctx, entry, "")
 	if err != nil {
 		return
@@ -231,7 +223,7 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 			// the lobby branch on every pass, so the create path (which fills all 12 at once)
 			// never runs, and the partial creeps upward until its window expires. Tables were
 			// aborting at 1, 2, 3, 5, 7, 9 and 11 seats — every one of them a table that had
-			// taken real stakes and would never start.
+			// taken a seat and would never start.
 			//
 			// Filling here is the same all-or-nothing seating the create path does, for the same
 			// reason: Mafia cannot start short, so a roster that cannot be completed is worth
@@ -402,22 +394,24 @@ func min(a, b int) int {
 	return b
 }
 
-// lowestStake returns the game's lowest enabled tier, falling back to def when no tier source is
-// wired or the table cannot be read.
+// houseStake is what a house bot may stake: NOTHING.
 //
-// The fallback is the DEFAULT FLOOR rather than a cheap constant on purpose: if the tiers cannot
-// be read, the safe direction is a stake the platform is known to accept, not one it is known to
-// reject. Erring cheap is what produced the sub-floor tables in the first place.
-func (r *Runner) lowestStake(ctx context.Context, game string, def int64) int64 {
-	if r.stakes == nil {
-		return def
-	}
-	if lowest, ok := r.stakes.LowestEnabledCoins(ctx, game); ok && lowest > 0 {
-		return lowest
-	}
-	return def
-}
-
-// WithStakes wires the tier table so house tables use a stake the game actually offers.
-// Chainable, matching WithMonopoly.
-func (r *Runner) WithStakes(src StakeSource) *Runner { r.stakes = src; return r }
+// # Why this is zero and not a tier
+//
+// These agents are demo.FrameworkLabel = "rules-engine". They are deterministic code, not an
+// LLM, and the platform's verification gate correctly flags them as such — 72,469 times. The
+// tempting fix was to exempt house bots from that gate. It is the wrong fix: a deterministic
+// agent taking coins off a developer is fraud, and the gate exists precisely to stop it. Cutting
+// an exemption into an anti-fraud control to make a demo run would trade the integrity of the
+// whole arena for a fuller lobby.
+//
+// So the house does not stake. It seeds PRACTICE tables — visible activity, a lobby that is not
+// empty, a spectator feed with something in it — and every staked seat belongs to a verified
+// LLM-backed agent that a developer deployed and holds the key for.
+//
+// This also retires three problems rather than tuning them. A house bot that stakes nothing
+// cannot drain to rake (so the top-up exists only for legacy balances), cannot trip a session
+// loss limit, and never meets the certification gate at all, because zero-fee tables skip it.
+// Raising the bot's stake to the 500 tier, which I did earlier in this session, was pushing
+// house bots deeper into paid play in exactly the direction this reverses.
+func (r *Runner) houseStake() int64 { return 0 }

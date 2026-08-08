@@ -1579,7 +1579,7 @@ func run() error {
 					log.Warn("demo agent certify failed", "agent", a.PublicID, "error", err)
 				}
 			}
-			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).WithStakes(gameStakesSvc).Run)
+			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).Run)
 			// NOTE: mafia push-play is now enabled unconditionally above with dedicated
 			// kind='house' filler bots, so it no longer depends on these demo agents.
 		}
