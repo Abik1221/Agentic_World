@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -322,6 +323,16 @@ func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID st
 	// Generous, because a 12-player game runs several days of night/discussion/voting, and the
 	// no-progress exit below is what actually ends the loop in the normal case.
 	const maxRounds = 200
+	// PROGRESS means the game moved, not that a call returned without error.
+	//
+	// A seat that has already spoken this phase gets (state, nil, nil) from the engine — no
+	// error, no change. Treating that as progress made driveMafia spin its full 200 rounds
+	// believing it was advancing, and report moved=true to a caller that then refused to start
+	// anything else. The platform sat behind one table at day 5 for an hour.
+	//
+	// So progress is measured from the phase itself: if a whole cycle of every seat leaves day
+	// and phase where they were, nothing happened, whatever the calls returned.
+	lastPhase := ""
 	for round := 0; round < maxRounds; round++ {
 		progressed := false
 		for _, a := range agents {
@@ -340,8 +351,19 @@ func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID st
 			if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act, 0, "", "", true); err != nil {
 				continue
 			}
-			progressed = true
-			moved = true
+			// Only a change of day or phase counts. A message accepted from a seat that had
+			// already spoken changes nothing and must not read as motion.
+			cur := fmt.Sprintf("%d/%s", view.Day, view.Phase)
+			if lastPhase == "" {
+				// SEED, do not count. The first observation is not motion — it is simply the
+				// first time we looked. Counting it made every wedged table report one round of
+				// progress, which was enough to keep moved=true and hold the livelock shut.
+				lastPhase = cur
+			} else if cur != lastPhase {
+				lastPhase = cur
+				progressed = true
+				moved = true
+			}
 		}
 		if !progressed {
 			// No seat could act anywhere on the table. That is a phase waiting on a timer rather
