@@ -210,6 +210,26 @@ func (r *Runner) playGoofspiel(ctx context.Context, agentID, matchID string) {
 
 func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 	entry := r.houseStake()
+	// RESUME an active table before starting anything new.
+	//
+	// driveMafia returns when no seat can act, which is correct — that is a phase waiting on its
+	// own timer, and spinning would burn CPU without moving the game. But nothing ever came back
+	// for that table. The tick created a fresh one instead, so partially-played matches piled up
+	// in 'active' forever: 582 of them, and demo bots sitting in 488-535 "active" matches each
+	// against a concurrency cap of 14.
+	//
+	// That also explains the concurrency errors this fix was chased down from. The cap was never
+	// violated by a race; the count was real, and it was counting abandoned games.
+	if live, err := r.mafia.Live(ctx); err == nil {
+		for _, lm := range live {
+			if lm.Winner != "" {
+				continue
+			}
+			r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], lm.MatchID)
+			return // one table per tick: driving is the work, not a preamble to more of it
+		}
+	}
+
 	lobby, err := r.mafia.Lobby(ctx, entry, "")
 	if err != nil {
 		return
