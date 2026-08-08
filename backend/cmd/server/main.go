@@ -30,6 +30,7 @@ import (
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/deadline"
+	"github.com/agent-arena/arena/internal/deception"
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
@@ -1385,6 +1386,10 @@ func run() error {
 	// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after the
 	// tiers were seeded and continuing for two days without a single error.
 	matchmakingSvc.SetStakeFloor(gameStakesSvc)
+	// Deception index. Public read, like the model board — and served WITH its methodology,
+	// because "this seat deceives 92% of the time" is a claim about conduct and a number without
+	// its chance baseline reads as damning when it is often below random.
+	deceptionHandler := deception.NewHandler(store.NewDeceptionRepo(st.DB))
 	// Reconciler for queue entries the finalize hook could not clear. A match that ends in about
 	// a second can finish BEFORE the pairing transaction that marked its rows 'matched' commits,
 	// so the clear deletes nothing and the row is orphaned afterwards. That is two transactions
@@ -1688,6 +1693,7 @@ func run() error {
 			return e
 		}),
 		matchHandler.Register,
+		deceptionHandler.Register,
 		matchmakingHandler.Register,
 		groupHandler.Register,
 		autoplayHandler.Register,

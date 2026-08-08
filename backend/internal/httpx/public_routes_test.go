@@ -42,6 +42,13 @@ var publicRoutes = []string{
 	"Get /v1/agents/{agent_id}/manifest/public",
 	"Get /v1/arenas",
 	"Get /v1/auth/magic-link/verify",
+	// Public deliberately, and the guard made me say so. Both are read-only aggregates over
+	// FINISHED matches: the roles they score against are already revealed at the end of a game,
+	// so nothing here leaks a live table's secret. The methodology is public for the same reason
+	// the model board's is — a conduct claim published without its method is not defensible, and
+	// the chance baseline is the part that stops the number being read backwards.
+	"Get /v1/benchmark/deception",
+	"Get /v1/benchmark/deception/methodology",
 	"Get /v1/benchmark/developers",
 	"Get /v1/benchmark/model",
 	"Get /v1/benchmark/modelboard",
