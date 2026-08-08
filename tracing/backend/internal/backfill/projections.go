@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/agent-arena/pyyol-lens/backend/internal/store"
 )
@@ -29,8 +30,38 @@ func ResetProjectionTables(ctx context.Context, ch *store.Store) error {
 	return nil
 }
 
+// rollupTables are SummingMergeTree, so re-inserting an aggregate ADDS to it rather than
+// replacing it. Every other projection here is keyed and collapses on merge, which makes it
+// idempotent; these three are not.
+var rollupTables = []string{"rollup_hourly", "rollup_daily", "rollup_monthly"}
+
+// truncateRollups clears the rollup tables before they are re-derived.
+//
+// ALWAYS, not only under BACKFILL_RESET. Re-deriving a rollup from events_raw is by definition a
+// full replacement, and because these tables SUM on merge, a run without reset silently DOUBLES
+// them: measured 381,060 tokens against a true 190,530 after one such run. Nothing errored and
+// nothing looked wrong — the numbers were simply twice reality, which on a cost board is worse
+// than a crash.
+//
+// The reset flag also could not be relied on to prevent this: it compares the env var against the
+// literal "true", so the obvious BACKFILL_RESET=1 reads as false and the caller gets the unsafe
+// path while believing they asked for the safe one.
+func truncateRollups(ctx context.Context, ch *store.Store) error {
+	for _, tbl := range rollupTables {
+		if _, err := ch.DB.ExecContext(ctx, "TRUNCATE TABLE "+tbl); err != nil {
+			return fmt.Errorf("truncate %s before re-deriving rollups: %w", tbl, err)
+		}
+	}
+	return nil
+}
+
 // InsertProjectionsFromEventsRaw rebuilds traces, spans, events, token_usage, rollups, etc. from events_raw.
 func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error {
+	// The rollups must start empty every time; see truncateRollups.
+	if err := truncateRollups(ctx, ch); err != nil {
+		return err
+	}
+
 	queries := []string{
 		`INSERT INTO traces
 		SELECT
@@ -62,7 +93,24 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		WHERE trace_id != ''
 		GROUP BY trace_id`,
 
-		`INSERT INTO spans
+		// EXPLICIT column list, not a positional insert.
+		//
+		// This selected 21 expressions into `spans` with no column list, which worked until the
+		// phase-10 telemetry migration widened the table to 38 columns. After that the whole
+		// backfill died on "Number of columns doesn't match (source: 21 and result: 38)" — and
+		// because the queries run in sequence, ONE broken projection meant no projection could be
+		// rebuilt at all.
+		//
+		// Naming the columns is what stops that recurring: the 17 later columns take their
+		// defaults, and a 39th added tomorrow cannot break this again. The alternative — appending
+		// 17 placeholder expressions — would have to be edited on every future migration, which is
+		// the same trap one release further out.
+		`INSERT INTO spans (
+			trace_id, span_id, parent_span_id, span_type, step_name, status,
+			started_at, ended_at, latency_ms, input_ref, output_ref,
+			error_type, error_message, provider, model, model_version,
+			tool_name, tool_version, total_tokens, total_cost, updated_at
+		)
 		SELECT
 			trace_id,
 			span_id,
@@ -172,6 +220,9 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 			now64(3) AS processed_at
 		FROM events_raw`,
 
+		// meter_source is part of the GROUP BY, not just the projection. A gateway-routed call
+		// emits one gateway event and one sdk event, so grouping without it sums a measurement
+		// and a claim into a single number and counts every such call twice. See migration 006.
 		`INSERT INTO rollup_hourly
 		SELECT
 			toStartOfHour(event_time) AS bucket_start,
@@ -181,10 +232,14 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 			countIf(event_type = 'trace_started') AS traces_total,
 			countIf(event_type = 'trace_failed' OR status = 'error') AS errors_total,
 			sum(total_tokens) AS tokens_total,
-			sum(if(reconciled_cost > 0, reconciled_cost, estimated_cost)) AS estimated_cost
+			sum(if(reconciled_cost > 0, reconciled_cost, estimated_cost)) AS estimated_cost,
+			meter_source
 		FROM events_raw
-		GROUP BY bucket_start, organization_id, project_id, environment`,
+		GROUP BY bucket_start, organization_id, project_id, environment, meter_source`,
 
+		// meter_source is part of the GROUP BY, not just the projection. A gateway-routed call
+		// emits one gateway event and one sdk event, so grouping without it sums a measurement
+		// and a claim into a single number and counts every such call twice. See migration 006.
 		`INSERT INTO rollup_daily
 		SELECT
 			toDate(event_time) AS bucket_start,
@@ -194,10 +249,14 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 			countIf(event_type = 'trace_started') AS traces_total,
 			countIf(event_type = 'trace_failed' OR status = 'error') AS errors_total,
 			sum(total_tokens) AS tokens_total,
-			sum(if(reconciled_cost > 0, reconciled_cost, estimated_cost)) AS estimated_cost
+			sum(if(reconciled_cost > 0, reconciled_cost, estimated_cost)) AS estimated_cost,
+			meter_source
 		FROM events_raw
-		GROUP BY bucket_start, organization_id, project_id, environment`,
+		GROUP BY bucket_start, organization_id, project_id, environment, meter_source`,
 
+		// meter_source is part of the GROUP BY, not just the projection. A gateway-routed call
+		// emits one gateway event and one sdk event, so grouping without it sums a measurement
+		// and a claim into a single number and counts every such call twice. See migration 006.
 		`INSERT INTO rollup_monthly
 		SELECT
 			toDate(toStartOfMonth(event_time)) AS bucket_start,
@@ -207,9 +266,10 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 			countIf(event_type = 'trace_started') AS traces_total,
 			countIf(event_type = 'trace_failed' OR status = 'error') AS errors_total,
 			sum(total_tokens) AS tokens_total,
-			sum(if(reconciled_cost > 0, reconciled_cost, estimated_cost)) AS estimated_cost
+			sum(if(reconciled_cost > 0, reconciled_cost, estimated_cost)) AS estimated_cost,
+			meter_source
 		FROM events_raw
-		GROUP BY bucket_start, organization_id, project_id, environment`,
+		GROUP BY bucket_start, organization_id, project_id, environment, meter_source`,
 	}
 
 	for _, q := range queries {

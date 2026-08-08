@@ -94,6 +94,13 @@ type RollupDelta struct {
 	ErrorsTotal    int64
 	TokensTotal    int64
 	EstimatedCost  float64
+	// MeterSource keeps the VERIFIED and SELF-REPORTED economics in separate buckets.
+	//
+	// A gateway-routed call emits two events — the gateway's server-observed span and the agent's
+	// own report — and before this was part of the rollup key, SummingMergeTree collapsed them
+	// together and summed them. Every routed call was counted twice, and the total mixed a
+	// measurement with a claim. See migration 006.
+	MeterSource string
 }
 
 func New(cfg config.Config) (*Store, error) {
@@ -320,25 +327,25 @@ func (s *Store) InsertRollupDelta(ctx context.Context, d RollupDelta) error {
 
 	if _, err := s.DB.ExecContext(
 		ctx,
-		`INSERT INTO rollup_hourly (bucket_start,organization_id,project_id,environment,traces_total,errors_total,tokens_total,estimated_cost)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		hourBucket, d.OrganizationID, d.ProjectID, d.Environment, d.TracesTotal, d.ErrorsTotal, d.TokensTotal, d.EstimatedCost,
+		`INSERT INTO rollup_hourly (bucket_start,organization_id,project_id,environment,traces_total,errors_total,tokens_total,estimated_cost,meter_source)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		hourBucket, d.OrganizationID, d.ProjectID, d.Environment, d.TracesTotal, d.ErrorsTotal, d.TokensTotal, d.EstimatedCost, d.MeterSource,
 	); err != nil {
 		return err
 	}
 	if _, err := s.DB.ExecContext(
 		ctx,
-		`INSERT INTO rollup_daily (bucket_start,organization_id,project_id,environment,traces_total,errors_total,tokens_total,estimated_cost)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		dayBucket, d.OrganizationID, d.ProjectID, d.Environment, d.TracesTotal, d.ErrorsTotal, d.TokensTotal, d.EstimatedCost,
+		`INSERT INTO rollup_daily (bucket_start,organization_id,project_id,environment,traces_total,errors_total,tokens_total,estimated_cost,meter_source)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		dayBucket, d.OrganizationID, d.ProjectID, d.Environment, d.TracesTotal, d.ErrorsTotal, d.TokensTotal, d.EstimatedCost, d.MeterSource,
 	); err != nil {
 		return err
 	}
 	_, err := s.DB.ExecContext(
 		ctx,
-		`INSERT INTO rollup_monthly (bucket_start,organization_id,project_id,environment,traces_total,errors_total,tokens_total,estimated_cost)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		monthBucket, d.OrganizationID, d.ProjectID, d.Environment, d.TracesTotal, d.ErrorsTotal, d.TokensTotal, d.EstimatedCost,
+		`INSERT INTO rollup_monthly (bucket_start,organization_id,project_id,environment,traces_total,errors_total,tokens_total,estimated_cost,meter_source)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		monthBucket, d.OrganizationID, d.ProjectID, d.Environment, d.TracesTotal, d.ErrorsTotal, d.TokensTotal, d.EstimatedCost, d.MeterSource,
 	)
 	return err
 }
