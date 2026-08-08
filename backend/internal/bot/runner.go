@@ -225,8 +225,17 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 			if lm.Winner != "" {
 				continue
 			}
-			r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], lm.MatchID)
-			return // one table per tick: driving is the work, not a preamble to more of it
+			// Return ONLY if the table actually moved.
+			//
+			// Returning unconditionally livelocks the platform on a single wedged game: one table
+			// that can never progress is found on every tick, driven to no effect, and the create
+			// path is never reached — so no new mafia is ever played again. That happened, with
+			// one table stuck for an hour while nothing else started.
+			//
+			// A table that cannot move is not worth a tick; fall through and start a fresh one.
+			if r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], lm.MatchID) {
+				return // it progressed — driving is the work, not a preamble to more of it
+			}
 		}
 	}
 
@@ -309,7 +318,7 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 // drive a game whose progress condition is collective.
 //
 // Nine tables were reaching a full 12 seats and starting; all-time finished stayed at 1.
-func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID string) {
+func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID string) (moved bool) {
 	// Generous, because a 12-player game runs several days of night/discussion/voting, and the
 	// no-progress exit below is what actually ends the loop in the normal case.
 	const maxRounds = 200
@@ -321,7 +330,7 @@ func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID st
 				continue // one unreadable seat must not abandon the table
 			}
 			if view.Status == mafia.StatusFinished {
-				return
+				return moved
 			}
 			act, ok := PickMafiaAction(view)
 			if !ok {
@@ -332,15 +341,17 @@ func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID st
 				continue
 			}
 			progressed = true
+			moved = true
 		}
 		if !progressed {
 			// No seat could act anywhere on the table. That is a phase waiting on a timer rather
 			// than on us, so spinning would burn CPU without moving the game.
-			return
+			return moved
 		}
 	}
 	slog.Warn("bot: mafia table hit the round cap without finishing",
 		"match", matchID, "rounds", maxRounds)
+	return moved
 }
 
 func (r *Runner) next(idx *int) demo.Agent {
