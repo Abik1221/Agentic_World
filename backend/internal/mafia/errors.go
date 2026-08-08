@@ -30,7 +30,7 @@ var (
 	// and the service collapsed them into illegal_action. An eliminated seat told "not legal in the
 	// current phase" sends a developer to read the phase, when the fact is that their agent is dead
 	// and no phase will accept the action.
-	ErrSeatEliminated = httpx.NewError(http.StatusConflict, "seat_eliminated", "Your seat has been eliminated and can no longer act in this match.")
+	ErrSeatEliminated  = httpx.NewError(http.StatusConflict, "seat_eliminated", "Your seat has been eliminated and can no longer act in this match.")
 	ErrNoPendingAction = httpx.NewError(http.StatusConflict, "no_pending_action", "Your seat has no action pending in this phase.")
 	// ErrStalePhase rejects an action computed for a phase that has already resolved
 	// (the game advanced to a new day/phase). Once a phase is DONE its late actions

@@ -47,8 +47,25 @@ type Config struct {
 }
 
 // Service drives the Mafia match lifecycle.
+// SetHouseRoster records the agent ids the platform itself runs.
+//
+// # Why an explicit list and not a pattern
+//
+// This is an exemption inside a fraud control, so it must be impossible to fall into by
+// accident. Matching on a slug prefix or a framework label would mean any agent that came to
+// look house-shaped would inherit the exemption; an id set, built at boot from the seeder's own
+// return value, cannot be joined by anything a user creates.
+//
+// # What the exemption is, exactly
+//
+// A house agent skips the LLM-certification check on ZERO-FEE tables only. It can never skip it
+// on a paid one, because a house agent must never be at a paid table at all — that is enforced
+// separately by houseStake() == 0 and its regression guards. So the widest this can ever open is
+// "the platform may seat its own deterministic bots at practice tables", which is precisely the
+// intent: our bots may fill a seat, a user's may not.
 type Service struct {
-	stakes StakeFloor // rejects an entry fee mafia does not offer; see StakeFloor
+	house  map[string]bool // agent ids the PLATFORM runs; see SetHouseRoster
+	stakes StakeFloor      // rejects an entry fee mafia does not offer; see StakeFloor
 	repo   Repo
 	lock   Locker
 	limits Limits
@@ -302,9 +319,14 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 		if err := s.limits.CheckJoin(ctx, agentPublicID, entryFee); err != nil {
 			return "", err
 		}
-		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
-			return "", err
-		}
+	}
+	// Certification runs on EVERY table, paid or free — outside the fee branch on purpose.
+	// A practice match writes decision and benchmark rows that feed the P-Index, the model board
+	// and the deception index, so a scripted agent farming free tables earns a public record it
+	// did not deserve. Only the platform's own bots are exempt, and only here where nothing is
+	// staked; see mustCertify.
+	if err := s.certify(ctx, agentPublicID, entryFee); err != nil {
+		return "", err
 	}
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
@@ -416,7 +438,11 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		if err := s.limits.CheckJoin(ctx, agentPublicID, m.EntryFee); err != nil {
 			return AgentView{}, err
 		}
-		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+	}
+	// As in CreateTable: certify every seat, free tables included, with only the platform's own
+	// bots exempt at zero fee.
+	if !house {
+		if err := s.certify(ctx, agentPublicID, m.EntryFee); err != nil {
 			return AgentView{}, err
 		}
 	}
@@ -1402,4 +1428,42 @@ func mafiaSeatResult(st mf.State, seat int) benchmark.Result {
 		return benchmark.ResultWin
 	}
 	return benchmark.ResultLoss
+}
+
+// SetHouseRoster injects the platform's own agent ids. Nil means no exemption at all, which is
+// the safe default: without it every seat, house or not, must certify.
+func (s *Service) SetHouseRoster(ids []string) {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			m[id] = true
+		}
+	}
+	s.house = m
+}
+
+// mustCertify reports whether this seat has to prove it is LLM-backed.
+//
+// Paid tables: ALWAYS, without exception. A house agent reaching this with a fee is a bug
+// somewhere else, and failing it here is the correct outcome rather than something to smooth
+// over.
+func (s *Service) mustCertify(agentPublicID string, fee int64) bool {
+	if fee > 0 {
+		return true
+	}
+	return !s.house[agentPublicID]
+}
+
+// certify enforces the LLM check unless this is one of the platform's own bots at a free table.
+//
+// The check used to sit INSIDE `if entryFee > 0`, so every practice table skipped it — for the
+// user as well as the house. A practice match is not inert: it writes decision and benchmark
+// rows that feed the P-Index, the model board and the deception index, so a scripted agent
+// farming free tables builds a public record it did not earn. That is the same fraud as winning
+// coins with one, paid in reputation instead of currency.
+func (s *Service) certify(ctx context.Context, agentPublicID string, fee int64) error {
+	if !s.mustCertify(agentPublicID, fee) {
+		return nil
+	}
+	return s.ver.CheckEligible(ctx, agentPublicID)
 }

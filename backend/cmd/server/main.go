@@ -1564,6 +1564,15 @@ func run() error {
 			log.Warn("demo agent seed failed", "error", err)
 		} else {
 			log.Info("demo bots enabled (rules engine, not LLM)", "count", len(agents))
+			// The house roster, as an EXPLICIT id set from the seeder's own return value. This is an
+			// exemption inside a fraud control, so it must be impossible to fall into: matching a slug
+			// or framework label would let any agent that came to look house-shaped inherit it.
+			houseIDs := make([]string, 0, len(agents))
+			for _, a := range agents {
+				houseIDs = append(houseIDs, a.PublicID)
+			}
+			mafiaSvc.SetHouseRoster(houseIDs)
+			monopolySvc.SetHouseRoster(houseIDs)
 			// Keep them solvent. House bots play EACH OTHER at staked tables and the platform
 			// rakes every pot, so a closed population shrinks by arithmetic — seeding funded them
 			// once with a key that could never fire again, and Mafia rosters failed on
