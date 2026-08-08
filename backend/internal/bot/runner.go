@@ -225,15 +225,31 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 	if len(lobby) > 0 {
 		item := lobby[0]
 		if item.SeatsFilled < item.SeatsTotal {
-			a := r.next(idx)
-			// Seat one and RETURN. Deliberately no driving from here.
+			// FINISH the table, do not add one seat to it.
 			//
-			// Two attempts failed before this. Driving unconditionally burned the whole tick on a
-			// table that could not start, and even gated on "this join completes the roster" the
-			// lobby path still starves the create path: while any partial table exists the bot
-			// only ever adds a single seat per tick, so it never gets to build a full one in a
-			// single pass. The create path below fills all 12 at once, and drives what it filled.
-			_, _ = r.mafia.Join(ctx, a.PublicID, a.OwnerPublicID, item.PublicID)
+			// Seating one per tick is why partial tables piled up: a waiting table is claimed by
+			// the lobby branch on every pass, so the create path (which fills all 12 at once)
+			// never runs, and the partial creeps upward until its window expires. Tables were
+			// aborting at 1, 2, 3, 5, 7, 9 and 11 seats — every one of them a table that had
+			// taken real stakes and would never start.
+			//
+			// Filling here is the same all-or-nothing seating the create path does, for the same
+			// reason: Mafia cannot start short, so a roster that cannot be completed is worth
+			// cancelling immediately rather than leaving to time out.
+			need := item.SeatsTotal - item.SeatsFilled
+			filled := 0
+			for i := 0; i < need; i++ {
+				b := r.next(idx)
+				if _, err := r.mafia.Join(ctx, b.PublicID, b.OwnerPublicID, item.PublicID); err != nil {
+					slog.Warn("bot: could not complete a waiting mafia table",
+						"match", item.PublicID, "was", item.SeatsFilled, "added", filled,
+						"need", item.SeatsTotal, "error", err)
+					return
+				}
+				filled++
+			}
+			// Complete: drive it, exactly as the create path drives what it filled.
+			r.driveMafia(ctx, r.agents[:min(len(r.agents), mf.RosterSize)], item.PublicID)
 		}
 		return
 	}
