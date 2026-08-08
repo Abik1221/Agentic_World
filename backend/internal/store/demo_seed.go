@@ -6,7 +6,6 @@ import (
 	"fmt"
 	mafia "github.com/agent-arena/arena/internal/engine/mafia"
 	"log/slog"
-	"time"
 
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/identity"
@@ -57,8 +56,11 @@ func (r *IdentityRepo) EnsureDevAgents(ctx context.Context, n int, mint *wallet.
 	limits.CoinLimitPerMatch = houseStakeCap
 	limits.MaxBid = houseStakeCap
 	limits.MaxConcurrentMatches = mafia.RosterSize + 2
-	limits.SessionLossLimit = houseStakeCap * 40
-	limits.DailyLossLimit = houseStakeCap * 200
+	// Loss and cooldown caps are left at the DEFAULTS on purpose. They were raised when house
+	// bots staked; a house that stakes nothing cannot lose a coin, so a raised limit protects
+	// against nothing and reads as a safeguard that is doing work it is not. Concurrency stays
+	// raised because it is not about money — Mafia needs 12 DISTINCT seats and the pool must be
+	// able to hold them.
 	limits.CooldownLosses = 0
 	limits.CooldownSeconds = 0
 	limits.AutoJoin = true
@@ -82,24 +84,6 @@ func (r *IdentityRepo) EnsureDevAgents(ctx context.Context, n int, mint *wallet.
 			// and widening someone's risk cap by deploy is never safe. These are house bots.
 			// Nobody chose these values, they are infrastructure, and leaving them stale breaks
 			// a game rather than protecting anyone.
-			// Top the bot back up if it has ground itself broke. See demo.TopUp: a closed
-			// population paying rake on every match is a one-way drain, so this is maintenance,
-			// not a bailout.
-			if mint != nil {
-				var bal int64
-				if berr := r.db.QueryRow(ctx,
-					`SELECT coalesce(w.balance,0) FROM agents a
-					   LEFT JOIN wallets w ON w.agent_id = a.id AND w.kind='agent'
-					  WHERE a.slug=$1`, slug).Scan(&bal); berr == nil {
-					if topped, terr := demo.TopUp(ctx, mint, agentPublicID, bal, time.Now().Unix()/3600); terr != nil {
-						if log != nil {
-							log.Warn("demo agent top-up failed", "agent", agentPublicID, "balance", bal, "error", terr)
-						}
-					} else if topped && log != nil {
-						log.Info("demo agent topped up", "agent", agentPublicID, "was", bal, "to", demo.HouseFloat)
-					}
-				}
-			}
 			if _, uerr := r.db.Exec(ctx,
 				`UPDATE agents SET coin_limit_per_match=$2, max_bid=$3, max_concurrent_matches=$4,
 				        session_loss_limit=$5, daily_loss_limit=$6, cooldown_losses=$7, cooldown_seconds=$8
