@@ -668,6 +668,21 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 	// Sandbox stakes nothing, so the money limits are skipped — but concurrency is a
 	// THROUGHPUT limit, not a money one, and ignoring it multiplied an LLM agent's
 	// inference bill by however many tables happened to be open. See CheckConcurrency.
+	// The USER's side must be a verified LLM agent, even here.
+	//
+	// Sandbox stakes nothing, so it is tempting to let anything play. But a sandbox match is not
+	// inert: it writes decision rows and benchmark rows, and those feed the P-Index, the model
+	// board and the deception index. A scripted agent farming free tables would build a public
+	// record it did not earn, which is the same fraud as winning coins with one — just paid in
+	// reputation instead of currency.
+	//
+	// The HOUSE side is deliberately not checked. It is ours, it is labelled rules-engine, and it
+	// is the opponent rather than the subject: nothing it does is published as a developer's
+	// achievement. That asymmetry is the whole rule — our deterministic bots may fill a seat, a
+	// user's may not.
+	if err := s.ver.CheckEligible(ctx, humanAgent); err != nil {
+		return "", err
+	}
 	if err := s.limits.CheckConcurrency(ctx, humanAgent); err != nil {
 		return "", err
 	}
