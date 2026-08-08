@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -35,7 +36,16 @@ func TestDeceptionIndexAgainstLiveDatabase(t *testing.T) {
 	}
 
 	for _, s := range scores {
-		t.Log("  " + s.Describe())
+		line := "  " + s.Describe()
+		if pr, ok := s.PointMisdirection(); ok {
+			plo, phi, _ := s.PointInterval()
+			line += fmt.Sprintf("  | accusations %.0f%% [%.0f-%.0f%%] of %d (%d on own team)",
+				pr*100, plo*100, phi*100, s.PointsCast, s.PointsOnOwnTeam)
+			if gap, ok := s.TalkActionGap(); ok {
+				line += fmt.Sprintf("  | talk-action gap %+.0f pts", gap*100)
+			}
+		}
+		t.Log(line)
 		// Every seat must be scored by exactly ONE metric. Both would mean a mafia seat is
 		// being read as accurate; neither (with votes cast) means a role fell through.
 		_, mis := s.Misdirection()

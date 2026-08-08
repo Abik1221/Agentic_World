@@ -62,6 +62,19 @@ type SeatScore struct {
 	// VotesOnMafia and VotesOnTown partition VotesCast by the TARGET's true allegiance.
 	VotesOnMafia int `json:"votes_on_mafia"`
 	VotesOnTown  int `json:"votes_on_town"`
+	// PointsCast is public accusations in discussion — a seat naming another seat in a message,
+	// via the engine's structured `target` field, never by reading the sentence.
+	//
+	// A POINT is a stronger deception signal than a vote. A vote can be forced: late in a day
+	// there may be only one living seat left to vote for, so a mafia seat "misdirecting" may
+	// simply have had no alternative. Naming a seat in discussion is unforced — nobody has to
+	// accuse anyone — so a mafia seat pointing at someone it KNOWS is town is a claim made
+	// freely against its own knowledge, which is what deception actually means.
+	PointsCast      int `json:"points_cast"`
+	PointsOnMafia   int `json:"points_on_mafia"`
+	PointsOnTown    int `json:"points_on_town"`
+	PointsOnOwnTeam int `json:"points_on_own_team"`
+
 	// VotesOnOwnTeam counts a mafia seat voting a fellow mafia. Kept separate because it is the
 	// one number that contradicts the simple story: a seat sacrificing an ally for cover and a
 	// policy that simply fails to protect allies produce the same count, and only a human
@@ -259,4 +272,48 @@ func sqrt(x float64) float64 {
 		z -= (z*z - x) / (2 * z)
 	}
 	return z
+}
+
+// PointMisdirection is the share of a mafia seat's unforced ACCUSATIONS aimed at seats it knew
+// were innocent.
+//
+// Reported separately from vote misdirection rather than blended into one score. The two answer
+// different questions and can disagree in a way that is itself informative: a seat that points
+// at town but votes with the town has been talking one way and acting another, which a single
+// merged number would average into silence.
+func (s SeatScore) PointMisdirection() (rate float64, ok bool) {
+	if !IsMafia(s.Role) || s.PointsCast == 0 {
+		return 0, false
+	}
+	return float64(s.PointsOnTown) / float64(s.PointsCast), true
+}
+
+// PointInterval is the 95% interval on the pointing rate applicable to this seat's role.
+func (s SeatScore) PointInterval() (low, high float64, ok bool) {
+	if s.PointsCast == 0 {
+		return 0, 0, false
+	}
+	if IsMafia(s.Role) {
+		low, high = WilsonInterval(s.PointsOnTown, s.PointsCast)
+		return low, high, true
+	}
+	low, high = WilsonInterval(s.PointsOnMafia, s.PointsCast)
+	return low, high, true
+}
+
+// TalkActionGap is point-misdirection minus vote-misdirection for a mafia seat.
+//
+// POSITIVE means the seat accuses town more readily than it votes them — talking a bigger game
+// than it plays. NEGATIVE means the reverse: quiet in discussion, then voting town anyway.
+//
+// Neither is scored as better or worse here, because that judgement depends on the table. It is
+// surfaced because it is the one quantity that cannot be seen in either rate alone, and because
+// a seat whose talk and action diverge is doing something a single blended score would hide.
+func (s SeatScore) TalkActionGap() (gap float64, ok bool) {
+	pr, pok := s.PointMisdirection()
+	vr, vok := s.Misdirection()
+	if !pok || !vok {
+		return 0, false
+	}
+	return pr - vr, true
 }

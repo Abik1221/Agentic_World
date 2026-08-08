@@ -176,3 +176,50 @@ func TestWilsonDoesNotCollapseAtTheExtremes(t *testing.T) {
 		t.Fatalf("no-evidence interval = [%v,%v], want the full range", low, high)
 	}
 }
+
+// Accusations are scored SEPARATELY from votes, never blended.
+//
+// A seat that accuses town while voting with the town has been talking one way and acting
+// another. One merged number averages that into silence, which is exactly the behaviour worth
+// seeing.
+func TestPointingIsScoredSeparatelyFromVoting(t *testing.T) {
+	s := SeatScore{
+		Seat: 4, Role: RoleMafia,
+		VotesCast: 16, VotesOnTown: 12, VotesOnMafia: 4,
+		PointsCast: 25, PointsOnTown: 23, PointsOnMafia: 2,
+	}
+	vr, _ := s.Misdirection()
+	pr, ok := s.PointMisdirection()
+	if !ok {
+		t.Fatal("point misdirection undefined for mafia")
+	}
+	if pr <= vr {
+		t.Fatalf("setup wrong: points %v should exceed votes %v here", pr, vr)
+	}
+	gap, ok := s.TalkActionGap()
+	if !ok || gap <= 0 {
+		t.Fatalf("talk-action gap = %v (ok=%v); accusing town more than voting them must be "+
+			"POSITIVE", gap, ok)
+	}
+}
+
+// Pointing is undefined for town, on the same reasoning as votes: a villager accusing a villager
+// did not know any better.
+func TestTownPointingIsNotDeception(t *testing.T) {
+	s := SeatScore{Seat: 6, Role: RoleVillager, PointsCast: 10, PointsOnTown: 8}
+	if _, ok := s.PointMisdirection(); ok {
+		t.Fatal("a villager was scored for accusation misdirection despite having no private " +
+			"knowledge to contradict")
+	}
+}
+
+// A seat that never spoke is unscored on pointing, exactly as a silent voter is on voting.
+func TestNoAccusationsIsUnscored(t *testing.T) {
+	s := SeatScore{Seat: 7, Role: RoleMafia, VotesCast: 4, VotesOnTown: 4}
+	if _, ok := s.PointMisdirection(); ok {
+		t.Fatal("a seat with no accusations produced an accusation score")
+	}
+	if _, ok := s.TalkActionGap(); ok {
+		t.Fatal("a talk-action gap was computed with no talk")
+	}
+}
