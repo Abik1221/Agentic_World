@@ -14,7 +14,12 @@
 /vendor/
 *.test
 *.out
-coverage.*
+# Coverage REPORTS, named by extension. `coverage.*` was the rule here, and it silently
+# excluded internal/rating/coverage.go — a real source file — so a fresh clone did not
+# compile while `git status` stayed clean, because ignored files are not reported.
+coverage.out
+coverage.html
+coverage.txt
 
 # Node / JS / TS
 node_modules/
@@ -66,3 +71,14 @@ backend/.lab-gamelab
 # Stray output from `go build ./cmd/gamelab` with no -o. The lab binaries the docker
 # workflow uses are backend/.lab-server and backend/.lab-gamelab.
 backend/gamelab
+
+# Lens lab binaries, swapped into the processor container to verify a fix without
+# rebuilding the image. Same reasoning as the arena ones above: 10MB+ each, built from
+# the source beside them.
+tracing/backend/.processor
+tracing/backend/.backfill
+
+# Compose overrides are per-machine by definition — this one only drops host port
+# publishes that another project on that machine already owns. Committing it would
+# impose one developer's port conflicts on everyone.
+tracing/docker-compose.override.yml
