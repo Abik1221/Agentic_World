@@ -511,7 +511,15 @@ func run() error {
 	launch("webhook-monitor", webhookMonitor.Run)
 
 	// Verification (built in Stage 1) is wired into the match flow now.
+	//
+	// It also gets the completion-binding evidence, so a cryptographic PROOF outranks the
+	// statistical timing guess. The timing detector infers "a human is playing this by hand"
+	// from response-time distribution; binding shows the gateway watched a model emit the move
+	// and the match refuse anything else. Both answer the same question and one of them is
+	// direct — which is why ~112k verification_pending flags sat on deterministic agents that
+	// were provably not human, and why the matchmaker could not pair them.
 	verSvc := verification.New(store.NewVerificationRepo(st.DB))
+	verSvc.SetProvenShare(store.NewLLMGatewayRepo(st.DB))
 
 	// Money: the ledger is the only coin-mover; the wallet service layers
 	// stake/settle/refund and the seven spending limits on top, and serves the

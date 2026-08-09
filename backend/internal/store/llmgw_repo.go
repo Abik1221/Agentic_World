@@ -208,6 +208,20 @@ func min(a, b int) int {
 	return b
 }
 
+// ProvenShare is how much of an agent's whole history is cryptographically proven LLM-backed.
+//
+// Reuses CoverageFor with no match filter, so "proven share" is ONE definition rather than two
+// that could drift — the figure the verified badge shows and the figure that overrides the
+// timing detector are the same number, computed by the same statement, including its
+// per-game proof slot and its intersection with decisions actually made.
+func (r *LLMGatewayRepo) ProvenShare(ctx context.Context, agentPublicID string) (bound, decisions int, err error) {
+	cov, err := r.CoverageFor(ctx, agentPublicID, "")
+	if err != nil {
+		return 0, 0, err
+	}
+	return cov.BoundDecisions, cov.Decisions, nil
+}
+
 // RecordVerifiedCost accumulates one observed call into the match's verified spend.
 //
 // Delegates to the same statement the older gateway used, so the two cannot disagree about how
