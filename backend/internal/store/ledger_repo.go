@@ -358,7 +358,26 @@ func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error
 
 	// Escrow reconciliation, computed before the row checks so the figures are reported even when
 	// a later check errors. Every coin in escrow must be explained by a match that has not settled
-	// — either still open, or finished with a payout hold recorded against it.
+	// — either still open, or finished with its retention recorded somewhere.
+	//
+	// # BOTH hold records, because there are two
+	//
+	// A 1v1 payout withheld by the gate writes payout_holds, keyed by matches.id. A MAFIA table
+	// settled while the gate denies writes held_settlements, keyed by match_public_id, carrying
+	// the fee and the payout map it will pay out later. This check knew only the first, so every
+	// held Mafia table reported as escrow with NO STORY:
+	//
+	//	LEDGER INTEGRITY VIOLATION check=escrow_unexplained severity=critical rows=2700
+	//
+	// A critical alert that fires on correct behaviour is worse than no alert, because the next
+	// real one is read as noise. Found by watching the audit log after a run that exercised the
+	// deny gate; the three matches it named held 900 coins each and each had a held_settlements
+	// row stating exactly where the coins were going.
+	//
+	// The DEEPER fix is one record rather than two — this codebase's own rule about two records
+	// of one event that can drift — by having the Mafia hold path also write payout_holds. That
+	// changes a money-writing path, so it is deliberately not bundled with a reporting fix; see
+	// HANDOFF-SESSION.md.
 	const escrowSQL = `
 		WITH staked AS (
 		  SELECT metadata->>'match' AS mid FROM ledger_transactions WHERE kind = 'stake'),
@@ -366,22 +385,25 @@ func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error
 		  SELECT DISTINCT metadata->>'match' AS mid FROM ledger_transactions
 		   WHERE kind IN ('settle','refund')),
 		unsettled AS (
-		  SELECT m.id, m.status,
+		  SELECT m.id, m.public_id, m.status,
 		         m.bid * (SELECT count(*) FROM match_players mp WHERE mp.match_id = m.id) AS stake
 		    FROM staked s JOIN matches m ON m.public_id = s.mid
-		   WHERE NOT EXISTS (SELECT 1 FROM closed c WHERE c.mid = s.mid))
+		   WHERE NOT EXISTS (SELECT 1 FROM closed c WHERE c.mid = s.mid)),
+		explained AS (
+		  SELECT id, public_id, status, stake,
+		         (EXISTS (SELECT 1 FROM payout_holds h
+		                   WHERE h.match_id = unsettled.id AND h.status = 'held')
+		          OR EXISTS (SELECT 1 FROM held_settlements hs
+		                      WHERE hs.match_public_id = unsettled.public_id)) AS held
+		    FROM unsettled)
 		SELECT
 		  (SELECT coalesce(sum(balance),0) FROM wallets WHERE kind = 'escrow'),
-		  coalesce(sum(stake) FILTER (
-		    WHERE EXISTS (SELECT 1 FROM payout_holds h
-		                   WHERE h.match_id = unsettled.id AND h.status = 'held')), 0),
+		  coalesce(sum(stake) FILTER (WHERE held), 0),
 		  coalesce(sum(stake) FILTER (
 		    WHERE status NOT IN ('finished','aborted','cancelled')), 0),
 		  coalesce(sum(stake) FILTER (
-		    WHERE status IN ('finished','aborted','cancelled')
-		      AND NOT EXISTS (SELECT 1 FROM payout_holds h
-		                       WHERE h.match_id = unsettled.id AND h.status = 'held')), 0)
-		FROM unsettled`
+		    WHERE status IN ('finished','aborted','cancelled') AND NOT held), 0)
+		FROM explained`
 	var unexplained int64
 	if err := r.db.QueryRow(ctx, escrowSQL).
 		Scan(&rep.EscrowBalance, &rep.EscrowHeld, &rep.EscrowOpen, &unexplained); err != nil {

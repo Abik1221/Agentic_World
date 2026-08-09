@@ -24,7 +24,11 @@ func TestBoardHistoryRoundTripIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	// t.Cleanup, not defer. A deferred Close runs when the test function RETURNS, which is
+	// before every t.Cleanup — so a cleanup that deletes rows through this pool was running
+	// against a closed pool and silently doing nothing (the deletes ignore their errors).
+	// Registered FIRST so LIFO ordering runs it LAST, after the data cleanups.
+	t.Cleanup(pool.Close)
 	repo := NewModelBoardRepo(pool)
 
 	const model = "itest/model-history"
@@ -99,7 +103,11 @@ func TestNoRatingsWritesNothingRatherThanZeroes(t *testing.T) {
 	}
 	ctx := context.Background()
 	pool, _ := pgxpool.New(ctx, dsn)
-	defer pool.Close()
+	// t.Cleanup, not defer. A deferred Close runs when the test function RETURNS, which is
+	// before every t.Cleanup — so a cleanup that deletes rows through this pool was running
+	// against a closed pool and silently doing nothing (the deletes ignore their errors).
+	// Registered FIRST so LIFO ordering runs it LAST, after the data cleanups.
+	t.Cleanup(pool.Close)
 	repo := NewModelBoardRepo(pool)
 	if err := repo.RecordBoardHistory(ctx, time.Now(), 90, nil); err != nil {
 		t.Fatalf("empty write errored: %v", err)
