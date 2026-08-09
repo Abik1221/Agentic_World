@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -376,5 +377,84 @@ func TestGatewaySpanCarriesNoMoveWhenNothingWasBound(t *testing.T) {
 	}
 	if bound, _ := ev.PayloadJSON["turn_bound"].(bool); bound {
 		t.Fatal("span reports turn_bound for a call whose proof did not verify")
+	}
+}
+
+// A span is bound in EVERY game, not just the one the lab drives.
+//
+// The gateway resolves the game from the match id prefix and dispatches through
+// movebind.ToolFor / CanonPlan, so nothing about range binding is Goofspiel-specific. But the
+// only end-to-end evidence is a Goofspiel match, and "it dispatches by game" is exactly the
+// kind of claim that turns out to have a hardcoded constant behind it. Mafia and Monopoly are
+// the two with more seats and more money on the table.
+func TestASpanBindsEveryRoundInMafiaAndMonopoly(t *testing.T) {
+	cases := []struct {
+		name, matchID, tool, body string
+		wantMoves                 []string
+	}{
+		{
+			name:    "mafia",
+			matchID: "mf_spanitest0001",
+			tool:    "mafia_action",
+			// Seat 0 is a real player and an ABSENT target is not seat 0 — the span must keep
+			// those distinct exactly as a single call does.
+			body: `{"model":"m","content":[{"type":"tool_use","name":"mafia_action","input":{"plan":[
+				{"round":4,"kind":"kill","target":0},
+				{"round":5,"kind":"abstain"}]}}]}`,
+			wantMoves: []string{"kill:0", "abstain:none"},
+		},
+		{
+			name:    "monopoly",
+			matchID: "mp_spanitest0001",
+			tool:    "monopoly_action",
+			body: `{"model":"m","content":[{"type":"tool_use","name":"monopoly_action","input":{"plan":[
+				{"round":4,"kind":"buy","property":12,"amount":150},
+				{"round":5,"kind":"pass"}]}}]}`,
+			wantMoves: []string{"buy:12:150", "pass:0:0"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			up := jsonUpstream(t, tc.body)
+			g, rec := gwFor(t, up, "s")
+			proof := turnproof.New("s").Mint("ag_1", tc.matchID, 4)
+
+			if rr := post(g, "ag_1", tc.matchID, "4", proof, `{"model":"m"}`); rr.Code != 200 {
+				t.Fatalf("code = %d, want 200", rr.Code)
+			}
+			rec.settle(t, 1)
+
+			var got []bindRecord
+			for _, b := range rec.bindRecords() {
+				if b.matchID == tc.matchID {
+					got = append(got, b)
+				}
+			}
+			if len(got) != len(tc.wantMoves) {
+				t.Fatalf("bound %d rounds %+v, want %d — the span covered fewer rounds than the "+
+					"completion decided, so this game is not getting range binding at all",
+					len(got), got, len(tc.wantMoves))
+			}
+			sort.Slice(got, func(i, j int) bool { return got[i].round < got[j].round })
+			for i, want := range tc.wantMoves {
+				if got[i].move != want {
+					t.Errorf("round %d bound %q, want %q", got[i].round, got[i].move, want)
+				}
+				if got[i].round != 4+i {
+					t.Errorf("bound round %d, want %d", got[i].round, 4+i)
+				}
+				if got[i].receipt == "" {
+					t.Errorf("round %d has no receipt — an unattested row is one anything with "+
+						"database access can rewrite", got[i].round)
+				}
+			}
+			// ONE completion, so one hash across the whole span. That shared hash is what ties
+			// the rounds back together as a single call when a developer disputes one of them.
+			if got[0].completionHash == "" || got[0].completionHash != got[1].completionHash {
+				t.Errorf("completion hashes %q / %q — every round in a span must carry the hash of "+
+					"the ONE response it came from", got[0].completionHash, got[1].completionHash)
+			}
+		})
 	}
 }
