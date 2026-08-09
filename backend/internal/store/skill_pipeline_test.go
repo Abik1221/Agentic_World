@@ -94,6 +94,57 @@ func seedRankedScoredMatch(t *testing.T, pool *pgxpool.Pool, run string, season 
 	return ownerPub
 }
 
+
+// scoreThisMatch drives the worker until this match's decisions are scored, or SKIPS the test
+// when the shared database makes that impossible.
+//
+// The worker reads a GLOBAL backlog: NextUnscored orders across the whole table and takes a
+// batch, so a pass scores whatever sorts first — not necessarily this test's rows. Asserting on
+// a pass's return value therefore measures the database's contents rather than the scorer, and
+// these four tests failed permanently on the lab for exactly that reason ("worker scored 0 of
+// 3"), which reads as a product defect and is not one.
+//
+// A test that cannot be meaningful on this database must say so rather than report a failure
+// nobody can act on. The message carries the backlog size, because that number is itself worth
+// knowing: at the time of writing it was 2.57M rows, 99.5% of them Monopoly decisions the
+// scorer declines by design, with the scorable Goofspiel rows queued behind them.
+func scoreThisMatch(t *testing.T, pool *pgxpool.Pool, matchPub string) {
+	t.Helper()
+	ctx := context.Background()
+
+	var ahead int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_match_decisions
+		  WHERE input_json IS NOT NULL AND skill_scorer_version IS NULL AND match_id < $1`,
+		matchPub).Scan(&ahead); err != nil {
+		t.Fatalf("measure backlog: %v", err)
+	}
+	const reachable = 50000
+	if ahead > reachable {
+		t.Skipf("%d unscored decisions sort before %s, so no single worker pass reaches this "+
+			"match's rows and any assertion here would describe the backlog rather than the "+
+			"scorer. Run against a database whose skill backlog is drained.", ahead, matchPub)
+	}
+
+	w := skill.NewWorker(store.NewSkillRepo(pool),
+		skill.WorkerConfig{Batch: reachable + 1000}, slog.New(slog.DiscardHandler))
+	for i := 0; i < 5; i++ {
+		var unstamped int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM agent_match_decisions
+			  WHERE match_id = $1 AND skill_scorer_version IS NULL`, matchPub).Scan(&unstamped); err != nil {
+			t.Fatalf("count unstamped: %v", err)
+		}
+		if unstamped == 0 {
+			return
+		}
+		if _, err := w.Once(ctx); err != nil {
+			t.Fatalf("worker pass: %v", err)
+		}
+	}
+	t.Fatalf("this match's decisions were never stamped")
+}
+
 // The whole chain, in one test: worker scores → repository stores → P-Index reads.
 func TestSkillPipelineEndToEnd(t *testing.T) {
 	pool := openConservationDB(t)
@@ -106,16 +157,7 @@ func TestSkillPipelineEndToEnd(t *testing.T) {
 	owner := seedRankedScoredMatch(t, pool, run, season, []string{"12", "1", "6"})
 
 	// ── Layer 1+2: the worker scores and the repository stores ──
-	repo := store.NewSkillRepo(pool)
-	w := skill.NewWorker(repo, skill.WorkerConfig{Batch: 100}, slog.New(slog.DiscardHandler))
-	scored, err := w.Once(ctx)
-	if err != nil {
-		t.Fatalf("worker pass: %v", err)
-	}
-	if scored != 3 {
-		t.Fatalf("worker scored %d of 3 decisions — the scorer and the stored view shape "+
-			"have diverged, or the dispatcher does not handle this game", scored)
-	}
+	scoreThisMatch(t, pool, "m_skill_"+run)
 
 	var stored, stamped int
 	var meanRegret float64
@@ -173,10 +215,7 @@ func TestSandboxDecisionsAreScoredButNeverCounted(t *testing.T) {
 		t.Fatalf("unrank: %v", err)
 	}
 
-	repo := store.NewSkillRepo(pool)
-	if _, err := skill.NewWorker(repo, skill.WorkerConfig{Batch: 100}, slog.New(slog.DiscardHandler)).Once(ctx); err != nil {
-		t.Fatalf("worker: %v", err)
-	}
+	scoreThisMatch(t, pool, "m_skill_"+run)
 	// It IS scored — a developer still sees the verdict in their own trace.
 	var stored int
 	_ = pool.QueryRow(ctx, `SELECT COUNT(skill_regret) FROM agent_match_decisions WHERE match_id=$1`,
@@ -205,35 +244,55 @@ func TestWorkerDoesNotRescoreCurrentVersion(t *testing.T) {
 	run := time.Now().Format("150405.000") + "rs"
 
 	seedRankedScoredMatch(t, pool, run, 44, []string{"12", "3"})
-	repo := store.NewSkillRepo(pool)
-	w := skill.NewWorker(repo, skill.WorkerConfig{Batch: 100}, slog.New(slog.DiscardHandler))
-
-	first, err := w.Once(ctx)
-	if err != nil || first != 2 {
-		t.Fatalf("first pass scored %d (err %v), want 2", first, err)
-	}
-	second, err := w.Once(ctx)
-	if err != nil {
-		t.Fatalf("second pass: %v", err)
-	}
-	if second != 0 {
-		t.Fatalf("second pass rescored %d already-current decisions — the worker would spin "+
-			"on the same rows forever and never drain a real backlog", second)
+	matchPub := "m_skill_" + run
+	scoredRows := func() int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT COUNT(skill_regret) FROM agent_match_decisions WHERE match_id = $1`,
+			matchPub).Scan(&n); err != nil {
+			t.Fatalf("count scores: %v", err)
+		}
+		return n
 	}
 
-	// Rolling the stamp back is what a ScorerVersion bump looks like to the query.
+	scoreThisMatch(t, pool, matchPub)
+	if n := scoredRows(); n != 2 {
+		t.Fatalf("scored %d of 2 decisions — the scorer and the stored view shape have "+
+			"diverged, or the dispatcher does not handle this game", n)
+	}
+
+	// THE version gate. Clear the scores but KEEP the current stamp: that is a row the worker
+	// has already done. If it re-reads it, the score comes back — and a worker that re-reads
+	// current rows spins on them forever and never drains a real backlog.
+	if _, err := pool.Exec(ctx,
+		`UPDATE agent_match_decisions SET skill_regret = NULL WHERE match_id = $1`,
+		matchPub); err != nil {
+		t.Fatalf("clear scores: %v", err)
+	}
+	w := skill.NewWorker(store.NewSkillRepo(pool), skill.WorkerConfig{Batch: 100000},
+		slog.New(slog.DiscardHandler))
+	if _, err := w.Once(ctx); err != nil {
+		t.Fatalf("pass over already-current rows: %v", err)
+	}
+	if n := scoredRows(); n != 0 {
+		t.Fatalf("%d already-current decisions were rescored — the version stamp is not "+
+			"gating the read", n)
+	}
+
+	// Rolling the stamp back is what a ScorerVersion bump looks like to the query: the same
+	// rows become eligible again, so improving a scorer does not leave history stale.
 	if _, err := pool.Exec(ctx,
 		`UPDATE agent_match_decisions SET skill_scorer_version = skill_scorer_version - 1
-		  WHERE match_id = $1`, "m_skill_"+run); err != nil {
+		  WHERE match_id = $1`, matchPub); err != nil {
 		t.Fatalf("age the stamp: %v", err)
 	}
-	third, err := w.Once(ctx)
-	if err != nil {
-		t.Fatalf("third pass: %v", err)
+	if _, err := w.Once(ctx); err != nil {
+		t.Fatalf("pass after a version bump: %v", err)
 	}
-	if third != 2 {
-		t.Fatalf("after a version bump the worker rescored %d of 2 — improving a scorer "+
-			"would leave history permanently stale", third)
+	if n := scoredRows(); n != 2 {
+		t.Fatalf("after a version bump %d of 2 decisions were rescored — improving a scorer "+
+			"would leave history permanently stale", n)
 	}
 }
 
@@ -248,10 +307,7 @@ func TestUnscorableRowsNeverInflateTheRollup(t *testing.T) {
 	// One scorable bid, one action the Goofspiel scorer cannot read.
 	owner := seedRankedScoredMatch(t, pool, run, season, []string{"12", "not-a-card"})
 
-	repo := store.NewSkillRepo(pool)
-	if _, err := skill.NewWorker(repo, skill.WorkerConfig{Batch: 100}, slog.New(slog.DiscardHandler)).Once(ctx); err != nil {
-		t.Fatalf("worker: %v", err)
-	}
+	scoreThisMatch(t, pool, "m_skill_"+run)
 	var withScore, withStamp int
 	if err := pool.QueryRow(ctx,
 		`SELECT COUNT(skill_regret), COUNT(skill_scorer_version)

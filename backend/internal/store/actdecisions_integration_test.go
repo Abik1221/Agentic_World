@@ -21,6 +21,14 @@ func TestActDecisionsProduceTheRowsEveryBoardReads(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
 	}
+	// MIGRATE, rather than assume someone else already did. These in-package integration tests
+	// share one database with the rest of the file set, and Go runs them in filename order — so
+	// on a fresh database this file runs BEFORE the tests that migrate, and every seed failed
+	// with `relation "agents" does not exist`. Migrate is idempotent, so this costs a no-op on
+	// an already-migrated database and removes the ordering dependency entirely.
+	if err := Migrate(dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -196,6 +204,14 @@ func TestRetriedActDecisionsAreIdempotent(t *testing.T) {
 	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
+	}
+	// MIGRATE, rather than assume someone else already did. These in-package integration tests
+	// share one database with the rest of the file set, and Go runs them in filename order — so
+	// on a fresh database this file runs BEFORE the tests that migrate, and every seed failed
+	// with `relation "agents" does not exist`. Migrate is idempotent, so this costs a no-op on
+	// an already-migrated database and removes the ordering dependency entirely.
+	if err := Migrate(dsn); err != nil {
+		t.Fatalf("migrate: %v", err)
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)

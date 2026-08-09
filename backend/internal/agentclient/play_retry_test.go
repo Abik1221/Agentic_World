@@ -26,14 +26,19 @@ func TestPlay_RetriesBillTheDeveloperTwice(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		nonces.Store(r.Header.Get("X-Arena-Request-Id"), true)
 		// Never answer in time: force the per-attempt deadline to expire.
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"card":1}`))
 	}))
 	defer srv.Close()
 
+	// The deadline has to be comfortably longer than it takes a local request to REACH the
+	// handler, and comfortably shorter than the handler's sleep. At 50ms the first half stopped
+	// holding under -race, which slows everything 2-20x: the attempt timed out before the
+	// request landed, `calls` read 0, and the test failed claiming the endpoint was never
+	// called. 400ms against a 2s sleep leaves both margins wide.
 	c := New(Config{
-		Timeout: 50 * time.Millisecond, MaxTimeout: 50 * time.Millisecond,
+		Timeout: 400 * time.Millisecond, MaxTimeout: 400 * time.Millisecond,
 		Retries: 2, AllowPrivate: true,
 	})
 	var out struct {
@@ -64,14 +69,16 @@ func TestPlay_NoRetryWhenRetriesZero(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"card":1}`))
 	}))
 	defer srv.Close()
 
+	// See the sibling test: 400ms against a 2s handler sleep, so the request always lands
+	// before the deadline fires even under the race detector's slowdown.
 	c := New(Config{
-		Timeout: 50 * time.Millisecond, MaxTimeout: 50 * time.Millisecond,
+		Timeout: 400 * time.Millisecond, MaxTimeout: 400 * time.Millisecond,
 		Retries: 0, AllowPrivate: true,
 	})
 	var out struct {

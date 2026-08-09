@@ -83,6 +83,28 @@ func writeBenchFixture(t *testing.T, pool *pgxpool.Pool, f benchFixture) {
 			f.matchID, f.verifiedCost, f.verifiedProvider, f.verifiedModel, f.tokens, f.agentPub); err != nil {
 			t.Fatalf("insert verified cost %s: %v", f.matchID, err)
 		}
+		// The DECISION LOG and its bindings, because coverage is bound ÷ logged and the board
+		// DOWNGRADES attribution by coverage — it can never promote it. A fixture that declared
+		// 250 gateway-verified decisions while logging none produced coverage 0, so the row came
+		// back "observed" and "self-reported" no matter what else it carried, and the test read
+		// as a product defect on a clean database.
+		//
+		// Written to MATCH f.decisions exactly: this seat played that many decisions and every
+		// one of them was proven, which is what "gateway-verified" claims.
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_match_decisions (match_id, agent_id, seq, round)
+			 SELECT $1, a.id, g.i, g.i FROM agents a, generate_series(0, $2 - 1) AS g(i)
+			  WHERE a.public_id = $3
+			 ON CONFLICT DO NOTHING`, f.matchID, f.decisions, f.agentPub); err != nil {
+			t.Fatalf("seed decision log %s: %v", f.matchID, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_match_bound_decisions (match_id, agent_id, round)
+			 SELECT $1, a.id, g.i FROM agents a, generate_series(0, $2 - 1) AS g(i)
+			  WHERE a.public_id = $3
+			 ON CONFLICT DO NOTHING`, f.matchID, f.decisions, f.agentPub); err != nil {
+			t.Fatalf("seed bound decisions %s: %v", f.matchID, err)
+		}
 		// The BOUND CALL that makes this fixture what it says it is.
 		//
 		// "verified" on this platform means the gateway PROVED a call belonged to a decision
