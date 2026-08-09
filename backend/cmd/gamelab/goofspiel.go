@@ -20,10 +20,13 @@ import (
 // fields a strategy needs are decoded; unknown fields are ignored so the lab keeps
 // working if the platform adds to the payload.
 type goofspielView struct {
-	Game         string `json:"game"`
-	MatchID      string `json:"match_id"`
-	Seat         int    `json:"seat"`
-	Round        int    `json:"round"`
+	Game    string `json:"game"`
+	MatchID string `json:"match_id"`
+	Seat    int    `json:"seat"`
+	Round   int    `json:"round"`
+	// TurnProof is the per-turn token the platform mints (internal/turnproof). Shipped in the
+	// view so an agent can attach it to its model call; without it a decision cannot be bound.
+	TurnProof    string `json:"turn_proof"`
 	CurrentPrize int    `json:"current_prize"`
 	PrizePool    int    `json:"prize_pool"`
 	YourHand     []int  `json:"your_hand"`
@@ -116,6 +119,47 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 				a.log.Printf("say failed (non-fatal): %v", err)
 			}
 		}()
+	}
+
+	// COMPLETION BINDING. Ask the model — through the gateway, with the turn proof attached —
+	// to report the move as a structured tool call, and play what it answers. The strategy above
+	// still chooses; the gateway path is what makes that choice PROVABLE.
+	if BindThroughGateway {
+		// An honest agent does not bind every turn. A failed provider call or a batched decision
+		// leaves the round unbound, and the agent PLAYS ON — see bindThisTurn. Skipping the call
+		// entirely (rather than making it and discarding it) is what makes the resulting coverage
+		// figure a real measurement of the honest population.
+		if ok, why := bindThisTurn(v.MatchID, v.Round, v.Seat); !ok {
+			a.log.Printf("round %2d  UNBOUND: %s", v.Round, why)
+			writeJSON(w, map[string]any{
+				"round": v.Round, "card": card,
+				"rationale": "unbound this turn: " + why,
+				"usage":     a.Persona.tokens(len(raw), think),
+			})
+			return
+		}
+		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, v.TurnProof)
+		if err != nil {
+			// LOUD and fatal to the turn. A run that fell back to playing unbound would report
+			// a completed match and prove nothing about binding, which is worse than failing.
+			a.log.Printf("round %2d  BINDING FAILED — not playing: %v", v.Round, err)
+			http.Error(w, "binding failed", http.StatusInternalServerError)
+			return
+		}
+		card = res.Card
+		why = fmt.Sprintf("bound to the model's own tool call (card %d)", res.Card)
+
+		// The negative half of the proof: submit a card the model did NOT choose.
+		if SubstituteAtRound > 0 && v.Round >= SubstituteAtRound {
+			if sub, ok := substitutedCard(res.Card, legal); ok {
+				a.log.Printf("round %2d  SUBSTITUTING — model bound card %d, submitting %d instead; "+
+					"the platform MUST reject this", v.Round, res.Card, sub)
+				card = sub
+				why = fmt.Sprintf("deliberate substitution: model said %d", res.Card)
+			} else {
+				a.log.Printf("round %2d  cannot substitute — only one legal card (%d)", v.Round, res.Card)
+			}
+		}
 	}
 
 	a.log.Printf("round %2d  → plays %2d   (%s)", v.Round, card, why)

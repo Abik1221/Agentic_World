@@ -50,12 +50,37 @@ func main() {
 	// quietly assumes a docker hostname or a local port.
 	publicURL := flag.String("public-url", "", "external base URL for seat 0 (e.g. a tunnel); empty = all agents local")
 	churn := flag.Int("churn", 0, "run the queue-churn test for N ticks: a mixed population of autoplay, one-shot, underfunded and late-joining agents")
+	// Completion binding. Off by default: adding a proxy hop to an ordinary run would change
+	// the shot-clock and forfeit behaviour the lab exists to measure.
+	bindGw := flag.Bool("bind", false, "route every decision through the LLM Gateway as a structured play_card tool call, so the turn is completion-bound")
+	bindStream := flag.Bool("bind-stream", false, "with -bind, request a STREAMED completion (exercises the SSE tool-call reassembly path)")
+	substituteAt := flag.Int("substitute-at", 0, "with -bind, from this round on submit a card the model did NOT choose; the platform must reject the move (0 = never)")
+	// Honest-but-unbound behaviour, for measuring the ranked threshold against a realistic
+	// population rather than against a harness that binds every round by construction.
+	bindFailPct := flag.Int("bind-fail-pct", 0, "with -bind, this %% of turns have their model call FAIL; the agent falls back to its strategy and plays on, unbound (honest, not cheating)")
+	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
 	flag.Parse()
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
 	GoDarkAfterRound, GoDarkSeat = *goDark, *goDarkSeat
 
 	base := envOr("API_BASE", "http://localhost:8090")
+
+	// Completion binding. The gateway lives on the platform itself, so the agent reaches it at
+	// the same base URL — one fewer thing to configure wrongly, and it cannot drift from the
+	// server the match is actually running on.
+	BindThroughGateway, BindStream, SubstituteAtRound = *bindGw, *bindStream, *substituteAt
+	BindFailPct, BindBatchRounds = *bindFailPct, *bindBatch
+	BindGatewayBase = base
+	if BindThroughGateway {
+		lg := log.New(os.Stdout, "", log.Ltime)
+		lg.Printf("completion binding ON — every decision goes through %s as a %s play_card tool call",
+			base, map[bool]string{true: "STREAMED", false: "single-object"}[BindStream])
+		if SubstituteAtRound > 0 {
+			lg.Printf("SUBSTITUTION ARMED from round %d — the platform MUST reject those moves; "+
+				"a match that completes cleanly means enforcement is NOT working", SubstituteAtRound)
+		}
+	}
 	agentHost := envOr("AGENT_HOST", "host.docker.internal")
 
 	lg := log.New(os.Stdout, "", log.Ltime)
