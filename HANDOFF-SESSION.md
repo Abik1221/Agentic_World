@@ -1,287 +1,284 @@
-# Session handoff — 2026-08-08
+# Session handoff — 2026-08-09
 
-Read `CLAUDE.md` first for the invariants and build commands. This file is **current state and the
-open queue only**.
+Read `CLAUDE.md` first for the invariants and build commands. This file is **current state and
+the open queue only**.
 
-**Nothing is committed.** ~43 changed/new paths in the `Agentic_World` working tree.
+**Everything is committed.** 21 commits, working tree clean. The previous session's ~47
+uncommitted paths were reviewed and landed in coherent chunks (completion binding / deadline fix
+/ provider generality / Lens / SDKs), each one built and tested from an exported index before it
+was committed, so a bisect means something.
 
 ---
 
-## Delivered and verified
+## Platform health at handoff
 
-### Phase 1 — completion binding (the session's main goal)
-
-A turn proof used to be `HMAC(agent|match|round)`: it proved a CALL happened, not that the model's
-answer drove the move. An agent could call the model, ignore the response, and submit a scripted
-move with every proof valid.
-
-Now: the gateway extracts the move from the model's own structured tool call, mints
-`HMAC(agent|match|round|completion_hash|extracted_move)`, and the three game services reject a
-submitted move that contradicts it.
-
-- New: `internal/movebind` (extraction + canonical forms + the enforcement rule), migration `0084`.
-- `turnproof.MintDecision` / `VerifyDecision`, domain-separated from the v1 token so a turn token
-  can never be presented as a receipt.
-- Enforced in `match`, `mafia`, `monopoly` `tryAct` — beside the `movesig` check, NOT in handlers.
-- Wired in `cmd/server/main.go` (`SetBoundMoveReader` on all three services).
-- SDKs: `pyyol.movetools` / `src/movetools.ts` with per-provider tool envelopes and `tool_choice`.
-
-**Live proof, both halves:**
-
-| | evidence |
+| check | result |
 |---|---|
-| honest play binds | staked table `m_v6ntsh3dsl6nf4gf` (bid 500, rated), 13/13 turns bound both seats, finished |
-| substitution rejected | `m_sspdkaz3rob2np35` — server log names `model_produced="card:5" agent_submitted="card:1"` for both seats |
-| cheat forfeits, does not stall | `m_huomhkeekafbmewb` finished in 22m49s with a winner, 27 extensions over 13 rounds (~2.1/round, policy max 3) |
+| ledger audit | clean; escrow reconciles exactly — `1,511,600 = 1,511,600 held + 0 open`, 0 unexplained |
+| mafia | completing — 780 finished in 6h |
+| queue orphans | 0 |
+| house never stakes | 0 house-created matches with bid > 0; 0 house agents in a staked match |
+| completion binding | active at boot, all three games |
+| rollups vs `events_raw` | exact, per meter, at every bucket |
+| a fully-bound seat's coverage | 100% (was 76–93%) |
+| clean clone | builds; 79 packages pass |
 
-Guards were **mutation-verified**: flipping `movebind.Check` to always-allow makes
-`TestEnforceRejectsASubstitutedMove` and the substitution subtest fail.
+---
 
-### Bug found by watching the DB: deadline extension runaway
+## Delivered this session
 
-`tryExtend` derived "extensions granted so far" from `elapsed`, but measured `elapsed` from
-`RoundDeadline` — which the extension itself moves forward. So the count never climbed and the
-ceiling was never reached. **Goofspiel granted 17 extensions against a `MaxExtensions` of 3, holding
-one round open for 12 minutes.** Pre-existing, but only reachable in practice once binding could
-reject a healthy agent's moves.
+### Range bindings — coverage now means "decisions a model made"
 
-Fixed with migration `0085` (`round_deadline_base`, an origin no extension touches) and a test that
-encodes both origins: `fixed origin: 3 extensions (bounded), moving origin: unbounded`.
+The headline. Coverage counted CALLS, so one completion bound one round, and an agent that
+batched — one call planning three rounds — scored ~33% while playing entirely model-backed.
+Phase 4 exists to *reward* that batching, so the two rules pulled in opposite directions and no
+threshold reconciled them.
 
-### Provider generality (all three languages)
+A completion may now declare the rounds it decided. The SDK sends a `plan`, the gateway binds
+each round from that one completion (shared `completion_hash`, one receipt per round over that
+round's own move), and match-time enforcement is unchanged.
 
-Was structurally OpenAI/Anthropic-only. Gemini, Mistral, DeepSeek, Cohere and every self-hosted
-server were unrouted, uncosted, unbindable — **silently**.
+**Measured on real staked tables:**
 
-- Structural tool-call walk replaces 4 hardcoded shapes.
-- Semantic usage normalization replaces the vendor table, with canonical-envelope priority (a decoy
-  test proved the weakness first: it read `prompt_eval_count: 9999` instead of `usage: 10`).
-- Wire-format routing replaces the provider→path table.
-- `sdk/conformance/move_binding.json`: **29 cases**, all three languages agree, including 8 shapes
-  with no code written for them.
-- Previously $0, now costed: DeepSeek caching, Cohere, Ollama, Bedrock, vLLM, **and every streamed
-  call** (the gateway never captured streamed bodies at all — that also fixed zero-usage streaming).
+| archetype | before | after | calls |
+|---|---|---|---|
+| perfect | 100% | 100% | 13 for 13 rounds |
+| batcher (`-bind-batch 3`) | **33–44%** | **100%** | **5 for 13 rounds** |
+| flaky (`-bind-fail-pct 15`) | 71–100% | 85–92% | one per round |
 
-### Traceability end to end
+The honest floor is now set by provider failures, which is the correct thing to set it — a call
+that never happened proved nothing.
 
-Lens stack brought up; a gateway span reached ClickHouse carrying `extracted_move=card:6`,
-`turn_bound=1`, cache 1500/600, `prompt_tokens=2520`, `meter_source=gateway`,
-`session_id=goofspiel`. A developer disputing a rejected turn can now see the evidence.
+**Two guards make over-claiming pointless rather than profitable:**
 
-### Rollup meter blend
+- A span is a **commitment**. Every round in it is enforced, so submitting anything else is
+  rejected. Proven live: match `m_yoyejg3i3oapkr3k` round 2 — bound by the *round 1* call —
+  `model_produced="card:1" agent_submitted="card:2"`, refused.
+- **Backward claims are dropped.** Rounds before the proven round are already played, so a
+  binding over them is coverage nothing will ever check. Forward claims are self-limiting
+  because they are enforced; backward ones are not.
 
-`rollup_hourly` summed the gateway span and the agent's self-report into one bucket:
-`66,367 = gateway 33,930 + sdk 32,437`. Every routed call double-counted, a measurement blended with
-a claim. Migration `006` adds `meter_source` to the sorting key of all three rollups; write path and
-backfill `GROUP BY` updated. Proven through the real projection SQL — separate rows per meter.
+`BoundDecisions` and `CoverageFor` now intersect bound rounds with the decision log, so a span
+cannot credit a round the agent never played. **That intersection fails open** — a seat whose
+decisions were never logged still counts everything, because `BoundDecisions` feeds the rule
+that voids staked matches. Verified on live data: 25 of 26 seats unchanged, **zero newly at
+zero**. The one that changed held a binding for round 24 of a 13-round match.
 
-### Coverage denominator (and a correction)
+Contract pinned in all three languages: `sdk/conformance/move_binding.json` gained 8
+`plan_cases` beside the 29 single-move cases. Go 8/8, Python 332 passed, JS 219 (was 211).
 
-`CoverageFor` counted `DISTINCT seq` for every game, but `seq` is a *submission counter* in
-Goofspiel while the numerator counts `DISTINCT round`. Retries inflated the denominator: six seats
-that bound every round reported **76–93%** instead of 100%. Fixed to resolve the proof slot per game.
+### Phase 3 — staked but unranked
 
-**Correction on the record:** I first reported this as blocking the ranked threshold. It was not.
-The share rule derives its denominator from the engine's round count
-(`rankedIntegrityFailed(… len(state.History) …)`) and was never affected. Only the display figure
-(badge, `pyyol doctor`, "your verified share") was wrong.
+Unverified agents keep playing staked and winning coins; they are gone from the published
+ladder. **Filters the publication, never the computation** — ratings still update for everyone,
+because dropping 55 of 75 rated agents from the maths would degrade the verified agents' own
+numbers.
+
+One predicate, `publishedAgent()`, shared by the board, the rank snapshots (or `trend` reports
+movement nobody made) and `AgentStanding`. Standing gained `ranked`, because omitting a
+developer from the ladder while still showing them a rank is the one outcome the policy must not
+produce.
+
+Live: the ladder went from a top eight that was **entirely unverified** — led by an agent on
+1791 Elo with 900 coins won — to exactly the 20 verified agents. `ag_kei3rfkzy2ybepmo` now
+reports `ranked: false`, elo 1791, coins 900 intact.
+
+Mutation-verified: replacing the predicate with `TRUE` fails the integration test.
+
+### Phase 2 — the threshold is ready; ADOPTION is what blocks it
+
+`RANKED_INTEGRITY_MIN_PCT` stays 0, but for a different reason than before. The metric is fixed.
+The number it should take is **50**, and the binomial false-void table is now in the comment at
+the wiring site: at 50% an honest agent with a pessimistic 15% provider failure rate is wrongly
+voided about once in 800 matches, and the cliff is between 60 and 70.
+
+**What actually blocks it:** rule 2 is absolute, and over the last 48 hours of staked ranked
+play **3863 of 3895 seats proved nothing**; a threshold of 50 would have voided 3523 of them.
+The gate is no longer a measurement — it is that routing through the gateway becomes the norm.
+The comment names the query that answers "is it yet".
+
+### A cryptographic proof now outranks the timing guess
+
+The timing detector infers "a human is playing this by hand" from response-time distribution and
+flags the agent ineligible; ~112k such flags sat on deterministic agents, and the matchmaker
+could not pair them. Completion binding answers the same question directly — a human cannot
+produce a bound decision, because the match rejects any move that is not the model's.
+
+Not an exemption cut into a fraud control, and two properties keep it that way: **90% of
+decisions must be proven** (mutation-verified — relaxing to `bound > 0` fails the test), and an
+**unreadable proof leaves the flag standing** (deliberately the opposite direction to
+`movebind.Enforce`; an exemption reachable by breaking the database is not a control).
+
+### Lens
+
+- **`span_id` was set by nothing** — 0 of 129,760 events — so the `spans` projection produced
+  zero rows forever. Decided in favour of the emitter setting it: the events this service emits
+  are leaves, so the event's own id IS the span id, which is already unique and already the
+  dedup key. Live: 318 spans, 133 traces, 7 span types.
+- That exposed a latency bug the empty table was hiding: the backfill derived span latency from
+  `min/max(event_time)`, which is 0 for a single-event span. Every model call reported 0ms. Now
+  real: 260ms, 123ms, 116ms.
+- **All ten projections now name their columns**, not just `spans`.
+
+### A critical ledger alert that fired on correct behaviour
+
+Found in the last half hour of the session, by reading the audit log after a deploy rather than
+by any test — and I had already drafted a handoff saying "ledger audit clean".
+
+```
+LEDGER INTEGRITY VIOLATION check=escrow_unexplained severity=critical rows=2700
+"the stake was taken and there is no story for where it went"
+```
+
+There are **two** hold records. A 1v1 payout withheld by the gate writes `payout_holds`, keyed
+by `matches.id`. A Mafia table settled while the gate denies writes `held_settlements`, keyed by
+`match_public_id`, carrying the fee and the payout map. The escrow reconciliation knew only the
+first, so **every held Mafia table read as coins nobody could account for.**
+
+A critical that fires on correct behaviour is worse than no alert — the next real one gets read
+as noise, and this is the worst condition the ledger has. Now counts both; escrow reconciles
+exactly. The regression test pins both halves, because a check that never fires is not a check.
+
+**The deeper fix is one record instead of two** — this codebase's own rule about two records of
+one event that can drift — by having the Mafia hold path also write `payout_holds`. That changes
+a money-writing path, so it was deliberately not bundled with a reporting fix. **Open.**
+
+### Six integration tests were never cleaning up
+
+`defer pool.Close()` runs when the test function *returns*, which is before every `t.Cleanup`.
+So each cleanup was deleting rows through an already-closed pool and silently doing nothing,
+because those deletes ignore their errors. That is how `ag_covitest` and three staked Mafia
+fixtures came to be sitting in the lab database — the 2700 coins above were one of them.
+
+Now `t.Cleanup(pool.Close)` registered first, so LIFO closes the pool last. Verified: after a
+run the seeded agents, matches and ledger rows are gone.
+
+### Two `.gitignore` rules were silently excluding source
+
+Found by exporting the git index to a clean tree and building *that* rather than the working
+directory.
+
+- `coverage.*` matched `internal/rating/coverage.go`. **A fresh clone did not compile** and
+  `git status` stayed clean, because ignored files are not reported.
+- `test/` was unanchored, so it matched `sdk/js/src/test/`. **Four JS test files had never been
+  tracked** — including `conformance.test.ts`, the cross-language drift guard itself. The stated
+  contract is that the fixtures are enforced in three languages; a fresh clone enforced them in
+  two.
+
+---
+
+## Corrections on the record
+
+**I reported "full suite green" from a broken pipeline.** The command was
+`go test ./... | grep -v '^ok'`, so the exit code was *grep's*, not the test run's — precisely
+the trap `CLAUDE.md` warns about, which I had read. Re-run properly, the suite is green (79
+packages, real exit 0), but the claim was unfounded when I made it. Every verification in this
+file was re-run with `cmd >log 2>&1; echo EXIT=$?`.
+
+**I reported a rollup/`events_raw` mismatch that was my own query error.** I compared
+`prompt_tokens + completion_tokens` against the rollup's `sum(total_tokens)`. They are different
+quantities. Both meters reconcile exactly.
+
+**A second rollup discrepancy was real, and it is a race, not a defect.** A backfill run while
+matches were in flight left the rollups +5,220 gateway / +6,643 sdk tokens: the rollups are
+re-derived by truncate-and-reselect while the processor writes a delta per arriving event, so an
+event landing in between is counted twice. With traffic stopped and the consumer drained, the
+same run landed on ground truth exactly. Now documented at the function with the command that
+checks it — **quiesce the pipeline before backfilling.**
 
 ---
 
 ## Open queue, in priority order
 
-### 1. ~~Lens processor writes no rollup rows~~ — RETRACTED, this was my error
+### 1. Phase 4 — reward cost skill (PARTIALLY done)
 
-I reported this as a pre-existing defect. **It is not one.** The processor writes rollups correctly
-and the meter separation works live:
+Done: the proof-outranks-timing half, and the metric it depends on.
 
-```
-rollup_hourly 20:00   gateway 107,010   sdk 305,934   '' 0
-events_raw    20:00   gateway 107,010   sdk 305,934   '' 0     ← exact match
-```
+**Not done.** Cache-hit ratio, cost per decision, and tokens per decision are not in the P-Index.
+`cost_per_win`, `tokens_per_decision` and coverage-gated cost basis already exist in
+`internal/rating` (`coverage.go`, `edge.go`, `groups.go`) — the gap is the P-Index integration,
+the sample-size floor and the published interval. Rank on **quality per cost**, never cost
+alone. Read `meter_source='gateway'` only.
 
-What I actually saw was **consumer lag I caused myself**. Recreating the NATS container left the
-`pl-processor` consumer ~12,958 messages behind (`delivered 39,266 / last_seq 52,224`). I checked
-`rollup_hourly` at 20:24 while that backlog was draining, found no 20:00 bucket, and concluded the
-write path was broken. Once it caught up (`processed_at` within 3s of `now()`) the bucket appeared,
-split by meter.
+Also unaddressed: `/v1/leaderboard/developers` ranks developers by P-Index rather than agent
+Elo, so Phase 3's filter does not apply to it. Whether cost-and-quality rankings should exclude
+unverified developers belongs here, where those figures are defined.
 
-**The lesson, not the bug:** I asserted a defect from a single point-in-time observation of a
-pipeline I had just restarted. The check that would have caught it in one command:
+### 2. Groq end-to-end — NOT STARTED
 
-```bash
-docker exec pyyol-lens-nats sh -c "wget -qO- 'http://127.0.0.1:8222/jsz?consumers=true&streams=true'"
-# compare consumer delivered/ack_floor against stream last_seq before concluding anything
-```
+One real coin game, prompt caching on, traces verified. The key is still at `groq.env` in the
+**previous** session's scratchpad
+(`/private/tmp/claude-501/-Users-macbookair-pyyol/a725c9c8-.../scratchpad/groq.env`, mode 600).
+Groq is OpenAI-wire so cache should be `prompt_tokens_details.cached_tokens` (a *subset*) —
+confirm rather than assume, and add a fixture. Verify: move bound, cost non-zero, cache tokens
+present, `meter_source=gateway`, span in ClickHouse. **Rotate the key afterwards.**
 
-So the rollup meter fix is **verified live end to end**, not merely in isolation. Nothing to do here.
+### 3. A rejected move should earn no deadline extension — DECIDED, not implemented
 
-### 2. ~~`backfill-projections` cannot run~~ — FIXED, and it hid a second, worse bug
+Decided: it should not extend. A seat whose move was refused is not waiting on a model, and
+extending holds up an opponent who staked real coins. The reasoning is at `tryExtend`.
 
-**The reported failure:** the `spans` projection selected 21 expressions into a table the phase-10
-telemetry migration had widened to 38 columns. Because the projections run in sequence, that one
-broken query meant *no* projection could be rebuilt. Fixed by giving it an explicit column list —
-the 17 later columns take their defaults, and a 39th added tomorrow cannot break it again. Every
-other projection here is still a positional insert, so they carry the same latent risk.
+Not implemented because "was a move rejected for this seat this round" is not derivable from the
+match row, the decision log (a refused move never becomes a decision) or the liveness probe, and
+must survive across instances. It needs a durable per-(match, round, seat) marker written by
+`tryAct` — a schema change plus a settlement-affecting behaviour change, which deserves its own
+commit.
 
-**Why nobody noticed:** `spans` would have produced 0 rows anyway — **0 of 57,301 events carry a
-`span_id`**, so the arena emitter never populates it. The `spans` table is dead weight for arena
-traces today, and any UI reading it shows nothing. Worth deciding whether the emitter should set
-`span_id` or the table should be dropped from the arena's projection set.
+### 4. Pre-existing integration-test failures (NOT introduced this session)
 
-**The worse bug it was hiding:** the rollups are `SummingMergeTree`, so re-inserting an aggregate
-ADDS to it. A backfill run without reset silently **doubled** them — measured 381,060 tokens against
-a true 190,530. Nothing errored; the numbers were simply twice reality, which on a cost board is
-worse than a crash. And the reset flag could not be relied on to prevent it: it compares the env var
-against the literal `"true"`, so the obvious `BACKFILL_RESET=1` reads as false and hands you the
-unsafe path while you believe you asked for the safe one.
+`TestBenchmarkAPILive`, `TestSkillPipelineEndToEnd`, `TestSandboxDecisionsAreScoredButNeverCounted`,
+`TestWorkerDoesNotRescoreCurrentVersion`, `TestUnscorableRowsNeverInflateTheRollup`,
+`TestMoneyFlowE2E_TenAgents`. They fail only with `PYYOL_TEST_DATABASE_URL` set, and they fail
+identically at `HEAD~1` and earlier — verified by running them against an exported earlier tree.
+They are DB-state dependent (`account_flagged`, `underfunded`, `worker scored 0 of 3`).
 
-Fixed by always truncating the three rollup tables before re-deriving them, regardless of the flag —
-re-deriving a rollup from `events_raw` is by definition a full replacement. **Proven idempotent:**
-two consecutive runs with no reset both land exactly on ground truth
-(`gateway 190,530 / sdk 588,099`), and the doubled data is repaired.
+I fixed the one assertion I *did* break (`standing Total:0`) by making `writeBenchFixture` write
+the bound model call it always claimed to — it described a "gateway-verified" seat while writing
+no row that any code deciding "verified" reads. The remaining `attribution = observed, want
+verified` failures in that test come from the same fixture gap and are worth finishing.
 
-### 3. ~~Integration test for `CoverageFor`'s per-game denominator~~ — DONE
+### 5. Unify the two hold records
 
-`internal/store/coverage_integration_test.go`. Skips unless `PYYOL_TEST_DATABASE_URL` is set:
+Have the Mafia hold path write `payout_holds` alongside `held_settlements`, so "these coins are
+retained" is one fact rather than two that can drift. The audit now reads both, which makes the
+alert correct — it does not make the data model right.
 
-```bash
-docker run --rm --network pyyol-lab -v "$PWD":/r \
-  -v pyyol-gocache:/root/.cache/go-build -v pyyol-gomod:/go/pkg/mod -w /r/backend \
-  -e PYYOL_TEST_DATABASE_URL='postgres://pyyol:pyyol@pyyol-pg:5432/pyyol_lab?sslmode=disable' \
-  golang:1.25-alpine sh -c "go test -count=1 -run TestCoverageDenominator ./internal/store/"
-```
+### 6. Phase 5 backlog, then Phase 6 publish LAST
 
-Covers both directions, which is the point — Goofspiel where counting submissions OVERstates the
-denominator (a retried round), and Mafia where counting the day would UNDERstate it (night and
-voting are separate proof slots on one day).
+107 suppressed frontend lint errors; JS SDK warnings; full `-race` suite >10min; the 38
+`matchmaker pairing failed` from `high_human_likelihood` — **recheck these now**, the
+proof-outranks-timing change is aimed squarely at them and was not re-measured after deploying.
 
-**Mutation-verified:** reverting the query to the old `seq`-for-all-games denominator makes it fail
-with `denominator = 4, coverage = 0.75`. It can fail, so it is a real guard.
+Publish only when the rest is green: the SDK contract changed in Phase 1 and changed again with
+range bindings.
 
-### 4. Phase 2 — `RANKED_INTEGRITY_MIN_PCT`: MEASURED. Leave it at 0, and fix the METRIC first.
+---
 
-I built the realistic population rather than guessing (`gamelab -bind-fail-pct`, `-bind-batch`),
-because the previous 100% readings came from a harness that binds every round by construction —
-that measures the rig, not agents. Three honest archetypes on real staked tables:
+## What I did NOT verify
 
-| archetype | behaviour | bound / rounds | coverage |
-|---|---|---|---|
-| perfect | binds every turn | 6/6, 6/6 | **100%** |
-| flaky | 15% of model calls fail (5xx/timeout); plays on unbound | 7/7, 5/7 | **71–100%** |
-| batcher | one call plans 3 rounds | 4/9, 3/9 | **33–44%** |
-
-**The honest floor is set by BATCHING, at ~33%.** Not by failures.
-
-**And that is a direct conflict with Phase 4.** Phase 4 exists to *reward* cost optimisation
-("Cost optimisation must be rewarded, never penalised"). Batching is textbook cost optimisation —
-fewer calls for the same play. But the share rule counts bound DECISIONS, so the cheapest honest
-agent looks like the least verified one. As specified, the two phases pull in opposite directions,
-and no choice of threshold reconciles them:
-
-- Set it **above ~33%** → voids honest batching agents, i.e. punishes exactly what Phase 4 rewards.
-- Set it **below ~33%** → so weak it barely constrains anything (a cheat binding 1 round in 3 passes).
-
-**So the metric is wrong, not the threshold.** The fix: let a binding COVER A RANGE. If one
-completion legitimately decides rounds 4–6, those three rounds *are* model-backed and should each
-count. Concretely — the SDK declares the span the completion covers, the tool call carries a move
-per round, and the gateway binds each round from that one completion (shared `completion_hash`, one
-receipt per round). Coverage then means "decisions a model actually made" rather than "calls made",
-after which a HIGH threshold is both safe and meaningful, and batching improves cost per decision
-without hurting coverage.
-
-**Interim: leave `RANKED_INTEGRITY_MIN_PCT` at 0.** That is now an evidence-backed choice rather
-than caution. Rule 1 — the zero-proof gate — is already active, self-calibrating, and catches the
-case that actually matters: a seat proving NOTHING while another seat at the same table proved
-something. The share rule adds nothing until the metric credits batched decisions.
-
-Reproduce the measurement:
-
-```bash
-/src/.lab-gamelab -game goofspiel -tier low -bind                      # perfect
-/src/.lab-gamelab -game goofspiel -tier low -bind -bind-fail-pct 15    # flaky provider
-/src/.lab-gamelab -game goofspiel -tier low -bind -bind-batch 3        # batching
-```
-
-Failures are deterministic on (match, round, seat) so a run is repeatable — a number that decides
-whether real matches get voided should not move between runs.
-
-### 5. Consider: a rejected move should earn no deadline extension
-
-Bounded now (3/round), but an agent that submitted and was *refused* is not "still thinking".
-Would cut a cheating seat's forfeit from ~2 min/round to one window. Behaviour change, not a bug.
-
-### 6. Phase 3 — DECIDED: **staked but unranked**. Half of it is not yet true.
-
-The user chose: an agent that never routes may play staked and win coins, but is excluded from the
-ranked surfaces. The incentive to verify is reputational rather than financial.
-
-I told them this was "already the case". **It is only half true, and I checked rather than left the
-claim standing:**
-
-| surface | excludes unverified? |
-|---|---|
-| Model board (`internal/modelboard/build.go:140`, `no_verified_model`) | YES — correct, there is no model to attribute |
-| Arena skill ratings (`ratings` table) | **NO — 69 of 87 rated agents are unverified** |
-
-So the decision requires work: unverified agents currently carry arena skill ratings.
-
-**But do not simply filter them out.** TrueSkill/Elo quality depends on a connected comparison
-graph, and removing 79% of the rated population would degrade the ratings of the VERIFIED agents
-too — the same separability concern the model board already tracks and publishes. Options, roughly
-in increasing cost:
-
-1. **Keep rating them, stop PUBLISHING them.** Ratings continue to be computed (so the comparison
-   graph stays intact and verified agents' numbers stay meaningful), but unverified agents are
-   filtered from the public ladder. Cheapest and preserves statistical quality.
-2. **Publish them in a separate, labelled tier** ("unverified"), so the arena is honest about what
-   each number means without pretending the play did not happen.
-3. **Exclude from rating entirely.** Cleanest conceptually, worst statistically — and it would make
-   an agent's first verified match its first rated one, which is a harsh onboarding cliff.
-
-I did not implement any of these: which one is right depends on what the ladder is FOR, which is a
-product call. My recommendation is (1) — it delivers exactly what "unranked" promises while costing
-the verified agents nothing.
-
-### 7. Phase 4 — reward cost skill (now unblocked by the rollup fix)
-
-Cache-hit ratio, cost per decision, cost per win, tokens per decision in the P-Index. Rank on
-**quality per cost**, never cost alone — cheapest is trivially won by the weakest model answering
-badly. Floor the sample size and publish an interval. Read `meter_source='gateway'`.
-Also consider making a cryptographic proof OUTRANK the statistical timing guess when both are
-present (~112k `verification_pending: high_human_likelihood` are the timing detector correctly
-flagging deterministic lab agents).
-
-### 8. User-requested: one real coin game via Groq
-
-Prompt caching on, verify traces and accuracy end to end. Key is in the session scratchpad at
-`groq.env` (mode 600, outside the repo) — **the user will rotate it when testing is done.**
-Groq is OpenAI-wire, so its cache field would be `prompt_tokens_details.cached_tokens` (a *subset*,
-handled by the prompt-family rule) — but confirm what Groq actually returns rather than assume.
-
-### 9. Phase 5 backlog / Phase 6 SDK publish (LAST)
-
-107 suppressed frontend lint errors; JS SDK 68 warnings (0 errors); full `-race` suite >10min;
-38 `matchmaker pairing failed` from `high_human_likelihood` (still occurring — recheck after 7).
-Publish only when 1–8 are green: the SDK contract changed in Phase 1, so shipping earlier forces an
-immediate breaking release.
+- **The `-race` suite.** Never run this session.
+- **Mafia and Monopoly range bindings end to end.** `CanonPlan` is game-general and the Mafia
+  no-target case is pinned in the shared fixtures, but only Goofspiel was driven through a real
+  match with a span.
+- **The 38 pairing failures.** The fix is deployed; the count was not re-measured.
+- **Streamed range bindings.** The stand-in provider emits a plan over SSE and `ExtractStream`
+  feeds the same `CanonPlan`, but no `-bind-stream -bind-batch` run was made.
+- **Any frontend surface.** `ranked` is served by the API; nothing consumes it yet.
 
 ---
 
 ## Environment left running
 
-- **Arena:** `pyyol-backend` (rebuilt with `TURN_PROOF_SECRET`, `PYYOL_LLM_GATEWAY_ENABLED=true`,
-  Lens env, upstreams pointed at `pyyol-toolprovider`), `pyyol-pg`, `pyyol-redis`, `pyyol-web`.
-  Also joined to `tracing_default` so it can reach `ingest-api`.
-- **Lens:** `pyyol-lens-{clickhouse,postgres,nats,minio,ingest,processor}`. `query-api` is stopped —
-  it requires `QUERY_API_KEY` and I did not weaken that guard for a test.
-- **Lab:** `pyyol-toolprovider` (stand-in Anthropic endpoint returning a `play_card` tool call, card
-  from an `X-Lab-Card` header; also serves an SSE variant), plus spent `pyyol-{final,trace,rollup}`.
+- **Arena:** `pyyol-backend` (rebuilt from HEAD), `pyyol-pg`, `pyyol-redis`, `pyyol-web`.
+- **Lens:** `pyyol-lens-{clickhouse,postgres,nats,minio,ingest,processor}`. `query-api` stopped
+  (it requires `QUERY_API_KEY`, not weakened for a test). The processor container carries
+  swapped `/usr/local/bin/backfill`.
+- **Lab:** `pyyol-toolprovider` — **now serving from THIS session's scratchpad**
+  (`/private/tmp/claude-501/-Users-macbookair-pyyol/025a7dd5-.../scratchpad/toolprovider.py`),
+  extended with an `X-Lab-Plan` header so "the model" can decide several rounds in one call.
+  That path is ephemeral; copy the script somewhere durable before relying on it again.
+- Spent population containers were removed.
 
-Files of mine outside `backend/`: `tracing/docker-compose.override.yml` (drops only the NATS/MinIO
-host port publishes — another project on this machine owns 4222/9000) and `tracing/.env` (copied
-from the example, `INGEST_API_KEY` appended). `pyyol-lens-backend:e2e` was tagged `:latest`.
-Swapped binaries live in the processor container: `/usr/local/bin/processor` and `.../backfill`.
-
-Platform health at handoff: **ledger audit clean**, escrow reconciling exactly
-(`1508900 = 1508900 held + 0 open`), no panics.
+`backend/.lab-server` and `backend/.lab-gamelab` are rebuilt from HEAD. Both are gitignored, as
+are `tracing/backend/.backfill|.processor` and `tracing/docker-compose.override.yml` (added this
+session — they were untracked and unignored, so `git status` kept offering 24MB of binaries).
