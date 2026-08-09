@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first for the invariants and build commands. This file is **current state and
 the open queue only**.
 
-**Everything is committed.** 21 commits, working tree clean. The previous session's ~47
+**Everything is committed.** 28 commits, working tree clean. The previous session's ~47
 uncommitted paths were reviewed and landed in coherent chunks (completion binding / deadline fix
 / provider generality / Lens / SDKs), each one built and tested from an exported index before it
 was committed, so a bisect means something.
@@ -120,28 +120,36 @@ decisions must be proven** (mutation-verified — relaxing to `bound > 0` fails 
   real: 260ms, 123ms, 116ms.
 - **All ten projections now name their columns**, not just `spans`.
 
-### A critical ledger alert that fired on correct behaviour
+### A critical ledger alert — and my own wrong fix for it, retracted
 
-Found in the last half hour of the session, by reading the audit log after a deploy rather than
-by any test — and I had already drafted a handoff saying "ledger audit clean".
+Found by reading the audit log after a deploy rather than by any test, after I had already
+drafted a handoff saying "ledger audit clean":
 
 ```
 LEDGER INTEGRITY VIOLATION check=escrow_unexplained severity=critical rows=2700
 "the stake was taken and there is no story for where it went"
 ```
 
-There are **two** hold records. A 1v1 payout withheld by the gate writes `payout_holds`, keyed
-by `matches.id`. A Mafia table settled while the gate denies writes `held_settlements`, keyed by
-`match_public_id`, carrying the fee and the payout map. The escrow reconciliation knew only the
-first, so **every held Mafia table read as coins nobody could account for.**
+**My first fix was wrong and I have reverted it.** I widened the escrow reconciliation to accept
+a `held_settlements` row as explaining retained coins — without checking the production path
+before changing a fraud control.
 
-A critical that fires on correct behaviour is worse than no alert — the next real one gets read
-as noise, and this is the worst condition the ledger has. Now counts both; escrow reconciles
-exactly. The regression test pins both halves, because a check that never fires is not a check.
+`held_settlements` is not a second hold record. `payout_holds` says a payout IS held;
+`held_settlements` carries the split to replay on release. **Every** deny branch of the real gate
+(`antifraud.Service.Allow`, all four) calls `RecordHold`, so a genuinely held match always has
+both. The state I taught the audit to accept is one production cannot produce — it came from a
+test whose `denyGate` stub refused without recording a hold. Widening would have masked exactly
+the defect the check exists to catch: a deny path that writes the payout map and forgets the
+hold, leaving coins retained with nothing marking them retained.
 
-**The deeper fix is one record instead of two** — this codebase's own rule about two records of
-one event that can drift — by having the Mafia hold path also write `payout_holds`. That changes
-a money-writing path, so it was deliberately not bundled with a reporting fix. **Open.**
+The check is strict again, the fixture is fixed instead, and the regression test pins both
+directions — a split alone must still fire, and the hold state must clear it. It asserts on a
+DELTA rather than the global figure, because the audit reconciles the whole database and any
+unrelated finding would otherwise decide the result, which is how the first version misled me.
+
+The three stale fixtures were repaired by recording their **missing hold markers**, not by
+deleting anything: each carries four balanced ledger entries, so removing the transactions would
+have orphaned real coin movements. No ledger row was altered.
 
 ### Six integration tests were never cleaning up
 
