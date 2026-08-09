@@ -58,6 +58,13 @@ __all__ = [
     "scaffold_from_request",
     "scaffold_eligible_for_pairing",
     "SCAFFOLD_VERSION",
+    # Structured move tools: how an agent proves its MODEL chose the move it played.
+    # Routing through the gateway proves a call happened for a turn; a tool call is what
+    # proves the model's answer became the move. See pyyol.movetools.
+    "move_tool",
+    "move_tool_choice",
+    "move_from_response",
+    "bound_move",
     # Telemetry + signing primitives (parity with the JS SDK).
     "Span",
     "UsageAccumulator",
@@ -111,6 +118,10 @@ _LAZY = {
     "scaffold_fingerprint": "scaffold",
     "scaffold_from_request": "scaffold",
     "scaffold_eligible_for_pairing": "scaffold",
+    "move_tool": "movetools",
+    "move_tool_choice": "movetools",
+    "move_from_response": "movetools",
+    "bound_move": "movetools",
     "Span": "telemetry",
     "UsageAccumulator": "telemetry",
     "match_trace_id": "telemetry",
