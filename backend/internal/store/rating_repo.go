@@ -23,6 +23,39 @@ func NewRatingRepo(db *pgxpool.Pool) *RatingRepo { return &RatingRepo{db: db} }
 
 var _ rating.Repo = (*RatingRepo)(nil)
 
+// publishedAgent is the "staked but unranked" rule, as SQL.
+//
+// An agent that never routes a model call may play staked tables and win coins. It is simply
+// not published on a ranked surface, because the arena cannot say a model chose its moves. The
+// incentive to verify is reputational, not financial.
+//
+// # Computed for everyone, published for the verified
+//
+// This filters the PUBLICATION, never the computation. Ratings keep updating for every agent,
+// because Glicko/Elo quality depends on a connected comparison graph: 55 of the 75 rated
+// non-house agents here are unverified, and dropping four fifths of the population from the
+// rating maths would degrade the VERIFIED agents' numbers too — the same separability concern
+// the model board already tracks. So every match still moves both seats' ratings; only the
+// board's SELECT is narrowed.
+//
+// # Why this predicate and not a coverage threshold
+//
+// It matches the model board's `no_verified_model` exclusion exactly — a call the gateway
+// PROVED belonged to a decision, which named a model — so "ranked" means one fact rather than
+// two that can drift apart. Measured against the live database, the two candidate definitions
+// (a bound model call vs. any bound decision) selected the identical 20 agents, so the weaker
+// one buys nothing.
+//
+// Deliberately "has EVER proven one", not "proves some percentage". How MUCH of an agent's play
+// is verified is the ranked-integrity threshold's question and it is measured per match; this is
+// the prior question of whether the agent routes at all.
+//
+// alias is the agents-table alias in the calling query.
+func publishedAgent(alias string) string {
+	return `EXISTS (SELECT 1 FROM agent_model_calls mc
+	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> '')`
+}
+
 func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool, error) {
 	if len(in.Players) < 2 {
 		return false, nil
@@ -199,6 +232,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 		          RANK() OVER (ORDER BY r.elo DESC, r.agent_id ASC) AS rnk
 		   FROM ratings r JOIN agents a ON a.id = r.agent_id
 		   WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
+		     AND ` + publishedAgent("a") + `
 		 ) cur
 		 LEFT JOIN LATERAL (
 		   SELECT s.rank FROM rating_rank_snapshots s
@@ -224,9 +258,15 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 	return out, rows.Err()
 }
 
-// SnapshotRanks records the current rank of every non-house agent per (game,
+// SnapshotRanks records the current rank of every PUBLISHED agent per (game,
 // season) for the given day. Idempotent per day via the UNIQUE(taken_on) key, so
 // running it more than once a day (or on multiple instances) is safe.
+//
+// Filtered by the same publishedAgent rule as the board itself, and that is not optional.
+// These snapshots are what the board's `trend` column subtracts from today's rank, so a
+// snapshot taken over a different population than the board displays would report movement
+// nobody made: with 55 unverified agents interleaved in yesterday's ranks and absent from
+// today's, every published agent would appear to have climbed.
 func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int, error) {
 	tag, err := r.db.Exec(ctx,
 		`INSERT INTO rating_rank_snapshots (game, season, agent_id, rank, taken_on)
@@ -234,7 +274,7 @@ func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int,
 		        RANK() OVER (PARTITION BY r.game, r.season ORDER BY r.elo DESC, r.agent_id ASC),
 		        $1::date
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE a.kind <> 'house'
+		 WHERE a.kind <> 'house' AND `+publishedAgent("a")+`
 		 ON CONFLICT (game, season, agent_id, taken_on) DO NOTHING`, takenOn)
 	if err != nil {
 		return 0, err
@@ -559,11 +599,22 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		`SELECT r.game, a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak,
 		   -- Rank is computed WITHIN r.game rather than within the requested arena, so
 		   -- it stays correct when the arena was resolved here instead of passed in.
+		   -- Rank and total count the PUBLISHED population (see publishedAgent), so this
+		   -- number means the same thing as the one on the board. Counting unverified agents
+		   -- here would tell a developer they are 40th of 75 while the ladder they are
+		   -- comparing against has 20 rows.
 		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
 		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind <> 'house'
+		        AND `+publishedAgent("a2")+`
 		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
 		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
-		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house') AS total,
+		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house'
+		        AND `+publishedAgent("a3")+`) AS total,
+		   -- Whether this agent is itself on the board. An unverified agent still has a real
+		   -- rating and real coins; it is simply not published, and saying so plainly is the
+		   -- whole point of the policy — the alternative is a developer seeing a rank on their
+		   -- own page and not finding themselves on the ladder.
+		   `+publishedAgent("a")+` AS ranked,
 		   -- agent_manifests is keyed by agent_public_id; it has no agent_id column.
 		   -- Referencing one made this whole query fail with "column m.agent_id does not
 		   -- exist", so /v1/rankings/standing answered 500 for every agent and the
@@ -613,7 +664,7 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		 LIMIT 1`,
 		season, agentPublicID, game).
 		Scan(&s.Game, &s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
-			&s.Rank, &s.Total, &s.Provider, &s.Model,
+			&s.Rank, &s.Total, &s.Ranked, &s.Provider, &s.Model,
 			&attrRank, &boundDecisions, &loggedDecisions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return rating.Standing{}, false, nil

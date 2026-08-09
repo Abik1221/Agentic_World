@@ -281,10 +281,24 @@ type ArenaStat struct {
 
 // Standing is one agent's season position (for "your rank this season").
 type Standing struct {
-	Season        int    `json:"season"`
-	Game          string `json:"game"`
-	Rank          int    `json:"rank"`
-	Total         int    `json:"total"`
+	Season int    `json:"season"`
+	Game   string `json:"game"`
+	// Rank and Total count the PUBLISHED population only — the agents that appear on the
+	// ladder — so this number can be compared with what the board shows.
+	Rank  int `json:"rank"`
+	Total int `json:"total"`
+	// Ranked reports whether this agent is on the published ladder at all.
+	//
+	// An agent that never routes a model call may play staked tables and win coins; it is
+	// excluded from ranked surfaces because the arena cannot say a model chose its moves. That
+	// exclusion has to be VISIBLE here, on the agent's own card. Silently omitting a developer
+	// from the ladder while still showing them a rank is the one outcome this policy must not
+	// produce — they would go looking for themselves and find a gap, with nothing telling them
+	// why or what to do about it.
+	//
+	// When false, Rank is this agent's position among published agents had it been published,
+	// which is what makes it actionable: it is the rank verifying would earn.
+	Ranked        bool   `json:"ranked"`
 	AgentPublicID string `json:"agent"`
 	Name          string `json:"name"`
 	Elo           int    `json:"elo"`
