@@ -1447,7 +1447,7 @@ func run() error {
 	// with a specific error, instead of getting a misleading 202 and squatting a
 	// `waiting` slot forever for a pairing that CheckEligible would always reject —
 	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
-	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel)})
+	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel), ver: verSvc})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	// Reject an offline agent at enqueue so it never gets matched and forfeit-bleeds its
 	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
@@ -1501,7 +1501,7 @@ func run() error {
 		groupmatch.Config{ShortFormAfter: cfg.GroupShortFormAfter},
 		log, metrics.Registry(),
 	)
-	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg}) // certified + not suspended (game guarded by the queue)
+	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, ver: verSvc}) // certified + not suspended + not flagged (game guarded by the queue)
 	groupSvc.SetAffordability(walletSvc)
 	groupSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	groupHandler := groupmatch.NewHandler(groupSvc, authn)
@@ -2014,14 +2014,16 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 }
 
 // rankedEntryGate is the matchmaking.Eligibility gate: an agent may enter the
-// ranked queue only if it is not Super-Admin-suspended AND is certified. The
-// authoritative money/play gate is still CreatePaired (verifierAdapter.CheckEligible);
-// this just fails suspended/uncertified agents fast at enqueue rather than letting
-// them sit in `waiting` for a pairing that can never escrow.
+// ranked queue only if it is not Super-Admin-suspended, is certified, and is not
+// flagged for review. The authoritative money/play gate is still CreatePaired
+// (verifierAdapter.CheckEligible); this fails those agents fast at enqueue rather than
+// letting them sit in `waiting` for a pairing that can never escrow.
 type rankedEntryGate struct {
 	cert *manifest.Service
 	susp *platformcfg.Provider // may be nil (suspension list unavailable)
 	game string                // the only game the ranked queue matchmakes; "" ⇒ skip the game check
+	// ver is the timing/verification check. Nil ⇒ skipped, which is the previous behaviour.
+	ver *verification.Service
 }
 
 func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID string) error {
@@ -2030,6 +2032,32 @@ func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID str
 	}
 	if err := g.cert.RequireCertified(ctx, agentPublicID); err != nil {
 		return err
+	}
+	// Flagged for review, checked HERE and not only at pairing time.
+	//
+	// This gate's whole purpose is to keep an agent that cannot escrow out of the pool, and
+	// eligibility was the one sticky rejection it did not check. The result was a retry storm:
+	// the matcher claims a pair, CreatePaired refuses on verification_pending, the claim is
+	// released "so both re-enter the pool and are retried next tick" — and next tick it fails
+	// for exactly the same reason, forever. Measured on the lab: 4,205 pairing failures in 30
+	// minutes for FOUR agents.
+	//
+	// That release-and-retry is right for a TRANSIENT refusal (a seat that cannot afford the
+	// stake this second). A review flag is not transient: it clears when a human clears it, or
+	// when the agent starts proving its decisions. Retrying it every tick also blocks the
+	// agents it keeps getting paired against.
+	//
+	// Fails OPEN on a lookup error. Refusing entry to the ranked queue because a timing query
+	// hiccuped would lock honest agents out of play, and the authoritative gate still runs at
+	// CreatePaired where the money actually moves.
+	if g.ver != nil {
+		e, err := g.ver.CheckEligibility(ctx, agentPublicID)
+		if err == nil && !e.Eligible {
+			return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending",
+				"Agent flagged for review: "+e.Reason+". Route your model calls through the Pyyol "+
+					"gateway so decisions are provably LLM-backed; a proven agent is not judged on "+
+					"timing alone.")
+		}
 	}
 	// Ranked matchmaking runs one game (Goofspiel). Reject an agent whose manifest
 	// doesn't declare it, so a Mafia/Monopoly-only agent can't be enqueued into the
