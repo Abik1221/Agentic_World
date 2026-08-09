@@ -2796,6 +2796,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # BARE `pyyol` ON A TTY OPENS THE SHELL.
+    #
+    # The subcommand is required=True, so typing the tool's own name — the first thing anyone
+    # does after installing it — printed a usage error and exited 2. Now it opens the home
+    # screen instead, and every command remains available exactly as before on the command
+    # line: the shell dispatches through this same parser (see pyyol/shell.py).
+    #
+    # TTY-GATED, and that is not a nicety. `pyyol | cat`, a CI step, a cron entry or a
+    # Dockerfile RUN must print help and exit; a prompt waiting on stdin there hangs the
+    # pipeline forever, in exactly the places nobody is watching. argv is checked rather than
+    # sys.argv so a programmatic main([]) keeps its old behaviour.
+    if argv is None and not sys.argv[1:]:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from . import shell
+
+            return shell.run_shell(build_parser, __version__, DEFAULT_API_BASE)
+        build_parser().print_help()
+        return 0
+
     args = build_parser().parse_args(argv)
     # Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
     # PYYOL_NO_TELEMETRY / DO_NOT_TRACK). Never blocks or affects the command.
