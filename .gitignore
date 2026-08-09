@@ -61,8 +61,11 @@ Pyyol_client/
 # Separate repo (admin) — cloned in-tree, never tracked here
 Super_Admin/
 
-# Local beta test harness (agent + docker db + secrets) — never committed
-test/
+# Local beta test harness (agent + docker db + secrets) — never committed.
+# ANCHORED to the repo root. Unanchored, `test/` matched every test directory in the tree,
+# so a new file under sdk/js/src/test/ was silently ignored — the existing ones are tracked
+# only because they predate the rule. Same trap as `coverage.*`; see the Go section.
+/test/
 
 # Local lab binaries (built by the docker loop in NEXT_SESSION_PROMPT.md) — 30MB+ each,
 # rebuilt from source on demand and never useful in a commit.
