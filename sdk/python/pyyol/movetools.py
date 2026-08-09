@@ -134,7 +134,49 @@ def tool_name(game: str) -> str:
     return _TOOL_BY_GAME.get(game, "")
 
 
-def tool_for(game: str, provider: str = "openai") -> dict[str, Any]:
+def _plan_schema(game: str, base: dict[str, Any], rounds: int) -> dict[str, Any]:
+    """The batching form of a move schema: a plan of per-round moves.
+
+    A SEPARATE schema rather than an optional ``plan`` property beside ``card``, because a
+    schema that accepts either shape has to drop ``required``, and a model handed an
+    all-optional object will sometimes return an empty one. Anthropic's and OpenAI's strict
+    modes are also unenthusiastic about ``oneOf``. So an agent that batches asks for the plan
+    tool and is told exactly one shape; an agent that does not gets today's schema untouched.
+    """
+    entry = {
+        "type": "object",
+        "properties": {
+            "round": {
+                "type": "integer",
+                "description": (
+                    "The round this move is for. Must be the current round or a later one — "
+                    "a move for a round already played cannot be bound."
+                ),
+            },
+            **base["properties"],
+        },
+        "required": ["round", *base.get("required", [])],
+    }
+    return {
+        "type": "object",
+        "properties": {
+            PLAN_KEY: {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": min(rounds, MAX_SPAN_ROUNDS),
+                "description": (
+                    "One entry per round you are deciding now, starting at the current round. "
+                    "Every round you list is bound to the move you give it, so list only "
+                    "rounds you intend to play exactly as planned."
+                ),
+                "items": entry,
+            },
+        },
+        "required": [PLAN_KEY],
+    }
+
+
+def tool_for(game: str, provider: str = "openai", plan_rounds: int | None = None) -> dict[str, Any]:
     """The move tool definition, shaped for ``provider``.
 
     Providers disagree about the envelope while agreeing on the JSON Schema inside it, so the
@@ -143,6 +185,15 @@ def tool_for(game: str, provider: str = "openai") -> dict[str, Any]:
     instead of hand-writing.
 
     ``provider`` is one of "openai" (chat completions and Responses), "anthropic", "google".
+
+    ``plan_rounds`` asks for the BATCHING form: one call that decides up to that many rounds.
+    Leave it None for the ordinary one-move-per-call tool, which is what every agent shipping
+    today uses and is completely unchanged.
+
+    Batching is cost optimisation and this platform means to reward it. Coverage counts the
+    DECISIONS a model made rather than the calls made, so a plan of three rounds is three
+    verified decisions — but each of them is BINDING. Submitting a different move for a round
+    you planned is rejected exactly as a substitution is, so plan only what you mean to play.
     """
     schema = _SCHEMAS.get(game)
     if schema is None:
@@ -150,6 +201,10 @@ def tool_for(game: str, provider: str = "openai") -> dict[str, Any]:
             f"pyyol.movetools: no move tool for game {game!r}; "
             f"known games are {sorted(_TOOL_BY_GAME)}"
         )
+    if plan_rounds is not None:
+        if plan_rounds < 1:
+            raise ValueError("pyyol.movetools: plan_rounds must be at least 1")
+        schema = _plan_schema(game, schema, plan_rounds)
     name = _TOOL_BY_GAME[game]
     description = _DESCRIPTIONS[game]
     p = (provider or "").lower()
@@ -454,6 +509,98 @@ def bound_move(game: str, resp: Any) -> str | None:
     asserts on this locally cannot be surprised by a rejection in a real match.
     """
     return canon(game, move_from_response(game, resp))
+
+
+# The argument that carries a multi-round decision. Named once, and it has to match the Go
+# gateway and the JS SDK exactly: a mismatch would not error, it would silently fall back to
+# single-round binding and quietly restore the coverage problem this exists to fix.
+PLAN_KEY = "plan"
+
+# The most rounds one completion may claim to have decided.
+#
+# Bounded because the plan is attacker-supplied — without a cap a single call could assert a
+# hundred thousand rounds and become that many database writes. Comfortably above any real
+# game, so a legitimate agent never meets it.
+MAX_SPAN_ROUNDS = 64
+
+
+def canon_plan(game: str, args: dict[str, Any] | None, proven_round: int) -> list[dict[str, Any]] | None:
+    """Reduce move arguments to EVERY round they decided, as ``[{"round": n, "move": s}]``.
+
+    # Why a completion may cover more than one round
+
+    Coverage used to count CALLS, so one completion bound one round. An agent that batches —
+    one call planning three rounds — therefore scored about 33% on real staked tables while
+    playing entirely model-backed, and cost optimisation is something this platform means to
+    REWARD. Coverage now means "decisions a model made" rather than "calls made".
+
+    # Why claiming a span is safe
+
+    A span is a COMMITMENT, not a free coverage win. Match-time enforcement is unchanged, so
+    submitting anything other than the bound move for a covered round is rejected exactly as a
+    substitution is. An agent that over-claims has only tied its own hands.
+
+    # The one thing a span must never do
+
+    Rounds before ``proven_round`` are DROPPED. Those turns have already been played, so a
+    binding over them is coverage nothing will ever check — an agent could retroactively claim
+    turns it played unbound. Forward claims are self-limiting because they are enforced.
+
+    None means nothing is bindable, which callers must treat as an unverified turn and never as
+    a wrong move. A plan naming one round twice returns None WHOLE: two moves for one slot has
+    no honest reading, and picking either would be guessing on the agent's behalf.
+    """
+    if not args:
+        return None
+    entries = _plan_entries(args)
+    if entries is None:
+        # No plan: the ordinary single-round call, unchanged.
+        move = canon(game, args)
+        return [{"round": proven_round, "move": move}] if move else None
+    if len(entries) > MAX_SPAN_ROUNDS:
+        return None
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        rnd, has = _int_arg(entry, "round")
+        if not has or rnd < proven_round:
+            # Backward or unplaceable: skipped, never fatal. A model that emitted one bad
+            # entry has still honestly decided the others.
+            continue
+        if rnd in seen:
+            return None
+        move = canon(game, entry)
+        if not move:
+            continue
+        seen.add(rnd)
+        out.append({"round": rnd, "move": move})
+    if not out:
+        return None
+    out.sort(key=lambda rm: rm["round"])
+    return out
+
+
+def _plan_entries(args: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The per-round argument objects in a plan, or None when this call carries no plan.
+
+    None must mean "no plan" rather than "empty plan", because the caller falls back to
+    single-round binding on None and binding nothing would break every agent shipping today.
+    """
+    raw = args.get(PLAN_KEY)
+    if not isinstance(raw, list) or not raw:
+        return None
+    out = [item for item in raw if isinstance(item, dict)]
+    return out or None
+
+
+def bound_plan(game: str, resp: Any, proven_round: int) -> list[dict[str, Any]] | None:
+    """Every round this response will bind, exactly as the gateway will read it.
+
+    Use it in a test before shipping a batching agent: if this does not list the round you are
+    about to play, that turn will not be bound, and if it lists a DIFFERENT move than you
+    intend to submit, the match will reject it.
+    """
+    return canon_plan(game, move_from_response(game, resp), proven_round)
 
 
 # Top-level aliases, so the common calls read well from the package root:

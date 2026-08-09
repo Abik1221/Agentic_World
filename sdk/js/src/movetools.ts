@@ -129,13 +129,63 @@ export function moveToolName(game: string): string {
  * the provider rather than a silent problem, which is why this is worth getting from the SDK
  * instead of hand-writing.
  */
-export function moveTool(game: string, provider = "openai"): Record<string, unknown> {
-  const schema = SCHEMAS[game];
+/**
+ * The batching form of a move schema: a plan of per-round moves.
+ *
+ * A SEPARATE schema rather than an optional `plan` property beside `card`, because a schema
+ * accepting either shape has to drop `required`, and a model handed an all-optional object will
+ * sometimes return an empty one. Strict modes are also unenthusiastic about `oneOf`. So an agent
+ * that batches asks for the plan tool and is told exactly one shape; an agent that does not gets
+ * today's schema untouched.
+ */
+function planSchema(base: Record<string, unknown>, rounds: number): Record<string, unknown> {
+  const props = (base.properties ?? {}) as Record<string, unknown>;
+  const required = (base.required ?? []) as string[];
+  return {
+    type: "object",
+    properties: {
+      [PLAN_KEY]: {
+        type: "array",
+        minItems: 1,
+        maxItems: Math.min(rounds, MAX_SPAN_ROUNDS),
+        description:
+          "One entry per round you are deciding now, starting at the current round. Every " +
+          "round you list is bound to the move you give it, so list only rounds you intend " +
+          "to play exactly as planned.",
+        items: {
+          type: "object",
+          properties: {
+            round: {
+              type: "integer",
+              description:
+                "The round this move is for. Must be the current round or a later one — a " +
+                "move for a round already played cannot be bound.",
+            },
+            ...props,
+          },
+          required: ["round", ...required],
+        },
+      },
+    },
+    required: [PLAN_KEY],
+  };
+}
+
+export function moveTool(
+  game: string,
+  provider = "openai",
+  planRounds?: number,
+): Record<string, unknown> {
+  let schema = SCHEMAS[game];
   if (!schema) {
     throw new Error(
       `pyyol.moveTool: no move tool for game ${JSON.stringify(game)}; ` +
         `known games are ${Object.keys(TOOL_BY_GAME).sort().join(", ")}`,
     );
+  }
+  if (planRounds !== undefined) {
+    if (planRounds < 1) throw new Error("pyyol.moveTool: planRounds must be at least 1");
+    schema = planSchema(schema, planRounds);
   }
   const name = TOOL_BY_GAME[game];
   const description = DESCRIPTIONS[game];
@@ -355,4 +405,111 @@ export function canonMove(game: string, args: Record<string, unknown> | null): s
  */
 export function boundMove(game: string, resp: unknown): string | null {
   return canonMove(game, moveFromResponse(game, resp));
+}
+
+/**
+ * The argument that carries a multi-round decision.
+ *
+ * Named once, and it must match the Go gateway and the Python SDK exactly: a mismatch would
+ * not throw, it would silently fall back to single-round binding and quietly restore the
+ * coverage problem range bindings exist to fix.
+ */
+export const PLAN_KEY = "plan";
+
+/**
+ * The most rounds one completion may claim to have decided.
+ *
+ * Bounded because the plan is attacker-supplied — uncapped, a single call could assert a
+ * hundred thousand rounds and become that many database writes. Comfortably above any real
+ * game, so a legitimate agent never meets it.
+ */
+export const MAX_SPAN_ROUNDS = 64;
+
+/** One round a completion decided. */
+export interface RoundMove {
+  round: number;
+  move: string;
+}
+
+/**
+ * Reduce move arguments to EVERY round they decided.
+ *
+ * # Why a completion may cover more than one round
+ *
+ * Coverage used to count CALLS, so one completion bound one round. An agent that batches — one
+ * call planning three rounds — therefore scored about 33% on real staked tables while playing
+ * entirely model-backed, and cost optimisation is something this platform means to REWARD.
+ * Coverage now means "decisions a model made" rather than "calls made".
+ *
+ * # Why claiming a span is safe
+ *
+ * A span is a COMMITMENT, not a free coverage win. Match-time enforcement is unchanged, so
+ * submitting anything other than the bound move for a covered round is rejected exactly as a
+ * substitution is. An agent that over-claims has only tied its own hands.
+ *
+ * # The one thing a span must never do
+ *
+ * Rounds before `provenRound` are DROPPED. Those turns have already been played, so a binding
+ * over them is coverage nothing will ever check — an agent could retroactively claim turns it
+ * played unbound. Forward claims are self-limiting because they are enforced.
+ *
+ * null means nothing is bindable. A plan naming one round twice returns null WHOLE: two moves
+ * for one slot has no honest reading, and picking either would be guessing for the agent.
+ */
+export function canonPlan(
+  game: string,
+  args: Record<string, unknown> | null,
+  provenRound: number,
+): RoundMove[] | null {
+  if (!args) return null;
+  const entries = planEntries(args);
+  if (entries === null) {
+    // No plan: the ordinary single-round call, unchanged.
+    const move = canonMove(game, args);
+    return move ? [{ round: provenRound, move }] : null;
+  }
+  if (entries.length > MAX_SPAN_ROUNDS) return null;
+  const seen = new Set<number>();
+  const out: RoundMove[] = [];
+  for (const entry of entries) {
+    const [round, has] = intArg(entry, "round");
+    // Backward or unplaceable: skipped, never fatal. A model that emitted one bad entry has
+    // still honestly decided the others.
+    if (!has || round < provenRound) continue;
+    if (seen.has(round)) return null;
+    const move = canonMove(game, entry);
+    if (!move) continue;
+    seen.add(round);
+    out.push({ round, move });
+  }
+  if (out.length === 0) return null;
+  out.sort((a, b) => a.round - b.round);
+  return out;
+}
+
+/**
+ * The per-round argument objects in a plan, or null when this call carries no plan.
+ *
+ * null must mean "no plan" rather than "empty plan": the caller falls back to single-round
+ * binding on null, and binding nothing would break every agent shipping today.
+ */
+function planEntries(args: Record<string, unknown>): Record<string, unknown>[] | null {
+  const raw = args[PLAN_KEY];
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out = raw.filter(
+    (item): item is Record<string, unknown> =>
+      typeof item === "object" && item !== null && !Array.isArray(item),
+  );
+  return out.length > 0 ? out : null;
+}
+
+/**
+ * Every round this response will bind, exactly as the gateway will read it.
+ *
+ * Worth calling in a test before shipping a batching agent: if this does not list the round you
+ * are about to play, that turn will not be bound, and if it lists a DIFFERENT move than you
+ * intend to submit, the match will reject it.
+ */
+export function boundPlan(game: string, resp: unknown, provenRound: number): RoundMove[] | null {
+  return canonPlan(game, moveFromResponse(game, resp), provenRound);
 }

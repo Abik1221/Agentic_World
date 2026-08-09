@@ -16,6 +16,7 @@ import { dirname, resolve } from "node:path";
 
 import {
   boundMove,
+  boundPlan,
   canonMafia,
   canonMonopoly,
   moveTool,
@@ -54,10 +55,31 @@ function load(): BindingCase[] {
         "sibling sdk/conformance directory. Run tests from a full checkout of the repository.",
     );
   }
-  const doc = JSON.parse(raw) as { cases: BindingCase[] };
+  const doc = JSON.parse(raw) as { cases: BindingCase[]; plan_cases: PlanCase[] };
   assert.ok(doc.cases?.length, "move_binding.json contains no cases");
+  assert.ok(doc.plan_cases?.length, "move_binding.json contains no plan_cases");
+  planCases = doc.plan_cases;
   return doc.cases;
 }
+
+// The RANGE half of the contract: one completion that decided several rounds.
+//
+// Shared for the same reason as the single-move cases. The gateway writes a bound row per round
+// in the span and the match checks each one as it is submitted, so an SDK that builds a plan the
+// gateway reduces differently rejects an honest turn in the MIDDLE of a batched sequence — the
+// hardest possible failure to debug from either side.
+interface PlanCase {
+  name: string;
+  why: string;
+  game: string;
+  tool: string;
+  proven_round: number;
+  response: unknown;
+  // null means NOTHING may be bound, the same distinction expect_move draws.
+  expect_plan: { round: number; move: string }[] | null;
+}
+
+let planCases: PlanCase[] = [];
 
 for (const c of load()) {
   test(`move binding conformance: ${c.name}`, () => {
@@ -150,4 +172,25 @@ test("a quoted integer binds but an exponent or decimal string does not", () => 
 
 function tool(input: Record<string, unknown>): Record<string, unknown> {
   return { type: "tool_use", name: "play_card", input };
+}
+
+for (const c of planCases) {
+  test(`move binding plan conformance: ${c.name}`, () => {
+    assert.equal(
+      moveToolName(c.game),
+      c.tool,
+      `moveToolName(${c.game}) disagrees with the fixture's tool name`,
+    );
+    const got = boundPlan(c.game, c.response, c.proven_round);
+    if (c.expect_plan === null) {
+      assert.equal(got, null, `bound ${JSON.stringify(got)} but must bind NOTHING.\nwhy: ${c.why}`);
+      return;
+    }
+    assert.ok(got, `bound nothing, want ${c.expect_plan.length} rounds.\nwhy: ${c.why}`);
+    assert.deepEqual(
+      got,
+      c.expect_plan,
+      `bound ${JSON.stringify(got)}, want ${JSON.stringify(c.expect_plan)}.\nwhy: ${c.why}`,
+    );
+  });
 }

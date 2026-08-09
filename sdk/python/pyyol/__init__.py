@@ -65,6 +65,9 @@ __all__ = [
     "move_tool_choice",
     "move_from_response",
     "bound_move",
+    # Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
+    # model made, not calls, so batching no longer costs an agent its verified share.
+    "bound_plan",
     # Telemetry + signing primitives (parity with the JS SDK).
     "Span",
     "UsageAccumulator",
@@ -122,6 +125,7 @@ _LAZY = {
     "move_tool_choice": "movetools",
     "move_from_response": "movetools",
     "bound_move": "movetools",
+    "bound_plan": "movetools",
     "Span": "telemetry",
     "UsageAccumulator": "telemetry",
     "match_trace_id": "telemetry",

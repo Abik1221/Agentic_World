@@ -649,5 +649,232 @@
       },
       "expect_move": "card:7"
     }
+  ],
+
+  "_plan_readme": [
+    "RANGE BINDINGS: one completion that decided SEVERAL rounds.",
+    "",
+    "WHY. Coverage used to count CALLS, so a completion bound exactly one round. An agent",
+    "that batches — one call planning three rounds — therefore scored about 33% on real",
+    "staked tables while playing entirely model-backed. Phase 4 exists to REWARD batching as",
+    "cost optimisation, so the two rules pulled in opposite directions and no threshold",
+    "reconciled them. Coverage now means 'decisions a model made' rather than 'calls made'.",
+    "",
+    "THE SHAPE. The move tool carries a `plan` array, each entry being that round's ordinary",
+    "move arguments plus a `round`. The gateway binds every round in the plan from that one",
+    "completion: shared completion hash, one receipt per round over that round's own move.",
+    "",
+    "WHY OVER-CLAIMING IS SAFE. A span is a COMMITMENT, not a free coverage win. Match-time",
+    "enforcement is unchanged, so submitting anything other than the bound move for round 5",
+    "is rejected exactly as a substitution is. An agent that claims rounds it does not play",
+    "has only tied its own hands.",
+    "",
+    "THE ONE THING A SPAN MUST NEVER DO IS REACH BACKWARDS. Rounds before proven_round have",
+    "already been played, so a binding written over them is coverage nothing will ever check.",
+    "Forward claims are self-limiting because they are enforced; backward claims are not.",
+    "",
+    "proven_round is the round the turn proof attests. expect_plan of null means NOTHING may",
+    "be bound. A case with no `plan` in its arguments must still bind its proven round, which",
+    "is what keeps every agent shipping today working unchanged."
+  ],
+  "plan_cases": [
+    {
+      "name": "openai_wire_batched_three_rounds",
+      "why": "The headline case: one call plans rounds 4-6. Arguments arrive as a JSON STRING, as OpenAI-wire providers send them.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 4,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 4, \"card\": 7}, {\"round\": 5, \"card\": 2}, {\"round\": 6, \"card\": 9}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 4, "move": "card:7" },
+        { "round": 5, "move": "card:2" },
+        { "round": 6, "move": "card:9" }
+      ]
+    },
+    {
+      "name": "anthropic_native_batched_plan",
+      "why": "Anthropic sends tool input as an OBJECT rather than a string. The plan must read identically either way.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 1,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": {
+              "plan": [
+                { "round": 1, "card": 13 },
+                { "round": 2, "card": 1 }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 1, "move": "card:13" },
+        { "round": 2, "move": "card:1" }
+      ]
+    },
+    {
+      "name": "plan_cannot_reach_backwards",
+      "why": "THE security case. Rounds 1 and 2 were played before this call was proven, so binding them would be coverage nothing can check — an agent could retroactively claim turns it played unbound. Only the proven round and later survive.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 8,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 1, \"card\": 1}, {\"round\": 2, \"card\": 2}, {\"round\": 8, \"card\": 8}, {\"round\": 9, \"card\": 9}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 8, "move": "card:8" },
+        { "round": 9, "move": "card:9" }
+      ]
+    },
+    {
+      "name": "contradictory_plan_binds_nothing",
+      "why": "Two different moves for one round has no honest reading, and picking either would be the platform guessing on the agent's behalf. Binding nothing leaves the turn unverified, which is always the safe direction.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 4,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 4, \"card\": 7}, {\"round\": 4, \"card\": 8}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": null
+    },
+    {
+      "name": "plain_call_still_binds_its_proven_round",
+      "why": "Back-compatibility, and the case that matters most in production: every agent shipping today sends this shape. A call with no plan binds exactly the round its proof attests.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 11,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": { "card": 3 }
+          }
+        ]
+      },
+      "expect_plan": [{ "round": 11, "move": "card:3" }]
+    },
+    {
+      "name": "plan_entry_without_a_round_is_skipped_not_fatal",
+      "why": "One malformed entry must not discard the rounds the model did decide honestly. An unplaceable entry has no slot and a move-less entry is not a move; both are dropped.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 4,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 4, \"card\": 7}, {\"card\": 5}, {\"round\": 6}, {\"round\": 7, \"card\": 11}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 4, "move": "card:7" },
+        { "round": 7, "move": "card:11" }
+      ]
+    },
+    {
+      "name": "mafia_plan_keeps_no_target_distinct_from_seat_zero",
+      "why": "Range binding is not Goofspiel-only, and Mafia's convention has to survive it. Seat 0 is a REAL PLAYER, so an absent target must stay distinguishable from targeting them — collapsing the two would let a move against that one player be substituted for doing nothing.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "proven_round": 2,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "plan": [
+                { "round": 2, "kind": "kill", "target": 0 },
+                { "round": 3, "kind": "abstain" }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 2, "move": "kill:0" },
+        { "round": 3, "move": "abstain:none" }
+      ]
+    },
+    {
+      "name": "plan_on_the_wrong_games_tool_binds_nothing",
+      "why": "A Mafia tool call cannot decide a Goofspiel round, plan or no plan. Same rule as a single call.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 1,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": { "plan": [{ "round": 1, "kind": "kill", "target": 2 }] }
+          }
+        ]
+      },
+      "expect_plan": null
+    }
   ]
 }

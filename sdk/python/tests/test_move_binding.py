@@ -133,3 +133,71 @@ def test_sdk_objects_are_read_like_dicts() -> None:
         content = [Block()]
 
     assert movetools.bound_move("goofspiel", Resp()) == "card:7"
+
+
+_PLAN_CASES = _DOC["plan_cases"]
+assert _PLAN_CASES, "move_binding.json contains no plan_cases: the range contract is unpinned"
+
+
+@pytest.mark.parametrize("case", _PLAN_CASES, ids=[c["name"] for c in _PLAN_CASES])
+def test_move_binding_plan_conformance(case: dict[str, Any]) -> None:
+    """The RANGE half: one completion that decided several rounds.
+
+    Shared for the same reason as the single-move cases. The gateway writes a bound row per
+    round in the span and the match checks each one as it is submitted, so an SDK that builds a
+    plan the gateway reduces differently rejects an honest turn in the MIDDLE of a batched
+    sequence — the hardest possible failure to debug from either side.
+    """
+    game, tool, expect = case["game"], case["tool"], case["expect_plan"]
+
+    assert movetools.tool_name(game) == tool, (
+        f"tool_name({game!r}) = {movetools.tool_name(game)!r}, fixture expects {tool!r}"
+    )
+
+    got = movetools.bound_plan(game, case["response"], case["proven_round"])
+    if expect is None:
+        assert got is None, f"bound {got!r}, but this response must bind NOTHING.\nwhy: {case['why']}"
+        return
+
+    assert got is not None, f"bound nothing, want {len(expect)} rounds.\nwhy: {case['why']}"
+    assert got == expect, f"bound {got!r}, want {expect!r}.\nwhy: {case['why']}"
+
+
+def test_the_plan_tool_and_the_plan_reader_agree() -> None:
+    """Round-trip: the schema this SDK asks a model for is one this SDK can read back.
+
+    Worth pinning separately from the shared fixtures. Those prove the three languages agree on
+    reducing a response; this proves the tool we TELL the model to use produces a response we
+    reduce — the two halves are written in different places and nothing else connects them.
+    """
+    tool = movetools.move_tool(movetools.GAME_GOOFSPIEL, "anthropic", plan_rounds=3)
+    schema = tool["input_schema"]
+    assert schema["required"] == [movetools.PLAN_KEY]
+    item = schema["properties"][movetools.PLAN_KEY]["items"]
+    assert "round" in item["required"] and "card" in item["required"], (
+        "a plan entry must require BOTH its slot and its move: an entry missing either is "
+        "silently dropped, so the model must be told both are mandatory"
+    )
+
+    # A response shaped exactly as that schema asks for.
+    resp = {
+        "content": [
+            {
+                "type": "tool_use",
+                "name": movetools.tool_name(movetools.GAME_GOOFSPIEL),
+                "input": {"plan": [{"round": 4, "card": 7}, {"round": 5, "card": 2}]},
+            }
+        ]
+    }
+    assert movetools.bound_plan(movetools.GAME_GOOFSPIEL, resp, 4) == [
+        {"round": 4, "move": "card:7"},
+        {"round": 5, "move": "card:2"},
+    ]
+
+
+def test_the_plain_tool_is_untouched_by_the_plan_option() -> None:
+    # Every agent shipping today calls move_tool with no plan_rounds. A change to that schema
+    # would alter what their models are asked for, which is a breaking change dressed as a feature.
+    plain = movetools.move_tool(movetools.GAME_GOOFSPIEL, "anthropic")
+    assert plain["input_schema"]["required"] == ["card"]
+    assert movetools.PLAN_KEY not in plain["input_schema"]["properties"]

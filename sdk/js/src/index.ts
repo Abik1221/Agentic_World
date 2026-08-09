@@ -43,6 +43,12 @@ export {
   moveToolName,
   moveFromResponse,
   boundMove,
+  // Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
+  // model made, not calls, so batching no longer costs an agent its verified share.
+  boundPlan,
+  canonPlan,
+  PLAN_KEY,
+  MAX_SPAN_ROUNDS,
   canonMove,
   canonGoofspiel,
   canonMafia,
