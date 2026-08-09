@@ -456,14 +456,55 @@ func (r *PIndexRepo) RecordBoundDecision(ctx context.Context, matchID, agentPubl
 }
 
 // BoundDecisions returns how many DISTINCT decisions in this match the agent proved
-// were LLM-backed. Compared against the decisions it actually made to get the ranked
-// integrity ratio.
+// were LLM-BACKED AND ACTUALLY MADE. This is the numerator of the ranked integrity ratio,
+// so it decides whether a staked match is voided.
+//
+// # Why it is not simply a row count any more
+//
+// One completion may now cover a RANGE of rounds — an agent that batches ("plan rounds 4-6
+// in one call") gets a bound row per round, which is the whole point: those decisions are
+// model-backed and counting calls instead punished the cheapest honest agents at roughly 33%.
+//
+// But the span is written when the CALL happens, before its later rounds have been played.
+// A row for round 6 is therefore a CLAIM about a turn that may never be taken. Counting it
+// would let one call at round 1 assert a whole match's worth of coverage, and the ratio that
+// voids matches would be reading a promise rather than a decision.
+//
+// Intersecting with agent_match_decisions costs nothing and makes the count mean what its
+// name says. The proof slot is game-dependent for the same reason it is in CoverageFor:
+// Goofspiel's `seq` is a submission counter that repeats on a retry, while Mafia's and
+// Monopoly's IS the slot the turn proof was minted for.
+//
+// # And why an unlogged seat still counts everything
+//
+// This number feeds rule 1 of the ranked gate — "stakes must not flow to a seat that proved
+// NOTHING" — which voids a staked match. So a change that can only lower it is not
+// automatically safe: if a seat's decisions were never logged, intersecting would take a
+// fully-bound seat to zero and VOID the match of an agent that did everything right. The
+// decision log has been incomplete before; the pull path wrote no rows at all until
+// actdecisions.go, which is how 2067 rated Monopoly matches produced no benchmark facts.
+//
+// So the intersection applies only to a seat the log actually knows about. No decisions
+// logged means no evidence either way, and the count falls back to exactly what it was —
+// the same fail-open shape as integrity.Evaluate and movebind.Enforce.
 func (r *PIndexRepo) BoundDecisions(ctx context.Context, matchID, agentPublicID string) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM agent_match_bound_decisions b
 		   JOIN agents a ON a.id = b.agent_id
-		  WHERE b.match_id = $1 AND a.public_id = $2`,
+		   LEFT JOIN matches m ON m.public_id = b.match_id
+		  WHERE b.match_id = $1 AND a.public_id = $2
+		    AND (
+		      NOT EXISTS (
+		        SELECT 1 FROM agent_match_decisions d
+		         WHERE d.match_id = b.match_id AND d.agent_id = b.agent_id
+		      )
+		      OR EXISTS (
+		        SELECT 1 FROM agent_match_decisions d
+		         WHERE d.match_id = b.match_id AND d.agent_id = b.agent_id
+		           AND (CASE WHEN m.game = 'goofspiel' THEN d.round ELSE d.seq END) = b.round
+		      )
+		    )`,
 		matchID, agentPublicID).Scan(&n)
 	return n, err
 }

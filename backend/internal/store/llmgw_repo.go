@@ -171,10 +171,21 @@ func (r *LLMGatewayRepo) CoverageFor(ctx context.Context, agentPublicID, matchID
 		     LEFT JOIN matches m ON m.public_id = dd.match_id
 		    WHERE a.public_id = $1 AND ($2 = '' OR dd.match_id = $2)
 		 ), b AS (
+		   -- INTERSECTED with d, and that is what makes a range binding honest.
+		   --
+		   -- One completion may now cover several rounds ("plan rounds 4-6"), which is the
+		   -- point: batching is cost optimisation and those rounds ARE model-backed. But a span
+		   -- is written when the CALL happens, before the later rounds are played. An agent
+		   -- that claims rounds 4-6 and then goes dark at round 5 must not be credited for two
+		   -- decisions it never made — the platform force-played those turns.
+		   --
+		   -- So a bound round counts only where the decision log has the matching slot: the
+		   -- agent both decided that turn and had a model decide it.
 		   SELECT DISTINCT bd.match_id, bd.round
 		     FROM agent_match_bound_decisions bd
 		     JOIN agents a ON a.id = bd.agent_id
 		    WHERE a.public_id = $1 AND ($2 = '' OR bd.match_id = $2)
+		      AND EXISTS (SELECT 1 FROM d WHERE d.match_id = bd.match_id AND d.slot = bd.round)
 		 )
 		 SELECT (SELECT count(*) FROM d), (SELECT count(*) FROM b)`,
 		agentPublicID, matchID).Scan(&out.Decisions, &out.BoundDecisions)

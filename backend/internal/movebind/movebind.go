@@ -148,6 +148,126 @@ func Canon(game string, tc ToolCall) (string, bool) {
 	return "", false
 }
 
+// RoundMove is one round's canonical move within the span a single completion covers.
+type RoundMove struct {
+	Round int
+	Move  string
+}
+
+// MaxSpanRounds caps how many rounds one completion may claim to have decided.
+//
+// A bound rather than an unbounded list because the plan is attacker-supplied: without a cap
+// a single call could assert a hundred thousand rounds and turn one request into that many
+// database writes. Comfortably above any real game — Goofspiel is 13 rounds and Monopoly's
+// turn cap is well inside this — so a legitimate agent never meets it.
+const MaxSpanRounds = 64
+
+// planKey is the argument that carries a multi-round decision. Named once: the SDKs, the
+// conformance fixtures and this extractor all have to agree, and a mismatch would silently
+// fall back to single-round binding rather than fail loudly.
+const planKey = "plan"
+
+// CanonPlan reduces a move tool call to every round it decided.
+//
+// # Why a completion may cover more than one round
+//
+// Coverage used to count CALLS: one completion bound exactly one round. That made the honest
+// floor for an agent that batches — one call planning three rounds — about 33%, measured on
+// real staked tables. Phase 4 exists to REWARD batching as cost optimisation, so the metric
+// scored the cheapest honest agent as the least verified one, and no threshold reconciles
+// that. The fix is to make coverage mean "decisions a model made" rather than "calls made":
+// if one completion legitimately decided rounds 4, 5 and 6, those three rounds ARE
+// model-backed and each should count.
+//
+// # Why claiming a span is safe to allow
+//
+// A span is a COMMITMENT, not a free coverage win. Each round in it is bound to a specific
+// move, and match-time enforcement is unchanged — submitting anything else for round 5 is
+// rejected exactly as a substitution is. So an agent that over-claims has only tied its own
+// hands, and one that plays what it claimed genuinely played what its model chose. There is
+// no version of this an agent profits from without actually letting the model decide.
+//
+// # The one thing a span must never do: reach backwards
+//
+// Rounds before provenRound are DROPPED. The turn proof attests the call belongs to
+// provenRound; earlier rounds have already been played, so writing a binding over them would
+// let an agent retroactively claim coverage for turns it played unbound — inflating the very
+// number the ranked gate reads. Forward claims are self-limiting because they are enforced;
+// backward claims are not enforced at all, because those moves are already sealed.
+//
+// Returns ok=false for "nothing to bind", which every caller must treat as absence rather
+// than as a mismatch. A plan naming the same round twice is rejected WHOLE: two different
+// moves for one slot has no honest reading, and picking either one would be the platform
+// guessing on the agent's behalf.
+func CanonPlan(game string, tc ToolCall, provenRound int) ([]RoundMove, bool) {
+	if tc.Name != ToolFor(game) || tc.Name == "" {
+		return nil, false
+	}
+	entries, ok := planEntries(tc.Args)
+	if !ok {
+		// No plan: the ordinary single-round call, which stays exactly as it was.
+		move, ok := Canon(game, tc)
+		if !ok {
+			return nil, false
+		}
+		return []RoundMove{{Round: provenRound, Move: move}}, true
+	}
+	if len(entries) > MaxSpanRounds {
+		return nil, false
+	}
+	seen := make(map[int]bool, len(entries))
+	out := make([]RoundMove, 0, len(entries))
+	for _, args := range entries {
+		round, has := intArg(args, "round")
+		if !has || round < provenRound {
+			// Backward or unlabelled: skipped, never an error. A model that emitted one
+			// malformed entry has still honestly decided the others.
+			continue
+		}
+		if seen[round] {
+			return nil, false
+		}
+		move, ok := Canon(game, ToolCall{Name: tc.Name, Args: args})
+		if !ok {
+			continue
+		}
+		seen[round] = true
+		out = append(out, RoundMove{Round: round, Move: move})
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Round < out[j].Round })
+	return out, true
+}
+
+// planEntries reads the per-round argument objects out of a plan array.
+//
+// ok=false means this call carries no plan at all, which is the common case and must fall
+// back to single-round binding rather than bind nothing.
+func planEntries(args map[string]any) ([]map[string]any, bool) {
+	raw, present := args[planKey]
+	if !present {
+		return nil, false
+	}
+	list, isList := raw.([]any)
+	if !isList || len(list) == 0 {
+		return nil, false
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, item := range list {
+		obj, isObj := item.(map[string]any)
+		if !isObj {
+			continue
+		}
+		out = append(out, obj)
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
 // CanonGoofspiel is the bound form of a Goofspiel move: the card, and nothing else.
 func CanonGoofspiel(card int) string { return "card:" + strconv.Itoa(card) }
 

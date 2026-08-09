@@ -192,6 +192,18 @@ type Call struct {
 	ExtractedMove  string
 	Receipt        string
 
+	// BoundRounds is every round this ONE completion decided.
+	//
+	// Usually exactly one — the round the turn proof attests. An agent that batches ("plan
+	// rounds 4 through 6 in a single call") produces several, all sharing CompletionHash and
+	// each carrying its own receipt over its own move.
+	//
+	// This exists because coverage used to count CALLS, which made the honest floor for a
+	// batching agent ~33% while Phase 4 rewards batching as cost optimisation. ExtractedMove
+	// and Receipt above stay the PROVEN round's, so the trace and the span keep describing the
+	// decision the request was made for.
+	BoundRounds []BoundRound
+
 	// UsageUnreadable marks a successful response whose usage we could not parse. Carried on
 	// the Call so the condition is visible in the trace and countable, not just a log line —
 	// the whole risk is that it stays invisible while the call is priced at zero.
@@ -475,9 +487,32 @@ func (g *Gateway) record(c Call) {
 		if !c.Bound || c.Status < 200 || c.Status > 299 {
 			return
 		}
-		if err := g.rec.BindDecision(ctx, c.MatchID, c.AgentPublicID, c.Round,
-			c.ExtractedMove, c.CompletionHash, c.Receipt); err != nil {
-			g.log.Debug("llmgw: could not bind decision", "match", c.MatchID, "error", err)
+		// Every round this completion decided gets its own row. For an agent that does not
+		// batch that is exactly one — the proven round — and identical to what this always did.
+		//
+		// A completion carrying NO recognisable move still binds its proven round with an empty
+		// move, because "a verified call was made for this turn" is true and is what the ranked
+		// gate counts. That is the case BoundRounds is empty for.
+		bound := c.BoundRounds
+		if len(bound) == 0 {
+			bound = []BoundRound{{Round: c.Round}}
+		}
+		persisted := 0
+		for _, br := range bound {
+			if err := g.rec.BindDecision(ctx, c.MatchID, c.AgentPublicID, br.Round,
+				br.Move, c.CompletionHash, br.Receipt); err != nil {
+				// Logged per round rather than abandoning the span: rounds are independent
+				// rows, and losing round 5 to a transient error is no reason to drop round 6.
+				g.log.Debug("llmgw: could not bind decision",
+					"match", c.MatchID, "round", br.Round, "error", err)
+				continue
+			}
+			persisted++
+		}
+		// The badge stands for a RECORDED proven decision, so it needs at least one row to
+		// have landed. Awarding it off an attempted binding would leave a developer holding a
+		// badge the boards cannot corroborate.
+		if persisted == 0 {
 			return
 		}
 		g.awardVerified(ctx, c.AgentPublicID)
@@ -723,11 +758,24 @@ func mergeUsage(dst *usageUsage, src usageUsage) bool {
 // we could not parse — all of them mean the platform has nothing to say about this move, and
 // the match must proceed exactly as it does today. The only thing that may ever REJECT a turn
 // is a successful extraction that DISAGREES with the submitted move.
+// BoundRound is one round a completion decided, with the receipt attesting it.
+//
+// A separate receipt per round rather than one over the whole span: each row in
+// agent_match_bound_decisions is read and verified on its own at match time, and a receipt
+// covering a list would force a reader checking round 5 to reconstruct rounds 4 and 6 to
+// verify it. The COMPLETION HASH is what ties them back together as one call.
+type BoundRound struct {
+	Round   int
+	Move    string
+	Receipt string
+}
+
 func (g *Gateway) bindCompletion(c *Call, body []byte) {
 	if !c.Bound || c.Status < 200 || c.Status > 299 || g.verifier == nil {
 		return
 	}
-	tool := movebind.ToolFor(telemetry.GameFromMatchID(c.MatchID))
+	game := telemetry.GameFromMatchID(c.MatchID)
+	tool := movebind.ToolFor(game)
 	if tool == "" {
 		return
 	}
@@ -741,13 +789,30 @@ func (g *Gateway) bindCompletion(c *Call, body []byte) {
 	if !ok {
 		return
 	}
-	move, ok := movebind.Canon(telemetry.GameFromMatchID(c.MatchID), tc)
+	// Every round this completion decided. A plain call yields exactly one — the proven
+	// round — so this is the same behaviour it has always had for an agent that does not batch.
+	covered, ok := movebind.CanonPlan(game, tc, c.Round)
 	if !ok {
 		return
 	}
-	c.CompletionHash = movebind.CompletionHash(body)
-	c.ExtractedMove = move
-	c.Receipt = g.verifier.MintDecision(c.AgentPublicID, c.MatchID, c.Round, c.CompletionHash, move)
+	hash := movebind.CompletionHash(body)
+	c.CompletionHash = hash
+	c.BoundRounds = make([]BoundRound, 0, len(covered))
+	for _, rm := range covered {
+		receipt := g.verifier.MintDecision(c.AgentPublicID, c.MatchID, rm.Round, hash, rm.Move)
+		c.BoundRounds = append(c.BoundRounds, BoundRound{Round: rm.Round, Move: rm.Move, Receipt: receipt})
+		// The PROVEN round's move is what the trace and the Lens span report, because that is
+		// the decision this request was made for. A span's later rounds are recorded, not
+		// narrated.
+		if rm.Round == c.Round {
+			c.ExtractedMove, c.Receipt = rm.Move, receipt
+		}
+	}
+	if len(c.BoundRounds) > 1 {
+		g.log.Debug("llmgw: one completion covered several rounds",
+			"agent", c.AgentPublicID, "match", c.MatchID, "proven_round", c.Round,
+			"rounds_covered", len(c.BoundRounds))
+	}
 }
 
 // hopByHop headers must not be forwarded in either direction.

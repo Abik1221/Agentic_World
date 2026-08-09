@@ -83,6 +83,20 @@ func writeBenchFixture(t *testing.T, pool *pgxpool.Pool, f benchFixture) {
 			f.matchID, f.verifiedCost, f.verifiedProvider, f.verifiedModel, f.tokens, f.agentPub); err != nil {
 			t.Fatalf("insert verified cost %s: %v", f.matchID, err)
 		}
+		// The BOUND CALL that makes this fixture what it says it is.
+		//
+		// "verified" on this platform means the gateway PROVED a call belonged to a decision
+		// and saw the provider name a model — that one row in agent_model_calls is what the
+		// model board's `no_verified_model` exclusion and the published-ladder filter both
+		// read. Writing only the verified-cost row described a gateway-verified seat while
+		// leaving no evidence any of the code that decides "verified" can see, so the fixture
+		// asserted an attribution its own data did not support.
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_model_calls (agent_id, match_id, round, bound, provider, model, status)
+			 SELECT a.id, $1, 1, true, $2, $3, 200 FROM agents a WHERE a.public_id = $4`,
+			f.matchID, f.verifiedProvider, f.verifiedModel, f.agentPub); err != nil {
+			t.Fatalf("insert bound model call %s: %v", f.matchID, err)
+		}
 	}
 }
 
