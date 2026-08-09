@@ -135,13 +135,40 @@ func (r *LLMGatewayRepo) ExtractedMove(ctx context.Context, matchID, agentPublic
 //
 // Counts DISTINCT decisions, not calls. An agent that made forty calls for one decision has
 // covered one decision, and counting calls would let volume manufacture coverage.
+//
+// # Both sides must count the same unit, and that unit is game-dependent
+//
+// The numerator counts DISTINCT bound_decisions.round, which is the number the TURN PROOF was
+// minted for. The denominator has to count the same thing, and which decision-log column holds
+// it differs per game:
+//
+//	goofspiel  proof slot = the round      → decisions.round  (decisions.seq is a SUBMISSION
+//	                                         counter, so a retried round appears twice)
+//	mafia      proof slot = MafiaTurn(day, phase) → decisions.seq (day alone would collide
+//	                                         across the night and voting phases of one day)
+//	monopoly   proof slot = the pre-move NextSeq  → decisions.seq
+//
+// This counted seq for ALL games, so Goofspiel's denominator included retries while its
+// numerator did not. Measured: six seats that bound every single round they played reported
+// 76–93% instead of 100%, purely because rounds 7, 8 and 12 had each been submitted twice.
+//
+// That was a DISPLAY defect rather than a settlement one — the ranked share rule computes its
+// own denominator from the engine's round count (see match.rankedIntegrityFailed) and was never
+// affected. But this figure is what the Verified badge, `pyyol doctor` and the developer's own
+// "verified share" report, so understating it tells an honest developer their agent is partly
+// unverified when every decision was bound.
 func (r *LLMGatewayRepo) CoverageFor(ctx context.Context, agentPublicID, matchID string) (llmgw.Coverage, error) {
 	out := llmgw.Coverage{AgentPublicID: agentPublicID}
 	err := r.db.QueryRow(ctx,
 		`WITH d AS (
-		   SELECT dd.match_id, dd.seq
+		   SELECT DISTINCT dd.match_id,
+		          CASE WHEN m.game = 'goofspiel' THEN dd.round ELSE dd.seq END AS slot
 		     FROM agent_match_decisions dd
 		     JOIN agents a ON a.id = dd.agent_id
+		     -- LEFT JOIN so a decision whose match row has been pruned still counts. Dropping
+		     -- it would shrink the denominator and flatter the agent, which is the wrong
+		     -- direction for a figure that backs a badge.
+		     LEFT JOIN matches m ON m.public_id = dd.match_id
 		    WHERE a.public_id = $1 AND ($2 = '' OR dd.match_id = $2)
 		 ), b AS (
 		   SELECT DISTINCT bd.match_id, bd.round
