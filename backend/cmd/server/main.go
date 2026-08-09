@@ -1393,6 +1393,11 @@ func run() error {
 	// whose completion carried no move tool call, plays exactly as it does today. Only a move
 	// that CONTRADICTS an attested model output is rejected.
 	matchSvc.SetBoundMoveReader(llmGatewayRepo)
+	// A refused move must not buy more time. tryExtend gives a responsive seat extra window on
+	// the reasoning that it is thinking; a seat that answered and was REJECTED is not, and
+	// without this it holds the round open to the policy ceiling while answering /health
+	// perfectly — roughly two minutes a round on a table an opponent has staked on.
+	matchSvc.SetRejectionLog(store.NewMatchRepo(st.DB))
 	mafiaSvc.SetBoundMoveReader(llmGatewayRepo)
 	monopolySvc.SetBoundMoveReader(llmGatewayRepo)
 	log.Info("completion binding active: a submitted move that contradicts the model's own output is rejected",

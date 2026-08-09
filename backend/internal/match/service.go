@@ -95,6 +95,9 @@ type Service struct {
 	// boundMoves reports the move the MODEL produced for a turn, as the gateway observed
 	// it. Nil ⇒ completion binding is not enforced, which is the pre-existing behaviour.
 	boundMoves movebind.Reader
+	// rejections records that a seat's move was refused this round, so tryExtend can tell a
+	// slow agent from one that answered and was turned away. Nil ⇒ extensions unchanged.
+	rejections RejectionLog
 }
 
 // SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).
@@ -102,6 +105,22 @@ type Service struct {
 // Without it the service behaves exactly as it did before: a move is authenticated by its
 // signature and applied, with nothing checking it against the model's own answer.
 func (s *Service) SetBoundMoveReader(r movebind.Reader) { s.boundMoves = r }
+
+// RejectionLog records and reports that a seat's move was REFUSED for a round.
+//
+// A narrow port for one fact, declared next to the two places that need it: tryAct writes it,
+// tryExtend reads it. Satisfied by *store.MatchRepo.
+type RejectionLog interface {
+	// RecordMoveRejection notes that this seat submitted a move for this round and it was
+	// refused. Idempotent on (match, agent, round) — one refusal answers the question.
+	RecordMoveRejection(ctx context.Context, matchID, agentPublicID string, round int, reason string) error
+	// MoveRejected reports whether this seat has had a move refused for this round.
+	MoveRejected(ctx context.Context, matchID, agentPublicID string, round int) (bool, error)
+}
+
+// SetRejectionLog installs the refused-move record that stops a rejected seat earning deadline
+// extensions. Nil ⇒ extensions behave exactly as they did before.
+func (s *Service) SetRejectionLog(r RejectionLog) { s.rejections = r }
 
 // ChatTracer records agent table talk to the observability pipeline. Satisfied by
 // *telemetry.Client; nil means telemetry is off and every call is a no-op.
@@ -425,6 +444,27 @@ func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) boo
 			return false
 		}
 	}
+	// A seat that ANSWERED and was REFUSED is not thinking. /health says nothing useful about
+	// it — an agent whose every move contradicts its own model's output stays perfectly
+	// responsive while being turned away each time, which is how a rejected seat could hold a
+	// round open to the policy ceiling on a table someone else has staked on.
+	//
+	// Reads as "no rejection" on an error, so a lookup failure costs the table nothing it had
+	// before. This can only ever REMOVE extra time, never grant it, so failing open here means
+	// behaving exactly as the code did before this check existed.
+	for _, agent := range unsealed {
+		rejected, err := s.rejectedThisRound(ctx, m, agent)
+		if err != nil {
+			slog.Debug("match: could not read the move-rejection log; extending as before",
+				"match", m.PublicID, "agent", agent, "error", err)
+			continue
+		}
+		if rejected {
+			slog.Info("match: NOT extending — this seat submitted a move and it was refused, so it is not still thinking",
+				"match", m.PublicID, "agent", agent, "round", m.State.Round)
+			return false
+		}
+	}
 	next := s.clock.Now().Add(ext)
 	if err := s.repo.ExtendDeadline(ctx, m.PublicID, next); err != nil {
 		slog.Debug("match: could not extend a deadline; forfeiting the turn as before",
@@ -432,8 +472,20 @@ func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) boo
 		return false
 	}
 	slog.Info("match: deadline extended — the agent is still answering /health, so it is thinking rather than gone",
-		"match", m.PublicID, "extension", ext, "elapsed", elapsed)
+		// The ROUND, because without it an extension cannot be matched against the
+		// refused-move record for the same round, and "did this grant more time to a seat we
+		// had already turned away" becomes unanswerable from the log.
+		"match", m.PublicID, "round", m.State.Round, "unsealed", unsealed,
+		"extension", ext, "elapsed", elapsed)
 	return true
+}
+
+// rejectedThisRound reports whether a seat has had a move refused for the round now open.
+func (s *Service) rejectedThisRound(ctx context.Context, m Match, agentPublicID string) (bool, error) {
+	if s.rejections == nil {
+		return false, nil
+	}
+	return s.rejections.MoveRejected(ctx, m.PublicID, agentPublicID, m.State.Round)
 }
 
 // SetStyleRecorder installs the (optional) style aggregator. Nil keeps it off.
@@ -1006,6 +1058,16 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	// about whether a model chose the move, so it does not transfer to this question.
 	if err := movebind.Enforce(ctx, s.boundMoves, slog.Default(), "match",
 		matchPublicID, agentPublicID, round, movebind.CanonGoofspiel(card)); err != nil {
+		// Note the refusal so the deadline sweep does not read this seat as "still thinking".
+		// Best-effort and never fatal to the rejection itself: failing to record it costs an
+		// extension budget, while failing the move would change what the control does.
+		if s.rejections != nil {
+			if rerr := s.rejections.RecordMoveRejection(ctx, matchPublicID, agentPublicID, round,
+				"completion_binding"); rerr != nil {
+				slog.Debug("match: could not record a move rejection",
+					"match", matchPublicID, "agent", agentPublicID, "round", round, "error", rerr)
+			}
+		}
 		return AgentView{}, err
 	}
 
