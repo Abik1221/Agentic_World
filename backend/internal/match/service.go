@@ -377,6 +377,25 @@ func (s *Service) SetLivenessProber(p LivenessProber) {
 // refused answers /health perfectly well, so it reads as "still thinking" indefinitely — which
 // would have let a rejected cheat stall a table other people have staked on.
 //
+// # DECIDED, NOT YET IMPLEMENTED: a REJECTED move should earn no extension
+//
+// The extension exists to give a slow-but-working agent time to answer. A seat whose move was
+// refused is not waiting on a model — it answered, and the answer contradicted what its own
+// model produced. Extending there rewards the behaviour and holds up an opponent who staked
+// real coins: at the policy ceiling of 3, a rejected cheat costs the table roughly two minutes
+// per round instead of one window.
+//
+// The counter-argument does not survive contact: an agent that submitted a bad move and wants
+// to correct it can simply resubmit inside the window it already has. The extension is not the
+// retry mechanism.
+//
+// Not implemented here because it needs state this function does not have. "Was a move rejected
+// for this seat this round" is not derivable from the match row, the decision log (a refused
+// move never becomes a decision) or the liveness probe, and it has to survive across instances,
+// so it means a durable per-(match, round, seat) rejection marker written by tryAct. That is a
+// small schema change and a settlement-affecting behaviour change, which together deserve their
+// own commit rather than a rushed rider on the deadline fix.
+//
 // Returns true when the deadline was pushed out and the caller should NOT force a timeout.
 func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) bool {
 	if s.livecheck == nil || len(unsealed) == 0 || m.RoundDeadline == nil {
