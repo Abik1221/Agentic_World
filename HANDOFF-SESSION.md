@@ -233,12 +233,49 @@ Mutation-verified (restoring the `break` fails two of four new tests), ordering 
 lands against the move it accompanied, blank says dropped. `tsc` clean, 110 frontend tests pass.
 Committed in `Pyyol_client` (separate repo) as `36d19f3`.
 
-**Left for whoever picks this up:** the "Watch the replay" action is on the match DETAIL page
-only — adding it to the list rows is a one-liner if it is wanted. Mafia/Monopoly replays reuse
-their existing viewers and were not re-verified against a recorded match this session; only
-Goofspiel was driven end to end. `replay_hash` is still `""`, and a match with no recording
-returns `"events": null` — the replay page should say "no recording" rather than render an
-empty board.
+### UI glitches removed, and a bug in the replay link itself
+
+Three faults, one cause: the viewer hooks had to answer before they knew anything.
+
+- **The flash.** On first render, with discovery still in flight, each hook fell straight
+  through to its last branch — the scripted DEMO on the dashboard, or "no match right now" in
+  the Live Arena — and swapped a moment later. So a fabricated game, or a denial that anything
+  was happening, rendered in front of the real thing. `loading` is now a mode of its own and
+  each viewer renders a skeleton sized like the board it becomes, so the page does not jump
+  either.
+- **"Watch the replay" did not replay.** Every hook's replay effect opened with
+  `if (preferredMatchId) return;` — naming a match SKIPPED the recording. A finished match is
+  the only kind anyone watches back, so the one path the feature exists for had no source.
+- **A finished match could masquerade as live.** `/watch` serves a finished match's backlog, so
+  connecting to a named one flipped `live` true and rendered it under a LIVE ribbon. The hooks
+  already refused this for DISCOVERED matches; naming one bypassed the check.
+
+All three games, because all three carried the identical code.
+
+### Broken images
+
+`profile.avatar ? <img/> : initials` only asks "is there a url", never "did it load", so a dead
+url rendered the browser's broken-image glyph inside the avatar circle with the initials sitting
+right there unused. `SafeImg` drops the image on error and renders the fallback the surrounding
+component would have shown anyway — applied to the three places a user's own picture appears
+and to the dashboard game tiles. The failure is keyed BY URL rather than a boolean reset in an
+effect, so a new src still gets a fresh chance without an extra render.
+
+### Checked and found already correct
+
+- **Telemetry** (`/traces/telemetry`) renders everything the backend sends — KPIs, failures by
+  cause, round hotspots, latency percentiles, and the per-arena table — and is already
+  responsive (the wide table scrolls in its own container rather than stretching the page).
+- **Ordering and pagination**: `ORDER BY COALESCE(started_at, created_at) DESC`, 20 per page,
+  page in the URL so a link to page 4 is a link.
+
+**Left for whoever picks this up:** the mode chooser is pills (All / Ranked / Sandbox) rather
+than two large cards — it works, is URL-driven and responsive, so it was left alone rather than
+restyled at the end of a long session; say the word if cards are wanted. The "Watch the replay"
+action is on the match DETAIL page only. Mafia/Monopoly replays share the fixed hook and are
+covered by the same code path, but only Goofspiel was driven end to end against a real
+recording. `replay_hash` is still `""`, and a match with no recording returns `"events": null` —
+the replay page should say "no recording" rather than render an empty board.
 
 ## Open queue, in priority order
 
