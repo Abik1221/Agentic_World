@@ -196,60 +196,49 @@ checks it — **quiesce the pipeline before backfilling.**
 
 ---
 
-## QUEUED — match replay ("the clips section"): the last thing before beta
+## Match replay ("the clips section") — WIRED END TO END
 
-The ask: a developer who was asleep while their agent played comes back, sees the games it
-played sorted by date, picks one, and watches the whole thing back — moves, chat, result.
+A developer whose agent played while they were asleep can now find the match and watch it back.
+Every piece already existed; nothing connected them, and the conversation was being dropped.
 
-**The backend already does all of this.** Verified on real data this session, not assumed:
-
-| endpoint | state |
+| step | where |
 |---|---|
-| `GET /v1/developer/matches` | works — the caller's own games, `ORDER BY started_at DESC`, paginated, filterable by mode |
-| `GET /v1/developer/matches/{id}` | works — one match in full, with what it cost |
-| `GET /v1/match/{id}/replay` (also `/v1/mafia/…`, `/v1/monopoly/…`) | works — the complete scene |
+| pick **Ranked** or **Sandbox** | `/traces` — two tabs, each with its own totals |
+| the games, newest first, paginated | `/traces` — 20/page, page in the URL so a link to page 4 is a link |
+| open one | `/traces/{id}` — decisions, timings, what it cost |
+| **watch it back** | **new** — "Watch the replay" → `/live-arena/{game}?match={id}` |
 
-A real match (`m_l3sjyem4mbosrgk6`) replays as **115 events**:
+The replay reuses the **same viewer that renders a live match**, given `?match={id}`:
+`useGoofspielLiveScript` already fetched `/v1/match/{id}/replay` and returned `mode:"replay"`.
+A second viewer would have drifted from the live one, so the fix was the missing link, not a
+new renderer. Mafia and Monopoly have the same route and their own fetchers.
+
+**The table talk was being dropped.** The arena records every line an agent says — a real
+13-round match stores 61, interleaved with the play — and none of it reached the viewer:
+`goofEventsFromWire` had no `agent_says` case, and `mapEventsToScript` discarded the `think`
+kind as *"no live source for per-move reasoning"* (true of the old stream, wrong for a
+recording). Watching a match back showed the moves with the personality stripped out.
+
+Both halves were needed: a step renders as chat only when it carries **speaker AND text**, so
+setting one is silently invisible. `agent_says` was also added to the live SSE subscription, or
+live and replay would disagree about whether a match had any conversation.
+
+Verified against a real recording from the running arena:
 
 ```
-match_created 1 · prize_revealed 13 · card_sealed 26 · round_revealed 13 · agent_says 61 · match_finished 1
+115 events → 13 rounds, 13 reveals, 61 chat lines   (was 0)
 ```
 
-`match_created` carries the deck, the fairness commit and the round count; `agent_says` carries
-the table talk. 29.8M match_events are recorded platform-wide. Nothing needs to be captured that
-is not already captured.
+Mutation-verified (restoring the `break` fails two of four new tests), ordering pinned so a line
+lands against the move it accompanied, blank says dropped. `tsc` clean, 110 frontend tests pass.
+Committed in `Pyyol_client` (separate repo) as `36d19f3`.
 
-### Why this is a small piece of work
-
-`lib/useGoofspielLiveScript.ts` consumes **exactly these event names** — `match_created`,
-`prize_revealed`, `card_sealed`, `round_revealed`, `match_finished` — and gets them from an
-`EventSource` SSE stream. The recorded replay is the same events in the same shapes, already
-ordered by `seq`.
-
-**So the viewer does not change. Only the source does.** A replay is the recorded array driven
-through the existing reducer instead of the socket.
-
-### What to build (frontend — `Pyyol_client`, a separate repo)
-
-1. **A "my matches" surface.** `app/clips/page.tsx` today calls `fetchClips()`, which is the
-   TRENDING feed keyed on `asset_url` — shareable highlight moments, a different feature that is
-   working as designed (5,700 rows, all with assets). What is missing is the developer's OWN
-   history: `/v1/developer/matches`, grouped by date, each row showing game, stake, opponent,
-   result, and an Open action.
-2. **A replay route.** Fetch `/v1/match/{id}/replay`, feed `events` into the same reducer the
-   live hook uses, and add transport controls — play/pause, speed, scrub by round. Reuse
-   `MonopolyViewer` / `MafiaViewer` as-is for those games.
-3. **Route `agent_says` into the chat panel.** It is the one event type the live hook does not
-   list, because live chat arrives on its own channel. In a replay it is interleaved in the same
-   ordered array, which is *better* — the talk lands against the exact move it accompanied.
-
-### The one backend gap
-
-`replay_hash` comes back `""`, and a fixture match returns `"events": null` (it genuinely has no
-events). Neither blocks the feature, but a replay page should say "this match has no recording"
-rather than render an empty board.
-
----
+**Left for whoever picks this up:** the "Watch the replay" action is on the match DETAIL page
+only — adding it to the list rows is a one-liner if it is wanted. Mafia/Monopoly replays reuse
+their existing viewers and were not re-verified against a recorded match this session; only
+Goofspiel was driven end to end. `replay_hash` is still `""`, and a match with no recording
+returns `"events": null` — the replay page should say "no recording" rather than render an
+empty board.
 
 ## Open queue, in priority order
 
