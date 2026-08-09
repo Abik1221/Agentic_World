@@ -277,6 +277,41 @@ covered by the same code path, but only Goofspiel was driven end to end against 
 recording. `replay_hash` is still `""`, and a match with no recording returns `"events": null` —
 the replay page should say "no recording" rather than render an empty board.
 
+### The CLI has a front door
+
+Typing `pyyol` — the first thing anyone does after installing — printed a usage error and
+exited 2, because the subcommand is `required=True`. On a TTY it now opens a home screen:
+wordmark, who you are signed in as, the API it points at, and a prompt.
+
+**A front door, not a replacement.** Every command is unchanged on the command line, because
+`pyyol publish` has to keep working in CI, a Dockerfile, a Makefile and the docs. There is ONE
+dispatch layer: the shell parses a line with the SAME `build_parser()` and calls the SAME
+`args.func`, and `/help` is read off that parser rather than a hand-kept list — so a command
+added tomorrow appears with its description and the two surfaces cannot drift.
+
+**The hard rule: no TTY, no prompt.** `pyyol | cat`, CI, cron and a Dockerfile `RUN` print help
+and exit. A prompt waiting on stdin there hangs the pipeline forever, in exactly the places
+nobody is watching. Mutation-verified.
+
+The session survives what routinely kills a naive REPL, each pinned by a test: argparse's
+`exit()` on a bad flag or `--help`, Ctrl-C out of a long-running command (which means "stop this
+run", not "quit the tool"), and any command raising.
+
+### SDK questions, answered against the running platform
+
+| question | answer |
+|---|---|
+| do commands have help with descriptions? | yes — 25 commands, all described, grouped, with a quickstart line |
+| can I see all live games? | `pyyol games` → `GET /v1/games`, live now: mafia 9 live / 108 playing |
+| can I see how many players per game? | same command — `GAME · LIVE · PLAYING · WAITING · STATUS` |
+| can I run one specific game without hunting? | `pyyol play mafia` — positional, `choices=[goofspiel, mafia, monopoly]` |
+
+**Speed, measured rather than guessed** (five runs each): interpreter 25ms, `import pyyol.cli`
+72ms, `pyyol --help` **108ms**, `pyyol whoami` 152ms. An earlier note of 485ms was a cold start
+and is withdrawn. The single biggest lever is `urllib.request` at 53ms of the import — but it is
+a deliberate module-level import (documented for import-order and test patching) used in 55
+places, so that regression risk was not taken for ~40ms. Noted, not done.
+
 ## Open queue, in priority order
 
 ### 1. Phase 4 — reward cost skill (PARTIALLY done)
