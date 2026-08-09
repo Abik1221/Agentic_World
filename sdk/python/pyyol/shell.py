@@ -57,41 +57,83 @@ class _Style:
         return f"{code}{text}{_RESET}" if self.color else text
 
 
-# The wordmark. Deliberately small: a banner that takes half the window is something a
-# developer sees a thousand times and resents by the tenth.
-_LOGO = r"""
-  ██████  ██   ██ ██    ██  ██████  ██
-  ██   ██  ██ ██   ██  ██  ██    ██ ██
-  ██████    ███     ████   ██    ██ ██
-  ██        ██       ██     ██████  ███████
-"""
+# The wordmark: one entry per LETTER, five rows each.
+#
+# Per letter rather than one wide string because the colour sweep is applied per letter. A
+# sweep applied per COLUMN lands its boundaries mid-glyph — half a stroke in one hue and half
+# in the next — which reads as a rendering fault rather than as a design. Splitting on the
+# letterforms is what makes it look deliberate.
+#
+# Five rows, because a P and a Y do not resolve in four: the first version of this banner drew
+# its Ys with the arms on different rows, closer to an H.
+_LETTERS: list[list[str]] = [
+    ["██████ ", "██   ██", "██████ ", "██     ", "██     "],           # P
+    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],      # Y
+    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],      # Y
+    [" ██████ ", "██    ██", "██    ██", "██    ██", " ██████ "],      # O
+    ["██     ", "██     ", "██     ", "██     ", "███████"],           # L
+]
+
+# Indigo → cyan, one stop per letter. 256-colour rather than truecolour: it renders the same
+# over ssh and inside tmux, where truecolour silently degrades to something muddy.
+_RAMP = [63, 69, 75, 81, 87]
+
+_GAP = "  "
+
+
+def _wordmark(color: bool) -> str:
+    rows = []
+    for r in range(5):
+        parts = []
+        for i, letter in enumerate(_LETTERS):
+            glyph = letter[r]
+            parts.append(f"\x1b[38;5;{_RAMP[i]}m{glyph}{_RESET}" if color else glyph)
+        rows.append("  " + _GAP.join(parts))
+    return "\n".join(rows)
+
+
+# Commands GROUPED and ordered by what a developer actually does, not alphabetically.
+#
+# Alphabetical put `arenas` and `autoplay` at the top and buried `play` and `dev` — the daily
+# loop — in the middle of twenty-five entries. The order below is the order of a working day:
+# get a game going, ship the agent, look at what happened, then the account plumbing you touch
+# once. The groups are an ORDER, not a LIST — anything they do not claim still appears under
+# "More", so a command added to the parser can never go missing because nobody updated this.
+_GROUPS: list[tuple[str, list[str]]] = [
+    ("Play", ["play", "dev", "games", "watch", "queue"]),
+    ("Ship", ["init", "publish", "serve", "autoplay"]),
+    ("Inspect", ["status", "doctor", "usage", "replay", "logs"]),
+    ("Standing", ["leaderboard", "profile", "wallet", "arenas"]),
+    ("Account", ["login", "whoami", "logout", "update"]),
+    ("Advanced", ["run", "validate", "simulate"]),
+]
 
 
 def _banner(s: _Style, version: str, api: str, who: dict[str, Any] | None) -> str:
-    lines = [s(_LOGO.strip("\n"), _BRAND)]
+    lines = [_wordmark(s.color)]
+    lines.append("")
     lines.append(
-        "  " + s(f"v{version}", _DIM) + s("  ·  build, run and rank autonomous agents", _DIM)
+        "  " + s(f"v{version}", _DIM) + s("   build, run and rank autonomous agents", _DIM)
     )
     lines.append("")
 
-    # Identity first, because every other line means something different depending on it.
+    # Identity first: every other line means something different depending on it.
     if who and who.get("handle"):
-        ident = s("●", _OK) + f" {who['handle']}"
+        ident = s("●", _OK) + f"  {who['handle']}"
         if who.get("agent"):
-            ident += s(f"   agent {who['agent']}", _DIM)
+            ident += s(f"   {who['agent']}", _DIM)
     else:
-        ident = s("○", _WARN) + " not signed in" + s("   run /login", _DIM)
+        ident = s("○", _WARN) + "  not signed in" + s("   /login to start", _DIM)
     lines.append("  " + ident)
     lines.append("  " + s(api, _DIM))
     lines.append("")
+
+    # THE AFFORDANCE. One key, said plainly. A developer should never have to guess that a
+    # slash does anything, and "/help" alone does not teach that "/" on its own is a menu.
     lines.append(
-        "  "
-        + s("/help", _BOLD)
-        + s(" for commands  ·  ", _DIM)
-        + s("/games", _BOLD)
-        + s(" to see what is live  ·  ", _DIM)
-        + s("/exit", _BOLD)
-        + s(" to leave", _DIM)
+        "  " + s("type", _DIM) + " " + s("/", _BOLD) + " " + s("for commands", _DIM)
+        + s("      ", _DIM) + s("tab", _BOLD) + s(" completes", _DIM)
+        + s("      ", _DIM) + s("/exit", _BOLD) + s(" to leave", _DIM)
     )
     return "\n".join(lines)
 
@@ -136,17 +178,41 @@ def _help_of(action: Any, name: str) -> str:
 
 
 def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
-    stream.write("\n  " + s("Commands", _BOLD) + s("  — type them with or without a leading /", _DIM) + "\n\n")
-    width = max((len(c) for c in cmds), default=10)
-    for name in sorted(cmds):
-        stream.write(f"  {s('/' + name.ljust(width), _BRAND)}  {s(cmds[name], _DIM)}\n")
+    """The palette: grouped, ordered by use, and complete.
+
+    Complete matters — the groups are a hand-written ORDER, not a hand-written LIST. Anything
+    in the parser that no group claims still appears under "More", so a command added tomorrow
+    shows up here whether or not anyone remembered this file.
+    """
+    stream.write("\n")
+    shown: set[str] = set()
+    width = max((len(c) for c in cmds), default=10) + 1
+
+    for title, names in _GROUPS:
+        present = [n for n in names if n in cmds]
+        if not present:
+            continue
+        stream.write("  " + s(title.upper(), _DIM) + "\n")
+        for name in present:
+            shown.add(name)
+            stream.write(f"    {s('/' + name.ljust(width), _BRAND)} {s(cmds[name], _DIM)}\n")
+        stream.write("\n")
+
+    rest = sorted(set(cmds) - shown)
+    if rest:
+        stream.write("  " + s("MORE", _DIM) + "\n")
+        for name in rest:
+            stream.write(f"    {s('/' + name.ljust(width), _BRAND)} {s(cmds[name], _DIM)}\n")
+        stream.write("\n")
+
     stream.write(
-        "\n  "
-        + s("Anything after the command is passed through", _DIM)
-        + s("  e.g. /play --game mafia --ranked", _DIM)
-        + "\n"
+        "  " + s("flags pass straight through", _DIM)
+        + s("   e.g. ", _DIM) + s("/play mafia --ranked", _BOLD) + "\n"
     )
-    stream.write("  " + s("/clear", _BRAND) + s("  clear the screen   ", _DIM) + s("/exit", _BRAND) + s("  leave", _DIM) + "\n\n")
+    stream.write(
+        "  " + s("/clear", _BRAND) + s(" screen", _DIM)
+        + s("    ", _DIM) + s("/exit", _BRAND) + s(" leave", _DIM) + "\n\n"
+    )
 
 
 def _install_readline(cmds: dict[str, str]) -> None:
@@ -203,6 +269,9 @@ def run_shell(
 
         bare = line[1:].strip() if line.startswith("/") else line
         if not bare:
+            # A lone "/" is the menu. This is the affordance the banner advertises, and it is
+            # what every developer coming from another agent CLI reaches for first.
+            _print_help(s, cmds, out)
             continue
         head = bare.split()[0].lower()
 

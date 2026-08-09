@@ -170,3 +170,49 @@ def test_no_color_env_is_honoured(monkeypatch):
     stream = io.StringIO()
     stream.isatty = lambda: True  # type: ignore[method-assign]
     assert shell.use_color(stream) is False
+
+
+# ── The palette is an ORDER, not a hand-kept list ────────────────────────────────
+
+
+def _real_shell(monkeypatch, lines: list[str]) -> str:
+    """Drive the shell with the REAL parser, so the palette is checked against the real
+    twenty-five commands rather than a stub."""
+    return _run(monkeypatch, lines, cli.build_parser)
+
+
+def test_a_lone_slash_opens_the_palette(monkeypatch):
+    # The banner advertises "type / for commands" — this is the thing it advertises, and it
+    # is what a developer coming from another agent CLI reaches for first.
+    text = _real_shell(monkeypatch, ["/", "/exit"])
+    assert "PLAY" in text and "/play" in text
+
+
+def test_the_palette_leads_with_the_daily_loop_not_the_alphabet(monkeypatch):
+    text = _real_shell(monkeypatch, ["/", "/exit"])
+    # Alphabetical put `arenas` and `autoplay` first and buried `play`. Position is the whole
+    # point of the grouping, so position is what is asserted.
+    assert text.index("/play") < text.index("/arenas")
+    assert text.index("/play") < text.index("/autoplay")
+    assert text.index("PLAY") < text.index("ACCOUNT")
+
+
+def test_every_real_command_appears_somewhere_in_the_palette(monkeypatch):
+    # The groups name ~25 commands by hand. A command added to the parser tomorrow must still
+    # be listed — under MORE if no group claims it — or the palette silently hides features.
+    text = _real_shell(monkeypatch, ["/", "/exit"])
+    for name in shell._commands(cli.build_parser()):
+        assert f"/{name}" in text, f"{name} is in the parser but missing from the palette"
+
+
+def test_the_wordmark_has_no_escapes_without_colour():
+    plain = shell._wordmark(color=False)
+    assert "\x1b[" not in plain
+    assert plain.count("\n") == 4, "the wordmark is five rows"
+
+
+def test_the_wordmark_is_coloured_per_letter_not_mid_glyph():
+    # A sweep applied per COLUMN lands its boundaries inside a stroke, which reads as a
+    # rendering fault. Per letter means exactly one colour start per letter, per row.
+    row = shell._wordmark(color=True).split("\n")[0]
+    assert row.count("\x1b[38;5;") == len(shell._LETTERS)
