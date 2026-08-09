@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/agent-arena/arena/internal/llmgw"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -50,19 +52,82 @@ func (r *LLMGatewayRepo) RecordCall(ctx context.Context, c llmgw.Call) error {
 	return err
 }
 
-// BindDecision marks (match, agent, round) as proven LLM-backed.
+// BindDecision marks (match, agent, round) as proven LLM-backed, and records the move the
+// model produced for it when the completion carried one.
 //
 // Reuses the same table the ranked integrity gate reads, so "verified for the leaderboard"
 // and "provably LLM-backed for settlement" are one fact rather than two that can disagree.
 // Idempotent: an agent may legitimately make several calls for one decision (a best-of-N
 // sample, a tool loop), and each carries the same valid proof.
-func (r *LLMGatewayRepo) BindDecision(ctx context.Context, matchID, agentPublicID string, round int) error {
+//
+// # The conflict rule, which is the whole subtlety here
+//
+// A turn legitimately produces several calls, and they do not all carry a move. An agent may
+// call the model to think, then call it again to decide; or decide first and then make a
+// follow-up call for commentary. So:
+//
+//   - A call WITH a move overwrites whatever was there. Last move wins, because a model that
+//     revised its answer stands behind the revision — and because binding the first would let
+//     an agent make a throwaway call to pin a move it never intended.
+//   - A call WITHOUT a move leaves an existing move ALONE. This is the load-bearing half. If
+//     an empty move overwrote, any agent could erase its own binding with one plain follow-up
+//     call and opt straight out of the check — the control would be defeated by an accident,
+//     let alone an attack.
+//
+// All three columns key off the SAME condition, which matters: the receipt is an HMAC over
+// this move and this completion hash, so a row that mixed a new move with an old hash would
+// fail verification and read as tampering rather than as the bookkeeping slip it was.
+func (r *LLMGatewayRepo) BindDecision(ctx context.Context, matchID, agentPublicID string, round int, move, completionHash, receipt string) error {
+	// Empty strings become NULL so "no move bound" is one value rather than two the readers
+	// would each have to remember to check.
+	nullable := func(s string) any {
+		if s == "" {
+			return nil
+		}
+		return s
+	}
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO agent_match_bound_decisions (match_id, agent_id, round)
-		 SELECT $1, a.id, $3 FROM agents a WHERE a.public_id = $2
-		 ON CONFLICT (match_id, agent_id, round) DO NOTHING`,
-		matchID, agentPublicID, round)
+		`INSERT INTO agent_match_bound_decisions
+		     (match_id, agent_id, round, extracted_move, completion_hash, bind_receipt)
+		 SELECT $1, a.id, $3, $4, $5, $6 FROM agents a WHERE a.public_id = $2
+		 ON CONFLICT (match_id, agent_id, round) DO UPDATE SET
+		     extracted_move  = CASE WHEN EXCLUDED.extracted_move IS NOT NULL
+		                            THEN EXCLUDED.extracted_move
+		                            ELSE agent_match_bound_decisions.extracted_move END,
+		     completion_hash = CASE WHEN EXCLUDED.extracted_move IS NOT NULL
+		                            THEN EXCLUDED.completion_hash
+		                            ELSE agent_match_bound_decisions.completion_hash END,
+		     bind_receipt    = CASE WHEN EXCLUDED.extracted_move IS NOT NULL
+		                            THEN EXCLUDED.bind_receipt
+		                            ELSE agent_match_bound_decisions.bind_receipt END`,
+		matchID, agentPublicID, round, nullable(move), nullable(completionHash), nullable(receipt))
 	return err
+}
+
+// ExtractedMove reports the move the model produced for one turn.
+//
+// ok=false means NOTHING IS BOUND for this turn — no verified call, or one that carried no
+// recognisable move tool call. Callers must treat that as "the platform has nothing to say",
+// never as a mismatch: rejecting on absence would void every honest turn played by an agent
+// that has not adopted the structured-move contract, which is currently all of them.
+func (r *LLMGatewayRepo) ExtractedMove(ctx context.Context, matchID, agentPublicID string, round int) (string, bool, error) {
+	var move *string
+	err := r.db.QueryRow(ctx,
+		`SELECT bd.extracted_move
+		   FROM agent_match_bound_decisions bd
+		   JOIN agents a ON a.id = bd.agent_id
+		  WHERE bd.match_id = $1 AND a.public_id = $2 AND bd.round = $3`,
+		matchID, agentPublicID, round).Scan(&move)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil // unbound turn: not an error, just nothing to compare
+		}
+		return "", false, err
+	}
+	if move == nil || *move == "" {
+		return "", false, nil
+	}
+	return *move, true, nil
 }
 
 // CoverageFor computes verified coverage for one agent over a match, or over all its play

@@ -57,6 +57,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/benchmark"
+	"github.com/agent-arena/arena/internal/movebind"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/pricing"
 )
@@ -71,7 +72,14 @@ type Recorder interface {
 	RecordCall(ctx context.Context, c Call) error
 	// BindDecision marks (match, agent, round) as proven LLM-backed. Only ever called
 	// for a call whose turn proof verified.
-	BindDecision(ctx context.Context, matchID, agentPublicID string, round int) error
+	//
+	// move/completionHash/receipt carry the COMPLETION BINDING and are empty when the
+	// response held no recognisable move tool call. An implementation must treat empty as
+	// "no move bound" and must not overwrite a move already recorded for this turn with
+	// nothing — an agent that makes a bound move call and then a plain follow-up call would
+	// otherwise erase its own binding, which is both a correctness bug and a trivial way to
+	// opt out of the check.
+	BindDecision(ctx context.Context, matchID, agentPublicID string, round int, move, completionHash, receipt string) error
 	// RecordVerifiedCost accumulates per-match server-observed spend.
 	//
 	// Separate from RecordCall because it answers a different question and has a different
@@ -120,9 +128,15 @@ type Emitter interface {
 	Enabled() bool
 }
 
-// Verifier checks a turn proof. Satisfied by *turnproof.Signer.
+// Verifier checks a turn proof and mints the completion-binding receipt. Satisfied by
+// *turnproof.Signer.
+//
+// One interface rather than two because both operations are the same secret used in the
+// same request: a deployment that can verify a turn can always mint the receipt for it, and
+// splitting them would allow a half-configured gateway that binds calls it cannot attest.
 type Verifier interface {
 	Verify(agentPublicID, matchID string, round int, token string) bool
+	MintDecision(agentPublicID, matchID string, round int, completionHash, move string) string
 	Enabled() bool
 }
 
@@ -163,6 +177,25 @@ type Call struct {
 	// table. Computed once here and carried, so the recorder and the Lens span cannot report
 	// two different costs for one call — and so pricing runs once rather than per consumer.
 	CostUSD float64
+
+	// --- Completion binding (internal/movebind, internal/turnproof) ---
+	//
+	// CompletionHash pins the exact response bytes the gateway observed. ExtractedMove is the
+	// canonical move read out of that response's structured tool call. Receipt is the HMAC over
+	// (agent, match, round, hash, move) that lets a replay re-verify the binding without
+	// trusting the stored row.
+	//
+	// All three are empty whenever the response carried no recognisable move tool call. That is
+	// the normal case for an agent that has not adopted the structured-move contract, and it
+	// means UNBOUND, never "wrong move" — see the enforcement rule in the game services.
+	CompletionHash string
+	ExtractedMove  string
+	Receipt        string
+
+	// UsageUnreadable marks a successful response whose usage we could not parse. Carried on
+	// the Call so the condition is visible in the trace and countable, not just a log line —
+	// the whole risk is that it stays invisible while the call is priced at zero.
+	UsageUnreadable bool
 }
 
 // Config tunes the gateway.
@@ -361,20 +394,42 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	// Stream through. A tee is used only for non-streamed responses, where the body is a
-	// single JSON object we need usage from. A streamed response is copied straight to the
-	// client with flushing so we add no perceptible latency — buffering an SSE stream to
-	// read its usage would delay every token and corrupt the latency we are measuring.
-	var captured bytes.Buffer
-	dst := io.Writer(w)
-	if !call.Streamed {
-		dst = io.MultiWriter(w, &captured)
-	}
-	_, copyErr := copyFlushing(dst, resp.Body, w)
+	// Stream through, TEEING both shapes into a bounded buffer.
+	//
+	// Streamed responses used to be copied straight through and never captured, on the
+	// reasoning that reading an SSE stream would delay every token. That conflated two
+	// different things. BUFFERING — holding bytes back until the body ends — would indeed
+	// add latency; TEEING does not, because the client's copy is written and flushed first
+	// and the buffer only receives what has already gone out. The cost of the conflation was
+	// large and silent: a streamed call recorded zero tokens and zero cost, so every
+	// streaming agent contributed nothing to verified spend while looking measured. It also
+	// made completion binding impossible for exactly the agents most likely to stream.
+	//
+	// Bounded because a response is attacker-influenced in size: an agent that asked for a
+	// million tokens must not be able to make the gateway hold them all in memory. Past the
+	// cap the tee stops recording and the client's stream continues untouched — losing the
+	// binding for that call, never the call itself.
+	captured := &capBuffer{limit: maxCapturedBytes}
+	_, copyErr := copyFlushing(io.MultiWriter(w, captured), resp.Body, w)
 	call.LatencyMS = time.Since(start).Milliseconds()
 
-	if !call.Streamed && captured.Len() > 0 {
-		applyUsage(&call, captured.Bytes())
+	if body := captured.Bytes(); len(body) > 0 && !captured.truncated {
+		// ONE normalizer for every provider and both transports. See usagenorm.go: fields are
+		// matched by what they MEAN, so a provider nobody has listed is costed correctly.
+		if !applyUsageGeneric(&call, body) && call.Status >= 200 && call.Status <= 299 {
+			// The one condition worth alerting on. A successful call whose usage we could not
+			// read is a real provider being costed at ZERO — silently, because a zero is a
+			// plausible integer. On a platform that ranks cost efficiency that is not merely a
+			// gap, it is a way to win, and nothing in any test would ever notice.
+			call.UsageUnreadable = true
+			g.log.Warn("llmgw: could not read usage from a successful response — this call is "+
+				"costed at ZERO and its provider shape is unknown to us",
+				"agent", call.AgentPublicID, "provider", call.Provider, "model", call.Model,
+				"streamed", call.Streamed, "bytes", len(body),
+				"fix", "add a case to internal/llmgw/usagenorm.go classifyUsageKey, and a "+
+					"fixture to sdk/conformance/usage_pricing.json")
+		}
+		g.bindCompletion(&call, body)
 	}
 	// Price once, on the normalized counts, before anything consumes the call.
 	call.CostUSD = pricing.EstimateCost(call.Model, call.PromptTokens, call.CompletionTokens,
@@ -420,7 +475,8 @@ func (g *Gateway) record(c Call) {
 		if !c.Bound || c.Status < 200 || c.Status > 299 {
 			return
 		}
-		if err := g.rec.BindDecision(ctx, c.MatchID, c.AgentPublicID, c.Round); err != nil {
+		if err := g.rec.BindDecision(ctx, c.MatchID, c.AgentPublicID, c.Round,
+			c.ExtractedMove, c.CompletionHash, c.Receipt); err != nil {
 			g.log.Debug("llmgw: could not bind decision", "match", c.MatchID, "error", err)
 			return
 		}
@@ -446,22 +502,7 @@ func peekRequest(body []byte) (model string, streamed bool) {
 // than three extractors: the field sets are disjoint, so a single decode cannot confuse
 // one provider's numbers for another's.
 type usageShape struct {
-	Usage struct {
-		// OpenAI chat completions
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		PromptTokensDetails struct {
-			CachedTokens int `json:"cached_tokens"`
-		} `json:"prompt_tokens_details"`
-		CompletionTokensDetails struct {
-			ReasoningTokens int `json:"reasoning_tokens"`
-		} `json:"completion_tokens_details"`
-		// Anthropic messages
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	} `json:"usage"`
+	Usage usageUsage `json:"usage"`
 	// Google Gemini
 	UsageMetadata struct {
 		PromptTokenCount        int `json:"promptTokenCount"`
@@ -472,6 +513,26 @@ type usageShape struct {
 	Model string `json:"model"`
 }
 
+// usageUsage is the `usage` object itself, named so the streaming path can accumulate one
+// across frames. Anonymous, it could only ever be decoded whole — which is precisely what a
+// provider that splits its counts over several frames never sends.
+type usageUsage struct {
+	// OpenAI chat completions
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	// Anthropic messages
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
 // applyUsage fills in what the provider reported. Server-observed, so unlike the SDK's
 // numbers it is not a claim the agent can shade.
 func applyUsage(c *Call, body []byte) {
@@ -479,6 +540,15 @@ func applyUsage(c *Call, body []byte) {
 	if json.Unmarshal(body, &s) != nil {
 		return
 	}
+	applyUsageShape(c, s)
+}
+
+// applyUsageShape normalizes one decoded usage object onto the Call.
+//
+// Split from applyUsage so the streamed path, which must assemble its shape from many
+// frames before it has one to normalize, runs the SAME conversion rather than a second copy
+// of it.
+func applyUsageShape(c *Call, s usageShape) {
 	u := s.Usage
 	switch {
 	case u.PromptTokens > 0 || u.CompletionTokens > 0: // OpenAI
@@ -512,6 +582,172 @@ func applyUsage(c *Call, body []byte) {
 	if s.Model != "" {
 		c.Model = s.Model
 	}
+}
+
+// maxCapturedBytes bounds the tee. Large enough for any real completion including a long
+// reasoning trace, small enough that a hostile response cannot pressure the gateway's memory
+// — with many concurrent calls the product of the two is what matters, not one response.
+const maxCapturedBytes = 4 << 20 // 4 MiB
+
+// capBuffer accumulates up to limit bytes and then stops, remembering that it did.
+//
+// The truncated flag is the point. A silently short buffer would be parsed as if complete:
+// usage would read as zero and a half-received tool call could decode to a DIFFERENT move
+// than the model emitted — which at match time would reject an honest turn. So a truncated
+// capture is discarded entirely rather than trusted in part.
+type capBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (c *capBuffer) Write(p []byte) (int, error) {
+	if room := c.limit - c.buf.Len(); room > 0 {
+		if len(p) > room {
+			c.buf.Write(p[:room])
+			c.truncated = true
+		} else {
+			c.buf.Write(p)
+		}
+	} else if len(p) > 0 {
+		c.truncated = true
+	}
+	// Always reports a full write: this is a tee, and returning a short write would abort
+	// io.MultiWriter and with it the CLIENT's copy. Losing our bookkeeping is acceptable;
+	// truncating the agent's response is rule 1.
+	return len(p), nil
+}
+
+func (c *capBuffer) Bytes() []byte { return c.buf.Bytes() }
+
+// applyStreamUsage fills in usage from a captured SSE stream.
+//
+// Streaming providers report usage in pieces across frames rather than in one object:
+// OpenAI appends a final chunk carrying `usage` (only when the caller asked for it via
+// stream_options), while Anthropic splits it — input counts arrive on message_start and
+// output counts on message_delta. Merging both shapes here is what makes a streamed call
+// cost the same as the identical non-streamed one.
+//
+// Frames are merged rather than last-write-wins, because neither provider sends a single
+// frame containing the whole picture.
+func applyStreamUsage(c *Call, sse []byte) {
+	var merged usageShape
+	var sawAny bool
+	for _, line := range strings.Split(string(sse), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var frame struct {
+			usageShape
+			// Anthropic nests the initial usage inside the message envelope.
+			Message struct {
+				Model string     `json:"model"`
+				Usage usageUsage `json:"usage"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(payload), &frame) != nil {
+			continue
+		}
+		for _, u := range []usageUsage{frame.Usage, frame.Message.Usage} {
+			if mergeUsage(&merged.Usage, u) {
+				sawAny = true
+			}
+		}
+		if frame.UsageMetadata.PromptTokenCount > 0 {
+			merged.UsageMetadata = frame.UsageMetadata
+			sawAny = true
+		}
+		if frame.Model != "" {
+			merged.Model = frame.Model
+		} else if frame.Message.Model != "" {
+			merged.Model = frame.Message.Model
+		}
+	}
+	if !sawAny && merged.Model == "" {
+		return
+	}
+	// Reuse the ONE normalizer. A second copy of the Anthropic cache-token convention here
+	// is exactly how the streamed and non-streamed paths would come to price the same call
+	// differently — the bug the conformance suite exists to prevent between languages, which
+	// would be no less real between two functions in this file.
+	applyUsageShape(c, merged)
+}
+
+// mergeUsage folds a frame's usage into the accumulator, keeping the larger of each count.
+//
+// Larger rather than latest: providers repeat counts across frames and a late frame may
+// carry a zero for a field it is not reporting, which would erase a real count already seen.
+func mergeUsage(dst *usageUsage, src usageUsage) bool {
+	any := false
+	for _, f := range []struct{ d, s *int }{
+		{&dst.PromptTokens, &src.PromptTokens},
+		{&dst.CompletionTokens, &src.CompletionTokens},
+		{&dst.InputTokens, &src.InputTokens},
+		{&dst.OutputTokens, &src.OutputTokens},
+		{&dst.CacheReadInputTokens, &src.CacheReadInputTokens},
+		{&dst.CacheCreationInputTokens, &src.CacheCreationInputTokens},
+	} {
+		if *f.s > *f.d {
+			*f.d, any = *f.s, true
+		}
+	}
+	if src.PromptTokensDetails.CachedTokens > dst.PromptTokensDetails.CachedTokens {
+		dst.PromptTokensDetails.CachedTokens = src.PromptTokensDetails.CachedTokens
+		any = true
+	}
+	if src.CompletionTokensDetails.ReasoningTokens > dst.CompletionTokensDetails.ReasoningTokens {
+		dst.CompletionTokensDetails.ReasoningTokens = src.CompletionTokensDetails.ReasoningTokens
+		any = true
+	}
+	return any
+}
+
+// bindCompletion extracts the move the model produced and mints the receipt for it.
+//
+// # Why only on a BOUND call
+//
+// The extraction is meaningful only if we know which decision it belongs to. On an unbound
+// call the match and round are unverified headers the agent chose, so recording an extracted
+// move against them would let an agent write a move of its choosing into any turn's slot —
+// turning the anti-cheat control into the cheat. So this runs after the turn proof verified,
+// never before.
+//
+// # Why a failure here is silent
+//
+// Every exit is "leave it unbound". A completion with no tool call, an unknown game, a shape
+// we could not parse — all of them mean the platform has nothing to say about this move, and
+// the match must proceed exactly as it does today. The only thing that may ever REJECT a turn
+// is a successful extraction that DISAGREES with the submitted move.
+func (g *Gateway) bindCompletion(c *Call, body []byte) {
+	if !c.Bound || c.Status < 200 || c.Status > 299 || g.verifier == nil {
+		return
+	}
+	tool := movebind.ToolFor(telemetry.GameFromMatchID(c.MatchID))
+	if tool == "" {
+		return
+	}
+	var tc movebind.ToolCall
+	var ok bool
+	if c.Streamed {
+		tc, ok = movebind.ExtractStream(body, tool)
+	} else {
+		tc, ok = movebind.Extract(body, tool)
+	}
+	if !ok {
+		return
+	}
+	move, ok := movebind.Canon(telemetry.GameFromMatchID(c.MatchID), tc)
+	if !ok {
+		return
+	}
+	c.CompletionHash = movebind.CompletionHash(body)
+	c.ExtractedMove = move
+	c.Receipt = g.verifier.MintDecision(c.AgentPublicID, c.MatchID, c.Round, c.CompletionHash, move)
 }
 
 // hopByHop headers must not be forwarded in either direction.
@@ -635,6 +871,11 @@ func (g *Gateway) emit(c Call) {
 			// Cache WRITE tokens, which nothing captured before this session and which bill at
 			// 1.25x input. Carried so a developer can see where a cache-heavy turn's cost went.
 			"cache_write_tokens": c.CachedWriteTokens,
+			// The move the MODEL produced, as the gateway read it. Empty means no structured
+			// move tool call was found. In the trace this is the line a developer compares
+			// against the move their agent actually submitted when a turn is rejected — without
+			// it, "move did not match the model's output" is an assertion they cannot check.
+			"extracted_move": c.ExtractedMove,
 		},
 	})
 }

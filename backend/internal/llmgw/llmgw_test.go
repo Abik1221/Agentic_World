@@ -21,6 +21,7 @@ type fakeRecorder struct {
 	calls []Call
 	bound []string
 	costs []VerifiedCost
+	binds []bindRecord
 }
 
 func (f *fakeRecorder) RecordCall(_ context.Context, c Call) error {
@@ -29,11 +30,30 @@ func (f *fakeRecorder) RecordCall(_ context.Context, c Call) error {
 	f.calls = append(f.calls, c)
 	return nil
 }
-func (f *fakeRecorder) BindDecision(_ context.Context, matchID, agent string, round int) error {
+func (f *fakeRecorder) BindDecision(_ context.Context, matchID, agent string, round int, move, completionHash, receipt string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.bound = append(f.bound, matchID+"|"+agent+"|"+itoa(round))
+	f.binds = append(f.binds, bindRecord{
+		matchID: matchID, agent: agent, round: round,
+		move: move, completionHash: completionHash, receipt: receipt,
+	})
 	return nil
+}
+
+// bindRecord is what BindDecision was actually told, so a test can assert on the COMPLETION
+// BINDING and not merely on the fact that some binding happened.
+type bindRecord struct {
+	matchID, agent       string
+	round                int
+	move, completionHash string
+	receipt              string
+}
+
+func (f *fakeRecorder) bindRecords() []bindRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bindRecord(nil), f.binds...)
 }
 func (f *fakeRecorder) RecordVerifiedCost(_ context.Context, c VerifiedCost) error {
 	f.mu.Lock()
@@ -233,7 +253,7 @@ type brokenRecorder struct{}
 func (brokenRecorder) RecordCall(context.Context, Call) error {
 	return context.DeadlineExceeded
 }
-func (brokenRecorder) BindDecision(context.Context, string, string, int) error {
+func (brokenRecorder) BindDecision(context.Context, string, string, int, string, string, string) error {
 	return context.DeadlineExceeded
 }
 func (brokenRecorder) RecordVerifiedCost(context.Context, VerifiedCost) error {
