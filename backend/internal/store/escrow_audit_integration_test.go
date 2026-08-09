@@ -9,24 +9,30 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// A HELD Mafia settlement is escrow with a story, and the audit must say so.
+// payout_holds is what explains retained escrow — a payout SPLIT on its own does not.
 //
-// # The false critical this exists to stop
+// # What this pins, and the mistake it records
 //
-// There are two hold records. A 1v1 payout withheld by the gate writes payout_holds, keyed by
-// matches.id. A Mafia table settled while the gate denies writes held_settlements, keyed by
-// match_public_id. The escrow reconciliation knew only the first, so every held Mafia table was
-// reported as coins nobody could account for:
+// held_settlements is not a second hold record. payout_holds says a match's payout IS held;
+// held_settlements carries the multi-winner split to replay on release. Every deny branch of
+// the real gate calls RecordHold, so a genuinely held match always has both.
+//
+// A match with a split and NO hold state is therefore a defect, not a false alarm: a deny path
+// wrote the payout map and forgot the hold, leaving coins retained with nothing marking them
+// retained and nothing for an admin release to claim. It must keep firing.
+//
+// I got this backwards first. A critical fired on three such matches:
 //
 //	LEDGER INTEGRITY VIOLATION check=escrow_unexplained severity=critical rows=2700
 //
-// That is worse than a missing alert. A critical that fires on correct behaviour trains
-// everyone to read the next real one as noise — and this one names the most alarming condition
-// the ledger has ("the stake was taken and there is no story for where it went").
+// and I widened the check to accept a split alone. The three came from a test whose denyGate
+// stub refused without recording a hold — a state production cannot reach — so the widening
+// would have masked exactly the defect the check exists to catch. The fixture was wrong, not
+// the audit. This test now pins the strict rule in both directions.
 //
-// Needs a real Postgres: the whole bug lives in one SQL statement's knowledge of which tables
-// record a hold, and a fake repo would simply return whatever it was told.
-func TestHeldMafiaSettlementIsExplainedEscrow(t *testing.T) {
+// Needs a real Postgres: the bug lives in one SQL statement's knowledge of which tables record
+// a hold, and a fake repo would simply return whatever it was told.
+func TestOnlyAPayoutHoldExplainsRetainedEscrow(t *testing.T) {
 	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
@@ -45,6 +51,8 @@ func TestHeldMafiaSettlementIsExplainedEscrow(t *testing.T) {
 	const matchID = "m_escrowaudit_mafia_hold"
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM held_settlements WHERE match_public_id = $1`, matchID)
+		_, _ = pool.Exec(ctx, `DELETE FROM payout_holds WHERE match_id IN
+			(SELECT id FROM matches WHERE public_id = $1)`, matchID)
 		_, _ = pool.Exec(ctx, `DELETE FROM ledger_transactions WHERE metadata->>'match' = $1`, matchID)
 		_, _ = pool.Exec(ctx, `DELETE FROM match_players WHERE match_id IN
 			(SELECT id FROM matches WHERE public_id = $1)`, matchID)
@@ -52,6 +60,22 @@ func TestHeldMafiaSettlementIsExplainedEscrow(t *testing.T) {
 	}
 	cleanup()
 	t.Cleanup(cleanup)
+
+	repo := NewLedgerRepo(pool)
+
+	// Asserted as a DELTA against this match's own stake, never as the global figure. The audit
+	// reconciles the whole database, so any unrelated unexplained escrow — a stale fixture, a
+	// genuine open incident — would otherwise decide the result of this test.
+	unexplained := func() int64 {
+		t.Helper()
+		rep, err := repo.AuditLedger(ctx)
+		if err != nil {
+			t.Fatalf("AuditLedger: %v", err)
+		}
+		return findingCount(rep.Findings, "escrow_unexplained")
+	}
+	const stake = 900 // 300 bid × 3 seats
+	baseline := unexplained()
 
 	var ownerID int64
 	if err := pool.QueryRow(ctx, `SELECT id FROM users ORDER BY id LIMIT 1`).Scan(&ownerID); err != nil {
@@ -85,36 +109,39 @@ func TestHeldMafiaSettlementIsExplainedEscrow(t *testing.T) {
 		t.Fatalf("seed stake txn: %v", err)
 	}
 
-	repo := NewLedgerRepo(pool)
 
 	// WITHOUT the hold record the audit must call this out — otherwise the test would pass for
 	// the wrong reason, and a check that never fires is not a check.
-	rep, err := repo.AuditLedger(ctx)
-	if err != nil {
-		t.Fatalf("Audit: %v", err)
-	}
-	if findingCount(rep.Findings, "escrow_unexplained") == 0 {
-		t.Fatal("a staked, finished match with NO hold record of any kind was not flagged — " +
-			"the escrow check is not actually looking at this match, so the rest of this test " +
-			"would prove nothing")
+	withMatch := unexplained()
+	if withMatch < baseline+stake {
+		t.Fatalf("unexplained escrow rose by %d when a staked, finished match with NO hold record "+
+			"was added; want +%d. The escrow check is not looking at this match, so the rest of "+
+			"this test would prove nothing", withMatch-baseline, stake)
 	}
 
-	// Now record the hold the Mafia deny-gate path writes: the fee and the payout map, stating
-	// exactly where the retained coins are going.
+	// A payout SPLIT alone must NOT clear it. This is the half I originally got wrong: a split
+	// with no hold state means a deny path forgot to mark the coins retained, which is a defect
+	// the audit should keep shouting about — not evidence that everything is fine.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO held_settlements (match_public_id, platform_fee, payouts)
 		 VALUES ($1, 90, '{"ag_x": 810}'::jsonb)`, matchID); err != nil {
 		t.Fatalf("seed held settlement: %v", err)
 	}
-
-	rep, err = repo.AuditLedger(ctx)
-	if err != nil {
-		t.Fatalf("Audit: %v", err)
+	if got := unexplained(); got < baseline+stake {
+		t.Errorf("a payout split with NO payout_holds row cleared %d coins from the escrow check. "+
+			"That state means a deny path wrote the split and forgot the hold, leaving coins "+
+			"retained with nothing marking them retained — masking it is how a real defect goes "+
+			"quiet", baseline+stake-got)
 	}
-	if n := findingCount(rep.Findings, "escrow_unexplained"); n != 0 {
-		t.Errorf("escrow_unexplained fired for %d coins on a match whose retention IS recorded, "+
-			"in held_settlements with its fee and payout map. Escrow held for review is not "+
-			"escrow with no story", n)
+
+	// The HOLD STATE is what explains it, exactly as the real gate records it.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO payout_holds (match_id, reason) VALUES ($1, 'itest')`, mid); err != nil {
+		t.Fatalf("seed payout hold: %v", err)
+	}
+	if got := unexplained(); got != baseline {
+		t.Errorf("unexplained escrow is %d, want it back at the %d it started from: a match with a "+
+			"recorded payout hold is escrow held for review, not escrow with no story", got, baseline)
 	}
 }
 

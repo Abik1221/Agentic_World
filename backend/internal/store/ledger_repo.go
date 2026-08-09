@@ -360,24 +360,23 @@ func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error
 	// a later check errors. Every coin in escrow must be explained by a match that has not settled
 	// — either still open, or finished with its retention recorded somewhere.
 	//
-	// # BOTH hold records, because there are two
+	// # payout_holds is the ONLY hold state, and this check is deliberately strict about it
 	//
-	// A 1v1 payout withheld by the gate writes payout_holds, keyed by matches.id. A MAFIA table
-	// settled while the gate denies writes held_settlements, keyed by match_public_id, carrying
-	// the fee and the payout map it will pay out later. This check knew only the first, so every
-	// held Mafia table reported as escrow with NO STORY:
+	// held_settlements is not a second hold record. payout_holds says a match's payout IS held;
+	// held_settlements carries the multi-winner SPLIT to replay when it is released. Every deny
+	// branch of the real gate (antifraud.Service.Allow) calls RecordHold, so a genuinely held
+	// match always has the payout_holds row — including the Mafia and Monopoly paths, which
+	// write the split in addition to, never instead of, the hold.
 	//
-	//	LEDGER INTEGRITY VIOLATION check=escrow_unexplained severity=critical rows=2700
+	// So a match with a split and no hold state is NOT explained escrow, and must keep firing.
+	// It means a deny path wrote the payout map and forgot the hold, which would leave coins
+	// retained with nothing marking them retained and nothing for an admin release to claim.
 	//
-	// A critical alert that fires on correct behaviour is worse than no alert, because the next
-	// real one is read as noise. Found by watching the audit log after a run that exercised the
-	// deny gate; the three matches it named held 900 coins each and each had a held_settlements
-	// row stating exactly where the coins were going.
-	//
-	// The DEEPER fix is one record rather than two — this codebase's own rule about two records
-	// of one event that can drift — by having the Mafia hold path also write payout_holds. That
-	// changes a money-writing path, so it is deliberately not bundled with a reporting fix; see
-	// HANDOFF-SESSION.md.
+	// I briefly widened this to accept held_settlements alone, after a critical fired on three
+	// such matches. That was wrong: the three came from TestMoneyFlowE2E_TenAgents, whose
+	// denyGate stub refuses without recording a hold — a state the production gate cannot
+	// produce. Widening the check would have masked exactly the defect it exists to catch. The
+	// fixture was fixed instead.
 	const escrowSQL = `
 		WITH staked AS (
 		  SELECT metadata->>'match' AS mid FROM ledger_transactions WHERE kind = 'stake'),
@@ -385,25 +384,22 @@ func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error
 		  SELECT DISTINCT metadata->>'match' AS mid FROM ledger_transactions
 		   WHERE kind IN ('settle','refund')),
 		unsettled AS (
-		  SELECT m.id, m.public_id, m.status,
+		  SELECT m.id, m.status,
 		         m.bid * (SELECT count(*) FROM match_players mp WHERE mp.match_id = m.id) AS stake
 		    FROM staked s JOIN matches m ON m.public_id = s.mid
-		   WHERE NOT EXISTS (SELECT 1 FROM closed c WHERE c.mid = s.mid)),
-		explained AS (
-		  SELECT id, public_id, status, stake,
-		         (EXISTS (SELECT 1 FROM payout_holds h
-		                   WHERE h.match_id = unsettled.id AND h.status = 'held')
-		          OR EXISTS (SELECT 1 FROM held_settlements hs
-		                      WHERE hs.match_public_id = unsettled.public_id)) AS held
-		    FROM unsettled)
+		   WHERE NOT EXISTS (SELECT 1 FROM closed c WHERE c.mid = s.mid))
 		SELECT
 		  (SELECT coalesce(sum(balance),0) FROM wallets WHERE kind = 'escrow'),
-		  coalesce(sum(stake) FILTER (WHERE held), 0),
+		  coalesce(sum(stake) FILTER (
+		    WHERE EXISTS (SELECT 1 FROM payout_holds h
+		                   WHERE h.match_id = unsettled.id AND h.status = 'held')), 0),
 		  coalesce(sum(stake) FILTER (
 		    WHERE status NOT IN ('finished','aborted','cancelled')), 0),
 		  coalesce(sum(stake) FILTER (
-		    WHERE status IN ('finished','aborted','cancelled') AND NOT held), 0)
-		FROM explained`
+		    WHERE status IN ('finished','aborted','cancelled')
+		      AND NOT EXISTS (SELECT 1 FROM payout_holds h
+		                       WHERE h.match_id = unsettled.id AND h.status = 'held')), 0)
+		FROM unsettled`
 	var unexplained int64
 	if err := r.db.QueryRow(ctx, escrowSQL).
 		Scan(&rep.EscrowBalance, &rep.EscrowHeld, &rep.EscrowOpen, &unexplained); err != nil {

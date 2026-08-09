@@ -336,9 +336,33 @@ func seedFinishedMatch(t *testing.T, pool *pgxpool.Pool, matchPID string, winner
 }
 
 // denyGate refuses every settlement — simulating a fraud flag / admin hold.
-type denyGate struct{}
+//
+// It RECORDS THE HOLD, because the real gate does. antifraud.Service.Allow calls RecordHold on
+// every deny branch, so a genuinely held match always carries a payout_holds row; a stub that
+// denies without one leaves a state production cannot produce — a payout split with nothing
+// marking the coins as retained.
+//
+// That is not a cosmetic difference. This fixture left three such matches in the lab database
+// and the ledger audit correctly screamed its most severe finding at them:
+//
+//	LEDGER INTEGRITY VIOLATION check=escrow_unexplained severity=critical rows=2700
+//	"the stake was taken and there is no story for where it went"
+//
+// The first fix attempted was to teach the audit that a split alone explains escrow. That was
+// backwards — it would have masked exactly the defect the check exists to catch.
+type denyGate struct{ pool *pgxpool.Pool }
 
-func (denyGate) Allow(context.Context, string) (bool, error) { return false, nil }
+func (g denyGate) Allow(ctx context.Context, matchPublicID string) (bool, error) {
+	if g.pool != nil {
+		if _, err := g.pool.Exec(ctx,
+			`INSERT INTO payout_holds (match_id, reason)
+			 SELECT id, 'test_deny_gate' FROM matches WHERE public_id = $1
+			 ON CONFLICT (match_id) DO NOTHING`, matchPublicID); err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
 
 // TestMoneyFlowE2E_MonopolyRespectsFraudGate verifies the fix: under a deny-all gate,
 // BOTH Mafia and Monopoly now HOLD escrow (winner unpaid, pending review) instead of
@@ -363,7 +387,7 @@ func TestMoneyFlowE2E_MonopolyRespectsFraudGate(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ledgerSvc := ledger.New(store.NewLedgerRepo(pool), reg)
 	walletSvc := wallet.New(ledgerSvc, store.NewWalletRepo(pool), platform.NewClock(), wallet.Config{CoinCents: 1}, reg)
-	walletSvc.SetPayoutGate(denyGate{}) // every match is "flagged"
+	walletSvc.SetPayoutGate(denyGate{pool: pool}) // every match is "flagged", and the hold is recorded
 
 	agents, err := store.NewIdentityRepo(pool).EnsureDevAgents(ctx, 10, walletSvc, log)
 	if err != nil {
