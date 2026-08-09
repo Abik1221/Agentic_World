@@ -1265,10 +1265,56 @@ func run() error {
 	// actually flow it cannot fire at all. That is the property the gate was written to
 	// have (see rankedIntegrityFailed) and it is the property it now actually has.
 	//
-	// RANKED_INTEGRITY_MIN_PCT is deliberately still 0. The share rule is the part that
-	// needs a number derived from what honest agents score, and guessing it would void the
-	// matches of developers who are genuinely paying for inference. Measure first — the
-	// zero-proof gate needs no threshold, which is exactly why it can ship ahead of one.
+	// RANKED_INTEGRITY_MIN_PCT is deliberately still 0, and the reason has CHANGED.
+	//
+	// # The metric is no longer the blocker
+	//
+	// It used to be. Coverage counted CALLS, so one completion bound one round and an agent
+	// that batched — one call planning three rounds — scored ~33% while playing entirely
+	// model-backed. Phase 4 rewards batching as cost optimisation, so no threshold reconciled
+	// the two: above ~33% voided honest batchers, below it let a cheat binding one round in
+	// three straight through. Range bindings fixed that (internal/movebind CanonPlan): a
+	// completion declares the rounds it decided, each is bound and each is ENFORCED. Measured
+	// on real staked tables after the change:
+	//
+	//	perfect  13/13, 13/13   100%    13 completions
+	//	batcher  13/13, 13/13   100%     5 completions   (was 33-44%)
+	//	flaky    11/13, 12/13   85-92%  15% of calls failing
+	//
+	// The honest floor is now set by PROVIDER FAILURES, which is correct — a call that never
+	// happened genuinely proved nothing — and it sits far above any threshold worth setting.
+	//
+	// # What the number should be, when it is turned on
+	//
+	// False-VOID rate for an honest agent over 13 rounds, by threshold and provider failure
+	// rate (binomial; a void cancels a real staked match):
+	//
+	//	thresh   fail 1%     fail 5%     fail 15%    fail 25%
+	//	  40%    0.0000%     0.0000%     0.0162%     0.5649%
+	//	  50%    0.0000%     0.0001%     0.1268%     2.4290%
+	//	  60%    0.0000%     0.0020%     0.7534%     8.0213%
+	//	  70%    0.0007%     0.3103%    11.8003%    41.5747%
+	//
+	// The cliff is between 60 and 70. 50 is the defensible choice — "more than half of your
+	// decisions must be model-backed" — at roughly one false void in 800 matches against a
+	// pessimistic 15% failure rate. Longer games are safer still, because the tail tightens
+	// with the round count (at 25 rounds, 50% costs 0.0017%).
+	//
+	// # Why it stays 0 anyway: ADOPTION, not the metric
+	//
+	// Rule 2 is ABSOLUTE — it voids a seat for a low share regardless of what the other seat
+	// did — and almost nobody routes through the gateway yet. Measured over the last 48 hours
+	// of staked ranked play: 3863 of 3895 seats proved NOTHING, and a threshold of 50 would
+	// have voided 3523 of them. Turning it on today would cancel essentially every staked
+	// match on the platform.
+	//
+	// So the gate to opening this is no longer a measurement, it is that routing through the
+	// gateway is the NORM for staked play. Rule 1 is the right control until then: it is
+	// relative, so it fires only where proofs actually flow, and it is already on.
+	//
+	//	SELECT count(*) FILTER (WHERE bound = 0), count(*) FROM <seats in staked rated matches>
+	//
+	// When that first figure approaches zero, set this to 50.
 	//
 	// SetTurnMinter must precede EnableRankedDrive: the driver copies the minter at
 	// construction, so installing it afterwards would ship views with no proof token.
