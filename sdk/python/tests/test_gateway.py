@@ -27,11 +27,39 @@ def _clean():
     uninstrument()
 
 
-def test_gateway_base_url_per_provider():
+def test_gateway_base_url_resolves_by_wire_format_not_a_provider_list():
     enable_gateway("agentA", "https://gateway.pyyol.com/")
-    assert gateway_base_url("openai") == "https://gateway.pyyol.com/gw/openai/v1"
+    # Anthropic and Google clients append their own version segment, so the base must not.
     assert gateway_base_url("anthropic") == "https://gateway.pyyol.com/gw/anthropic"
-    assert gateway_base_url("unknown") == ""
+    assert gateway_base_url("google") == "https://gateway.pyyol.com/gw/google"
+    # Everything else is OpenAI-wire and needs /v1.
+    assert gateway_base_url("openai") == "https://gateway.pyyol.com/gw/openai/v1"
+    for provider in ("groq", "mistral", "deepseek", "cohere", "xai", "together", "openrouter"):
+        assert gateway_base_url(provider) == f"https://gateway.pyyol.com/gw/{provider}/v1"
+
+
+def test_an_unlisted_provider_still_routes():
+    """THE regression this guards.
+
+    A provider->path table returned "" for anything unlisted, so Gemini, Mistral, DeepSeek and
+    every remote provider outside the table were NOT routed — silently. Those agents produced no
+    proofs and could never earn Verified, and nothing told the developer. The ecosystem adds
+    providers faster than a table can, so an unknown name must route and let the gateway's own
+    allowlist give a clear answer.
+    """
+    enable_gateway("agentA", "https://gateway.pyyol.com")
+    assert (
+        gateway_base_url("brand-new-provider")
+        == "https://gateway.pyyol.com/gw/brand-new-provider/v1"
+    )
+
+
+def test_a_local_provider_is_deliberately_not_routed():
+    """The gateway cannot reach a model server on the developer's own machine, so routing there
+    would break every call. That play is unverified — and free, so no cost attribution is lost."""
+    enable_gateway("agentA", "https://gateway.pyyol.com")
+    for provider in ("ollama", "vllm", "lmstudio", "llamacpp", "self-hosted"):
+        assert gateway_base_url(provider) == "", provider
 
 
 def test_gateway_base_url_empty_when_disabled():
