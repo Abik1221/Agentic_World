@@ -56,6 +56,26 @@ func truncateRollups(ctx context.Context, ch *store.Store) error {
 }
 
 // InsertProjectionsFromEventsRaw rebuilds traces, spans, events, token_usage, rollups, etc. from events_raw.
+//
+// # QUIESCE THE PIPELINE FIRST
+//
+// The rollups are re-derived by truncating and re-selecting, which is correct only if nothing
+// is writing them meanwhile. The live processor writes a rollup delta per event as it arrives,
+// so an event landing between the TRUNCATE and the SELECT is counted twice — once by its own
+// delta and once by the re-derivation.
+//
+// Measured: a backfill run while lab matches were in flight left the rollups 5,220 gateway
+// tokens and 6,643 sdk tokens ABOVE events_raw. Nothing errored. With traffic stopped and the
+// consumer drained, the same run landed on ground truth exactly, both meters.
+//
+// So: stop the producers, wait for the NATS consumer to reach zero pending, then run this.
+//
+//	docker exec <nats> sh -c "wget -qO- 'http://127.0.0.1:8222/jsz?consumers=true&streams=true'"
+//	# every consumer's num_pending must be 0 before starting
+//
+// Fixing the race properly means deriving into a shadow table and swapping, or excluding events
+// newer than a watermark. Neither is worth building until a backfill has to run on a live
+// system; today it is a repair tool, and the requirement is written down rather than assumed.
 func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error {
 	// The rollups must start empty every time; see truncateRollups.
 	if err := truncateRollups(ctx, ch); err != nil {
@@ -63,7 +83,13 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 	}
 
 	queries := []string{
-		`INSERT INTO traces
+		`INSERT INTO traces (
+			trace_id, request_id, organization_id, project_id, environment, user_id, actor_id,
+			session_id, started_at, ended_at, status, root_input_ref, root_output_ref, total_tokens,
+			total_cost, latency_ms, error_type, error_message, workflow_version,
+			prompt_version_ids_json, model_config_versions_json, sampling_reason,
+			redaction_summary_json, updated_at
+		)
 		SELECT
 			trace_id,
 			anyLast(request_id),
@@ -120,7 +146,11 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 			anyLast(status),
 			min(event_time),
 			max(event_time),
-			dateDiff('millisecond', min(event_time), max(event_time)),
+			-- A LEAF span has one event, so the timestamp span is zero and the real duration is
+			-- the one the producer measured. Deriving it from min/max alone reported every
+			-- gateway model call as 0ms — a latency column that is always zero is worse than an
+			-- absent one, because a reader takes it for a measurement.
+			greatest(dateDiff('millisecond', min(event_time), max(event_time)), max(latency_ms)),
 			anyLast(root_input_ref),
 			anyLast(root_output_ref),
 			anyLast(error_type),
@@ -137,7 +167,10 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		WHERE trace_id != '' AND span_id != ''
 		GROUP BY trace_id, span_id`,
 
-		`INSERT INTO events
+		`INSERT INTO events (
+			trace_id, span_id, event_id, event_type, event_time, status, source_service,
+			payload_ref, error_type, error_message
+		)
 		SELECT
 			trace_id,
 			span_id,
@@ -151,7 +184,11 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 			error_message
 		FROM events_raw`,
 
-		`INSERT INTO token_usage
+		`INSERT INTO token_usage (
+			trace_id, span_id, project_id, environment, provider, model, model_version,
+			prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, total_tokens,
+			estimated_cost, reconciled_cost, currency, pricing_version, meter_source, event_time
+		)
 		SELECT
 			trace_id,
 			span_id,
@@ -174,7 +211,10 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		FROM events_raw
 		WHERE total_tokens > 0 OR estimated_cost > 0 OR reconciled_cost > 0`,
 
-		`INSERT INTO tool_calls
+		`INSERT INTO tool_calls (
+			trace_id, span_id, tool_name, tool_version, status, event_time, error_message,
+			payload_ref, total_tokens, estimated_cost
+		)
 		SELECT
 			trace_id,
 			span_id,
@@ -189,7 +229,9 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		FROM events_raw
 		WHERE tool_name != ''`,
 
-		`INSERT INTO retrievals
+		`INSERT INTO retrievals (
+			trace_id, span_id, step_name, status, event_time, payload_ref, error_message
+		)
 		SELECT
 			trace_id,
 			span_id,
@@ -201,7 +243,9 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		FROM events_raw
 		WHERE event_type IN ('retrieval_started','retrieval_completed','rerank_started','rerank_completed')`,
 
-		`INSERT INTO match_events
+		`INSERT INTO match_events (
+			run_id, trace_id, event_type, event_time, status, error_message
+		)
 		SELECT
 			run_id,
 			trace_id,
@@ -212,7 +256,9 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		FROM events_raw
 		WHERE run_id != ''`,
 
-		`INSERT INTO processed_events
+		`INSERT INTO processed_events (
+			event_id, trace_id, ingestion_id, processed_at
+		)
 		SELECT
 			event_id,
 			trace_id,
@@ -223,7 +269,10 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		// meter_source is part of the GROUP BY, not just the projection. A gateway-routed call
 		// emits one gateway event and one sdk event, so grouping without it sums a measurement
 		// and a claim into a single number and counts every such call twice. See migration 006.
-		`INSERT INTO rollup_hourly
+		`INSERT INTO rollup_hourly (
+			bucket_start, organization_id, project_id, environment, traces_total, errors_total,
+			tokens_total, estimated_cost, meter_source
+		)
 		SELECT
 			toStartOfHour(event_time) AS bucket_start,
 			organization_id,
@@ -240,7 +289,10 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		// meter_source is part of the GROUP BY, not just the projection. A gateway-routed call
 		// emits one gateway event and one sdk event, so grouping without it sums a measurement
 		// and a claim into a single number and counts every such call twice. See migration 006.
-		`INSERT INTO rollup_daily
+		`INSERT INTO rollup_daily (
+			bucket_start, organization_id, project_id, environment, traces_total, errors_total,
+			tokens_total, estimated_cost, meter_source
+		)
 		SELECT
 			toDate(event_time) AS bucket_start,
 			organization_id,
@@ -257,7 +309,10 @@ func InsertProjectionsFromEventsRaw(ctx context.Context, ch *store.Store) error 
 		// meter_source is part of the GROUP BY, not just the projection. A gateway-routed call
 		// emits one gateway event and one sdk event, so grouping without it sums a measurement
 		// and a claim into a single number and counts every such call twice. See migration 006.
-		`INSERT INTO rollup_monthly
+		`INSERT INTO rollup_monthly (
+			bucket_start, organization_id, project_id, environment, traces_total, errors_total,
+			tokens_total, estimated_cost, meter_source
+		)
 		SELECT
 			toDate(toStartOfMonth(event_time)) AS bucket_start,
 			organization_id,

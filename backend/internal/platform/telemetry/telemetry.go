@@ -268,6 +268,25 @@ func (c *Client) normalize(e *Event) {
 	if e.EventID == "" {
 		e.EventID = newID()
 	}
+	// A LEAF EVENT IS ITS OWN SPAN.
+	//
+	// span_id was set by nothing on this side: 0 of 129,760 events carried one, so the Lens
+	// `spans` projection — which filters on `span_id != ''` — produced zero rows forever and any
+	// UI reading it showed an empty trace. The events were all there; they simply had no
+	// identity to be grouped under.
+	//
+	// The events this service emits are leaves rather than containers. A gateway model call, a
+	// resolved decision, a benchmark record: each one IS the operation, so the operation's span
+	// is the event itself and the event's own id is the correct span id. It is already unique
+	// and already the key the pipeline dedupes on, which makes the span idempotent under NATS
+	// at-least-once redelivery for free.
+	//
+	// Only for events that name a span_type. An event with no span type is not an operation and
+	// should not appear as one; internal/platform/telemetry/span.go sets its own SpanID for the
+	// nested case and is left alone here.
+	if e.SpanID == "" && e.SpanType != "" {
+		e.SpanID = e.EventID
+	}
 	if e.EventTime.IsZero() {
 		e.EventTime = time.Now().UTC()
 	}
