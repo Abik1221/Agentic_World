@@ -1326,6 +1326,25 @@ func run() error {
 		_, err = store.InsertEvent(ctx, st.DB, events.TypeAgentGatewayVerified, payload)
 		return err
 	}))
+	// COMPLETION BINDING. The gateway extracts the move from the model's own structured tool
+	// call; these three lines are what make the game services CHECK it before applying a move.
+	// Without them the extraction is recorded and enforced nowhere — exactly the shape of bug
+	// this codebase has hit repeatedly, where a correct control sat where the traffic did not go.
+	//
+	// All three games, not one. A control installed on Goofspiel alone would leave Mafia and
+	// Monopoly — the two with more seats and more money on the table — unprotected, and nothing
+	// in a passing Goofspiel test would say so.
+	//
+	// Inert until a turn is actually bound: an agent that does not route through the gateway, or
+	// whose completion carried no move tool call, plays exactly as it does today. Only a move
+	// that CONTRADICTS an attested model output is rejected.
+	matchSvc.SetBoundMoveReader(llmGatewayRepo)
+	mafiaSvc.SetBoundMoveReader(llmGatewayRepo)
+	monopolySvc.SetBoundMoveReader(llmGatewayRepo)
+	log.Info("completion binding active: a submitted move that contradicts the model's own output is rejected",
+		"games", "goofspiel,mafia,monopoly",
+		"inert_when", "the turn carries no bound move (agent does not route, or no move tool call)")
+
 	llmGatewayHandler := llmgw.NewHandler(llmGateway, authn)
 	if cfg.TurnProofSecret == "" {
 		log.Warn("LLM gateway will record calls but can PROVE none: TURN_PROOF_SECRET is unset, so no call can be bound to a decision and the verified tier stays empty",

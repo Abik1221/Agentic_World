@@ -14,6 +14,7 @@ import (
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/liveness"
+	"github.com/agent-arena/arena/internal/movebind"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
@@ -91,7 +92,16 @@ type Service struct {
 	chatTracer ChatTracer
 	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
 	decisionTracer DecisionTracer
+	// boundMoves reports the move the MODEL produced for a turn, as the gateway observed
+	// it. Nil ⇒ completion binding is not enforced, which is the pre-existing behaviour.
+	boundMoves movebind.Reader
 }
+
+// SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).
+//
+// Without it the service behaves exactly as it did before: a move is authenticated by its
+// signature and applied, with nothing checking it against the model's own answer.
+func (s *Service) SetBoundMoveReader(r movebind.Reader) { s.boundMoves = r }
 
 // ChatTracer records agent table talk to the observability pipeline. Satisfied by
 // *telemetry.Client; nil means telemetry is off and every call is a no-op.
@@ -962,6 +972,22 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 		if !movesig.Verify(pubkey, matchPublicID, round, p.Seat, card, signature) {
 			return AgentView{}, ErrBadSignature
 		}
+	}
+
+	// Completion binding: the card must be the one this agent's MODEL chose, whenever the
+	// gateway observed a model choosing one.
+	//
+	// Placed here, beside the signature check, and NOT on the HTTP handler. The stake floor
+	// taught that lesson expensively: a control on the handler was simply bypassed by the
+	// bot runner, which reaches the service directly. Every path that can seal a card comes
+	// through tryAct.
+	//
+	// Applies to platform-driven moves too, unlike the signature check above. That exemption
+	// exists because an authenticated socket already proves AUTHORSHIP; it says nothing
+	// about whether a model chose the move, so it does not transfer to this question.
+	if err := movebind.Enforce(ctx, s.boundMoves, slog.Default(), "match",
+		matchPublicID, agentPublicID, round, movebind.CanonGoofspiel(card)); err != nil {
+		return AgentView{}, err
 	}
 
 	// Record think-time for verification (best-effort).

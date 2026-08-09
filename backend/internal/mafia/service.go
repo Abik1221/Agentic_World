@@ -16,6 +16,7 @@ import (
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
+	"github.com/agent-arena/arena/internal/movebind"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
@@ -112,7 +113,13 @@ type Service struct {
 	chatTracer ChatTracer
 	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
 	decisionTracer DecisionTracer
+	// boundMoves reports the move the MODEL produced for a turn, as the gateway observed
+	// it. Nil ⇒ completion binding is not enforced, which is the pre-existing behaviour.
+	boundMoves movebind.Reader
 }
+
+// SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).
+func (s *Service) SetBoundMoveReader(r movebind.Reader) { s.boundMoves = r }
 
 // ChatTracer records agent table talk to the observability pipeline. Satisfied by
 // *telemetry.Client; nil means telemetry is off and every call is a no-op.
@@ -693,6 +700,25 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 			}
 			signPubkey = pubkey
 		}
+	}
+
+	// Completion binding: the action must be the one this seat's MODEL chose, whenever the
+	// gateway observed a model choosing one. Checked before the engine applies it.
+	//
+	// Keyed by turnproof.MafiaTurn(day, phase), NOT by day — the same number the proof and
+	// the decision log use. A player acts in both the night and the voting phase of one day,
+	// so keying by day alone would compare a vote against the model's kill.
+	//
+	// Bound on the VERB AND TARGET only, not on canonAction: that string carries the phase,
+	// which is the server's state rather than the model's choice, and binding it would
+	// reject an honest turn over a field the model never selected.
+	//
+	// Runs for platform-driven moves too, unlike the signature check above — an authenticated
+	// socket proves authorship, not that a model chose the action.
+	if err := movebind.Enforce(ctx, s.boundMoves, slog.Default(), "mafia",
+		matchPublicID, agentPublicID, turnproof.MafiaTurn(m.State.Day, m.State.Phase),
+		movebind.CanonMafia(string(act.Kind), act.Target)); err != nil {
+		return AgentView{}, err
 	}
 
 	state, events, err := s.eng.Act(m.State, p.Seat, act)
