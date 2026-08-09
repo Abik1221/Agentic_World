@@ -348,9 +348,24 @@ func (s *Service) SetLivenessProber(p LivenessProber) {
 // rather than burning the remainder of the window on a process that will never answer.
 //
 // Bounded by the policy ceiling, so a hung-but-responsive endpoint cannot extend forever.
-// Extensions granted so far are DERIVED from elapsed time rather than tracked in a column:
-// the ceiling is what actually bounds this, and a counter would be one more piece of state
-// to keep consistent across a crash for no added safety.
+//
+// # The bound, and why it needs a fixed origin
+//
+// Extensions granted so far are DERIVED from elapsed time rather than tracked in a counter.
+// That is still the right call — a counter is more state to keep consistent across a crash —
+// but it only works if elapsed is measured from something an extension does NOT move.
+//
+// It was measured from RoundDeadline, which the extension itself pushes forward, so after each
+// grant elapsed snapped back to roughly one window, the derived count never climbed, and the
+// ceiling was never reached. On a live staked table Goofspiel granted 17 extensions against a
+// MaxExtensions of 3, holding one round open for twelve minutes.
+//
+// RoundDeadlineBase is the deadline as first set for this round and no extension touches it, so
+// elapsed measured from it is the real time this round has been open. See migration 0085.
+//
+// This became reachable in practice with completion binding: an agent whose every move is
+// refused answers /health perfectly well, so it reads as "still thinking" indefinitely — which
+// would have let a rejected cheat stall a table other people have staked on.
 //
 // Returns true when the deadline was pushed out and the caller should NOT force a timeout.
 func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) bool {
@@ -359,7 +374,13 @@ func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) boo
 	}
 	pol := deadline.DefaultPolicy(m.Game)
 	window := s.moveWindow(ctx, unsealed...)
-	elapsed := s.clock.Now().Sub(m.RoundDeadline.Add(-window))
+	// The FIXED origin, falling back to the current deadline when a row carries no base — which
+	// is the pre-existing behaviour, not a silent loss of the bound.
+	origin := m.RoundDeadline
+	if m.RoundDeadlineBase != nil {
+		origin = m.RoundDeadlineBase
+	}
+	elapsed := s.clock.Now().Sub(origin.Add(-window))
 	granted := 0
 	if elapsed > window && pol.Extension > 0 {
 		granted = int((elapsed - window) / pol.Extension)

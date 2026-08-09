@@ -52,7 +52,7 @@ func (r *LivenessRepo) Beat(ctx context.Context, at time.Time) error {
 func (r *LivenessRepo) ExtendActiveDeadlines(ctx context.Context, until time.Time) (int64, error) {
 	tag, err := r.db.Exec(ctx,
 		`UPDATE matches
-		    SET round_deadline = $1, updated_at = now()
+		    SET round_deadline = $1, round_deadline_base = $1, updated_at = now()
 		  WHERE status = 'active'
 		    AND round_deadline IS NOT NULL
 		    AND round_deadline <= now()`,
