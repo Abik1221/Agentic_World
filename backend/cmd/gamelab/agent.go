@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -164,6 +165,38 @@ type labAgent struct {
 	api       *api
 	srv       *http.Server
 	log       *log.Logger
+
+	// span holds the moves this agent has already decided for FUTURE rounds, per match.
+	//
+	// A batching agent makes one model call that plans several rounds; the gateway binds each
+	// of them from that one completion. The agent must then PLAY what it planned — a span is a
+	// commitment, and submitting anything else is rejected exactly as a substitution is. So the
+	// plan has to survive between /play requests, which are independent HTTP calls.
+	spanMu sync.Mutex
+	span   map[string]map[int]int // matchID → round → card
+}
+
+// planFor records the moves a single completion decided.
+func (a *labAgent) planFor(matchID string, steps []planStep) {
+	a.spanMu.Lock()
+	defer a.spanMu.Unlock()
+	if a.span == nil {
+		a.span = map[string]map[int]int{}
+	}
+	if a.span[matchID] == nil {
+		a.span[matchID] = map[int]int{}
+	}
+	for _, s := range steps {
+		a.span[matchID][s.Round] = s.Card
+	}
+}
+
+// plannedCard reports the move this agent already committed to for a round, if any.
+func (a *labAgent) plannedCard(matchID string, round int) (int, bool) {
+	a.spanMu.Lock()
+	defer a.spanMu.Unlock()
+	card, ok := a.span[matchID][round]
+	return card, ok
 }
 
 func (a *labAgent) endpointURL() string {

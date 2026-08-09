@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/movebind"
@@ -93,15 +96,59 @@ func bindLuck(matchID string, round, seat int) int {
 // bindThisTurn reports whether the agent should route this turn through the gateway at all, and
 // why not when it should not. The reason is logged so a run's coverage can be explained rather
 // than merely observed.
+//
+// Batching no longer appears here. It used to: a batched round made no call and was recorded
+// UNBOUND, which is precisely what put the honest floor at ~33% and made the share rule punish
+// the cost optimisation Phase 4 rewards. A batched round now plays from a span the anchor call
+// already bound, so it is covered rather than skipped.
 func bindThisTurn(matchID string, round, seat int) (ok bool, why string) {
 	if BindFailPct > 0 && bindLuck(matchID, round, seat) < BindFailPct {
 		return false, "provider call failed (simulated 5xx/timeout) — playing unbound"
 	}
-	if BindBatchRounds > 1 && (round-1)%BindBatchRounds != 0 {
-		return false, fmt.Sprintf("covered by the batched decision from round %d",
-			round-((round-1)%BindBatchRounds))
-	}
 	return true, ""
+}
+
+// isSpanAnchor reports whether this round is where a batching agent makes its one call.
+func isSpanAnchor(round int) bool {
+	return BindBatchRounds > 1 && (round-1)%BindBatchRounds == 0
+}
+
+// planStep is one round of a batched decision.
+type planStep struct {
+	Round int
+	Card  int
+}
+
+// buildSpan decides the next BindBatchRounds moves in one go.
+//
+// The anchor round plays what the strategy chose; the rounds after it take DISTINCT cards from
+// the remaining hand, which is what keeps them legal — Goofspiel removes each card as it is
+// played, so committing to cards the agent still holds and playing them in order cannot produce
+// an illegal move. Ascending order rather than a strategy, because the point of the lab is to
+// measure coverage, and a plan that occasionally became illegal would measure rejections
+// instead.
+func buildSpan(round, card int, legal []int, n int) []planStep {
+	span := []planStep{{Round: round, Card: card}}
+	rest := make([]int, 0, len(legal))
+	for _, c := range legal {
+		if c != card {
+			rest = append(rest, c)
+		}
+	}
+	sort.Ints(rest)
+	for i := 0; i < len(rest) && len(span) < n; i++ {
+		span = append(span, planStep{Round: round + len(span), Card: rest[i]})
+	}
+	return span
+}
+
+// spanHeader renders a plan for the stand-in provider: "4:7,5:2,6:9".
+func spanHeader(span []planStep) string {
+	parts := make([]string, 0, len(span))
+	for _, s := range span {
+		parts = append(parts, fmt.Sprintf("%d:%d", s.Round, s.Card))
+	}
+	return strings.Join(parts, ",")
 }
 
 // bindResult is what one gateway round trip established.
@@ -112,6 +159,9 @@ type bindResult struct {
 	// call did not carry a usable proof or tool call, in which case enforcement is inert and
 	// the run proves nothing — so the caller logs it loudly rather than treating it as success.
 	Bound bool
+	// Span is every round this ONE completion decided, as the gateway will have bound them.
+	// Length 1 for an agent that does not batch.
+	Span []planStep
 }
 
 // decideThroughGateway asks the model, through the gateway, for this turn's move.
@@ -121,7 +171,7 @@ type bindResult struct {
 // lab's own persona logic), and the provider is simply made to say what the strategy decided.
 // That keeps the match's play identical to a non-bound run, which is what makes the two
 // comparable.
-func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, proof string) (bindResult, error) {
+func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string) (bindResult, error) {
 	if BindGatewayBase == "" {
 		return bindResult{}, fmt.Errorf("gateway base URL not set")
 	}
@@ -145,11 +195,7 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, pro
 		"tools": []map[string]any{{
 			"name":        movebind.ToolGoofspiel,
 			"description": "Play one card from your hand for this round.",
-			"input_schema": map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"card": map[string]any{"type": "integer"}},
-				"required":   []string{"card"},
-			},
+			"input_schema": moveToolSchema(len(span)),
 		}},
 		"tool_choice": map[string]any{"type": "tool", "name": movebind.ToolGoofspiel},
 		"messages": []map[string]any{{
@@ -181,6 +227,11 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, pro
 	// Tells the stand-in provider which card to answer with. An ordinary header, so it reaches
 	// the upstream: the gateway strips only x-pyyol-* and hop-by-hop.
 	req.Header.Set("X-Lab-Card", fmt.Sprint(wantCard))
+	// A BATCHED decision: one call that plans several rounds. The stand-in provider answers
+	// with a plan tool call, and the gateway binds every round in it from that one completion.
+	if len(span) > 1 {
+		req.Header.Set("X-Lab-Plan", spanHeader(span))
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -211,24 +262,35 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, pro
 			"the completion carried no play_card tool call, so nothing was bound: %s",
 			truncate(string(body), 300))
 	}
-	move, ok := movebind.Canon(movebind.GameGoofspiel, tc)
-	if !ok {
+	// Reduce the SAME way the gateway will, including the range form. If the lab and the
+	// gateway ever disagree the run fails here rather than as a mysterious rejection later.
+	covered, ok := movebind.CanonPlan(movebind.GameGoofspiel, tc, round)
+	if !ok || len(covered) == 0 {
 		return bindResult{}, fmt.Errorf("the tool call did not reduce to a move: %+v", tc)
 	}
-	card, cok := tc.Args["card"]
-	if !cok {
-		return bindResult{}, fmt.Errorf("tool call has no card argument: %+v", tc.Args)
+	if len(span) > 1 && len(covered) != len(span) {
+		// The whole point of a batched run is that the span is bound. Silently covering fewer
+		// rounds than were planned would understate coverage and look like the metric is still
+		// broken, so it fails loudly instead.
+		return bindResult{}, fmt.Errorf(
+			"planned %d rounds but the completion bound %d: %+v", len(span), len(covered), covered)
 	}
-	got, gok := asInt(card)
-	if !gok {
-		return bindResult{}, fmt.Errorf("card argument %v is not an integer", card)
+	out := bindResult{Bound: true}
+	for _, rm := range covered {
+		card, cok := cardOf(rm.Move)
+		if !cok {
+			return bindResult{}, fmt.Errorf("bound move %q is not a card", rm.Move)
+		}
+		out.Span = append(out.Span, planStep{Round: rm.Round, Card: card})
+		if rm.Round == round {
+			out.Card = card
+		}
 	}
-	if move != movebind.CanonGoofspiel(got) {
-		// Defensive: if the canonical form and the raw argument disagree, the lab's own
-		// reading is wrong and every later assertion would be meaningless.
-		return bindResult{}, fmt.Errorf("canonical move %q disagrees with card %d", move, got)
+	if out.Card == 0 {
+		return bindResult{}, fmt.Errorf("the completion bound %d rounds but not round %d itself: %+v",
+			len(covered), round, covered)
 	}
-	return bindResult{Card: got, Bound: true}, nil
+	return out, nil
 }
 
 func asInt(v any) (int, bool) {
@@ -260,4 +322,54 @@ func substitutedCard(bound int, legal []int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// moveToolSchema is the tool the lab asks the model for: the plain one-card form, or the plan
+// form when this call is deciding several rounds.
+//
+// Mirrors what the SDKs build (pyyol.movetools.move_tool / moveTool), because the lab exists to
+// exercise what a developer's agent actually sends. A schema only the lab uses would test the
+// gateway against a shape no real agent produces.
+func moveToolSchema(spanLen int) map[string]any {
+	card := map[string]any{"type": "integer"}
+	if spanLen <= 1 {
+		return map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"card": card},
+			"required":   []string{"card"},
+		}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"plan": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": spanLen,
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"round": map[string]any{"type": "integer"},
+						"card":  card,
+					},
+					"required": []string{"round", "card"},
+				},
+			},
+		},
+		"required": []string{"plan"},
+	}
+}
+
+// cardOf reads the card back out of a canonical Goofspiel move ("card:7").
+//
+// Goes through the canonical string rather than the raw tool arguments on purpose: the
+// canonical form is what the platform stores and compares, so reading THAT is what makes the
+// lab's expectation identical to the server's.
+func cardOf(move string) (int, bool) {
+	rest, ok := strings.CutPrefix(move, "card:")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	return n, err == nil
 }

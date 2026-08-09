@@ -125,10 +125,40 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 	// to report the move as a structured tool call, and play what it answers. The strategy above
 	// still chooses; the gateway path is what makes that choice PROVABLE.
 	if BindThroughGateway {
-		// An honest agent does not bind every turn. A failed provider call or a batched decision
-		// leaves the round unbound, and the agent PLAYS ON — see bindThisTurn. Skipping the call
-		// entirely (rather than making it and discarding it) is what makes the resulting coverage
-		// figure a real measurement of the honest population.
+		// A BATCHED round the agent already decided. No model call: the anchor call planned
+		// this round, the gateway bound it from that one completion, and the agent must now
+		// play exactly what it planned — a span is a commitment, so submitting anything else
+		// would be rejected as a substitution.
+		if planned, ok := a.plannedCard(v.MatchID, v.Round); ok {
+			play, note := planned, "played from the batched decision that also bound this round"
+			// The negative half, INSIDE a span. A round covered by a batched decision is bound
+			// exactly as an anchor round is, so submitting a different card here must be
+			// refused too. Without this the span would be credited for coverage while being
+			// enforced nowhere, which is the one way range bindings could become a loophole.
+			if SubstituteAtRound > 0 && v.Round >= SubstituteAtRound {
+				if sub, ok := substitutedCard(planned, legal); ok {
+					a.log.Printf("round %2d  SUBSTITUTING INSIDE A SPAN — the batched call bound card %d, "+
+						"submitting %d instead; the platform MUST reject this", v.Round, planned, sub)
+					play = sub
+					note = fmt.Sprintf("deliberate substitution inside a batched span: the plan said %d", planned)
+				}
+			}
+			if play == planned {
+				a.log.Printf("round %2d  → plays %2d   (from the batched plan; bound by the span, no new call)",
+					v.Round, planned)
+			}
+			writeJSON(w, map[string]any{
+				"round": v.Round, "card": play,
+				"rationale": note,
+				"usage":     a.Persona.tokens(len(raw), think),
+			})
+			return
+		}
+
+		// An honest agent does not bind every turn. A failed provider call leaves the round
+		// unbound and the agent PLAYS ON — see bindThisTurn. Skipping the call entirely
+		// (rather than making it and discarding it) is what makes the resulting coverage figure
+		// a real measurement of the honest population.
 		if ok, why := bindThisTurn(v.MatchID, v.Round, v.Seat); !ok {
 			a.log.Printf("round %2d  UNBOUND: %s", v.Round, why)
 			writeJSON(w, map[string]any{
@@ -138,7 +168,14 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 			})
 			return
 		}
-		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, v.TurnProof)
+
+		// A batching agent decides several rounds in ONE call. span is length 1 otherwise, so
+		// the non-batching path is byte-for-byte what it was.
+		span := []planStep{{Round: v.Round, Card: card}}
+		if isSpanAnchor(v.Round) {
+			span = buildSpan(v.Round, card, legal, BindBatchRounds)
+		}
+		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, span, v.TurnProof)
 		if err != nil {
 			// LOUD and fatal to the turn. A run that fell back to playing unbound would report
 			// a completed match and prove nothing about binding, which is worse than failing.
@@ -148,6 +185,13 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 		}
 		card = res.Card
 		why = fmt.Sprintf("bound to the model's own tool call (card %d)", res.Card)
+		if len(res.Span) > 1 {
+			// Remember the rest of the span. Those rounds are ALREADY bound — the gateway wrote
+			// a row for each from this one completion — so the agent is committed to them.
+			a.planFor(v.MatchID, res.Span[1:])
+			why = fmt.Sprintf("bound to the model's own tool call (card %d); this call also decided %d later rounds",
+				res.Card, len(res.Span)-1)
+		}
 
 		// The negative half of the proof: submit a card the model did NOT choose.
 		if SubstituteAtRound > 0 && v.Round >= SubstituteAtRound {
