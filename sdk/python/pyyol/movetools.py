@@ -614,6 +614,11 @@ def bound_plan(game: str, resp: Any, proven_round: int) -> list[dict[str, Any]] 
 # `pyyol.tool_for` it would not be.
 move_tool = tool_for
 move_tool_choice = tool_choice_for
+# Same reasoning, and the same names the JS SDK uses. These were the only movetools symbols a
+# developer could not find by porting `pyyol.X` from one SDK to the other: the logic was here all
+# along under a shorter in-module name, so the gap was purely in what the package exported.
+move_tool_name = tool_name
+canon_move = canon
 
 
 def prompt_for(view: Any) -> str:
@@ -622,9 +627,25 @@ def prompt_for(view: Any) -> str:
     Deliberately plain. Nothing about the prompt is checked or scored, and a helper that
     implied otherwise would mislead — this exists so the tool-call example above is runnable,
     not because the platform has a preferred prompt.
+
+    Compact separators and ensure_ascii=False, deliberately — both to match JS. json.dumps
+    defaults to ", "/": " where JSON.stringify emits neither, AND it escapes non-ASCII to
+    \\uXXXX where JSON.stringify emits raw UTF-8. So the two SDKs built DIFFERENT prompts from
+    the same view, and the second difference fires on any view carrying a non-English handle or
+    chat line — i.e. exactly the matches this arena runs. "The SDKs are equivalent" quietly
+    stops being true, and a paired comparison of one scaffold across languages ends up comparing
+    two different prompts. Both forms are also fewer tokens.
+
+    sdk/conformance/prompt_for.json pins both languages to the same string, unicode case
+    included; it is read by this SDK's tests and the JS SDK's.
     """
     try:
-        body = json.dumps(view if isinstance(view, dict) else _view_dict(view), default=str)
+        body = json.dumps(
+            view if isinstance(view, dict) else _view_dict(view),
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
     except (TypeError, ValueError):
         body = str(view)
     return (

@@ -1,0 +1,68 @@
+{
+  "_comment": "prompt_for/promptFor must return the SAME string in every SDK. Python's json.dumps defaults to ', '/': ' and JS's JSON.stringify emits neither, so the two languages built different prompts from the same view. Compact separators everywhere; these vectors pin it. Nothing about the prompt is scored — the point is that a paired cross-SDK comparison of one scaffold is comparing ONE prompt. ensure_ascii=False too: json.dumps escapes non-ASCII to \\uXXXX and JSON.stringify does not, which diverged on any non-English handle or chat line.",
+  "cases": [
+    {
+      "name": "goofspiel turn",
+      "view": {
+        "game": "goofspiel",
+        "round": 4,
+        "seat": 0,
+        "prize": 7,
+        "legal_actions": [
+          1,
+          2,
+          9
+        ]
+      },
+      "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{\"game\":\"goofspiel\",\"round\":4,\"seat\":0,\"prize\":7,\"legal_actions\":[1,2,9]}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+    },
+    {
+      "name": "mafia night",
+      "view": {
+        "game": "mafia",
+        "round": 2,
+        "phase": "night",
+        "seat": 3,
+        "alive": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{\"game\":\"mafia\",\"round\":2,\"phase\":\"night\",\"seat\":3,\"alive\":[0,1,2,3]}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+    },
+    {
+      "name": "monopoly turn",
+      "view": {
+        "game": "monopoly",
+        "turn": 11,
+        "seat": 1,
+        "cash": 1500,
+        "position": 12
+      },
+      "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{\"game\":\"monopoly\",\"turn\":11,\"seat\":1,\"cash\":1500,\"position\":12}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+    },
+    {
+      "name": "empty view",
+      "view": {},
+      "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+    },
+    {
+      "name": "nested + unicode",
+      "view": {
+        "game": "goofspiel",
+        "note": "café — dash",
+        "state": {
+          "a": [
+            1,
+            {
+              "b": 2
+            }
+          ]
+        }
+      },
+      "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{\"game\":\"goofspiel\",\"note\":\"café — dash\",\"state\":{\"a\":[1,{\"b\":2}]}}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+    }
+  ]
+}

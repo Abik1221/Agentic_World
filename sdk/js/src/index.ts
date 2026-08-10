@@ -33,7 +33,17 @@ export type { TracerOptions, ModelCall, MoveUsage, UsageAdd } from "./telemetry.
 export { instrument, uninstrument, recordResponse, extractUsage, patchPrototype } from "./instrument.js";
 export { route, enableGateway, disableGateway, gatewayBaseUrl, gatewayHeaders } from "./instrument.js";
 export type { ExtractedUsage } from "./instrument.js";
-export { estimateCost, rateFor, isKnown, canonical, PRICING_VERSION } from "./pricing.js";
+// cacheWriteRate was defined and used internally but never re-exported, so "what will a cache
+// write cost me?" was answerable in Python and not here. Cache writes bill at a premium, which
+// makes it exactly the rate a developer wants to check before enabling caching.
+export {
+  estimateCost,
+  rateFor,
+  isKnown,
+  canonical,
+  cacheWriteRate,
+  PRICING_VERSION,
+} from "./pricing.js";
 // Structured move tools: how an agent proves its MODEL chose the move it played. Routing
 // through the gateway proves a call happened for a turn; a tool call is what proves the
 // model's answer became the move. See src/movetools.ts.
@@ -47,6 +57,8 @@ export {
   // model made, not calls, so batching no longer costs an agent its verified share.
   boundPlan,
   canonPlan,
+  // Renders a turn view as a prompt the move tools expect. Parity with Python's prompt_for.
+  promptFor,
   PLAN_KEY,
   MAX_SPAN_ROUNDS,
   canonMove,
