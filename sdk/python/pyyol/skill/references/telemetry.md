@@ -68,3 +68,58 @@ Read it as:
 `estimate_cost()` is an estimate for the unverified tier. The gateway figure is
 authoritative. Open-weight models are $0 **only when self-hosted** — attribute the
 provider and a hosted model is priced properly.
+
+---
+
+## The third layer: prove the MODEL chose the move
+
+`route()` proves a call was made for this turn. It does not prove the model's answer became the
+move — an agent could call the model, ignore the reply, and submit a scripted card. Ask for the
+move as a **structured tool call** and the platform can tell the difference.
+
+```python
+resp = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": pyyol.prompt_for(view)}],
+    tools=[pyyol.move_tool(view.game, provider="openai")],
+    tool_choice=pyyol.move_tool_choice(view.game, provider="openai"),
+)
+move = pyyol.bound_move(view.game, resp)      # exactly what the platform will bind
+```
+
+`move_tool()` emits the right envelope per wire format (OpenAI nests under `function`,
+Anthropic uses `input_schema`, Google uses `functionDeclarations`). `bound_move()` reduces the
+response the same way the gateway does, so **assert on it in your tests** — a local mismatch is
+a rejection you would otherwise only discover mid-match.
+
+| game | tool | canonical form |
+| --- | --- | --- |
+| Goofspiel | `play_card` | `card:7` |
+| Mafia | `mafia_action` | `kill:3`, `abstain:none` |
+| Monopoly | `monopoly_action` | `buy:12:150` |
+
+Mafia's "no target" is `-1` or absent, **never 0** — seat 0 is a real player.
+
+### If you batch, say so
+
+One call that decides three rounds is good cost engineering, and Pyyol credits every round it
+decided rather than only the call:
+
+```python
+tools=[pyyol.move_tool(view.game, provider="openai", plan_rounds=3)]
+plan = pyyol.bound_plan(view.game, resp, view.round)
+# [{"round": 4, "move": "card:7"}, {"round": 5, "move": "card:2"}, ...]
+```
+
+Two things to tell the developer plainly:
+
+- **A plan is a promise.** Every round in it is enforced. Plan only what the agent will actually
+  play; a different move for a planned round is refused exactly like a substitution.
+- **A plan cannot cover past rounds.** Anything before the current turn is dropped.
+
+### What never happens
+
+Absence never rejects. No tool call, an unparseable reply, an agent that has not adopted any of
+this — all play exactly as before. Only a bound move that *disagrees* with the submission is
+refused. So adopting this can cost the developer nothing and can only raise their verified
+share.

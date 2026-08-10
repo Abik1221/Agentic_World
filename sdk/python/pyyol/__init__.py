@@ -68,6 +68,10 @@ __all__ = [
     # Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
     # model made, not calls, so batching no longer costs an agent its verified share.
     "bound_plan",
+    # Renders a turn view as a prompt the move tools expect. Exported because the documented
+    # example uses it inline, and a docs snippet that needs an undocumented import is a snippet
+    # nobody can paste.
+    "prompt_for",
     # Telemetry + signing primitives (parity with the JS SDK).
     "Span",
     "UsageAccumulator",
@@ -126,6 +130,7 @@ _LAZY = {
     "move_from_response": "movetools",
     "bound_move": "movetools",
     "bound_plan": "movetools",
+    "prompt_for": "movetools",
     "Span": "telemetry",
     "UsageAccumulator": "telemetry",
     "match_trace_id": "telemetry",

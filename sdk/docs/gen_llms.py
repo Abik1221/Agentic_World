@@ -42,7 +42,10 @@ _PUBLISHED = {
     "ranked.md": "ranked/index",
     "manifest.md": "sdk/publishing",
     "simulation.md": "sdk/testing-locally",
-    "protocol.md": "sdk/cli-reference",
+    # protocol.md is the LEGACY hosted-HTTP model, not the CLI. It was mapped to
+    # sdk/cli-reference, so every "CLI reference" link landed on the push protocol.
+    "protocol.md": "sdk/push-protocol",
+    "cli.md": "sdk/cli-reference",
 }
 
 
@@ -57,8 +60,9 @@ def _page_url(fname: str) -> str:
 PAGES = [
     ("README.md", "Overview", "what Pyyol is + the doc map"),
     ("quickstart.md", "Quickstart (start here)", "install, log in, scaffold, and run an agent in ~2 minutes"),
+    ("cli.md", "CLI reference", "every command, generated from the parser — plus the interactive shell"),
     ("local-runtime.md", "Local-runtime model", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
-    ("verified-telemetry.md", "Verified LLM agents", "instrument()/route(): capture real model, tokens, and cost; the Verified badge"),
+    ("verified-telemetry.md", "Verified LLM agents", "the three layers of proof: instrument() captures cost, route() verifies it server-side, and move tools prove your MODEL chose the move"),
     ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Monopoly, Mafia) — the rules"),
     ("deploy.md", "Deploy your agent (optional)", "ranked works with no hosting while you are connected; an endpoint buys always-on play — plus the spending limits"),
     ("ranked.md", "Ranked play (for coins)", "stake tiers, pyyol queue, matchmaking, budget/limits, settlement"),
