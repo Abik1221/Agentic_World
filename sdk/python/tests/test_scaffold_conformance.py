@@ -108,7 +108,9 @@ def test_credentials_never_enter_the_hash():
     harness."""
     base = {"system": "S", "messages": [{"role": "user", "content": "u"}]}
     plain = scaffold.from_request(base, endpoint="x")
-    with_key = scaffold.from_request({**base, "api_key": "sk-secret", "base_url": "http://x"}, endpoint="x")
+    with_key = scaffold.from_request(
+        {**base, "api_key": "sk-secret", "base_url": "http://x"}, endpoint="x"
+    )
     assert plain == with_key
     assert "sk-secret" not in scaffold.canonical(scaffold.extract({**base, "api_key": "sk-secret"}))
 
@@ -164,9 +166,7 @@ def test_a_prompt_in_the_user_turn_is_not_a_scaffold():
 def test_the_developer_is_told_why_and_what_to_do():
     """An agent that silently fails to qualify files a support ticket; one that is told
     'move your instructions into a system message' fixes it in a line."""
-    note = scaffold.diagnose(
-        {"messages": [{"role": "user", "content": "Bid low."}]}, endpoint="x"
-    )
+    note = scaffold.diagnose({"messages": [{"role": "user", "content": "Bid low."}]}, endpoint="x")
     assert "system message" in note
     # And no note once it is fixed, so the field is a signal rather than decoration.
     assert (
@@ -192,7 +192,10 @@ def test_moving_the_prompt_into_a_system_message_makes_a_rewrite_visible():
         endpoint="x",
     )
     two = scaffold.from_request(
-        {**base, "messages": [{"role": "system", "content": "Bid high always."}] + base["messages"]},
+        {
+            **base,
+            "messages": [{"role": "system", "content": "Bid high always."}] + base["messages"],
+        },
         endpoint="x",
     )
     assert one and two and one != two

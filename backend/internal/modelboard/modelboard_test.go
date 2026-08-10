@@ -47,6 +47,15 @@ func fastConfig() Config {
 	// Enough replicates for a real percentile interval, few enough to keep the suite quick.
 	c.BootstrapReplicates = 200
 	c.MinComparisons = 10
+	// The FIT budget matters as much as the replicate count, because every replicate refits.
+	// Inheriting the production MaxIter/Tol meant up to 2000 Newton iterations × 200
+	// replicates × each Estimate call, and under -race that put this package at 22 MINUTES —
+	// past `go test`'s 10-minute default, so CI saw "panic: test timed out" rather than a
+	// result. These tests assert ORDER, DETERMINISM and interval monotonicity; none of them
+	// asserts numerical precision to 1e-7, and the determinism property is independent of how
+	// many iterations the fit takes. Production keeps the tight budget.
+	c.MaxIter = 200
+	c.Tol = 1e-5
 	return c
 }
 

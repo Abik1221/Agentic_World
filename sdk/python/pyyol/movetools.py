@@ -265,7 +265,7 @@ def _decode_args(raw: Any) -> dict[str, Any] | None:
         return None
     # An SDK object that is neither: try its dict form before giving up.
     try:
-        return dict(raw)  # type: ignore[call-overload]
+        return dict(raw)
     except (TypeError, ValueError):
         return None
 
@@ -524,7 +524,9 @@ PLAN_KEY = "plan"
 MAX_SPAN_ROUNDS = 64
 
 
-def canon_plan(game: str, args: dict[str, Any] | None, proven_round: int) -> list[dict[str, Any]] | None:
+def canon_plan(
+    game: str, args: dict[str, Any] | None, proven_round: int
+) -> list[dict[str, Any]] | None:
     """Reduce move arguments to EVERY round they decided, as ``[{"round": n, "move": s}]``.
 
     # Why a completion may cover more than one round

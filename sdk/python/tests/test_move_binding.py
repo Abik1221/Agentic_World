@@ -156,7 +156,9 @@ def test_move_binding_plan_conformance(case: dict[str, Any]) -> None:
 
     got = movetools.bound_plan(game, case["response"], case["proven_round"])
     if expect is None:
-        assert got is None, f"bound {got!r}, but this response must bind NOTHING.\nwhy: {case['why']}"
+        assert got is None, (
+            f"bound {got!r}, but this response must bind NOTHING.\nwhy: {case['why']}"
+        )
         return
 
     assert got is not None, f"bound nothing, want {len(expect)} rounds.\nwhy: {case['why']}"

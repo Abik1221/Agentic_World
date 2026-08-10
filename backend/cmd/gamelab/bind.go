@@ -346,16 +346,6 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	return out, nil
 }
 
-func asInt(v any) (int, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int(n), n == float64(int(n))
-	case int:
-		return n, true
-	}
-	return 0, false
-}
-
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

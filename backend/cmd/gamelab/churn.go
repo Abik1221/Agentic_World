@@ -50,7 +50,6 @@ type churnAgent struct {
 	// stalled queue look like a busy one.
 	matchIDs map[string]bool
 	lastBal  int64
-	violated []string
 }
 
 // runChurn drives the mixed population and reports what each role actually did.
@@ -264,15 +263,6 @@ func reportChurn(a *api, lg *log.Logger, pop []*churnAgent) error {
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {
-			return true
-		}
-	}
-	return false
-}
-
-func containsAny(xs []string, wants ...string) bool {
-	for _, w := range wants {
-		if contains(xs, w) {
 			return true
 		}
 	}

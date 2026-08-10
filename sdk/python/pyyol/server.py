@@ -222,7 +222,6 @@ class Agent:
             return 500, {"error": "handler_error", "message": str(e)}
         return 200, move_to_dict(move)
 
-
     # --- shared handler invocation (used by both the HTTP path and the socket
     # RuntimeConnector, so both transports run identical decision logic) ---
 
@@ -421,6 +420,7 @@ def _load_json(body: bytes) -> dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except json.JSONDecodeError:
         return {}
+
 
 def _turn_number(data: dict[str, Any]) -> int:
     """The round this view is asking about.

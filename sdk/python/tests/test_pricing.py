@@ -145,8 +145,11 @@ def test_reads_and_writes_partition_the_input_and_never_double_bill():
     rate = pricing.rate_for("claude-opus-4")
     prompt, read, write, completion = 2520, 1500, 600, 90
     got = pricing.estimate_cost(
-        "claude-opus-4", prompt, completion,
-        cached_tokens=read, cached_write_tokens=write,
+        "claude-opus-4",
+        prompt,
+        completion,
+        cached_tokens=read,
+        cached_write_tokens=write,
     )
     full = prompt - read - write  # 420 at full input rate
     want = (
@@ -199,7 +202,14 @@ def test_self_hosted_caching_is_still_free():
     """A multiplier on a $0 input rate must stay $0 — a locally served model has no
     bill of any kind, cache or otherwise."""
     assert pricing.cache_write_rate("llama-3.3-70b", provider="ollama") == 0.0
-    assert pricing.estimate_cost(
-        "llama-3.3-70b", 2520, 90, cached_tokens=1500,
-        cached_write_tokens=600, provider="ollama",
-    ) == 0.0
+    assert (
+        pricing.estimate_cost(
+            "llama-3.3-70b",
+            2520,
+            90,
+            cached_tokens=1500,
+            cached_write_tokens=600,
+            provider="ollama",
+        )
+        == 0.0
+    )

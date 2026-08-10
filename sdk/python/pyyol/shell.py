@@ -27,7 +27,8 @@ import os
 import shlex
 import sys
 import threading
-from typing import Any, Callable, TextIO
+from typing import Any, TextIO
+from collections.abc import Callable
 
 _RESET = "\x1b[0m"
 _BOLD = "\x1b[1m"
@@ -68,11 +69,11 @@ class _Style:
 # Five rows, because a P and a Y do not resolve in four: the first version of this banner drew
 # its Ys with the arms on different rows, closer to an H.
 _LETTERS: list[list[str]] = [
-    ["██████ ", "██   ██", "██████ ", "██     ", "██     "],           # P
-    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],      # Y
-    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],      # Y
-    [" ██████ ", "██    ██", "██    ██", "██    ██", " ██████ "],      # O
-    ["██     ", "██     ", "██     ", "██     ", "███████"],           # L
+    ["██████ ", "██   ██", "██████ ", "██     ", "██     "],  # P
+    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],  # Y
+    ["██    ██", " ██  ██ ", "  ████  ", "   ██   ", "   ██   "],  # Y
+    [" ██████ ", "██    ██", "██    ██", "██    ██", " ██████ "],  # O
+    ["██     ", "██     ", "██     ", "██     ", "███████"],  # L
 ]
 
 # Indigo → cyan, one stop per letter. 256-colour rather than truecolour: it renders the same
@@ -108,7 +109,6 @@ _GROUPS: list[tuple[str, list[str]]] = [
     ("Account", ["login", "whoami", "logout", "update"]),
     ("Advanced", ["run", "validate", "simulate"]),
 ]
-
 
 
 # ── The live strip ──────────────────────────────────────────────────────────────
@@ -151,10 +151,16 @@ class _LiveStrip:
             total_wait += waiting
             if live:
                 parts.append(
-                    s("●", _OK) + " " + s(name, _BOLD) + " " + s(f"{live} live · {playing} playing", _DIM)
+                    s("●", _OK)
+                    + " "
+                    + s(name, _BOLD)
+                    + " "
+                    + s(f"{live} live · {playing} playing", _DIM)
                 )
             elif waiting:
-                parts.append(s("◌", _WARN) + " " + s(name, _BOLD) + " " + s(f"{waiting} queued", _DIM))
+                parts.append(
+                    s("◌", _WARN) + " " + s(name, _BOLD) + " " + s(f"{waiting} queued", _DIM)
+                )
             else:
                 parts.append(s("·", _DIM) + " " + s(name, _DIM) + " " + s("idle", _DIM))
         head = s("LIVE", _DIM) if (total_live or total_wait) else s("LIVE", _DIM)
@@ -179,7 +185,7 @@ class _LiveStrip:
             )
             if st == 200:
                 games = (resp or {}).get("games") or []
-        except Exception:
+        except Exception:  # noqa: BLE001 - the door must open even if the API is down
             games = []
         self.text = self._render(games)
 
@@ -189,7 +195,7 @@ class _LiveStrip:
             import readline
 
             return bool(readline.get_line_buffer())
-        except Exception:
+        except Exception:  # noqa: BLE001 - no readline, or an uninitialised one, just means "not typing"
             return False
 
     def _loop(self) -> None:
@@ -213,7 +219,7 @@ class _LiveStrip:
         try:
             self.stream.write("\x1b[s\x1b[1A\x1b[2K\r" + self.text + "\x1b[u")
             self.stream.flush()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a redraw that cannot write must not kill the strip thread
             return
 
     def start(self) -> None:
@@ -249,9 +255,18 @@ def _banner(s: _Style, version: str, api: str, who: dict[str, Any] | None) -> st
     # THE AFFORDANCE. One key, said plainly. A developer should never have to guess that a
     # slash does anything, and "/help" alone does not teach that "/" on its own is a menu.
     lines.append(
-        "  " + s("type", _DIM) + " " + s("/", _BOLD) + " " + s("for commands", _DIM)
-        + s("      ", _DIM) + s("tab", _BOLD) + s(" completes", _DIM)
-        + s("      ", _DIM) + s("/exit", _BOLD) + s(" to leave", _DIM)
+        "  "
+        + s("type", _DIM)
+        + " "
+        + s("/", _BOLD)
+        + " "
+        + s("for commands", _DIM)
+        + s("      ", _DIM)
+        + s("tab", _BOLD)
+        + s(" completes", _DIM)
+        + s("      ", _DIM)
+        + s("/exit", _BOLD)
+        + s(" to leave", _DIM)
     )
     return "\n".join(lines)
 
@@ -266,10 +281,12 @@ def _whoami(api: str) -> dict[str, Any] | None:
         if not creds:
             return None
         return {
-            "handle": getattr(creds, "handle", None) or getattr(creds, "email", None) or "signed in",
+            "handle": getattr(creds, "handle", None)
+            or getattr(creds, "email", None)
+            or "signed in",
             "agent": getattr(creds, "agent_id", None) or "",
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 - an unreadable credential store means "signed out", not a crash
         return None
 
 
@@ -324,14 +341,21 @@ def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
         stream.write("\n")
 
     stream.write(
-        "  " + s("flags pass straight through", _DIM)
-        + s("   e.g. ", _DIM) + s("/play mafia --ranked", _BOLD) + "\n"
+        "  "
+        + s("flags pass straight through", _DIM)
+        + s("   e.g. ", _DIM)
+        + s("/play mafia --ranked", _BOLD)
+        + "\n"
     )
     stream.write(
-        "  " + s("/clear", _BRAND) + s(" screen", _DIM)
-        + s("    ", _DIM) + s("/exit", _BRAND) + s(" leave", _DIM) + "\n\n"
+        "  "
+        + s("/clear", _BRAND)
+        + s(" screen", _DIM)
+        + s("    ", _DIM)
+        + s("/exit", _BRAND)
+        + s(" leave", _DIM)
+        + "\n\n"
     )
-
 
 
 # ── The picker ──────────────────────────────────────────────────────────────────
@@ -353,7 +377,7 @@ def _pick(
     try:
         import termios
         import tty
-    except Exception:
+    except ImportError:
         return None
     if not (stream.isatty() and sys.stdin.isatty()):
         return None
@@ -391,7 +415,7 @@ def _pick(
         hits = matches()
         head = "  " + s("/" + query, _BOLD) + s("   ↑↓ move · enter run · esc cancel", _DIM)
         stream.write(head + "\n")
-        shown = hits[: rows]
+        shown = hits[:rows]
         for i, (name, help_text) in enumerate(shown):
             mark = s(" ❯ ", _BRAND) if i == idx else "   "
             label = s(name.ljust(12), _BRAND if i == idx else _DIM)
@@ -439,7 +463,7 @@ def _install_readline(cmds: dict[str, str]) -> None:
     it just does not complete — which is worth having rather than refusing to start."""
     try:
         import readline
-    except Exception:
+    except ImportError:
         return
 
     names = sorted(cmds)
@@ -490,7 +514,7 @@ def _loop(
     s: _Style,
     out: TextIO,
     prompt: str,
-    strip: "_LiveStrip",
+    strip: _LiveStrip,
 ) -> int:
     while True:
         # Reprinted each cycle so it always sits directly above the prompt — a command's
@@ -540,8 +564,7 @@ def _loop(
 
         if argv and argv[0] not in cmds:
             out.write(
-                s(f"  unknown command: {argv[0]}", _ERR)
-                + s("   /help lists them all\n", _DIM)
+                s(f"  unknown command: {argv[0]}", _ERR) + s("   /help lists them all\n", _DIM)
             )
             continue
 

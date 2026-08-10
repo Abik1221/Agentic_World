@@ -273,8 +273,8 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
 # the divergence would land as a silent bias in a public ranking rather than a visible bug.
 # sdk/conformance/usage_pricing.json pins both against the same expectations.
 
-_CONCEPT_INPUT_PROMPT = "input_prompt"   # whole-prompt family: cache is a SUBSET
-_CONCEPT_INPUT_FRESH = "input_fresh"     # fresh-input family: cache is ADDITIVE
+_CONCEPT_INPUT_PROMPT = "input_prompt"  # whole-prompt family: cache is a SUBSET
+_CONCEPT_INPUT_FRESH = "input_fresh"  # fresh-input family: cache is ADDITIVE
 _CONCEPT_OUTPUT = "output"
 _CONCEPT_CACHE_READ = "cache_read"
 _CONCEPT_CACHE_WRITE = "cache_write"
@@ -545,9 +545,7 @@ def extract_usage(resp: Any) -> dict[str, Any] | None:
     }
 
 
-def record_response(
-    resp: Any, *, provider: str = "", latency_ms: int = 0
-) -> dict[str, Any] | None:
+def record_response(resp: Any, *, provider: str = "", latency_ms: int = 0) -> dict[str, Any] | None:
     """Record usage from a provider response: compute cost, add to the turn
     accumulator, and emit a Lens ``model_call`` span. Returns the extracted usage (or
     None). Also the public manual hook for clients this module doesn't auto-wrap.
@@ -765,9 +763,7 @@ def _patch_openai() -> bool:
         ("openai.resources.responses", "Responses"),
         ("openai.resources.responses", "AsyncResponses"),
     ):
-        endpoint = (
-            "openai.responses" if "responses" in module_path else "openai.chat.completions"
-        )
+        endpoint = "openai.responses" if "responses" in module_path else "openai.chat.completions"
         patched |= _patch_method(module_path, class_name, "create", "openai", endpoint)
     return patched
 

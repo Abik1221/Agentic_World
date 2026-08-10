@@ -16,11 +16,12 @@ import (
 func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 	c := newClient(t)
 
-	// Solo dev signs up (no certification needed to practice).
+	// Solo dev signs up.
 	uniq := time.Now().UnixNano()
 	var su struct {
-		APIKey  string `json:"api_key"`
-		AgentID string `json:"agent_id"`
+		APIKey         string `json:"api_key"`
+		AgentID        string `json:"agent_id"`
+		DashboardToken string `json:"dashboard_token"`
 	}
 	if code := c.do(http.MethodPost, "/v1/auth/signup", "", map[string]any{
 		"email":      fmt.Sprintf("play+%d@example.com", uniq),
@@ -30,6 +31,17 @@ func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 		t.Fatalf("signup: %d", code)
 	}
 	key := su.APIKey
+
+	// Certify before playing. This test used to assert "no certification needed to
+	// practice" and start a sandbox match straight after signup — which stopped being
+	// true when CreateSandbox began calling CheckEligible like every other table.
+	//
+	// That was the right change, not a regression to work around: a sandbox match writes
+	// decision and benchmark rows that feed the P-Index, the model board and the deception
+	// index, so an uncertified agent farming free tables would build a public record it did
+	// not earn. The sandbox is free of STAKES, not of identity.
+	stub := certifyAgent(t, c, su.DashboardToken, su.AgentID, "PlayAgent", []string{"goofspiel"})
+	defer stub.Close()
 
 	// Start a sandbox match vs a house bot — the solo dev's guaranteed opponent.
 	var start struct {

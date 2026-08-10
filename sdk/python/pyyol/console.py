@@ -120,9 +120,7 @@ class JsonConsole(Console):
         self.stream.flush()
 
 
-def build_console(
-    mode: str = "pretty", quiet: bool = False, color: bool | None = None
-) -> Console:
+def build_console(mode: str = "pretty", quiet: bool = False, color: bool | None = None) -> Console:
     """Factory used by the CLI: mode is ``pretty`` | ``json``."""
     if mode == "json":
         return JsonConsole()

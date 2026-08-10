@@ -2361,7 +2361,9 @@ def _print_verified_readiness(base: str, creds, cfg) -> None:
 
     print("\nverified tier")
 
-    routed = bool(_instrument.gateway_base_url("anthropic") or _instrument.gateway_base_url("openai"))
+    routed = bool(
+        _instrument.gateway_base_url("anthropic") or _instrument.gateway_base_url("openai")
+    )
     print(
         f"  {OK if routed else WARN} {'gateway routing':<20} "
         + (
@@ -2376,13 +2378,19 @@ def _print_verified_readiness(base: str, creds, cfg) -> None:
     # "why am I not on the board" needs the answer for THEIR code, not for a generic example.
     hint = _scaffold_hint(cfg)
     if hint is None:
-        print(f"  {WARN} {'system prompt':<20} could not inspect the agent source; run `pyyol dev` "
-              "and check `scaffold` on a decision in the trace")
+        print(
+            f"  {WARN} {'system prompt':<20} could not inspect the agent source; run `pyyol dev` "
+            "and check `scaffold` on a decision in the trace"
+        )
     elif hint:
-        print(f"  {OK} {'system prompt':<20} found — the harness can be fingerprinted, so this "
-              "agent is eligible for paired model comparison")
+        print(
+            f"  {OK} {'system prompt':<20} found — the harness can be fingerprinted, so this "
+            "agent is eligible for paired model comparison"
+        )
     else:
-        print(f"  {WARN} {'system prompt':<20} none found. {scaffold.explain(scaffold.ISSUE_NO_SYSTEM_PROMPT)}")
+        print(
+            f"  {WARN} {'system prompt':<20} none found. {scaffold.explain(scaffold.ISSUE_NO_SYSTEM_PROMPT)}"
+        )
 
     if base and creds and creds.access_token:
         st, body = _api_get(f"{base}/v1/gw/coverage", token=creds.access_token)
@@ -2390,8 +2398,10 @@ def _print_verified_readiness(base: str, creds, cfg) -> None:
             cov = float(body.get("coverage") or 0)
             bound, total = body.get("bound_decisions", 0), body.get("decisions", 0)
             mark = OK if cov >= 0.90 else WARN
-            print(f"  {mark} {'coverage':<20} {bound}/{total} decisions proven ({cov * 100:.1f}%)"
-                  + ("" if cov >= 0.90 else " — below the 90% the verified tier requires"))
+            print(
+                f"  {mark} {'coverage':<20} {bound}/{total} decisions proven ({cov * 100:.1f}%)"
+                + ("" if cov >= 0.90 else " — below the 90% the verified tier requires")
+            )
         elif st == 200:
             print(f"  {WARN} {'coverage':<20} no decisions recorded yet — play a match first")
 
@@ -2413,7 +2423,7 @@ def _scaffold_hint(cfg) -> bool | None:
     except OSError:
         return None
     # Anthropic passes `system=`; OpenAI uses a message with role "system" (or "developer").
-    for needle in ('system=', '"system"', "'system'", '"developer"', "'developer'"):
+    for needle in ("system=", '"system"', "'system'", '"developer"', "'developer'"):
         if needle in src:
             return True
     return False

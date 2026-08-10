@@ -18,7 +18,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # Must match pyproject's requires-python. 3.9 stayed here after the floor was
+        # raised to 3.10 (it is EOL), so the job installed nothing and failed with
+        # "Package 'pyyol' requires a different Python" on every run — a red check that
+        # said nothing about the code.
+        python: ["3.10", "3.11", "3.12", "3.13"]
     defaults:
       run:
         working-directory: sdk/python
