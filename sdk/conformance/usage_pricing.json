@@ -44,8 +44,12 @@
           "prompt_tokens": 1200,
           "completion_tokens": 80,
           "total_tokens": 1280,
-          "prompt_tokens_details": { "cached_tokens": 300 },
-          "completion_tokens_details": { "reasoning_tokens": 20 }
+          "prompt_tokens_details": {
+            "cached_tokens": 300
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 20
+          }
         }
       },
       "expect": {
@@ -135,7 +139,10 @@
       "provider": "anthropic",
       "response": {
         "model": "claude-sonnet-4-5",
-        "usage": { "input_tokens": 900, "output_tokens": 120 }
+        "usage": {
+          "input_tokens": 900,
+          "output_tokens": 120
+        }
       },
       "expect": {
         "prompt_tokens": 900,
@@ -157,7 +164,9 @@
         "usage": {
           "prompt_tokens": 100,
           "completion_tokens": 900,
-          "completion_tokens_details": { "reasoning_tokens": 700 }
+          "completion_tokens_details": {
+            "reasoning_tokens": 700
+          }
         }
       },
       "expect": {
@@ -180,7 +189,9 @@
         "usage": {
           "prompt_tokens": 2520,
           "completion_tokens": 90,
-          "prompt_tokens_details": { "cached_tokens": 1500 }
+          "prompt_tokens_details": {
+            "cached_tokens": 1500
+          }
         }
       },
       "expect": {
@@ -191,6 +202,33 @@
         "reasoning_tokens": 0,
         "cost_usd": 0.0,
         "cost_breakdown": "self-hosted: no per-token bill of any kind"
+      }
+    },
+    {
+      "name": "groq_openai_wire_reports_no_cache_at_all",
+      "why": "Groq speaks the OpenAI wire format but its usage block carries NO cache fields — no prompt_tokens_details, no cached_tokens — and adds timing keys (queue_time, prompt_time, completion_time, total_time) that are NOT token counts. Captured verbatim from api.groq.com on llama-3.3-70b-versatile, and confirmed by sending a byte-identical 1609-token prompt twice: the second call reported exactly the same 1609 prompt tokens and still no cache key. So zero cached tokens here is the TRUTH, not a parse failure, and the timing floats must never be mistaken for usage.",
+      "model": "llama-3.3-70b-versatile",
+      "provider": "groq",
+      "response": {
+        "model": "llama-3.3-70b-versatile",
+        "usage": {
+          "queue_time": 0.047944928,
+          "prompt_tokens": 1609,
+          "prompt_time": 0.022219062,
+          "completion_tokens": 2,
+          "completion_time": 0.013239254,
+          "total_tokens": 1611,
+          "total_time": 0.035458316
+        }
+      },
+      "expect": {
+        "prompt_tokens": 1609,
+        "completion_tokens": 2,
+        "cached_read_tokens": 0,
+        "cached_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.00095089,
+        "cost_breakdown": "1609 full @0.59 + 2 out @0.79"
       }
     }
   ]

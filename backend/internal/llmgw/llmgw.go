@@ -444,8 +444,13 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 		g.bindCompletion(&call, body)
 	}
 	// Price once, on the normalized counts, before anything consumes the call.
-	call.CostUSD = pricing.EstimateCost(call.Model, call.PromptTokens, call.CompletionTokens,
-		call.CachedReadTokens, call.CachedWriteTokens, call.ReasoningTokens)
+	// Priced BY PROVIDER, not by model name alone. "llama-3.3-70b" is the same string whether
+	// you run it yourself (free) or Groq serves it (billed), and pricing it by name recorded
+	// $0 for every Groq-backed agent — on a cost-efficiency board, being unmeasurable is a way
+	// to win. The gateway always knows who served the call, so it is the one caller that can
+	// never get this wrong.
+	call.CostUSD = pricing.EstimateCostFor(call.Provider, call.Model, call.PromptTokens,
+		call.CompletionTokens, call.CachedReadTokens, call.CachedWriteTokens, call.ReasoningTokens)
 	if copyErr != nil {
 		g.log.Debug("llmgw: response copy ended early", "agent", agentPublicID, "error", copyErr)
 	}

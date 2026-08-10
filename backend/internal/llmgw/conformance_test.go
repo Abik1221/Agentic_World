@@ -113,7 +113,11 @@ func TestConformanceUsageAndCost(t *testing.T) {
 					got.CachedReadTokens, got.CachedWriteTokens, got.PromptTokens)
 			}
 
-			cost := pricing.EstimateCost(c.Model, got.PromptTokens, got.CompletionTokens,
+			// Priced BY PROVIDER, as the gateway does. The fixture carries the provider for a
+			// reason: "llama-3.3-70b" is free self-hosted and billed when Groq serves it, so a
+			// name-only lookup priced every Groq call at $0 — which is how this divergence
+			// went unnoticed on the Go side while the Python SDK had already fixed it.
+			cost := pricing.EstimateCostFor(c.Provider, c.Model, got.PromptTokens, got.CompletionTokens,
 				got.CachedReadTokens, got.CachedWriteTokens, got.ReasoningTokens)
 			if math.Abs(cost-c.Expect.CostUSD) > 1e-9 {
 				t.Fatalf("cost = %v, want %v (%s)", cost, c.Expect.CostUSD, c.Expect.CostBreakdown)

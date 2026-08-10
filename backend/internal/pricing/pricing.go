@@ -93,6 +93,11 @@ var table = map[string]rate{
 	// Google (Gemini)
 	"gemini-flash": {0.15, 0.60, 0.0375},
 	"gemini-pro":   {1.25, 5.00, 0.3125},
+	// HOSTED open-weight. "Open weight" does not mean "free": Groq bills per token like
+	// anyone else, and pricing llama by NAME alone recorded $0 for every Groq-backed agent —
+	// on a platform whose whole claim is verified LLM cost. Published Groq rates per 1M.
+	"groq-llama-8b":  {0.05, 0.08, 0},
+	"groq-llama-70b": {0.59, 0.79, 0},
 	// Open-weight / self-hosted (no per-token bill)
 	"llama":    {0, 0, 0},
 	"mistral":  {0, 0, 0},
@@ -141,6 +146,55 @@ var rules = []rule{
 	{"mixtral", "mistral"},
 	{"qwen", "qwen"},
 	{"deepseek", "deepseek"},
+}
+
+// providerRules scope a lookup to who SERVED the model.
+//
+// An open-weight model is $0 when you run it yourself and very much not $0 when a hosted
+// provider serves it — and the model id cannot tell you which, because "llama-3.3-70b" is the
+// same string either way. Pricing by name alone would bill self-hosted users for compute they
+// never bought, so only an explicitly provider-attributed call gets a hosted rate.
+//
+// The Python SDK has had this since its own test suite caught the same thing; the Go side was
+// never updated, and a shared conformance fixture built from a REAL Groq response is what
+// finally surfaced the divergence.
+var providerRules = map[string][]rule{
+	"groq": {
+		{"llama-3.1-8b", "groq-llama-8b"},
+		{"llama-3.1-70b", "groq-llama-70b"},
+		{"llama-3.3-70b", "groq-llama-70b"},
+		{"llama-4", "groq-llama-70b"},
+	},
+}
+
+// CanonicalFor is Canonical, scoped by the provider that served the model.
+func CanonicalFor(model, provider string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return ""
+	}
+	// Provider rules win: they are the only ones that know a hosted bill exists for a model
+	// that would otherwise be free.
+	for _, a := range providerRules[strings.ToLower(strings.TrimSpace(provider))] {
+		if strings.Contains(m, a.needle) {
+			return a.key
+		}
+	}
+	return Canonical(model)
+}
+
+// EstimateCostFor is EstimateCost, scoped by the provider that served the model. Prefer it
+// wherever the provider is known — the gateway always knows it, and it is the only caller
+// whose numbers are the platform's authoritative record of spend.
+//
+// Resolving to the canonical KEY and handing that to EstimateCost keeps ONE implementation of
+// the arithmetic (the read/write subset ordering is subtle and must not exist twice).
+func EstimateCostFor(provider, model string, promptTokens, completionTokens, cachedTokens, cachedWriteTokens, reasoningTokens int) float64 {
+	key := CanonicalFor(model, provider)
+	if key == "" {
+		key = model
+	}
+	return EstimateCost(key, promptTokens, completionTokens, cachedTokens, cachedWriteTokens, reasoningTokens)
 }
 
 // Canonical maps a raw model string to a canonical table key, or "" if unknown.
