@@ -50,3 +50,36 @@ func (Consistency) Score(in DeveloperInputs, cfg Config) SubScore {
 	}
 	return SubScore{Key: keyConsistency, Score: clamp(score, 0, cfg.Scale), Reason: reason}
 }
+
+// Explain publishes this dimension's method.
+func (Consistency) Explain(cfg Config) DimensionDoc {
+	cc := cfg.Consistency
+	return DimensionDoc{
+		Name:     "Consistency",
+		Measures: "How settled your standing is, rather than how high it spiked.",
+		Rationale: "A rating built on six matches and one built on six hundred are not the same " +
+			"claim. Both Glicko-2 and TrueSkill carry an explicit uncertainty term, so this " +
+			"dimension reads that term directly instead of inferring confidence from match " +
+			"count — the estimator already knows how sure it is, and asking it is more " +
+			"honest than guessing.",
+		Formulas: []Formula{
+			{
+				Expression: "certainty = clamp((high − uncertainty) / (high − low), 0, 1)",
+				Where: map[string]string{
+					"uncertainty": "Glicko RD, or TrueSkill sigma, normalised per algorithm so the two arena types are comparable",
+				},
+			},
+			{
+				Expression: "score = scale × matches_weighted_mean(certainty) × min(total_matches / min_matches, 1)",
+			},
+		},
+		Parameters: map[string]any{
+			"rd_low": cc.RDLow, "rd_high": cc.RDHigh,
+			"sigma_low": cc.SigmaLow, "sigma_high": cc.SigmaHigh,
+			"min_matches": cc.MinMatches,
+		},
+		Gameable: "Nothing here rewards volume for its own sake: certainty rises only as the " +
+			"rating estimator itself becomes confident, which requires informative results " +
+			"rather than repeated ones.",
+	}
+}

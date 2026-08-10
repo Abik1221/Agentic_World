@@ -347,3 +347,38 @@ func (s *Service) AdminPut(ctx context.Context, actor, game string, tiers []Tier
 	s.invalidate(game)
 	return nil
 }
+
+// ValidStake reports whether coins is an enabled tier for game, plus the lowest enabled tier.
+//
+// Implements matchmaking.StakeFloor and groupmatch.StakeFloor so the QUEUE can enforce tiers,
+// not just the HTTP handlers. The handlers were already correct; autoplay and the pairing driver
+// call Enqueue directly and so never reached them, which is how 870 matches came to be staked at
+// 50 and 100 coins against a 500-coin floor.
+//
+// A game with NO tiers configured accepts any positive amount, matching ResolveStake's existing
+// contract — tiers are opt-in per game, and inventing a floor for a game that has not defined one
+// would break free-form play rather than protect it.
+func (s *Service) ValidStake(ctx context.Context, game string, coins int64) (bool, int64, error) {
+	all, err := s.tiers(ctx, game)
+	if err != nil {
+		return false, 0, err
+	}
+	lowest := int64(0)
+	enabled := 0
+	for _, t := range all {
+		if !t.Enabled {
+			continue
+		}
+		enabled++
+		if lowest == 0 || t.Coins < lowest {
+			lowest = t.Coins
+		}
+		if t.Coins == coins {
+			return true, lowest, nil
+		}
+	}
+	if enabled == 0 {
+		return true, 0, nil // no tiers for this game → free-form, as ResolveStake allows
+	}
+	return false, lowest, nil
+}

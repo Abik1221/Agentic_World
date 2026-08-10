@@ -22,6 +22,8 @@ Manual API for agent authors, inside an ``on_turn`` handler::
 
 from __future__ import annotations
 
+from . import _urlguard
+
 import contextvars
 import json
 import os
@@ -29,13 +31,13 @@ import queue
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib import request as _request
 
 SCHEMA_VERSION = "2026-04-17"
 
 # The active span, so handler code can reach it via current_span().
-_current: "contextvars.ContextVar[Optional[Span]]" = contextvars.ContextVar(
+_current: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
     "pyyol_current_span", default=None
 )
 
@@ -49,7 +51,7 @@ class Span:
     """A live span. Records child model/tool calls and free-form logs. All methods
     are safe no-ops when telemetry is disabled."""
 
-    def __init__(self, tracer: "Tracer", trace_id: str, span_id: str, base: Dict[str, Any]):
+    def __init__(self, tracer: Tracer, trace_id: str, span_id: str, base: dict[str, Any]):
         self._t = tracer
         self.trace_id = trace_id
         self.span_id = span_id
@@ -148,7 +150,7 @@ def current_span() -> Span:
 # reaches the arena benchmark EVEN WHEN Lens is disabled. This is intentionally
 # decoupled from the Tracer's enabled flag.
 
-_current_usage: "contextvars.ContextVar[Optional[UsageAccumulator]]" = contextvars.ContextVar(
+_current_usage: contextvars.ContextVar[UsageAccumulator | None] = contextvars.ContextVar(
     "pyyol_current_usage", default=None
 )
 
@@ -160,9 +162,18 @@ class UsageAccumulator:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.reasoning_tokens = 0
+        # Cache READS (0.1x input on Anthropic) and cache WRITES (1.25x) are separate
+        # numbers because they are separate prices pointing opposite ways. Summing them
+        # into one "cached" figure makes a cost unrecoverable from what we stored.
         self.cached_tokens = 0
+        self.cached_write_tokens = 0
         self.estimated_cost = 0.0
         self.calls = 0
+        # Per-call latency, kept as a list so the platform can compute a distribution
+        # rather than only a mean. A turn's WALL time is already measured by the span;
+        # what that cannot separate is one slow call from six quick ones, and "thinks
+        # for 40s" versus "makes 20 round trips" are different things about an agent.
+        self.call_latencies_ms: list[int] = []
         # Turn context (for gateway attribution); set by turn_usage().
         self.match_id = ""
         self.turn = 0
@@ -173,8 +184,24 @@ class UsageAccumulator:
         self.turn_proof = ""
         # Ordered, de-duplicated list of models/providers seen this turn. A single
         # turn usually uses one model, but chains/retries may use several.
-        self.models: List[str] = []
-        self.providers: List[str] = []
+        self.models: list[str] = []
+        self.providers: list[str] = []
+        # The SCAFFOLD this turn ran under: everything the developer built around the
+        # model, hashed and with the model deliberately left out. It is what makes a
+        # paired model comparison possible — same scaffold, different model, so the
+        # harness cancels. See pyyol/scaffold.py.
+        self.scaffold: str = ""
+        # True when the fingerprint CHANGED between calls in one turn, which happens when
+        # variable game state sits in the system prompt. Such an agent cannot take part in
+        # a paired comparison, and saying so is more useful than silently keeping the
+        # first value seen.
+        self.scaffold_unstable: bool = False
+        # CODE for why no fingerprint could be computed, when none could (see
+        # scaffold.ISSUE_*). Carried to the developer rather than dropped: an agent that
+        # silently fails to qualify for the model board files a support ticket, where one
+        # told "move your instructions into a system message" fixes it in a line. A code
+        # rather than prose so it is small on the wire and aggregatable.
+        self.scaffold_issue: str = ""
 
     def add(
         self,
@@ -185,18 +212,40 @@ class UsageAccumulator:
         completion_tokens: int = 0,
         reasoning_tokens: int = 0,
         cached_tokens: int = 0,
+        cached_write_tokens: int = 0,
         estimated_cost: float = 0.0,
+        latency_ms: int = 0,
     ) -> None:
         self.prompt_tokens += max(0, int(prompt_tokens or 0))
         self.completion_tokens += max(0, int(completion_tokens or 0))
         self.reasoning_tokens += max(0, int(reasoning_tokens or 0))
         self.cached_tokens += max(0, int(cached_tokens or 0))
+        self.cached_write_tokens += max(0, int(cached_write_tokens or 0))
         self.estimated_cost += max(0.0, float(estimated_cost or 0.0))
         self.calls += 1
+        if latency_ms:
+            self.call_latencies_ms.append(max(0, int(latency_ms)))
         if model and model not in self.models:
             self.models.append(model)
         if provider and provider not in self.providers:
             self.providers.append(provider)
+
+    def observe_scaffold(self, fp: str, issue: str = "") -> None:
+        """Record a scaffold fingerprint seen on one call this turn.
+
+        An empty fingerprint means "could not tell" and is ignored rather than treated as a
+        distinct scaffold: a failure to fingerprint is not evidence that the harness
+        changed, and counting it as such would mark honest agents unstable.
+        """
+        if not fp:
+            # First reason wins; later calls in the same turn usually repeat it.
+            if issue and not self.scaffold_issue:
+                self.scaffold_issue = issue
+            return
+        if not self.scaffold:
+            self.scaffold = fp
+        elif fp != self.scaffold:
+            self.scaffold_unstable = True
 
     @property
     def total_tokens(self) -> int:
@@ -206,11 +255,11 @@ class UsageAccumulator:
     def empty(self) -> bool:
         return self.calls == 0
 
-    def to_move_usage(self) -> Dict[str, Any]:
+    def to_move_usage(self) -> dict[str, Any]:
         """The `usage` block attached to a move — matches the arena's TokenUsage
         decode (prompt/completion/reasoning/total), plus SDK-side model/provider/cost
         the Lens pipeline understands."""
-        usage: Dict[str, Any] = {
+        usage: dict[str, Any] = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -219,8 +268,27 @@ class UsageAccumulator:
             usage["reasoning_tokens"] = self.reasoning_tokens
         if self.cached_tokens:
             usage["cached_tokens"] = self.cached_tokens
+        if self.cached_write_tokens:
+            usage["cached_write_tokens"] = self.cached_write_tokens
         if self.estimated_cost:
             usage["estimated_cost"] = round(self.estimated_cost, 8)
+        # How many model calls this ONE decision took, and how long each took. A single
+        # aggregate hides the difference between an agent that answers in one call and
+        # one that runs a twelve-call chain to reach the same move — and that difference
+        # is most of what "efficient" means when comparing two agents on equal footing.
+        if self.calls:
+            usage["model_calls"] = self.calls
+        if self.call_latencies_ms:
+            usage["call_latencies_ms"] = list(self.call_latencies_ms)
+        if self.scaffold:
+            usage["scaffold"] = self.scaffold
+        # Only sent when true. An absent flag and a false one mean the same thing, and
+        # shipping the false case on every move would be noise on the wire.
+        if self.scaffold_unstable:
+            usage["scaffold_unstable"] = True
+        # Only when there is no fingerprint: with one, the code would be noise.
+        if not self.scaffold and self.scaffold_issue:
+            usage["scaffold_issue"] = self.scaffold_issue
         if self.models:
             usage["model"] = self.models[0] if len(self.models) == 1 else self.models
         if self.providers:
@@ -228,7 +296,7 @@ class UsageAccumulator:
         return usage
 
 
-def current_usage() -> Optional[UsageAccumulator]:
+def current_usage() -> UsageAccumulator | None:
     """The accumulator for the turn in progress, or None outside a turn. The
     instrumentation calls this to record real usage; it no-ops when None."""
     return _current_usage.get()
@@ -262,12 +330,12 @@ class _TurnSpanCtx:
     """Context manager that brackets a turn span (started → completed/failed) and
     installs it as the current span for the duration."""
 
-    def __init__(self, tracer: "Tracer", trace_id: str, base: Dict[str, Any]):
+    def __init__(self, tracer: Tracer, trace_id: str, base: dict[str, Any]):
         self._t = tracer
         self._trace_id = trace_id
         self._base = base
-        self._span: Optional[Span] = None
-        self._token: Optional[contextvars.Token] = None
+        self._span: Span | None = None
+        self._token: contextvars.Token | None = None
         self._start = 0.0
 
     def __enter__(self) -> Span:
@@ -319,16 +387,16 @@ class Tracer:
         self._flush_interval = flush_interval
         self._max_batch = max_batch
         self._timeout = timeout
-        self._q: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=buffer_size)
+        self._q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=buffer_size)
         self._stop = threading.Event()
         self.dropped = 0
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         if self.enabled:
             self._thread = threading.Thread(target=self._loop, name="pyyol-lens", daemon=True)
             self._thread.start()
 
     @classmethod
-    def from_env(cls, *, agent_id: str = "", service: str = "pyyol-agent") -> "Tracer":
+    def from_env(cls, *, agent_id: str = "", service: str = "pyyol-agent") -> Tracer:
         return cls(
             endpoint=os.environ.get("PYYOL_LENS_ENDPOINT", ""),
             api_key=os.environ.get("PYYOL_LENS_API_KEY", ""),
@@ -357,7 +425,7 @@ class Tracer:
         }
         return _TurnSpanCtx(self, trace_id, base)
 
-    def _emit(self, ev: Dict[str, Any]) -> None:
+    def _emit(self, ev: dict[str, Any]) -> None:
         if not self.enabled or self._stop.is_set():
             return
         ev.setdefault("event_id", _id())
@@ -375,7 +443,7 @@ class Tracer:
             self.dropped += 1
 
     def _loop(self) -> None:
-        batch: List[Dict[str, Any]] = []
+        batch: list[dict[str, Any]] = []
         while not self._stop.is_set():
             timeout = self._flush_interval
             try:
@@ -395,7 +463,7 @@ class Tracer:
                 batch = []
         self._flush(batch)
 
-    def _flush(self, batch: List[Dict[str, Any]]) -> None:
+    def _flush(self, batch: list[dict[str, Any]]) -> None:
         if not batch:
             return
         body = json.dumps({"events": batch}).encode("utf-8")
@@ -407,7 +475,7 @@ class Tracer:
         )
         for attempt in range(3):
             try:
-                with _request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
+                with _urlguard.urlopen(req, timeout=self._timeout) as resp:
                     if 200 <= resp.status < 300:
                         return
             except Exception:  # noqa: BLE001 - telemetry must never raise into the app

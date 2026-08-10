@@ -1,0 +1,880 @@
+{
+  "_readme": [
+    "Cross-language conformance for COMPLETION BINDING: reading the move out of a model's",
+    "structured tool call, and reducing it to the canonical string a bound decision stores.",
+    "",
+    "WHY THIS FILE EXISTS. Three implementations of this logic exist \u2014 the Go gateway",
+    "(internal/movebind), the Python SDK (pyyol.movetools) and the JS SDK (src/movetools.ts) \u2014",
+    "and nothing in any of them forces the three to agree. Each language's own tests would",
+    "keep passing while they quietly diverged.",
+    "",
+    "A divergence here does not land as a visible bug. It lands as an HONEST TURN BEING",
+    "REJECTED: the gateway reduces the model's answer one way, the match compares it against a",
+    "move the SDK reduced another way, they differ, and the platform tells a developer their",
+    "agent did not play what its model chose. That is the worst possible failure of this",
+    "mechanism, so the canonical forms are pinned here rather than in three test suites.",
+    "",
+    "Each case gives a provider response exactly as it arrives on the wire, plus the tool name",
+    "to look for and the canonical move all three implementations must produce. expect_move of",
+    "null means NOTHING MAY BE BOUND \u2014 those cases matter most, because binding a wrong move",
+    "rejects honest play while binding nothing merely leaves a turn unverified."
+  ],
+  "binding_version": "1",
+  "cases": [
+    {
+      "name": "openai_chat_tool_call",
+      "why": "The most common shape. Arguments arrive as a JSON STRING, not an object.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "id": "c1",
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "role": "assistant",
+              "tool_calls": [
+                {
+                  "id": "t1",
+                  "type": "function",
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"card\": 7}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "openai_responses_function_call",
+      "why": "The Responses API uses a flat output array with type=function_call.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "id": "r1",
+        "output": [
+          {
+            "type": "function_call",
+            "name": "play_card",
+            "arguments": "{\"card\": 7}"
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "anthropic_tool_use_with_leading_text",
+      "why": "Anthropic sends arguments as an OBJECT, and a reasoning model normally emits a text block before the tool_use one. Stopping at the first block would find no move.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "id": "m1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4",
+        "content": [
+          {
+            "type": "text",
+            "text": "The pool is small, so I will spend low."
+          },
+          {
+            "type": "tool_use",
+            "id": "tu1",
+            "name": "play_card",
+            "input": {
+              "card": 7
+            }
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "google_function_call",
+      "why": "Gemini nests the call under candidates[].content.parts[].functionCall with args as an object.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "candidates": [
+          {
+            "content": {
+              "parts": [
+                {
+                  "functionCall": {
+                    "name": "play_card",
+                    "args": {
+                      "card": 7
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "last_tool_call_wins",
+      "why": "A model that corrects itself stands behind its FINAL answer. Binding the first would let an agent pin a move with a throwaway call.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"card\": 2}"
+                  }
+                },
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"card\": 9}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_move": "card:9"
+    },
+    {
+      "name": "quoted_number_is_the_same_decision",
+      "why": "A model that wrote \"7\" instead of 7 made the same move. Rejecting the formatting habit would leave honest agents permanently unbound.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": {
+              "card": "7"
+            }
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "prose_binds_nothing",
+      "why": "The platform must never parse a move out of free text. 'I play the 7' is not a tool call, and guessing would make enforcement unfair and evadable.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "choices": [
+          {
+            "message": {
+              "role": "assistant",
+              "content": "I play the 7."
+            }
+          }
+        ]
+      },
+      "expect_move": null
+    },
+    {
+      "name": "another_tool_binds_nothing",
+      "why": "A call to some other tool the developer defined is not a move.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "lookup_rules",
+                    "arguments": "{\"topic\":\"scoring\"}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_move": null
+    },
+    {
+      "name": "fractional_card_binds_nothing",
+      "why": "7.5 is not a card. Rounding it would invent a move the model did not make, and that invented move would reject the agent's honest one.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": {
+              "card": 7.5
+            }
+          }
+        ]
+      },
+      "expect_move": null
+    },
+    {
+      "name": "missing_card_binds_nothing",
+      "why": "A tool call with no card names no move. Defaulting to 0 would bind a move the model never chose.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": {
+              "value": 7
+            }
+          }
+        ]
+      },
+      "expect_move": null
+    },
+    {
+      "name": "mafia_night_kill",
+      "why": "Mafia binds the verb and target only. The PHASE is server state, not the model's choice, so binding it would reject an honest turn over a field the model had no say in.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "kind": "night_kill",
+              "target": 3
+            }
+          }
+        ]
+      },
+      "expect_move": "night_kill:3"
+    },
+    {
+      "name": "mafia_absent_target_is_no_target_not_seat_zero",
+      "why": "Seat 0 is a real player. Defaulting a missing target to 0 would bind an action against that player which the model never named.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "kind": "vote"
+            }
+          }
+        ]
+      },
+      "expect_move": "vote:none"
+    },
+    {
+      "name": "mafia_explicit_negative_target_is_no_target",
+      "why": "-1 is the wire convention for 'no seat' and must reduce identically to an omitted target, or one encoding of the same abstain would reject the other.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "kind": "vote",
+              "target": -1
+            }
+          }
+        ]
+      },
+      "expect_move": "vote:none"
+    },
+    {
+      "name": "mafia_seat_zero_is_a_real_target",
+      "why": "The other half of the rule above: seat 0 must stay distinguishable from no target, or a move against that one player could be substituted for doing nothing.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "kind": "vote",
+              "target": 0
+            }
+          }
+        ]
+      },
+      "expect_move": "vote:0"
+    },
+    {
+      "name": "mafia_verb_case_is_normalized",
+      "why": "A model that emitted 'Vote' chose the same action. Case is cosmetic and must not reject a turn.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "kind": "Vote",
+              "target": 5
+            }
+          }
+        ]
+      },
+      "expect_move": "vote:5"
+    },
+    {
+      "name": "monopoly_buy_renders_all_three_fields",
+      "why": "Property and amount are always rendered, including zeros, so that 'mortgage property 0 for 50' and 'mortgage property 50 for 0' cannot reduce to one string.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "buy"
+            }
+          }
+        ]
+      },
+      "expect_move": "buy:0:0"
+    },
+    {
+      "name": "monopoly_bid_with_amount",
+      "why": "An amount-bearing action keeps its amount in the canonical form.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "bid",
+              "amount": 150
+            }
+          }
+        ]
+      },
+      "expect_move": "bid:0:150"
+    },
+    {
+      "name": "monopoly_property_and_amount_do_not_collide",
+      "why": "The specific collision the three-field form prevents. This case and the next differ only by which field holds 50.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "mortgage",
+              "property": 50,
+              "amount": 0
+            }
+          }
+        ]
+      },
+      "expect_move": "mortgage:50:0"
+    },
+    {
+      "name": "monopoly_property_and_amount_do_not_collide_reversed",
+      "why": "The pair to the case above: a different decision must produce a different string.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "mortgage",
+              "property": 0,
+              "amount": 50
+            }
+          }
+        ]
+      },
+      "expect_move": "mortgage:0:50"
+    },
+    {
+      "name": "wrong_game_tool_binds_nothing",
+      "why": "A Mafia tool call must not be readable as a Goofspiel move, or an agent in one game could bind a move shaped for another.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "kind": "night_kill",
+              "target": 3
+            }
+          }
+        ]
+      },
+      "expect_move": null
+    },
+    {
+      "name": "empty_response_binds_nothing",
+      "why": "An error page or an empty body must leave the turn unverified rather than produce a move.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {},
+      "expect_move": null
+    },
+    {
+      "name": "bedrock_converse_tooluse",
+      "why": "AWS Bedrock Converse nests the call under output.message.content[].toolUse with input as an object. No Bedrock-specific code exists: it works because name and its arguments are siblings.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "text": "Committing low here."
+              },
+              {
+                "toolUse": {
+                  "toolUseId": "tu-1",
+                  "name": "play_card",
+                  "input": {
+                    "card": 7
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "usage": {
+          "inputTokens": 400,
+          "outputTokens": 30
+        }
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "cohere_v2_tool_call",
+      "why": "Cohere v2 puts tool calls under message.tool_calls[].function with arguments as a JSON string. Never coded for; the structure is the same.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "c1",
+              "type": "function",
+              "function": {
+                "name": "play_card",
+                "arguments": "{\"card\": 7}"
+              }
+            }
+          ]
+        }
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "mistral_openai_wire",
+      "why": "Mistral speaks the OpenAI wire format. Covered without a Mistral branch.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "model": "mistral-large-latest",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"card\": 7}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "vllm_selfhosted_openai_wire",
+      "why": "A self-hosted vLLM/SGLang/llama.cpp server emitting the OpenAI shape. Open-source servers are the case a vendor table can never keep up with.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "model": "Qwen3-32B",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_0",
+                  "type": "function",
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"card\":7}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ]
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "ollama_native_tool_call",
+      "why": "Ollama's native (non-OpenAI) shape puts the call under message.tool_calls[].function with arguments as an OBJECT, not a string.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "model": "llama3.3",
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "play_card",
+                "arguments": {
+                  "card": 7
+                }
+              }
+            }
+          ]
+        },
+        "done": true
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "unknown_future_provider_shape",
+      "why": "A shape nobody has shipped: an invented envelope with the same name+args siblings. This is the whole point of a structural walk \u2014 a provider works on the day it appears, with no release.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "result": {
+          "turns": [
+            {
+              "emitted": {
+                "kind": "tool",
+                "name": "play_card",
+                "args": {
+                  "card": 7
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expect_move": "card:7"
+    },
+    {
+      "name": "echoed_tool_schema_binds_nothing",
+      "why": "THE dangerous near-miss. A response echoing the tool DEFINITION has name plus a JSON Schema under 'parameters'. Accepting 'parameters' as arguments would read a definition as a call. It must bind nothing, not a wrong move.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "tools": [
+          {
+            "name": "play_card",
+            "description": "Play one card",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "card": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "card"
+              ]
+            }
+          }
+        ]
+      },
+      "expect_move": null
+    },
+    {
+      "name": "deepseek_openai_wire_tool_call",
+      "why": "DeepSeek speaks the OpenAI wire format for tool calls, so no DeepSeek branch is needed. Its CACHE fields differ and are handled in usage normalization, not here.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "response": {
+        "model": "deepseek-chat",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"card\": 7}"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 1000,
+          "completion_tokens": 20,
+          "prompt_cache_hit_tokens": 896,
+          "prompt_cache_miss_tokens": 104
+        }
+      },
+      "expect_move": "card:7"
+    }
+  ],
+
+  "_plan_readme": [
+    "RANGE BINDINGS: one completion that decided SEVERAL rounds.",
+    "",
+    "WHY. Coverage used to count CALLS, so a completion bound exactly one round. An agent",
+    "that batches — one call planning three rounds — therefore scored about 33% on real",
+    "staked tables while playing entirely model-backed. Phase 4 exists to REWARD batching as",
+    "cost optimisation, so the two rules pulled in opposite directions and no threshold",
+    "reconciled them. Coverage now means 'decisions a model made' rather than 'calls made'.",
+    "",
+    "THE SHAPE. The move tool carries a `plan` array, each entry being that round's ordinary",
+    "move arguments plus a `round`. The gateway binds every round in the plan from that one",
+    "completion: shared completion hash, one receipt per round over that round's own move.",
+    "",
+    "WHY OVER-CLAIMING IS SAFE. A span is a COMMITMENT, not a free coverage win. Match-time",
+    "enforcement is unchanged, so submitting anything other than the bound move for round 5",
+    "is rejected exactly as a substitution is. An agent that claims rounds it does not play",
+    "has only tied its own hands.",
+    "",
+    "THE ONE THING A SPAN MUST NEVER DO IS REACH BACKWARDS. Rounds before proven_round have",
+    "already been played, so a binding written over them is coverage nothing will ever check.",
+    "Forward claims are self-limiting because they are enforced; backward claims are not.",
+    "",
+    "proven_round is the round the turn proof attests. expect_plan of null means NOTHING may",
+    "be bound. A case with no `plan` in its arguments must still bind its proven round, which",
+    "is what keeps every agent shipping today working unchanged."
+  ],
+  "plan_cases": [
+    {
+      "name": "openai_wire_batched_three_rounds",
+      "why": "The headline case: one call plans rounds 4-6. Arguments arrive as a JSON STRING, as OpenAI-wire providers send them.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 4,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 4, \"card\": 7}, {\"round\": 5, \"card\": 2}, {\"round\": 6, \"card\": 9}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 4, "move": "card:7" },
+        { "round": 5, "move": "card:2" },
+        { "round": 6, "move": "card:9" }
+      ]
+    },
+    {
+      "name": "anthropic_native_batched_plan",
+      "why": "Anthropic sends tool input as an OBJECT rather than a string. The plan must read identically either way.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 1,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": {
+              "plan": [
+                { "round": 1, "card": 13 },
+                { "round": 2, "card": 1 }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 1, "move": "card:13" },
+        { "round": 2, "move": "card:1" }
+      ]
+    },
+    {
+      "name": "plan_cannot_reach_backwards",
+      "why": "THE security case. Rounds 1 and 2 were played before this call was proven, so binding them would be coverage nothing can check — an agent could retroactively claim turns it played unbound. Only the proven round and later survive.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 8,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 1, \"card\": 1}, {\"round\": 2, \"card\": 2}, {\"round\": 8, \"card\": 8}, {\"round\": 9, \"card\": 9}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 8, "move": "card:8" },
+        { "round": 9, "move": "card:9" }
+      ]
+    },
+    {
+      "name": "contradictory_plan_binds_nothing",
+      "why": "Two different moves for one round has no honest reading, and picking either would be the platform guessing on the agent's behalf. Binding nothing leaves the turn unverified, which is always the safe direction.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 4,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 4, \"card\": 7}, {\"round\": 4, \"card\": 8}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": null
+    },
+    {
+      "name": "plain_call_still_binds_its_proven_round",
+      "why": "Back-compatibility, and the case that matters most in production: every agent shipping today sends this shape. A call with no plan binds exactly the round its proof attests.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 11,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "play_card",
+            "input": { "card": 3 }
+          }
+        ]
+      },
+      "expect_plan": [{ "round": 11, "move": "card:3" }]
+    },
+    {
+      "name": "plan_entry_without_a_round_is_skipped_not_fatal",
+      "why": "One malformed entry must not discard the rounds the model did decide honestly. An unplaceable entry has no slot and a move-less entry is not a move; both are dropped.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 4,
+      "response": {
+        "model": "gpt-5.2",
+        "choices": [
+          {
+            "message": {
+              "tool_calls": [
+                {
+                  "function": {
+                    "name": "play_card",
+                    "arguments": "{\"plan\": [{\"round\": 4, \"card\": 7}, {\"card\": 5}, {\"round\": 6}, {\"round\": 7, \"card\": 11}]}"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 4, "move": "card:7" },
+        { "round": 7, "move": "card:11" }
+      ]
+    },
+    {
+      "name": "mafia_plan_keeps_no_target_distinct_from_seat_zero",
+      "why": "Range binding is not Goofspiel-only, and Mafia's convention has to survive it. Seat 0 is a REAL PLAYER, so an absent target must stay distinguishable from targeting them — collapsing the two would let a move against that one player be substituted for doing nothing.",
+      "game": "mafia",
+      "tool": "mafia_action",
+      "proven_round": 2,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": {
+              "plan": [
+                { "round": 2, "kind": "kill", "target": 0 },
+                { "round": 3, "kind": "abstain" }
+              ]
+            }
+          }
+        ]
+      },
+      "expect_plan": [
+        { "round": 2, "move": "kill:0" },
+        { "round": 3, "move": "abstain:none" }
+      ]
+    },
+    {
+      "name": "plan_on_the_wrong_games_tool_binds_nothing",
+      "why": "A Mafia tool call cannot decide a Goofspiel round, plan or no plan. Same rule as a single call.",
+      "game": "goofspiel",
+      "tool": "play_card",
+      "proven_round": 1,
+      "response": {
+        "model": "claude-sonnet-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "mafia_action",
+            "input": { "plan": [{ "round": 1, "kind": "kill", "target": 2 }] }
+          }
+        ]
+      },
+      "expect_plan": null
+    }
+  ]
+}

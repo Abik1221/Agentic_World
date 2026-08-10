@@ -241,7 +241,16 @@ func (e *Engine) ForceTimeout(s State, seat int) (State, []Event, error) {
 			low = c
 		}
 	}
-	return e.Seal(s, seat, low)
+	ns, evs, err := e.Seal(s, seat, low)
+	if err != nil {
+		return ns, evs, err
+	}
+	// Count the miss. The card played is the seat's WORST, so absence already costs it
+	// the round on the merits; this tally exists so settlement can tell a seat that went
+	// dark from one that played and simply could not prove its reasoning was LLM-backed.
+	// Those two look identical in the proof tables and must not be paid out the same way.
+	ns.Timeouts[seat]++
+	return ns, evs, nil
 }
 
 func finalWinner(scores [2]int) int {

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/events"
+	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/pindex"
+	"github.com/agent-arena/arena/internal/skill"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -125,6 +127,41 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 		in.AvgLatencyMS = float64(latSum) / float64(dec)
 	}
 
+	// Skill: DECISION QUALITY, from the per-decision scores internal/skill wrote.
+	//
+	// Scoped exactly like the intelligence rollup above — same owner, same season, same
+	// fraud exclusion, same ranked-only join — so the two dimensions describe the same set
+	// of matches and cannot disagree about which games counted.
+	//
+	// `skill_regret IS NOT NULL` is the load-bearing predicate. A row can be stamped with
+	// a scorer version and still hold NULL when the decision was not scorable (a game with
+	// no scorer, a malformed view). Counting those as zero regret would hand every
+	// Monopoly agent a perfect record, since Monopoly has no scorer yet.
+	//
+	// The version filter keeps one average from mixing verdicts produced by two different
+	// scorers, which would compare agents against different yardsticks.
+	var skillN int64
+	var regretSum, blunders float64
+	if err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(d.skill_regret),0),
+		        COALESCE(SUM(CASE WHEN d.skill_regret > $3 THEN 1 ELSE 0 END),0)
+		   FROM agent_match_decisions d
+		   JOIN matches m ON m.public_id = d.match_id
+		   JOIN match_rating_changes mrc ON mrc.match_id = m.id AND mrc.agent_id = d.agent_id
+		   JOIN agents a ON a.id = d.agent_id AND a.owner_user_id = $1 AND a.kind <> 'house'
+		  WHERE mrc.season = $2
+		    AND d.skill_regret IS NOT NULL
+		    AND d.skill_scorer_version = $4
+		    AND NOT EXISTS (SELECT 1 FROM fraud_flags f WHERE f.match_id = mrc.match_id AND f.active)`,
+		uid, season, skill.BlunderThreshold, skill.ScorerVersion).Scan(&skillN, &regretSum, &blunders); err != nil {
+		return in, err
+	}
+	if skillN > 0 {
+		in.SkillDecisions = int(skillN)
+		in.SkillQuality = 1 - regretSum/float64(skillN)
+		in.SkillBlunderRate = blunders / float64(skillN)
+	}
+
 	return in, nil
 }
 
@@ -224,13 +261,24 @@ type MatchDecision struct {
 
 	Provider string
 	Model    string
+	// Scaffold fingerprints the harness (system prompt, tools, sampling) with the model
+	// excluded, so decisions sharing one fingerprint form a controlled comparison.
+	// Unstable means it changed mid-turn and the decision cannot be paired.
+	Scaffold         string
+	ScaffoldUnstable bool
+	// ScaffoldIssue is a short code for why there is no fingerprint (e.g.
+	// "no_system_prompt"). Empty when one was produced.
+	ScaffoldIssue string
 
 	PromptTokens     int
 	CompletionTokens int
 	ReasoningTokens  int
-	CachedTokens     int
-	TotalTokens      int
-	EstimatedCost    float64
+	// Cache READS and WRITES, kept apart because they carry different prices in opposite
+	// directions and one merged figure cannot be turned back into a cost.
+	CachedTokens      int
+	CachedWriteTokens int
+	TotalTokens       int
+	EstimatedCost     float64
 
 	// InputJSON is the turn view the agent was handed, already JSON-encoded and
 	// size-capped by the producer. nil when there was none to keep.
@@ -271,21 +319,26 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 		rows = append(rows, []any{
 			matchID, agentID, d.Seq, d.Round, d.Action, d.Outcome, d.LatencyMS, d.Rationale,
 			d.Provider, d.Model, d.PromptTokens, d.CompletionTokens, d.ReasoningTokens,
-			d.CachedTokens, d.TotalTokens, d.EstimatedCost,
+			d.CachedTokens, d.CachedWriteTokens, d.TotalTokens, d.EstimatedCost,
+			d.Scaffold, d.ScaffoldUnstable, d.ScaffoldIssue,
 			// nil (not "null") so an absent view stores SQL NULL rather than the JSON
 			// literal null — the two read back differently and only one is honest.
 			inputOrNil(d.InputJSON), d.InputTruncated, timeOrNil(d.StartedAt),
 		})
 	}
 
-	const cols = 19
+	const cols = 23
+	// Position of input_json within a row, named so the ::jsonb cast below cannot drift
+	// out of step with the column list the way a bare literal silently would.
+	const inputJSONIndex = 20
 	args := make([]any, 0, len(rows)*cols)
 	var b strings.Builder
 	b.WriteString(`INSERT INTO agent_match_decisions (
 		match_id, agent_id, seq, round, action, outcome, latency_ms, rationale,
 		provider, model, prompt_tokens, completion_tokens, reasoning_tokens,
-		cached_tokens, total_tokens, estimated_cost, input_json, input_truncated,
-		started_at) VALUES `)
+		cached_tokens, cached_write_tokens, total_tokens, estimated_cost,
+		scaffold, scaffold_unstable, scaffold_issue,
+		input_json, input_truncated, started_at) VALUES `)
 	for i, row := range rows {
 		if i > 0 {
 			b.WriteByte(',')
@@ -297,10 +350,11 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 			}
 			b.WriteByte('$')
 			b.WriteString(strconv.Itoa(i*cols + j + 1))
-			// input_json is column 17 (index 16): pgx sends []byte as bytea unless the
+			// input_json is column 18 (index 17): pgx sends []byte as bytea unless the
 			// placeholder is cast, and a bytea in a jsonb column is a type error at
 			// execute time, not at prepare time — so it would only surface in production.
-			if j == 16 {
+			// This index MUST move whenever a column is added ahead of input_json.
+			if j == inputJSONIndex {
 				b.WriteString("::jsonb")
 			}
 		}
@@ -317,6 +371,12 @@ func (r *PIndexRepo) RecordMatchDecisions(ctx context.Context, matchID, agentPub
 		model = COALESCE(NULLIF(EXCLUDED.model,''), agent_match_decisions.model),
 		prompt_tokens = EXCLUDED.prompt_tokens, completion_tokens = EXCLUDED.completion_tokens,
 		reasoning_tokens = EXCLUDED.reasoning_tokens, cached_tokens = EXCLUDED.cached_tokens,
+		cached_write_tokens = EXCLUDED.cached_write_tokens,
+		-- Never blank a fingerprint we already have: a replayed summary that lost its usage
+		-- block must not silently drop an agent out of every paired comparison.
+		scaffold = COALESCE(NULLIF(EXCLUDED.scaffold,''), agent_match_decisions.scaffold),
+		scaffold_unstable = EXCLUDED.scaffold_unstable OR agent_match_decisions.scaffold_unstable,
+		scaffold_issue = EXCLUDED.scaffold_issue,
 		total_tokens = EXCLUDED.total_tokens, estimated_cost = EXCLUDED.estimated_cost,
 		-- Same rule as the rationale: a replay that lost the view must not erase a view
 		-- we already captured.
@@ -396,14 +456,55 @@ func (r *PIndexRepo) RecordBoundDecision(ctx context.Context, matchID, agentPubl
 }
 
 // BoundDecisions returns how many DISTINCT decisions in this match the agent proved
-// were LLM-backed. Compared against the decisions it actually made to get the ranked
-// integrity ratio.
+// were LLM-BACKED AND ACTUALLY MADE. This is the numerator of the ranked integrity ratio,
+// so it decides whether a staked match is voided.
+//
+// # Why it is not simply a row count any more
+//
+// One completion may now cover a RANGE of rounds — an agent that batches ("plan rounds 4-6
+// in one call") gets a bound row per round, which is the whole point: those decisions are
+// model-backed and counting calls instead punished the cheapest honest agents at roughly 33%.
+//
+// But the span is written when the CALL happens, before its later rounds have been played.
+// A row for round 6 is therefore a CLAIM about a turn that may never be taken. Counting it
+// would let one call at round 1 assert a whole match's worth of coverage, and the ratio that
+// voids matches would be reading a promise rather than a decision.
+//
+// Intersecting with agent_match_decisions costs nothing and makes the count mean what its
+// name says. The proof slot is game-dependent for the same reason it is in CoverageFor:
+// Goofspiel's `seq` is a submission counter that repeats on a retry, while Mafia's and
+// Monopoly's IS the slot the turn proof was minted for.
+//
+// # And why an unlogged seat still counts everything
+//
+// This number feeds rule 1 of the ranked gate — "stakes must not flow to a seat that proved
+// NOTHING" — which voids a staked match. So a change that can only lower it is not
+// automatically safe: if a seat's decisions were never logged, intersecting would take a
+// fully-bound seat to zero and VOID the match of an agent that did everything right. The
+// decision log has been incomplete before; the pull path wrote no rows at all until
+// actdecisions.go, which is how 2067 rated Monopoly matches produced no benchmark facts.
+//
+// So the intersection applies only to a seat the log actually knows about. No decisions
+// logged means no evidence either way, and the count falls back to exactly what it was —
+// the same fail-open shape as integrity.Evaluate and movebind.Enforce.
 func (r *PIndexRepo) BoundDecisions(ctx context.Context, matchID, agentPublicID string) (int, error) {
 	var n int
 	err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM agent_match_bound_decisions b
 		   JOIN agents a ON a.id = b.agent_id
-		  WHERE b.match_id = $1 AND a.public_id = $2`,
+		   LEFT JOIN matches m ON m.public_id = b.match_id
+		  WHERE b.match_id = $1 AND a.public_id = $2
+		    AND (
+		      NOT EXISTS (
+		        SELECT 1 FROM agent_match_decisions d
+		         WHERE d.match_id = b.match_id AND d.agent_id = b.agent_id
+		      )
+		      OR EXISTS (
+		        SELECT 1 FROM agent_match_decisions d
+		         WHERE d.match_id = b.match_id AND d.agent_id = b.agent_id
+		           AND (CASE WHEN m.game = 'goofspiel' THEN d.round ELSE d.seq END) = b.round
+		      )
+		    )`,
 		matchID, agentPublicID).Scan(&n)
 	return n, err
 }
@@ -617,4 +718,57 @@ func timeOrNil(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+// ── Admin config surface ─────────────────────────────────────────────────────
+
+// ListConfigs returns every scoring config, newest first.
+func (r *PIndexRepo) ListConfigs(ctx context.Context) ([]pindex.VersionedConfig, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT version, active, params FROM pindex_config ORDER BY version DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pindex.VersionedConfig
+	for rows.Next() {
+		var c pindex.VersionedConfig
+		if err := rows.Scan(&c.Version, &c.Active, &c.Params); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// PutConfig writes a version's params, leaving its active flag untouched.
+//
+// Never activates. Writing a candidate must not change what developers are being scored
+// on — a P-Index change re-ranks everyone at once, so that has to be a separate,
+// deliberate act. Same separation as writing a doc version versus publishing it.
+func (r *PIndexRepo) PutConfig(ctx context.Context, version int, params []byte) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO pindex_config (version, params, active) VALUES ($1, $2, false)
+		 ON CONFLICT (version) DO UPDATE SET params = EXCLUDED.params`,
+		version, params)
+	return err
+}
+
+// ActivateConfig makes exactly one version live.
+//
+// One statement, so there is never an instant with two active configs or none. The table
+// carries a UNIQUE partial index on active, which would reject a two-step deactivate/
+// activate anyway — and an interval with NO active config would leave every recompute
+// unable to score at all.
+func (r *PIndexRepo) ActivateConfig(ctx context.Context, version int) error {
+	var exists bool
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM pindex_config WHERE version = $1)`, version).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return httpx.NewError(404, "not_found", "no such P-Index config version")
+	}
+	_, err := r.db.Exec(ctx, `UPDATE pindex_config SET active = (version = $1)`, version)
+	return err
 }

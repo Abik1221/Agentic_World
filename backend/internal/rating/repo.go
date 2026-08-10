@@ -175,6 +175,12 @@ type ModelStat struct {
 	// board look complete when it is not.
 	Preliminary bool `json:"preliminary"`
 
+	// Verified is how much of this row's play was actually PROVEN LLM-backed, not whether
+	// any of it was. Published because the attribution tier above is derived from it, so a
+	// reader who distrusts our threshold can ignore the label and read the fraction. See
+	// coverage.go for why the denominator is what makes the numerator safe to publish.
+	Verified CoverageStat `json:"verified"`
+
 	// ── time ──────────────────────────────────────────────────────────────────
 	// PlaySeconds is summed REAL match wall-clock; TimedMatches is how many matches
 	// contributed one (the correct denominator — a match with a broken clock must not
@@ -275,10 +281,24 @@ type ArenaStat struct {
 
 // Standing is one agent's season position (for "your rank this season").
 type Standing struct {
-	Season        int    `json:"season"`
-	Game          string `json:"game"`
-	Rank          int    `json:"rank"`
-	Total         int    `json:"total"`
+	Season int    `json:"season"`
+	Game   string `json:"game"`
+	// Rank and Total count the PUBLISHED population only — the agents that appear on the
+	// ladder — so this number can be compared with what the board shows.
+	Rank  int `json:"rank"`
+	Total int `json:"total"`
+	// Ranked reports whether this agent is on the published ladder at all.
+	//
+	// An agent that never routes a model call may play staked tables and win coins; it is
+	// excluded from ranked surfaces because the arena cannot say a model chose its moves. That
+	// exclusion has to be VISIBLE here, on the agent's own card. Silently omitting a developer
+	// from the ladder while still showing them a rank is the one outcome this policy must not
+	// produce — they would go looking for themselves and find a gap, with nothing telling them
+	// why or what to do about it.
+	//
+	// When false, Rank is this agent's position among published agents had it been published,
+	// which is what makes it actionable: it is the rank verifying would earn.
+	Ranked        bool   `json:"ranked"`
 	AgentPublicID string `json:"agent"`
 	Name          string `json:"name"`
 	Elo           int    `json:"elo"`
@@ -289,6 +309,17 @@ type Standing struct {
 	Streak        int    `json:"current_streak"`
 	Provider      string `json:"provider,omitempty"`
 	Model         string `json:"model,omitempty"`
+	// Attribution is where Provider/Model came from, and it is not decoration.
+	//
+	// This card used to read them straight out of agent_manifests — the developer's own YAML —
+	// and print them with no tag, so a model nobody ever confirmed looked identical to one the
+	// provider's API named. The model board has always been careful to call that "claimed";
+	// the agent's own standing was not.
+	Attribution string `json:"attribution,omitempty"`
+	// Verified is how much of this agent's play was proven LLM-backed. Published for the same
+	// reason as on the model board: the tier is a summary of a threshold, and a reader who
+	// cannot see the fraction is being asked to take the threshold on trust.
+	Verified CoverageStat `json:"verified"`
 }
 
 // RatingState is an agent's persisted rating for one arena, spanning both

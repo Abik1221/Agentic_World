@@ -29,8 +29,8 @@ func (r *MonopolyRepo) Create(ctx context.Context, in monopoly.CreateMatchInput)
 		err := tx.QueryRow(ctx,
 			`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode, state,
-			     round_deadline, started_at, creator_owner_user_id)
-			 VALUES ($1,'monopoly','active',$2,$3,$4,$5,$6,$7,'deterministic',$8::jsonb,$9,now(),
+			     round_deadline, round_deadline_base, started_at, creator_owner_user_id)
+			 VALUES ($1,'monopoly','active',$2,$3,$4,$5,$6,$7,'deterministic',$8::jsonb,$9,$9,now(),
 			         (SELECT id FROM users WHERE public_id=$10))
 			 RETURNING id`,
 			in.PublicID, in.EntryFee, in.RakePct, mono.DefaultMaxTurns, mono.Version,
@@ -139,7 +139,7 @@ func (r *MonopolyRepo) Start(ctx context.Context, matchPublicID string, state mo
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' AND game='monopoly' RETURNING id`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -256,7 +256,7 @@ func (r *MonopolyRepo) Advance(ctx context.Context, matchPublicID string, state 
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, updated_at=now()
+			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, updated_at=now()
 			 WHERE public_id=$1 AND status='active' AND game='monopoly' RETURNING id`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {

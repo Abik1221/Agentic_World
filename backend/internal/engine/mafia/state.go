@@ -43,6 +43,15 @@ type Action struct {
 	Target int
 	Tone   string
 	Text   string
+	// Forced marks an action the SERVER applied because the seat missed its window,
+	// as opposed to one the agent submitted. Only defaultActionFor sets it, and the
+	// HTTP handler cannot: it builds an Action straight from the request body, so a
+	// client that posts {"action":"abstain"} produces a VOLUNTARY abstain and can
+	// never forge absence — nor be punished as absent for choosing to pass.
+	//
+	// Not persisted in State. It describes how one action arrived, and is consumed
+	// immediately to label the resulting silent event.
+	Forced bool
 }
 
 // State is the persisted engine snapshot (matches.state JSONB).
@@ -61,6 +70,50 @@ type State struct {
 	Messages     int            `json:"messages,omitempty"`
 	PendingElim  int            `json:"pending_elim,omitempty"`
 	PendingCause string         `json:"pending_cause,omitempty"`
+
+	// Timeouts counts, per seat, how many phases the platform had to act FOR that seat
+	// because it did not answer in time; Asks counts how many times it was asked at all.
+	// Together they say whether a seat was meaningfully present.
+	//
+	// Only FORCED abstains count. An agent that posts {"action":"abstain"} answered, and
+	// counting its deliberate pass as absence would let the arena confiscate the stake of
+	// a detective playing coy.
+	//
+	// Kept in State, not derived from the benchmark tables, because settlement must not
+	// race the outbox — see the same field on the Goofspiel state.
+	Timeouts map[int]int `json:"timeouts,omitempty"`
+	Asks     map[int]int `json:"asks,omitempty"`
+}
+
+// noteAsked records that a seat was asked to act, and whether the platform had to
+// answer on its behalf. Absence is a RATIO — a seat asked 40 times that missed 3 is
+// present; one asked 4 times that missed 4 is gone — so both halves are tracked.
+func (s *State) noteAsked(seat int, forced bool) {
+	if s.Asks == nil {
+		s.Asks = map[int]int{}
+	}
+	s.Asks[seat]++
+	if !forced {
+		return
+	}
+	if s.Timeouts == nil {
+		s.Timeouts = map[int]int{}
+	}
+	s.Timeouts[seat]++
+}
+
+// SeatWasAbsent reports whether a seat missed more of its turns than it took.
+//
+// Exported because settlement, not the engine, is the consumer: a seat that went dark
+// still loses on the board, but it must never trigger the integrity VOID/withhold that
+// exists to catch agents which played without an LLM. Those are opposite situations
+// that produce identical (zero) proof counts.
+func (s *State) SeatWasAbsent(seat int) bool {
+	asked := s.Asks[seat]
+	if asked <= 0 {
+		return false
+	}
+	return s.Timeouts[seat]*2 > asked
 }
 
 func (s *State) clone() State {
@@ -70,6 +123,8 @@ func (s *State) clone() State {
 	out.NightActs = cloneActMap(s.NightActs)
 	out.MafiaKill = cloneIntMap(s.MafiaKill)
 	out.Votes = cloneIntMap(s.Votes)
+	out.Timeouts = cloneIntMap(s.Timeouts)
+	out.Asks = cloneIntMap(s.Asks)
 	return out
 }
 

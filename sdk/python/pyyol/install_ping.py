@@ -13,6 +13,8 @@ the platform can show adoption analytics (downloads over time + per-country). It
 
 from __future__ import annotations
 
+from . import _urlguard
+
 import json
 import os
 import threading
@@ -56,7 +58,7 @@ def maybe_ping(api_base: str, version: str) -> None:
                 method="POST",
                 headers={"Content-Type": "application/json"},
             )
-            with _request.urlopen(req, timeout=3) as resp:  # noqa: S310
+            with _urlguard.urlopen(req, timeout=3) as resp:
                 resp.read()
         except Exception:  # noqa: BLE001 - telemetry must never surface to the CLI
             pass

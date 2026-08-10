@@ -410,8 +410,10 @@ func (r *DevTraceRepo) MatchDecisions(
 	rows, err := r.db.Query(ctx,
 		`SELECT d.seq, d.round, d.action, d.outcome, d.latency_ms, d.rationale,
 		        d.provider, d.model, d.prompt_tokens, d.completion_tokens,
-		        d.reasoning_tokens, d.cached_tokens, d.total_tokens, d.estimated_cost,
-		        d.input_json, d.input_truncated, d.started_at
+		        d.reasoning_tokens, d.cached_tokens, d.cached_write_tokens,
+		        d.total_tokens, d.estimated_cost, d.scaffold, d.scaffold_unstable, d.scaffold_issue,
+		        d.input_json, d.input_truncated, d.started_at,
+		        d.skill_regret, d.skill_best
 		   FROM agent_match_decisions d
 		   JOIN agents a ON a.id = d.agent_id
 		  WHERE d.match_id = $1 AND a.public_id = ANY($2)
@@ -425,13 +427,21 @@ func (r *DevTraceRepo) MatchDecisions(
 	for rows.Next() {
 		var d devtrace.Decision
 		var input []byte
+		// skill_best is NULL on unscored rows; skill_regret stays a pointer so "not
+		// scored" survives all the way to the client rather than arriving as a zero.
+		var best *string
 		if err := rows.Scan(&d.Seq, &d.Round, &d.Action, &d.Outcome, &d.LatencyMS, &d.Rationale,
 			&d.Provider, &d.Model, &d.PromptTokens, &d.CompletionTokens,
-			&d.ReasoningTokens, &d.CachedTokens, &d.TotalTokens, &d.EstimatedCost,
-			&input, &d.InputTruncated, &d.StartedAt); err != nil {
+			&d.ReasoningTokens, &d.CachedTokens, &d.CachedWriteTokens,
+			&d.TotalTokens, &d.EstimatedCost, &d.Scaffold, &d.ScaffoldUnstable, &d.ScaffoldIssue,
+			&input, &d.InputTruncated, &d.StartedAt,
+			&d.SkillRegret, &best); err != nil {
 			return nil, err
 		}
 		d.Input = input
+		if best != nil {
+			d.SkillBest = *best
+		}
 		out = append(out, d)
 	}
 	return out, rows.Err()

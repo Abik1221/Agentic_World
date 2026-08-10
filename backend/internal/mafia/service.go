@@ -6,17 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/agent-arena/arena/internal/httpx"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/agent-arena/arena/internal/benchmark"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
+	"github.com/agent-arena/arena/internal/movebind"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/turnproof"
 )
 
 // Config tunes phase windows and table economics.
@@ -43,7 +48,25 @@ type Config struct {
 }
 
 // Service drives the Mafia match lifecycle.
+// SetHouseRoster records the agent ids the platform itself runs.
+//
+// # Why an explicit list and not a pattern
+//
+// This is an exemption inside a fraud control, so it must be impossible to fall into by
+// accident. Matching on a slug prefix or a framework label would mean any agent that came to
+// look house-shaped would inherit the exemption; an id set, built at boot from the seeder's own
+// return value, cannot be joined by anything a user creates.
+//
+// # What the exemption is, exactly
+//
+// A house agent skips the LLM-certification check on ZERO-FEE tables only. It can never skip it
+// on a paid one, because a house agent must never be at a paid table at all — that is enforced
+// separately by houseStake() == 0 and its regression guards. So the widest this can ever open is
+// "the platform may seat its own deterministic bots at practice tables", which is precisely the
+// intent: our bots may fill a seat, a user's may not.
 type Service struct {
+	house  map[string]bool // agent ids the PLATFORM runs; see SetHouseRoster
+	stakes StakeFloor      // rejects an entry fee mafia does not offer; see StakeFloor
 	repo   Repo
 	lock   Locker
 	limits Limits
@@ -51,8 +74,10 @@ type Service struct {
 	bcast  Broadcaster
 	ver    Verifier
 	finish FinishHook
-	clock  platform.Clock
-	cfg    Config
+	// actDecisions instruments the request path. Nil leaves Act uninstrumented.
+	actDecisions ActDecisionRecorder
+	clock        platform.Clock
+	cfg          Config
 	// defaultStake supplies the admin's cheapest enabled tier for lobby browsing.
 	defaultStake func(context.Context) (int64, bool)
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
@@ -88,7 +113,13 @@ type Service struct {
 	chatTracer ChatTracer
 	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
 	decisionTracer DecisionTracer
+	// boundMoves reports the move the MODEL produced for a turn, as the gateway observed
+	// it. Nil ⇒ completion binding is not enforced, which is the pre-existing behaviour.
+	boundMoves movebind.Reader
 }
+
+// SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).
+func (s *Service) SetBoundMoveReader(r movebind.Reader) { s.boundMoves = r }
 
 // ChatTracer records agent table talk to the observability pipeline. Satisfied by
 // *telemetry.Client; nil means telemetry is off and every call is a no-op.
@@ -107,6 +138,34 @@ type DecisionTracer interface {
 
 // SetDecisionTracer installs the per-decision tracer (called once at wiring time).
 func (s *Service) SetDecisionTracer(t DecisionTracer) { s.decisionTracer = t }
+
+// ActDecision is one decision made through the REQUEST path.
+//
+// Declared here rather than reusing store.ActDecision so this package does not depend on the
+// persistence layer — a game service defines what it needs and main.go adapts.
+type ActDecision struct {
+	MatchID       string
+	AgentPublicID string
+	Seq           int
+	Round         int
+	Action        string
+	Outcome       string
+	InputJSON     []byte
+}
+
+// ActDecisionRecorder durably records request-path decisions and builds the per-seat facts at
+// match end.
+//
+// Mafia's instrumentation lived only in its push-play driver, so an agent that polls state and
+// posts actions produced no benchmark fact, no decision log and no board presence. See
+// OBSERVABILITY_COVERAGE_GAP.md.
+type ActDecisionRecorder interface {
+	RecordActDecision(ctx context.Context, d ActDecision) error
+	AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error
+}
+
+// SetActDecisionRecorder wires request-path instrumentation. Optional.
+func (s *Service) SetActDecisionRecorder(r ActDecisionRecorder) { s.actDecisions = r }
 
 // SetLiveness installs the post-outage grace tracker (called once at wiring time).
 func (s *Service) SetLiveness(t *liveness.Tracker) { s.liveness = t }
@@ -131,7 +190,21 @@ func (s *Service) SetIntegrityChecker(c integrity.Checker) { s.integrity = c }
 // ordering constraint Goofspiel documents. Without a minter, Mafia views ship with no
 // proof, no decision can be shown to be LLM-backed, and the integrity check on paid
 // tables can never arm however it is configured.
-func (s *Service) SetTurnMinter(m TurnMinter) { s.turns = m }
+func (s *Service) SetTurnMinter(m TurnMinter) {
+	s.turns = m
+	// ALSO push onto an already-built pushPlayer, because EnablePushPlay copies s.turns by value.
+	//
+	// Monopoly's wiring called SetTurnMinter AFTER EnablePushPlay, so the pusher captured nil and
+	// every Monopoly view shipped with no turn proof — meaning no Monopoly decision could ever be
+	// bound, no Monopoly agent could earn Verified, and nothing anywhere said so. Mafia happened to
+	// be wired in the opposite order and worked, which is the worst kind of correctness: identical
+	// code, opposite behaviour, decided by a line number.
+	//
+	// Propagating here makes the order irrelevant instead of merely fixing today's order.
+	if s.pusher != nil {
+		s.pusher.turns = m
+	}
+}
 
 func NewService(repo Repo, lock Locker, limits Limits, wallet Wallet, bcast Broadcaster, ver Verifier, finish FinishHook, clock platform.Clock, cfg Config) *Service {
 	// PhaseWindow is left at zero on purpose when unset: that selects the engine's
@@ -207,9 +280,43 @@ func (s *Service) Lobby(ctx context.Context, entryFee int64, ownerPublicID strin
 	return s.repo.ListWaiting(ctx, entryFee, ownerPublicID, 50)
 }
 
+// StakeFloor validates that a coin amount is a stake the game actually offers.
+//
+// Same port, same reason, as match.StakeFloor: the handler resolves tiers correctly, but
+// CreateTable is also reached directly — by the house-bot runner, and by the service's own
+// DefaultEntryFee of 100 substituted whenever a fee is absent. Both sat below the configured
+// 500-coin floor, so mafia had a second, independent route to a stake the game does not offer.
+type StakeFloor interface {
+	ValidStake(ctx context.Context, game string, coins int64) (ok bool, lowest int64, err error)
+}
+
+// SetStakeFloor wires tier enforcement into the service that escrows.
+func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
+
+// checkStake rejects a stake mafia does not offer. Fails CLOSED — an unreadable tier table is
+// not permission to escrow an arbitrary amount. A zero fee is a practice table and is exempt.
+func (s *Service) checkStake(ctx context.Context, entryFee int64) error {
+	if s.stakes == nil || entryFee <= 0 {
+		return nil
+	}
+	ok, lowest, err := s.stakes.ValidStake(ctx, GameName, entryFee)
+	if err != nil {
+		return httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable",
+			"Stake tiers could not be read, so the stake cannot be verified. Try again shortly.")
+	}
+	if !ok {
+		return httpx.NewError(http.StatusBadRequest, "stake_not_offered",
+			fmt.Sprintf("An entry fee of %d coins is not offered for mafia. The lowest available stake is %d coins.", entryFee, lowest))
+	}
+	return nil
+}
+
 func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID string, entryFee int64) (string, error) {
 	if entryFee < 0 {
 		entryFee = 0
+	}
+	if err := s.checkStake(ctx, entryFee); err != nil {
+		return "", err
 	}
 	// A zero-fee table is a no-stakes practice/sandbox table (nothing staked, no
 	// payout, no rating change): skip the spending-limit and certification gates,
@@ -219,9 +326,14 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 		if err := s.limits.CheckJoin(ctx, agentPublicID, entryFee); err != nil {
 			return "", err
 		}
-		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
-			return "", err
-		}
+	}
+	// Certification runs on EVERY table, paid or free — outside the fee branch on purpose.
+	// A practice match writes decision and benchmark rows that feed the P-Index, the model board
+	// and the deception index, so a scripted agent farming free tables earns a public record it
+	// did not deserve. Only the platform's own bots are exempt, and only here where nothing is
+	// staked; see mustCertify.
+	if err := s.certify(ctx, agentPublicID, entryFee); err != nil {
+		return "", err
 	}
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
@@ -333,7 +445,11 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		if err := s.limits.CheckJoin(ctx, agentPublicID, m.EntryFee); err != nil {
 			return AgentView{}, err
 		}
-		if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+	}
+	// As in CreateTable: certify every seat, free tables included, with only the platform's own
+	// bots exempt at zero fee.
+	if !house {
+		if err := s.certify(ctx, agentPublicID, m.EntryFee); err != nil {
 			return AgentView{}, err
 		}
 	}
@@ -586,6 +702,25 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 		}
 	}
 
+	// Completion binding: the action must be the one this seat's MODEL chose, whenever the
+	// gateway observed a model choosing one. Checked before the engine applies it.
+	//
+	// Keyed by turnproof.MafiaTurn(day, phase), NOT by day — the same number the proof and
+	// the decision log use. A player acts in both the night and the voting phase of one day,
+	// so keying by day alone would compare a vote against the model's kill.
+	//
+	// Bound on the VERB AND TARGET only, not on canonAction: that string carries the phase,
+	// which is the server's state rather than the model's choice, and binding it would
+	// reject an honest turn over a field the model never selected.
+	//
+	// Runs for platform-driven moves too, unlike the signature check above — an authenticated
+	// socket proves authorship, not that a model chose the action.
+	if err := movebind.Enforce(ctx, s.boundMoves, slog.Default(), "mafia",
+		matchPublicID, agentPublicID, turnproof.MafiaTurn(m.State.Day, m.State.Phase),
+		movebind.CanonMafia(string(act.Kind), act.Target)); err != nil {
+		return AgentView{}, err
+	}
+
 	state, events, err := s.eng.Act(m.State, p.Seat, act)
 	if err != nil {
 		return AgentView{}, mapEngineErr(err)
@@ -610,7 +745,65 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	if err != nil {
 		return AgentView{}, err
 	}
-	return s.viewFor(ctx, m, agentPublicID), nil
+	view := s.viewFor(ctx, m, agentPublicID)
+	// Instrument AFTER the move commits: an action the engine refused returned above and is not
+	// a decision the agent got to make.
+	//
+	// Keyed by turnproof.MafiaTurn(day, phase), NOT by day. A player acts in both the night and
+	// the voting phase of the same day, so day alone would collide and each decision would
+	// overwrite the previous one — Monopoly can use its engine NextSeq for this, Mafia cannot.
+	// Using the same encoding the turn proof binds to also keeps a decision's identity
+	// consistent with the proof that verifies it.
+	s.recordActDecision(ctx, m, agentPublicID, act, view)
+	return view, nil
+}
+
+// recordActDecision persists one request-path decision, best-effort.
+//
+// Never blocks the move: the action is committed and any coins already moved, so a bookkeeping
+// failure is logged rather than surfaced to the agent.
+//
+// Latency is deliberately not reported — on the request path the platform never observed the
+// agent thinking, it received a finished action, so any figure would be OUR apply time. Zero
+// reads as "not measured", which is true.
+func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, act mf.Action, view AgentView) {
+	if s.actDecisions == nil {
+		return
+	}
+	input, err := json.Marshal(view)
+	if err != nil {
+		input = nil
+	}
+	if err := s.actDecisions.RecordActDecision(ctx, ActDecision{
+		MatchID: m.PublicID, AgentPublicID: agentPublicID,
+		Seq:   turnproof.MafiaTurn(m.State.Day, m.State.Phase),
+		Round: m.State.Day, Action: string(act.Kind),
+		Outcome:   string(benchmark.OutcomeOK),
+		InputJSON: input,
+	}); err != nil {
+		slog.Default().Warn("mafia: could not record act decision",
+			"match", m.PublicID, "agent", agentPublicID, "err", err)
+	}
+}
+
+// aggregateSeatBenchmark builds the per-seat facts the boards read, once the match is over.
+//
+// Called from finalize — the one point every ending passes through — and NOT from the Act path.
+// Mafia ends by phase timeout at least as often as by a player's action (a night nobody answers,
+// a vote that expires), so tying this to Act would have lost precisely the matches where agents
+// were least responsive. Same mistake as attaching instrumentation to a driver: the hook belongs
+// on the event, not on one way of reaching it.
+func (s *Service) aggregateSeatBenchmark(ctx context.Context, m Match, state mf.State) {
+	if s.actDecisions == nil || !state.Finished {
+		return
+	}
+	results := make(map[string]string, len(m.Players))
+	for _, p := range m.Players {
+		results[p.AgentPublicID] = string(mafiaSeatResult(state, p.Seat))
+	}
+	if err := s.actDecisions.AggregateSeatBenchmark(ctx, m.PublicID, GameName, results); err != nil {
+		slog.Default().Warn("mafia: could not aggregate seat benchmark", "match", m.PublicID, "err", err)
+	}
 }
 
 // nightSubmissionAdded reports whether `after` recorded a new night submission
@@ -708,10 +901,18 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 			// withholds when some OTHER seat at the table did prove itself — could flip
 			// the verdict for the humans depending on who else was seated.
 			agents := make([]string, 0, len(humans))
+			// A seat that went dark is exempt: its zero proofs are explained by never
+			// having answered, not by playing without a model. It has already been
+			// punished where it counts — it abstained through every vote and its team
+			// lost ground for it — and if it won ANYWAY, that win is real and gets paid.
+			absent := make(map[string]bool, len(humans))
 			for _, p := range humans {
 				agents = append(agents, p.AgentPublicID)
+				if state.SeatWasAbsent(p.Seat) {
+					absent[p.AgentPublicID] = true
+				}
 			}
-			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, slog.Default())
+			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
 			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
 		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, platformFee, payouts); err != nil {
@@ -752,6 +953,10 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 			return err
 		}
 	}
+
+	// The seat facts every board reads. Beside the settlement because this is where the result is
+	// known for EVERY way a match can end, including the timeouts Mafia ends on constantly.
+	s.aggregateSeatBenchmark(ctx, m, state)
 
 	s.finish.MatchFinished(ctx, m.PublicID)
 	return nil
@@ -1137,7 +1342,13 @@ func mapEngineErr(err error) error {
 		return ErrIllegalAction
 	case errors.Is(err, mf.ErrFinished):
 		return ErrNotActive
+	case errors.Is(err, mf.ErrNotAlive):
+		return ErrSeatEliminated
+	case errors.Is(err, mf.ErrNotPending):
+		return ErrNoPendingAction
 	default:
+		// ErrUnknownSeat stays here deliberately: a seat index the engine does not recognise is
+		// not an agent mistake to explain, and echoing it back would confirm which indices exist.
 		return ErrIllegalAction
 	}
 }
@@ -1225,4 +1436,60 @@ func (s *Service) rakePct() int {
 		}
 	}
 	return s.cfg.PlatformFeePct
+}
+
+// mafiaSeatResult maps a finished state onto one seat's outcome.
+//
+// Mafia is a TEAM game: the seat's result is its team's result, so a Mafioso and a Villager in
+// the same match never share an outcome and two seats on the same team always do. That is also
+// exactly why Mafia cannot enter the pairwise model board — see internal/modelboard/build.go —
+// but the per-seat result is still needed for win rates, ratings and the P-Index.
+func mafiaSeatResult(st mf.State, seat int) benchmark.Result {
+	if st.Winner == "" {
+		// Finished with no winner recorded: report a draw rather than inventing a loss for
+		// everyone, which is what a zero value would have meant.
+		return benchmark.ResultDraw
+	}
+	if mf.TeamOf(st.Roles[seat]) == st.Winner {
+		return benchmark.ResultWin
+	}
+	return benchmark.ResultLoss
+}
+
+// SetHouseRoster injects the platform's own agent ids. Nil means no exemption at all, which is
+// the safe default: without it every seat, house or not, must certify.
+func (s *Service) SetHouseRoster(ids []string) {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			m[id] = true
+		}
+	}
+	s.house = m
+}
+
+// mustCertify reports whether this seat has to prove it is LLM-backed.
+//
+// Paid tables: ALWAYS, without exception. A house agent reaching this with a fee is a bug
+// somewhere else, and failing it here is the correct outcome rather than something to smooth
+// over.
+func (s *Service) mustCertify(agentPublicID string, fee int64) bool {
+	if fee > 0 {
+		return true
+	}
+	return !s.house[agentPublicID]
+}
+
+// certify enforces the LLM check unless this is one of the platform's own bots at a free table.
+//
+// The check used to sit INSIDE `if entryFee > 0`, so every practice table skipped it — for the
+// user as well as the house. A practice match is not inert: it writes decision and benchmark
+// rows that feed the P-Index, the model board and the deception index, so a scripted agent
+// farming free tables builds a public record it did not earn. That is the same fraud as winning
+// coins with one, paid in reputation instead of currency.
+func (s *Service) certify(ctx context.Context, agentPublicID string, fee int64) error {
+	if !s.mustCertify(agentPublicID, fee) {
+		return nil
+	}
+	return s.ver.CheckEligible(ctx, agentPublicID)
 }

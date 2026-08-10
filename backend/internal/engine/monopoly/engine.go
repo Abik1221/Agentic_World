@@ -28,6 +28,12 @@ var (
 	ErrInsufficientFunds = errors.New("monopoly: insufficient cash")
 	ErrInvalidProperty   = errors.New("monopoly: invalid property")
 	ErrInvalidBid        = errors.New("monopoly: bid must exceed the current high bid")
+	// ErrBidAmountMissing is a bid that named no usable amount, kept separate from ErrInvalidBid
+	// because the two have different fixes. "Raise your bid" is useless advice to an agent whose
+	// amount field never reached the server. A bid of 0 is never legal either (the high bid starts
+	// at 0 and a bid must exceed it), so this covers an absent field and an explicit zero without
+	// having to claim which one occurred — Amount is a plain int and cannot tell them apart.
+	ErrBidAmountMissing = errors.New("monopoly: bid named no amount; send a positive \"amount\" with the bid")
 	ErrEmptyMessage      = errors.New("monopoly: message text is empty")
 )
 
@@ -69,6 +75,11 @@ type Action struct {
 	Property int    `json:"property,omitempty"`
 	Amount   int    `json:"amount,omitempty"`
 	Trade    *Trade `json:"trade,omitempty"` // only for propose_trade
+	// Forced marks an action the SERVER supplied because the seat missed its window.
+	// Set only by defaultAction via ForceTimeout; the agent-facing decoder never sets
+	// it, so an agent cannot claim absence (nor be punished for a deliberate pass).
+	// Not part of the wire contract — json:"-" keeps it out of replays and payloads.
+	Forced bool `json:"-"`
 }
 
 // Config defines a match's parameters. Defaults model a standard 4-player game.
@@ -283,6 +294,10 @@ func (e *Engine) Step(s State, seat int, a Action, seed []byte) (State, []Event,
 	}
 
 	ns := s.clone()
+	// Attendance, recorded before the phase handlers can reject or short-circuit: this
+	// asks "was the seat there when we needed it", which is true regardless of whether
+	// the action turned out legal.
+	ns.noteAsked(seat, a.Forced)
 	var evs []Event
 	var err error
 	switch ns.Phase {
@@ -328,7 +343,9 @@ func (e *Engine) ForceTimeout(s State, seed []byte) (State, []Event, error) {
 		return s, nil, nil
 	}
 	actor := e.pendingActor(s)
-	return e.Step(s, actor, e.defaultAction(s), seed)
+	a := e.defaultAction(s)
+	a.Forced = true // so Step can record this seat as absent rather than merely passive
+	return e.Step(s, actor, a, seed)
 }
 
 // defaultAction is the safe, deterministic fallback per phase.
@@ -514,6 +531,12 @@ func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
 	seat := au.Current
 	switch a.Kind {
 	case ActBid:
+		// Checked BEFORE the high-bid comparison. With a high bid of 0 an amount-less bid fails
+		// that comparison too, and reporting it as "does not exceed the high bid" would name a
+		// cause the agent cannot act on.
+		if a.Amount <= 0 {
+			return nil, ErrBidAmountMissing
+		}
 		if a.Amount <= au.HighBid {
 			return nil, ErrInvalidBid
 		}

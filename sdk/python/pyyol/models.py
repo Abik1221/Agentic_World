@@ -12,7 +12,7 @@ Nothing here contains game strategy or AI logic; these are pure data shapes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 PROTOCOL_VERSION = "1.0"
 
@@ -37,7 +37,7 @@ class InitializeRequest:
     protocol: str = PROTOCOL_VERSION
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "InitializeRequest":
+    def from_dict(cls, d: dict[str, Any]) -> InitializeRequest:
         return cls(
             match_id=d.get("match_id", ""),
             game=d.get("game", ""),
@@ -60,7 +60,7 @@ class EventNotification:
     protocol: str = PROTOCOL_VERSION
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "EventNotification":
+    def from_dict(cls, d: dict[str, Any]) -> EventNotification:
         return cls(
             match_id=d.get("match_id", ""),
             game=d.get("game", ""),
@@ -79,7 +79,7 @@ class GameEndNotification:
     protocol: str = PROTOCOL_VERSION
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "GameEndNotification":
+    def from_dict(cls, d: dict[str, Any]) -> GameEndNotification:
         return cls(
             match_id=d.get("match_id", ""),
             game=d.get("game", ""),
@@ -105,15 +105,15 @@ class GoofspielView:
     round: int
     current_prize: int
     prize_pool: int
-    your_hand: List[int]
-    scores: List[int]
-    legal_actions: List[int]
-    history: List[Dict[str, Any]] = field(default_factory=list)
+    your_hand: list[int]
+    scores: list[int]
+    legal_actions: list[int]
+    history: list[dict[str, Any]] = field(default_factory=list)
     game: str = GOOFSPIEL
-    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "GoofspielView":
+    def from_dict(cls, d: dict[str, Any]) -> GoofspielView:
         return cls(
             match_id=d.get("match_id", ""),
             seat=int(d.get("seat", 0)),
@@ -136,13 +136,13 @@ class MonopolyView:
     match_id: str
     seat: int
     phase: str
-    legal_actions: List[str]
-    state: Dict[str, Any]
+    legal_actions: list[str]
+    state: dict[str, Any]
     game: str = MONOPOLY
-    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "MonopolyView":
+    def from_dict(cls, d: dict[str, Any]) -> MonopolyView:
         return cls(
             match_id=d.get("match_id", ""),
             seat=int(d.get("seat", 0)),
@@ -163,16 +163,16 @@ class MafiaView:
     your_role: str
     day: int
     phase: str
-    alive: Dict[int, bool]
-    allies: List[int]
-    legal: List[str]
-    public: List[Dict[str, Any]]
-    private: List[Dict[str, Any]]
+    alive: dict[int, bool]
+    allies: list[int]
+    legal: list[str]
+    public: list[dict[str, Any]]
+    private: list[dict[str, Any]]
     game: str = MAFIA
-    raw: Dict[str, Any] = field(default_factory=dict, repr=False)
+    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "MafiaView":
+    def from_dict(cls, d: dict[str, Any]) -> MafiaView:
         alive_raw = d.get("alive") or {}
         alive = {int(k): bool(v) for k, v in alive_raw.items()}
         return cls(
@@ -193,7 +193,7 @@ class MafiaView:
 _VIEW_BY_GAME = {GOOFSPIEL: GoofspielView, MONOPOLY: MonopolyView, MAFIA: MafiaView}
 
 
-def parse_view(d: Dict[str, Any]):
+def parse_view(d: dict[str, Any]):
     """Parse a turn body into the typed view for its ``game``; unknown games
     fall back to the raw dict so a new game can be handled generically."""
     cls = _VIEW_BY_GAME.get(d.get("game", ""))
@@ -216,8 +216,8 @@ class GoofspielMove:
     # the one that did not work.
     rationale: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"round": self.round, "card": self.card}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"round": self.round, "card": self.card}
         if self.rationale:
             d["rationale"] = self.rationale
         return d
@@ -230,8 +230,8 @@ class MonopolyMove:
     amount: int = 0
     rationale: str = ""  # see GoofspielMove.rationale
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "action": self.action,
             "property": self.property,
             "amount": self.amount,
@@ -254,8 +254,8 @@ class MafiaMove:
     text: str = ""
     rationale: str = ""  # see GoofspielMove.rationale
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "action": self.action,
             "target": self.target,
             "tone": self.tone,
@@ -266,7 +266,7 @@ class MafiaMove:
         return d
 
 
-def move_to_dict(move: Any) -> Dict[str, Any]:
+def move_to_dict(move: Any) -> dict[str, Any]:
     """Normalize a handler's return value to a JSON-serializable dict."""
     if move is None:
         return {}

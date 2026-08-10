@@ -147,7 +147,8 @@ func emitModelCalls(em Emitter, trace, matchID, game, mode string, seat SeatSumm
 		if provider == "" {
 			provider = seat.Provider
 		}
-		cost := pricing.EstimateCost(model, u.PromptTokens, u.CompletionTokens, u.CachedTokens, u.ReasoningTokens)
+		cost := pricing.EstimateCost(model, u.PromptTokens, u.CompletionTokens,
+			u.CachedTokens, u.CachedWriteTokens, u.ReasoningTokens)
 		em.EmitEvent(telemetry.Event{
 			TraceID:          trace,
 			EventType:        EventModelCallCompleted,

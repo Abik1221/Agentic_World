@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
+	"github.com/agent-arena/arena/internal/deadline"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/liveness"
+	"github.com/agent-arena/arena/internal/movebind"
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
@@ -37,6 +40,8 @@ type Config struct {
 // Service drives the match lifecycle. It is stateless; all state lives in the
 // repo (snapshot + event log) and mutations are serialized by a per-match lock.
 type Service struct {
+	queue  QueueClearer // clears ranked-queue entries when a match ends; see QueueClearer
+	stakes StakeFloor   // rejects a stake the game does not offer; see StakeFloor
 	repo   Repo
 	lock   Locker
 	limits Limits
@@ -48,9 +53,16 @@ type Service struct {
 	finish FinishHook
 	bot    Bot
 	style  StyleRecorder // nil ⇒ style aggregates not recorded (optional, best-effort)
-	driver *driver       // nil ⇒ paired agents self-drive (auto-drive disabled)
-	clock  platform.Clock
-	cfg    Config
+	// windows derives each seat's decision budget from its demonstrated latency.
+	// Nil ⇒ every match uses the configured constant, exactly as before.
+	windows WindowProvider
+	// livecheck gates deadline extensions. Nil ⇒ a deadline expires as it always did.
+	// Distinct from the `liveness` tracker above, which records agent online state for
+	// presence; this one answers "is it answering RIGHT NOW" for one specific decision.
+	livecheck LivenessProber
+	driver    *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
+	clock     platform.Clock
+	cfg       Config
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -80,7 +92,35 @@ type Service struct {
 	chatTracer ChatTracer
 	// decisionTracer records each resolved agent turn. Nil ⇒ telemetry off.
 	decisionTracer DecisionTracer
+	// boundMoves reports the move the MODEL produced for a turn, as the gateway observed
+	// it. Nil ⇒ completion binding is not enforced, which is the pre-existing behaviour.
+	boundMoves movebind.Reader
+	// rejections records that a seat's move was refused this round, so tryExtend can tell a
+	// slow agent from one that answered and was turned away. Nil ⇒ extensions unchanged.
+	rejections RejectionLog
 }
+
+// SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).
+//
+// Without it the service behaves exactly as it did before: a move is authenticated by its
+// signature and applied, with nothing checking it against the model's own answer.
+func (s *Service) SetBoundMoveReader(r movebind.Reader) { s.boundMoves = r }
+
+// RejectionLog records and reports that a seat's move was REFUSED for a round.
+//
+// A narrow port for one fact, declared next to the two places that need it: tryAct writes it,
+// tryExtend reads it. Satisfied by *store.MatchRepo.
+type RejectionLog interface {
+	// RecordMoveRejection notes that this seat submitted a move for this round and it was
+	// refused. Idempotent on (match, agent, round) — one refusal answers the question.
+	RecordMoveRejection(ctx context.Context, matchID, agentPublicID string, round int, reason string) error
+	// MoveRejected reports whether this seat has had a move refused for this round.
+	MoveRejected(ctx context.Context, matchID, agentPublicID string, round int) (bool, error)
+}
+
+// SetRejectionLog installs the refused-move record that stops a rejected seat earning deadline
+// extensions. Nil ⇒ extensions behave exactly as they did before.
+func (s *Service) SetRejectionLog(r RejectionLog) { s.rejections = r }
 
 // ChatTracer records agent table talk to the observability pipeline. Satisfied by
 // *telemetry.Client; nil means telemetry is off and every call is a no-op.
@@ -123,6 +163,32 @@ func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
 	s.integrity, s.integrityMinPct = c, minPct
 }
 
+// seatWasAbsent reports whether a seat's failure to prove anything is explained by it
+// having gone dark rather than by it having played unproven.
+//
+// The two are indistinguishable in the proof tables — both score zero — and they call
+// for opposite outcomes:
+//
+//   - PLAYED BUT UNPROVEN is the case the void exists for. Detection is imperfect
+//     (batching, caching, a direct provider call instead of pyyol.route()), so the
+//     conservative answer is to cancel the match and give both stakes back rather than
+//     confiscate a real developer's coins on a false positive.
+//   - WENT DARK is not ambiguous at all. The platform asked, waited out the seat's full
+//     window, got nothing, and played the worst legal card on its behalf. Voiding there
+//     punishes the OPPONENT — who showed up, paid for inference and won — by cancelling
+//     the win, and it hands the absent agent its stake back. Absence is the absent
+//     agent's own risk: it stays at the table, loses on the board, and forfeits.
+//
+// The rule is a simple majority of the seat's own turns: a seat the platform had to play
+// for more often than not was not meaningfully present. One slow round does not strip a
+// match of integrity protection.
+func seatWasAbsent(timeouts, decisions int) bool {
+	if decisions <= 0 {
+		return false
+	}
+	return timeouts*2 > decisions
+}
+
 // rankedIntegrityFailed reports whether a finished ranked match should be VOIDED
 // because a seat cannot show it was played by an LLM, and names the seat if so.
 //
@@ -130,11 +196,14 @@ func (s *Service) SetIntegrityCheck(c IntegrityChecker, minPct int) {
 // script taking stakes from developers who are genuinely paying for inference is the
 // thing this exists to stop. decisions is how many moves each seat actually made.
 //
+// A seat that was merely ABSENT is never grounds to void — see seatWasAbsent. It loses
+// the match on the board and forfeits its stake, and the opponent is paid.
+//
 // FAILS OPEN. If the count cannot be read the match settles normally, because the
 // alternative — voiding on a database hiccup — would cancel legitimate matches in
 // bulk during an outage. A cheat that slips through is still recorded and reviewable;
 // a wrongly voided match is a broken product for everyone playing at that moment.
-func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions int) (bool, string) {
+func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions int, timeouts [2]int) (bool, string) {
 	if s.integrity == nil || decisions <= 0 {
 		return false, ""
 	}
@@ -153,6 +222,24 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 		}
 		bound[p.AgentPublicID] = n
 		total += n
+	}
+
+	// A seat that went dark is exempt from BOTH rules below. Its zero proofs are fully
+	// explained by never having answered, so they are not evidence of anything, and the
+	// remedy for absence is losing the game — which it already did — not cancelling the
+	// opponent's win. Logged because a silently-skipped integrity check is exactly the
+	// kind of thing that should never be invisible.
+	absent := func(p Player) bool {
+		if p.Seat < 0 || p.Seat >= len(timeouts) {
+			return false
+		}
+		if !seatWasAbsent(timeouts[p.Seat], decisions) {
+			return false
+		}
+		slog.Info("match: integrity check skipped for an ABSENT seat — it forfeits on the board rather than voiding the match",
+			"match", m.PublicID, "agent", p.AgentPublicID, "seat", p.Seat,
+			"timeouts", timeouts[p.Seat], "decisions", decisions)
+		return true
 	}
 
 	// RULE 1 — the zero-proof gate. Always on, and safe to have always on.
@@ -179,7 +266,7 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 	// staked play; only then is "zero proofs" unambiguous.
 	if total > 0 {
 		for _, p := range m.Players {
-			if bound[p.AgentPublicID] == 0 {
+			if bound[p.AgentPublicID] == 0 && !absent(p) {
 				return true, p.AgentPublicID
 			}
 		}
@@ -191,6 +278,9 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 	// honest agents score once proofs are flowing.
 	if s.integrityMinPct > 0 {
 		for _, p := range m.Players {
+			if absent(p) {
+				continue
+			}
 			if bound[p.AgentPublicID]*100 < decisions*s.integrityMinPct {
 				return true, p.AgentPublicID
 			}
@@ -203,6 +293,199 @@ func (s *Service) rankedIntegrityFailed(ctx context.Context, m Match, decisions 
 // (read-only descriptive metrics; never affects play or money). Optional.
 type StyleRecorder interface {
 	RecordStyle(ctx context.Context, agentPublicID, game string, aggression, efficiency int) error
+}
+
+// WindowProvider decides how long to wait for one agent's decision.
+//
+// A seam rather than a constant because a single number cannot serve both a 0.9s cloud
+// model and a 95s local one: generous enough for the second and one dead agent stalls
+// every table, tight enough for the first and honest slow agents lose rounds they were
+// winning. See internal/deadline — the window is derived from what the agent has actually
+// demonstrated, floored and ceilinged.
+//
+// Optional. Unset, every match uses cfg.MoveWindow exactly as before, so adopting this
+// changes nothing until a provider is installed.
+type WindowProvider interface {
+	// Window returns the decision budget for this agent in this game. Implementations
+	// must be fast and must never block a turn — a cached or best-effort answer is
+	// correct here, a slow one is not.
+	Window(ctx context.Context, agentPublicID, game string) time.Duration
+}
+
+// SetWindowProvider installs adaptive decision windows. Nil keeps the static config.
+func (s *Service) SetWindowProvider(w WindowProvider) {
+	if w != nil {
+		s.windows = w
+	}
+}
+
+// moveWindow is the budget for a seat's next decision: the provider's answer when one is
+// installed, else the configured constant.
+//
+// Falls back on ANY doubt — no provider, no agent, a non-positive answer. A deadline is on
+// the path of every turn on the platform, so this must degrade to the old behaviour rather
+// than risk a zero window, which would forfeit every decision the instant it was asked.
+func (s *Service) moveWindow(ctx context.Context, agents ...string) time.Duration {
+	base := s.cfg.MoveWindow
+	if s.windows == nil {
+		return base
+	}
+	// A round deadline is SHARED by both seats, so the table runs on the slower agent's
+	// window. Taking the faster one would cut the slower agent off mid-decision through
+	// no fault of its own — it would be forfeiting rounds because of who it was matched
+	// against, which is the one thing a deadline must never depend on.
+	longest := base
+	for _, a := range agents {
+		if a == "" {
+			continue
+		}
+		if w := s.windows.Window(ctx, a, "goofspiel"); w > longest {
+			longest = w
+		}
+	}
+	return longest
+}
+
+// LivenessProber reports whether an agent's endpoint is answering right now.
+//
+// Satisfied by a small adapter over agentwire.ConfirmReachability. Optional: unset, a
+// deadline expires exactly as it always did.
+type LivenessProber interface {
+	// Alive answers "is anything listening" for this agent. Must be fast and must never
+	// block a sweep — it runs while a round is being decided. Any doubt should answer
+	// false, because a false "alive" stalls a table while a false "gone" only forfeits a
+	// turn the agent was already failing to answer.
+	Alive(ctx context.Context, agentPublicID string) bool
+}
+
+// SetLivenessProber enables liveness-gated deadline extensions. Nil keeps them off.
+func (s *Service) SetLivenessProber(p LivenessProber) {
+	if p != nil {
+		s.livecheck = p
+	}
+}
+
+// tryExtend gives a still-alive agent more time instead of forfeiting its turn.
+//
+// This is the half of the adaptive-deadline design that makes a single window unnecessary.
+// A constant has to be simultaneously generous enough for a 95s local model and tight
+// enough that a dead agent does not stall a table — impossible, because it cannot tell
+// the two apart. A probe can: /health is free, involves no inference, and answers exactly
+// the question the deadline was guessing at.
+//
+// Alive means it is genuinely still thinking, so extend. Gone means stop waiting now
+// rather than burning the remainder of the window on a process that will never answer.
+//
+// Bounded by the policy ceiling, so a hung-but-responsive endpoint cannot extend forever.
+//
+// # The bound, and why it needs a fixed origin
+//
+// Extensions granted so far are DERIVED from elapsed time rather than tracked in a counter.
+// That is still the right call — a counter is more state to keep consistent across a crash —
+// but it only works if elapsed is measured from something an extension does NOT move.
+//
+// It was measured from RoundDeadline, which the extension itself pushes forward, so after each
+// grant elapsed snapped back to roughly one window, the derived count never climbed, and the
+// ceiling was never reached. On a live staked table Goofspiel granted 17 extensions against a
+// MaxExtensions of 3, holding one round open for twelve minutes.
+//
+// RoundDeadlineBase is the deadline as first set for this round and no extension touches it, so
+// elapsed measured from it is the real time this round has been open. See migration 0085.
+//
+// This became reachable in practice with completion binding: an agent whose every move is
+// refused answers /health perfectly well, so it reads as "still thinking" indefinitely — which
+// would have let a rejected cheat stall a table other people have staked on.
+//
+// # DECIDED, NOT YET IMPLEMENTED: a REJECTED move should earn no extension
+//
+// The extension exists to give a slow-but-working agent time to answer. A seat whose move was
+// refused is not waiting on a model — it answered, and the answer contradicted what its own
+// model produced. Extending there rewards the behaviour and holds up an opponent who staked
+// real coins: at the policy ceiling of 3, a rejected cheat costs the table roughly two minutes
+// per round instead of one window.
+//
+// The counter-argument does not survive contact: an agent that submitted a bad move and wants
+// to correct it can simply resubmit inside the window it already has. The extension is not the
+// retry mechanism.
+//
+// Not implemented here because it needs state this function does not have. "Was a move rejected
+// for this seat this round" is not derivable from the match row, the decision log (a refused
+// move never becomes a decision) or the liveness probe, and it has to survive across instances,
+// so it means a durable per-(match, round, seat) rejection marker written by tryAct. That is a
+// small schema change and a settlement-affecting behaviour change, which together deserve their
+// own commit rather than a rushed rider on the deadline fix.
+//
+// Returns true when the deadline was pushed out and the caller should NOT force a timeout.
+func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) bool {
+	if s.livecheck == nil || len(unsealed) == 0 || m.RoundDeadline == nil {
+		return false
+	}
+	pol := deadline.DefaultPolicy(m.Game)
+	window := s.moveWindow(ctx, unsealed...)
+	// The FIXED origin, falling back to the current deadline when a row carries no base — which
+	// is the pre-existing behaviour, not a silent loss of the bound.
+	origin := m.RoundDeadline
+	if m.RoundDeadlineBase != nil {
+		origin = m.RoundDeadlineBase
+	}
+	elapsed := s.clock.Now().Sub(origin.Add(-window))
+	granted := 0
+	if elapsed > window && pol.Extension > 0 {
+		granted = int((elapsed - window) / pol.Extension)
+	}
+	ext, ok := deadline.Extend(pol, elapsed, granted)
+	if !ok {
+		return false // ceiling or extension cap reached: the turn is genuinely over
+	}
+	// Only extend for a seat that is actually THERE. One dead seat must not buy the
+	// table more time, or a crashed agent stalls every round to the ceiling.
+	for _, agent := range unsealed {
+		if !s.livecheck.Alive(ctx, agent) {
+			return false
+		}
+	}
+	// A seat that ANSWERED and was REFUSED is not thinking. /health says nothing useful about
+	// it — an agent whose every move contradicts its own model's output stays perfectly
+	// responsive while being turned away each time, which is how a rejected seat could hold a
+	// round open to the policy ceiling on a table someone else has staked on.
+	//
+	// Reads as "no rejection" on an error, so a lookup failure costs the table nothing it had
+	// before. This can only ever REMOVE extra time, never grant it, so failing open here means
+	// behaving exactly as the code did before this check existed.
+	for _, agent := range unsealed {
+		rejected, err := s.rejectedThisRound(ctx, m, agent)
+		if err != nil {
+			slog.Debug("match: could not read the move-rejection log; extending as before",
+				"match", m.PublicID, "agent", agent, "error", err)
+			continue
+		}
+		if rejected {
+			slog.Info("match: NOT extending — this seat submitted a move and it was refused, so it is not still thinking",
+				"match", m.PublicID, "agent", agent, "round", m.State.Round)
+			return false
+		}
+	}
+	next := s.clock.Now().Add(ext)
+	if err := s.repo.ExtendDeadline(ctx, m.PublicID, next); err != nil {
+		slog.Debug("match: could not extend a deadline; forfeiting the turn as before",
+			"match", m.PublicID, "error", err)
+		return false
+	}
+	slog.Info("match: deadline extended — the agent is still answering /health, so it is thinking rather than gone",
+		// The ROUND, because without it an extension cannot be matched against the
+		// refused-move record for the same round, and "did this grant more time to a seat we
+		// had already turned away" becomes unanswerable from the log.
+		"match", m.PublicID, "round", m.State.Round, "unsealed", unsealed,
+		"extension", ext, "elapsed", elapsed)
+	return true
+}
+
+// rejectedThisRound reports whether a seat has had a move refused for the round now open.
+func (s *Service) rejectedThisRound(ctx context.Context, m Match, agentPublicID string) (bool, error) {
+	if s.rejections == nil {
+		return false, nil
+	}
+	return s.rejections.MoveRejected(ctx, m.PublicID, agentPublicID, m.State.Round)
 }
 
 // SetStyleRecorder installs the (optional) style aggregator. Nil keeps it off.
@@ -297,7 +580,68 @@ func (s *Service) Lobby(ctx context.Context, game string, bid int64, ownerPublic
 }
 
 // CreateOpen opens a new waiting match seated by the creator at seat A.
+// QueueClearer removes finished players' ranked-queue entries.
+//
+// # The bug this closes
+//
+// A queue entry was set to 'matched' at pairing and then never cleared. Live rows were still
+// 'matched' against matches that had finished an hour earlier. autoplay's Queued() treats
+// 'matched' as still-queued, so an autoplay agent played exactly ONE ranked match and then
+// wedged forever — reporting "in a ranked match or waiting in the queue", which is the most
+// reassuring possible way to be stuck. The orphaned entries are also unpairable (pairing selects
+// 'waiting'), so they crowd the queue and newcomers starve behind them.
+//
+// Cleared at FINALIZE because that is the authoritative moment the match ends. Anywhere later is
+// a sweeper racing the next autoplay tick; anywhere earlier and a crash mid-settlement would drop
+// an agent out of a queue it is still legitimately in.
+type QueueClearer interface {
+	ClearQueue(ctx context.Context, agentPublicIDs ...string) error
+}
+
+// SetQueueClearer wires ranked-queue cleanup on match completion.
+func (s *Service) SetQueueClearer(q QueueClearer) { s.queue = q }
+
+// StakeFloor validates that a coin amount is a stake the game actually offers.
+//
+// Enforced HERE, at the service that escrows, rather than only in the HTTP handler. The handler
+// was already correct — it called ResolveStake and would have rejected a free-form bid because
+// goofspiel has tiers. But internal/bot/runner.go calls CreateOpen directly with a hardcoded
+// bid := int64(50), and so never met that check. 870 matches were staked at 50 and 100 coins
+// against a configured floor of 500, beginning two seconds after the tiers were seeded and
+// continuing for two days without one error.
+//
+// The lesson is about PLACEMENT, not about the missing check: a guard beside one caller is one
+// new caller away from being bypassed. Money is escrowed here, so the floor belongs here.
+type StakeFloor interface {
+	ValidStake(ctx context.Context, game string, coins int64) (ok bool, lowest int64, err error)
+}
+
+// SetStakeFloor wires tier enforcement into the service that escrows.
+func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
+
+// checkStake rejects a stake the game does not offer. Fails CLOSED: an unreadable tier table is
+// not permission to escrow an arbitrary amount, which is the exact failure mode that let
+// sub-floor matches run unnoticed.
+func (s *Service) checkStake(ctx context.Context, bid int64) error {
+	if s.stakes == nil || bid <= 0 {
+		return nil
+	}
+	ok, lowest, err := s.stakes.ValidStake(ctx, "goofspiel", bid)
+	if err != nil {
+		return httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable",
+			"Stake tiers could not be read, so the stake cannot be verified. Try again shortly.")
+	}
+	if !ok {
+		return httpx.NewError(http.StatusBadRequest, "stake_not_offered",
+			fmt.Sprintf("A stake of %d coins is not offered for goofspiel. The lowest available stake is %d coins.", bid, lowest))
+	}
+	return nil
+}
+
 func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
+	if err := s.checkStake(ctx, bid); err != nil {
+		return "", err
+	}
 	if bid <= 0 {
 		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
 	}
@@ -359,6 +703,9 @@ func (s *Service) Cancel(ctx context.Context, agentPublicID, matchPublicID strin
 // deals the match, and persists it active in one step — no waiting window, so it
 // never appears in the open lobby. Returns the new match's public id.
 func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, bid int64) (string, error) {
+	if err := s.checkStake(ctx, bid); err != nil {
+		return "", err
+	}
 	if bid <= 0 {
 		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
 	}
@@ -391,7 +738,7 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 	if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
 		return "", err
 	}
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
 	in := CreatePairedInput{
 		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.rakePct(),
 		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
@@ -423,6 +770,21 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 	// Sandbox stakes nothing, so the money limits are skipped — but concurrency is a
 	// THROUGHPUT limit, not a money one, and ignoring it multiplied an LLM agent's
 	// inference bill by however many tables happened to be open. See CheckConcurrency.
+	// The USER's side must be a verified LLM agent, even here.
+	//
+	// Sandbox stakes nothing, so it is tempting to let anything play. But a sandbox match is not
+	// inert: it writes decision rows and benchmark rows, and those feed the P-Index, the model
+	// board and the deception index. A scripted agent farming free tables would build a public
+	// record it did not earn, which is the same fraud as winning coins with one — just paid in
+	// reputation instead of currency.
+	//
+	// The HOUSE side is deliberately not checked. It is ours, it is labelled rules-engine, and it
+	// is the opponent rather than the subject: nothing it does is published as a developer's
+	// achievement. That asymmetry is the whole rule — our deterministic bots may fill a seat, a
+	// user's may not.
+	if err := s.ver.CheckEligible(ctx, humanAgent); err != nil {
+		return "", err
+	}
 	if err := s.limits.CheckConcurrency(ctx, humanAgent); err != nil {
 		return "", err
 	}
@@ -437,7 +799,7 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 	state, events := eng.Init(seed)
 
 	publicID := platform.NewID(platform.PrefixMatch)
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, humanAgent))
 	in := CreatePairedInput{
 		PublicID: publicID, Game: "goofspiel", Mode: ModeSandbox, BotPolicy: policy,
 		Bid: 0, RakePct: 0, TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version,
@@ -508,7 +870,7 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		return AgentView{}, err
 	}
 
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, agentPublicID))
 	joiner := Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: gs.SeatB}
 	if err := s.repo.Activate(ctx, matchPublicID, joiner, state, deadline, events); err != nil {
 		// Activation failed after staking — return both bids so no coins are stuck.
@@ -516,6 +878,25 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		return AgentView{}, err
 	}
 	s.publish(matchPublicID, state, events)
+
+	// Drive the table, exactly as the queue path does when it pairs two agents.
+	//
+	// This was missing, and it made the whole lobby route non-functional for
+	// hosted-endpoint agents: a table could be created, an opponent could join, both
+	// stakes went into escrow — and then NEITHER AGENT WAS EVER ASKED TO PLAY. The
+	// sweeper force-timed-out every round and the match resolved entirely on fallbacks.
+	// Observed on a real staked table: seven rounds in, timeouts [7,7], not one agent
+	// ever asked to think.
+	//
+	// Only CreatePairedActive called it, so queue-matched games worked and lobby games
+	// silently did not — the kind of split nobody notices until an agent is staked on the
+	// wrong one.
+	//
+	// Spawned after the state is committed and published, so the driver's first read sees
+	// an active match. maybeDrive only starts a goroutine when a seat is actually drivable
+	// (socket or verified endpoint), and it can fire at most once per match because a
+	// second Join can never re-activate a table that has left `waiting`.
+	s.maybeDrive(matchPublicID, creator, agentPublicID)
 
 	updated, err := s.repo.Get(ctx, matchPublicID)
 	if err != nil {
@@ -546,6 +927,60 @@ func (s *Service) Act(ctx context.Context, agentPublicID, matchPublicID string, 
 // agent's seat in a live match instead of wedging on ErrSignatureRequired.
 func (s *Service) DriveAct(ctx context.Context, agentPublicID, matchPublicID string, round, card int) (AgentView, error) {
 	return s.act(ctx, agentPublicID, matchPublicID, round, card, "", true)
+}
+
+// DriveTimeout applies the ENGINE's deterministic timeout for a seat whose agent did not
+// answer, and records the miss.
+//
+// Why this exists rather than the driver just submitting the fallback card through
+// DriveAct: State.Timeouts — the per-seat absence tally that settlement uses to tell a
+// seat that went dark from one that played and could not prove itself — is incremented
+// only by the engine's ForceTimeout. A driver that computes the same lowest card and
+// submits it as an ordinary move produces an identical board and a tally that never moves.
+//
+// That was the shipped behaviour, and it was silently fatal to the absence rule: a
+// hosted-endpoint agent could go dark for ten straight rounds and still finish with
+// timeouts=[0,0], so seatWasAbsent always answered false and the forfeit could never
+// arm on the very path most real agents use. Verified against a live match before the
+// fix — 13 rounds, an agent dark from round 4, tally [0,0].
+//
+// Idempotent and race-safe on the same terms as DriveAct: a seat that has already sealed
+// this round is returned unchanged rather than double-counted.
+func (s *Service) DriveTimeout(ctx context.Context, agentPublicID, matchPublicID string, round int) (AgentView, error) {
+	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
+		if !ok {
+			return AgentView{}, ErrBusy
+		}
+		defer release()
+	}
+	m, err := s.repo.Get(ctx, matchPublicID)
+	if err != nil {
+		return AgentView{}, ErrNotFound
+	}
+	if m.Status != StatusActive {
+		return AgentView{}, ErrNotActive
+	}
+	p := m.playerByAgent(agentPublicID)
+	if p == nil {
+		return AgentView{}, ErrNotPlayer
+	}
+	if round != m.State.Round {
+		return AgentView{}, ErrWrongRound
+	}
+	if m.State.Sealed[p.Seat] != nil {
+		return s.view(m, agentPublicID), nil // already acted; nothing to force
+	}
+
+	eng := s.engine(m)
+	state, events, err := eng.ForceTimeout(m.State, p.Seat)
+	if err != nil {
+		return AgentView{}, mapEngineErr(err)
+	}
+	updated, err := s.commit(ctx, m, eng, state, events)
+	if err != nil {
+		return AgentView{}, err
+	}
+	return s.view(updated, agentPublicID), nil
 }
 
 func (s *Service) act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string, platformDriven bool) (AgentView, error) {
@@ -608,6 +1043,32 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 		if !movesig.Verify(pubkey, matchPublicID, round, p.Seat, card, signature) {
 			return AgentView{}, ErrBadSignature
 		}
+	}
+
+	// Completion binding: the card must be the one this agent's MODEL chose, whenever the
+	// gateway observed a model choosing one.
+	//
+	// Placed here, beside the signature check, and NOT on the HTTP handler. The stake floor
+	// taught that lesson expensively: a control on the handler was simply bypassed by the
+	// bot runner, which reaches the service directly. Every path that can seal a card comes
+	// through tryAct.
+	//
+	// Applies to platform-driven moves too, unlike the signature check above. That exemption
+	// exists because an authenticated socket already proves AUTHORSHIP; it says nothing
+	// about whether a model chose the move, so it does not transfer to this question.
+	if err := movebind.Enforce(ctx, s.boundMoves, slog.Default(), "match",
+		matchPublicID, agentPublicID, round, movebind.CanonGoofspiel(card)); err != nil {
+		// Note the refusal so the deadline sweep does not read this seat as "still thinking".
+		// Best-effort and never fatal to the rejection itself: failing to record it costs an
+		// extension budget, while failing the move would change what the control does.
+		if s.rejections != nil {
+			if rerr := s.rejections.RecordMoveRejection(ctx, matchPublicID, agentPublicID, round,
+				"completion_binding"); rerr != nil {
+				slog.Debug("match: could not record a move rejection",
+					"match", matchPublicID, "agent", agentPublicID, "round", round, "error", rerr)
+			}
+		}
+		return AgentView{}, err
 	}
 
 	// Record think-time for verification (best-effort).
@@ -834,11 +1295,15 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		// a re-drive after a crash cannot pay out a match that was voided, or void
 		// one that already paid.
 		//
-		// Voiding rather than forfeiting is deliberate. Detection is new and will
-		// have false positives (batching, caching, a model timing out into a
-		// deterministic fallback), and taking a real developer's stake on a false
-		// positive is not recoverable in the way an un-played match is.
-		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History)); failed {
+		// Voiding rather than forfeiting is deliberate FOR A SEAT THAT PLAYED. Detection
+		// is new and will have false positives (batching, caching, a direct provider
+		// call), and taking a real developer's stake on a false positive is not
+		// recoverable in the way an un-played match is.
+		//
+		// A seat that went DARK is the other case entirely and must not reach the void:
+		// it forfeits and the opponent is paid. state.Timeouts carries how many rounds
+		// the platform had to play for each seat, which is what separates the two.
+		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History), state.Timeouts); failed {
 			slog.Warn("match: VOIDED — seat could not prove its decisions were LLM-backed",
 				"match", m.PublicID, "agent", agent, "decisions", len(state.History),
 				"min_pct", s.integrityMinPct)
@@ -873,6 +1338,22 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		if err != nil {
 			return nil, err
 		}
+	}
+	// Clear both seats from the ranked queue. Best-effort and AFTER the terminal write: the
+	// match is over either way, and failing a completed match because a queue row would not
+	// delete would be strictly worse than a stale row the next enqueue overwrites anyway.
+	if s.queue != nil {
+		ids := make([]string, 0, len(m.Players))
+		for _, p := range m.Players {
+			ids = append(ids, p.AgentPublicID)
+		}
+		defer func() {
+			if err := s.queue.ClearQueue(ctx, ids...); err != nil {
+				slog.Warn("match: ranked queue entries not cleared; an autoplay agent may not "+
+					"re-enter until its next enqueue overwrites the row",
+					"match", m.PublicID, "error", err)
+			}
+		}()
 	}
 	if err := s.repo.Finish(ctx, m.PublicID, state, winnerAgent, hash, players, newEvents, finishedEvent); err != nil {
 		return nil, err
@@ -974,6 +1455,19 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	}
 	if m.RoundDeadline == nil || s.clock.Now().Before(*m.RoundDeadline) {
 		return nil // not actually expired (raced with a real action)
+	}
+
+	// Before forfeiting anyone's turn, find out whether they are actually gone.
+	var unsealed []string
+	for seat := 0; seat < 2; seat++ {
+		if m.State.Sealed[seat] == nil && !(m.Mode == ModeSandbox && seat == HouseSeat) {
+			if p := m.playerBySeat(seat); p != nil {
+				unsealed = append(unsealed, p.AgentPublicID)
+			}
+		}
+	}
+	if s.tryExtend(ctx, m, unsealed) {
+		return nil // still thinking; the sweeper will come back at the new deadline
 	}
 
 	eng := s.engine(m)

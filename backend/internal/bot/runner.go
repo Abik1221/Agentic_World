@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -139,7 +140,12 @@ func PickMonopolyAction(legal []string) mono.Action {
 }
 
 func (r *Runner) tickGoofspiel(ctx context.Context, idx *int) {
-	bid := int64(50)
+	// The stake comes from the game's tier table, not from a constant here. It WAS `int64(50)`,
+	// against a configured floor of 500, and because this runner calls CreateOpen directly it
+	// never met the handler's tier check — 711 goofspiel tables were opened at a stake the game
+	// does not offer. A house bot advertising an impossible stake is also a lie to any developer
+	// browsing the lobby.
+	bid := r.houseStake()
 	lobby, err := r.match.Lobby(ctx, "goofspiel", bid, "")
 	if err != nil {
 		return
@@ -204,7 +210,36 @@ func (r *Runner) playGoofspiel(ctx context.Context, agentID, matchID string) {
 }
 
 func (r *Runner) tickMafia(ctx context.Context, idx *int) {
-	entry := int64(100)
+	entry := r.houseStake()
+	// RESUME an active table before starting anything new.
+	//
+	// driveMafia returns when no seat can act, which is correct — that is a phase waiting on its
+	// own timer, and spinning would burn CPU without moving the game. But nothing ever came back
+	// for that table. The tick created a fresh one instead, so partially-played matches piled up
+	// in 'active' forever: 582 of them, and demo bots sitting in 488-535 "active" matches each
+	// against a concurrency cap of 14.
+	//
+	// That also explains the concurrency errors this fix was chased down from. The cap was never
+	// violated by a race; the count was real, and it was counting abandoned games.
+	if live, err := r.mafia.Live(ctx); err == nil {
+		for _, lm := range live {
+			if lm.Winner != "" {
+				continue
+			}
+			// Return ONLY if the table actually moved.
+			//
+			// Returning unconditionally livelocks the platform on a single wedged game: one table
+			// that can never progress is found on every tick, driven to no effect, and the create
+			// path is never reached — so no new mafia is ever played again. That happened, with
+			// one table stuck for an hour while nothing else started.
+			//
+			// A table that cannot move is not worth a tick; fall through and start a fresh one.
+			if r.driveMafia(ctx, r.agentsByID(lm.Agents), lm.MatchID) {
+				return // it progressed — driving is the work, not a preamble to more of it
+			}
+		}
+	}
+
 	lobby, err := r.mafia.Lobby(ctx, entry, "")
 	if err != nil {
 		return
@@ -212,11 +247,32 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 	if len(lobby) > 0 {
 		item := lobby[0]
 		if item.SeatsFilled < item.SeatsTotal {
-			a := r.next(idx)
-			view, err := r.mafia.Join(ctx, a.PublicID, a.OwnerPublicID, item.PublicID)
-			if err == nil {
-				r.playMafia(ctx, a, view.MatchID)
+			// FINISH the table, do not add one seat to it.
+			//
+			// Seating one per tick is why partial tables piled up: a waiting table is claimed by
+			// the lobby branch on every pass, so the create path (which fills all 12 at once)
+			// never runs, and the partial creeps upward until its window expires. Tables were
+			// aborting at 1, 2, 3, 5, 7, 9 and 11 seats — every one of them a table that had
+			// taken a seat and would never start.
+			//
+			// Filling here is the same all-or-nothing seating the create path does, for the same
+			// reason: Mafia cannot start short, so a roster that cannot be completed is worth
+			// cancelling immediately rather than leaving to time out.
+			need := item.SeatsTotal - item.SeatsFilled
+			filled := 0
+			for i := 0; i < need; i++ {
+				b := r.next(idx)
+				if _, err := r.mafia.Join(ctx, b.PublicID, b.OwnerPublicID, item.PublicID); err != nil {
+					slog.Warn("bot: could not complete a waiting mafia table",
+						"match", item.PublicID, "was", item.SeatsFilled, "added", filled,
+						"need", item.SeatsTotal, "error", err)
+					return
+				}
+				filled++
 			}
+			// Complete: drive exactly the seats now at the table, for the same reason as the
+			// create path — see agentsByID.
+			r.driveMafia(ctx, r.agentsByID(nil), item.PublicID)
 		}
 		return
 	}
@@ -225,31 +281,104 @@ func (r *Runner) tickMafia(ctx context.Context, idx *int) {
 	if err != nil {
 		return
 	}
+	// Collect WHO is seated, not how many. The driver must act for these exact agents; handing
+	// it the first twelve of the pool played agents who were not at the table. See agentsByID.
+	seatedAgents := []demo.Agent{a}
+	// Fill the roster. A failure here used to `return` silently, abandoning a table with ONE
+	// seat that then sat until it timed out and aborted — 190 aborted mafia tables against 1
+	// finished, every abort holding exactly 1 seat, and no log line anywhere saying why.
+	//
+	// The seating is still all-or-nothing (Mafia cannot start short), but the reason is now
+	// recorded and the half-filled table is cancelled instead of left to expire. A table nobody
+	// can join should not sit in the lobby advertising a game that will never start.
+	seated := 1
 	for i := 0; i < mf.RosterSize-1; i++ {
 		b := r.next(idx)
 		if _, err := r.mafia.Join(ctx, b.PublicID, b.OwnerPublicID, mid); err != nil {
+			slog.Warn("bot: mafia roster could not be filled; abandoning the table",
+				"match", mid, "seated", seated, "need", mf.RosterSize, "entry_fee", entry,
+				"error", err)
+			if cerr := r.mafia.Cancel(ctx, a.PublicID, mid); cerr != nil {
+				slog.Warn("bot: half-filled mafia table could not be cancelled and will sit "+
+					"in the lobby until it expires", "match", mid, "error", cerr)
+			}
 			return
 		}
+		seated++
+		seatedAgents = append(seatedAgents, b)
 	}
-	for _, ag := range r.agents[:min(len(r.agents), mf.RosterSize)] {
-		r.playMafia(ctx, ag, mid)
-	}
+	r.driveMafia(ctx, seatedAgents, mid)
 }
 
-func (r *Runner) playMafia(ctx context.Context, a demo.Agent, matchID string) {
-	for step := 0; step < 8; step++ {
-		view, err := r.mafia.State(ctx, matchID, a.PublicID, false, 0)
-		if err != nil || view.Status == mafia.StatusFinished {
-			return
+// driveMafia carries a table to its conclusion by cycling EVERY seat each round.
+//
+// # The bug this replaces
+//
+// playMafia gave each agent a private budget of 8 steps and was called once per agent in
+// sequence. It returned the moment PickMafiaAction found nothing to do — which is immediately,
+// because a Mafia phase requires ALL living seats to act before it advances. So seat 1 acted
+// once and returned, seat 2 acted once and returned, and after one pass the phase advanced with
+// nobody left to play it. Every table sat in 'active' until it timed out.
+//
+// It looked like a budget that was too small. It was the wrong shape: a per-seat loop cannot
+// drive a game whose progress condition is collective.
+//
+// Nine tables were reaching a full 12 seats and starting; all-time finished stayed at 1.
+func (r *Runner) driveMafia(ctx context.Context, agents []demo.Agent, matchID string) (moved bool) {
+	// Generous, because a 12-player game runs several days of night/discussion/voting, and the
+	// no-progress exit below is what actually ends the loop in the normal case.
+	const maxRounds = 200
+	// PROGRESS means the game moved, not that a call returned without error.
+	//
+	// A seat that has already spoken this phase gets (state, nil, nil) from the engine — no
+	// error, no change. Treating that as progress made driveMafia spin its full 200 rounds
+	// believing it was advancing, and report moved=true to a caller that then refused to start
+	// anything else. The platform sat behind one table at day 5 for an hour.
+	//
+	// So progress is measured from the phase itself: if a whole cycle of every seat leaves day
+	// and phase where they were, nothing happened, whatever the calls returned.
+	lastPhase := ""
+	for round := 0; round < maxRounds; round++ {
+		progressed := false
+		for _, a := range agents {
+			view, err := r.mafia.State(ctx, matchID, a.PublicID, false, 0)
+			if err != nil {
+				continue // one unreadable seat must not abandon the table
+			}
+			if view.Status == mafia.StatusFinished {
+				return moved
+			}
+			act, ok := PickMafiaAction(view)
+			if !ok {
+				continue // nothing pending for THIS seat right now; others may still act
+			}
+			// platform-driven bot: no stale-phase guard, no per-move signature
+			if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act, 0, "", "", true); err != nil {
+				continue
+			}
+			// Only a change of day or phase counts. A message accepted from a seat that had
+			// already spoken changes nothing and must not read as motion.
+			cur := fmt.Sprintf("%d/%s", view.Day, view.Phase)
+			if lastPhase == "" {
+				// SEED, do not count. The first observation is not motion — it is simply the
+				// first time we looked. Counting it made every wedged table report one round of
+				// progress, which was enough to keep moved=true and hold the livelock shut.
+				lastPhase = cur
+			} else if cur != lastPhase {
+				lastPhase = cur
+				progressed = true
+				moved = true
+			}
 		}
-		act, ok := PickMafiaAction(view)
-		if !ok {
-			return
-		}
-		if _, err := r.mafia.Act(ctx, a.PublicID, matchID, act, 0, "", "", true); err != nil { // platform-driven bot: no stale-phase guard, no per-move signature
-			return
+		if !progressed {
+			// No seat could act anywhere on the table. That is a phase waiting on a timer rather
+			// than on us, so spinning would burn CPU without moving the game.
+			return moved
 		}
 	}
+	slog.Warn("bot: mafia table hit the round cap without finishing",
+		"match", matchID, "rounds", maxRounds)
+	return moved
 }
 
 func (r *Runner) next(idx *int) demo.Agent {
@@ -321,4 +450,63 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// houseStake is what a house bot may stake: NOTHING.
+//
+// # Why this is zero and not a tier
+//
+// These agents are demo.FrameworkLabel = "rules-engine". They are deterministic code, not an
+// LLM, and the platform's verification gate correctly flags them as such — 72,469 times. The
+// tempting fix was to exempt house bots from that gate. It is the wrong fix: a deterministic
+// agent taking coins off a developer is fraud, and the gate exists precisely to stop it. Cutting
+// an exemption into an anti-fraud control to make a demo run would trade the integrity of the
+// whole arena for a fuller lobby.
+//
+// So the house does not stake. It seeds PRACTICE tables — visible activity, a lobby that is not
+// empty, a spectator feed with something in it — and every staked seat belongs to a verified
+// LLM-backed agent that a developer deployed and holds the key for.
+//
+// This also retires three problems rather than tuning them. A house bot that stakes nothing
+// cannot drain to rake (so the top-up exists only for legacy balances), cannot trip a session
+// loss limit, and never meets the certification gate at all, because zero-fee tables skip it.
+// Raising the bot's stake to the 500 tier, which I did earlier in this session, was pushing
+// house bots deeper into paid play in exactly the direction this reverses.
+func (r *Runner) houseStake() int64 { return 0 }
+
+// agentsByID resolves seated agent ids to the pool entries that can act for them.
+//
+// # Why this exists
+//
+// The driver used to be handed r.agents[:RosterSize] — the FIRST twelve of the pool — while
+// tables are filled with r.next(idx), which CYCLES. A table's twelve seats can easily be pool
+// entries 3..14 wrapped around, so the driver was playing agents who were not at the table and
+// never asking the ones who were.
+//
+// Those unasked seats could not speak, s.Messages never reached the living-seat count,
+// discussionReady() stayed false forever, and the table wedged at its discussion phase. It read
+// like a policy gap — some view PickMafiaAction could not answer — and it was an identity
+// mismatch: the right policy asked on behalf of the wrong agents.
+//
+// An empty or unknown list falls back to the whole pool, which is the old behaviour and still
+// correct when the caller cannot say who is seated: driving a superset merely wastes calls on
+// seats that are not ours, where driving a subset silently strands the ones that are.
+func (r *Runner) agentsByID(ids []string) []demo.Agent {
+	if len(ids) == 0 {
+		return r.agents[:min(len(r.agents), mf.RosterSize)]
+	}
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make([]demo.Agent, 0, len(ids))
+	for _, a := range r.agents {
+		if want[a.PublicID] {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
+		return r.agents[:min(len(r.agents), mf.RosterSize)]
+	}
+	return out
 }

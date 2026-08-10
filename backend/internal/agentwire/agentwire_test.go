@@ -124,3 +124,10 @@ func TestHTTPTransportEventInlineFallback(t *testing.T) {
 	}
 	t.Fatalf("inline fallback did not deliver: events=%d gameEnds=%d", fc.events, fc.gameEnds)
 }
+
+// Health satisfies HTTPClient. Reports the endpoint as UP, which is the conservative
+// default for these tests: it means a failed turn is classified "alive but slow" rather
+// than "gone", so no test accidentally asserts absence it did not set up.
+func (f *fakeClient) Health(context.Context, agentclient.Target) (agentclient.HealthResult, error) {
+	return agentclient.HealthResult{Status: 200}, nil
+}

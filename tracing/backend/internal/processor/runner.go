@@ -340,5 +340,9 @@ func buildRollupDelta(e schema.TelemetryEvent) store.RollupDelta {
 		ErrorsTotal:    errorsInc,
 		TokensTotal:    e.TotalTokens,
 		EstimatedCost:  cost,
+		// Carried so the rollup can keep verified and self-reported economics apart. A
+		// gateway-routed call produces one event of each, and summing them into one bucket
+		// double-counted every such call while blending a measurement with a claim.
+		MeterSource: e.MeterSource,
 	}
 }

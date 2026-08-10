@@ -177,3 +177,78 @@ func TestEdgePreliminaryAndMinGames(t *testing.T) {
 		t.Errorf("minGames did not filter: %+v", got)
 	}
 }
+
+// The developer board carried the third copy of the verified-cost inversion, and its version
+// was the worst of the three: it chose the basis PER (developer, model) ROW and summed the
+// results. A developer with one thinly-routed model and several unrouted ones ended up with a
+// CostUSD that added a partial gateway slice to complete self-reported totals, then divided
+// that mixture by every win — a figure that is not the cost of anything.
+//
+// The basis is now chosen ONCE on the developer's pooled coverage, through the same function
+// the model and group rows use.
+func TestDeveloperCostBasisIsChosenOnceOnPooledCoverage(t *testing.T) {
+	models := []ModelStat{{Provider: "p", Model: "m1", Wins: 500, Losses: 500}}
+	for i := range models {
+		deriveModelStat(&models[i])
+	}
+	// One model routed almost fully, one barely routed at all. Real spend is 1.00 + 100.00.
+	rows := []DevModelRow{
+		{UserPublicID: "u", Username: "u", Provider: "p", Model: "m1",
+			Matches: 10, Wins: 10,
+			EstCostUSD: 1.00, VerifiedCostUSD: 0.98, Verified: NewCoverage(100, 98)},
+		{UserPublicID: "u", Username: "u", Provider: "p", Model: "m2",
+			Matches: 10, Wins: 10,
+			EstCostUSD: 100.00, VerifiedCostUSD: 0.50, Verified: NewCoverage(9900, 20)},
+	}
+	edges := BuildDeveloperEdges(rows, models, 1)
+	if len(edges) != 1 {
+		t.Fatalf("want 1 developer, got %d", len(edges))
+	}
+	e := edges[0]
+
+	// Pooled coverage is 118/10000 ≈ 1.2%, so verified spend cannot represent this developer.
+	if e.Verified.Coverage > 0.02 {
+		t.Fatalf("pooled coverage = %.4f, want ~0.012", e.Verified.Coverage)
+	}
+	if e.CostBasis != CostSelfReported {
+		t.Fatalf("basis = %q, want %q at ~1%% coverage", e.CostBasis, CostSelfReported)
+	}
+	// The complete self-reported total, NOT the 1.48 of routed spend the old rule would have
+	// mixed together.
+	if e.CostUSD != 101.00 {
+		t.Fatalf("cost = %v, want 101.00 (the complete total)", e.CostUSD)
+	}
+	if e.CostPerWin != 101.00/20 {
+		t.Fatalf("cost per win = %v, want %v", e.CostPerWin, 101.00/20)
+	}
+}
+
+func TestDeveloperVerifiedCostUsedOnlyWhenFullyCovered(t *testing.T) {
+	models := []ModelStat{{Provider: "p", Model: "m1", Wins: 500, Losses: 500}}
+	deriveModelStat(&models[0])
+	rows := []DevModelRow{
+		{UserPublicID: "u", Username: "u", Provider: "p", Model: "m1",
+			Matches: 10, Wins: 10,
+			EstCostUSD: 5.00, VerifiedCostUSD: 8.00, Verified: NewCoverage(100, 100)},
+	}
+	e := BuildDeveloperEdges(rows, models, 1)[0]
+	if e.CostBasis != CostVerified || e.CostUSD != 8.00 {
+		t.Fatalf("basis=%q cost=%v, want %q / 8.00 — gateway spend is authoritative when it "+
+			"covers the record", e.CostBasis, e.CostUSD, CostVerified)
+	}
+}
+
+func TestDeveloperWithOnlyThinVerifiedSpendReportsNoCostAtAll(t *testing.T) {
+	// No complete figure to fall back on. Zero here must mean "not measured", and CostPerWin
+	// must stay 0 rather than publishing 0.00-per-win for someone who spent real money.
+	models := []ModelStat{{Provider: "p", Model: "m1", Wins: 500, Losses: 500}}
+	deriveModelStat(&models[0])
+	rows := []DevModelRow{
+		{UserPublicID: "u", Username: "u", Provider: "p", Model: "m1",
+			Matches: 10, Wins: 10, VerifiedCostUSD: 0.40, Verified: NewCoverage(100, 5)},
+	}
+	e := BuildDeveloperEdges(rows, models, 1)[0]
+	if e.CostBasis != "" || e.CostUSD != 0 || e.CostPerWin != 0 {
+		t.Fatalf("basis=%q cost=%v perWin=%v, want empty/0/0", e.CostBasis, e.CostUSD, e.CostPerWin)
+	}
+}

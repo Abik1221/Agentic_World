@@ -18,6 +18,10 @@ type Config struct {
 		Difficulty   float64 `json:"difficulty"`
 		Activity     float64 `json:"activity"`
 		Intelligence float64 `json:"intelligence"`
+		// Skill defaults to 0 when absent, which is what keeps every existing config
+		// valid and every existing P-Index unchanged: the dimension is computed and
+		// shown but contributes nothing until an operator weights it deliberately.
+		Skill float64 `json:"skill"`
 	} `json:"weights"`
 
 	Norm struct {
@@ -52,6 +56,11 @@ type Config struct {
 		LatencySlowMS float64 `json:"latency_slow_ms"` // ≥ this latency ⇒ zero speed credit
 		MinDecisions  int     `json:"min_decisions"`   // benchmarked decisions for full (ungated) credit
 	} `json:"intelligence"`
+
+	Skill struct {
+		MinDecisions int     `json:"min_decisions"` // scored decisions for full (ungated) credit
+		WBlunder     float64 `json:"w_blunder"`     // how hard a blunder rate is subtracted from mean quality
+	} `json:"skill"`
 }
 
 // ParseConfig decodes a pindex_config.params blob and validates the invariants the
@@ -65,7 +74,8 @@ func ParseConfig(version int, params []byte) (Config, error) {
 	if c.Scale <= 0 {
 		c.Scale = 1000
 	}
-	sum := c.Weights.Arena + c.Weights.Consistency + c.Weights.Difficulty + c.Weights.Activity + c.Weights.Intelligence
+	sum := c.Weights.Arena + c.Weights.Consistency + c.Weights.Difficulty + c.Weights.Activity +
+		c.Weights.Intelligence + c.Weights.Skill
 	if sum < 0.999 || sum > 1.001 {
 		return Config{}, fmt.Errorf("pindex: config v%d weights sum to %.3f, want 1.0", version, sum)
 	}

@@ -46,3 +46,28 @@ func (Arena) Score(in DeveloperInputs, cfg Config) SubScore {
 		Reason: fmt.Sprintf("across %d arena(s); strongest is %s at %d", len(in.Arenas), bestGame, best),
 	}
 }
+
+// Explain publishes this dimension's method.
+func (Arena) Explain(cfg Config) DimensionDoc {
+	return DimensionDoc{
+		Name:     "Arena Standing",
+		Measures: "How strong your agents' ratings are across the arenas they play.",
+		Rationale: "Rating is the only signal that comes from beating other developers rather " +
+			"than from behaving well, so it stays in — but it is one dimension among " +
+			"several rather than the whole score, because outcome variance in these games " +
+			"is large enough that rating alone ranks luck as much as strength.",
+		Formulas: []Formula{{
+			Expression: "score = scale × mean_over_arenas( clamp((rating − low) / (high − low), 0, 1) )",
+			Where: map[string]string{
+				"low/high": fmt.Sprintf("the rating range mapped onto 0–1 (%.0f to %.0f)", cfg.Norm.Low, cfg.Norm.High),
+			},
+		}},
+		Parameters: map[string]any{"norm_low": cfg.Norm.Low, "norm_high": cfg.Norm.High},
+		GameTheory: "Ratings are Glicko-2 for two-player arenas and TrueSkill for N-player " +
+			"ones. Both are Bayesian skill models that track an uncertainty term alongside " +
+			"the estimate, which is what lets the Consistency dimension read how settled a " +
+			"standing actually is instead of treating every rating as equally trustworthy.",
+		Gameable: "Farming a weak opponent repeatedly raises rating slowly and is directly " +
+			"offset by the Difficulty dimension, which reads the strength of who you beat.",
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/agent-arena/arena/internal/agentclient"
@@ -41,6 +42,11 @@ type PushClient interface {
 	Initialize(ctx context.Context, t agentclient.Target, req agentclient.InitializeRequest) (agentclient.InitializeResponse, error)
 	Event(ctx context.Context, t agentclient.Target, n agentclient.EventNotification) error
 	GameEnd(ctx context.Context, t agentclient.Target, n agentclient.GameEndNotification) error
+	// Health is the liveness probe the transport runs when a turn fails, so a missed
+	// turn on a STAKED table can be classified before it counts toward an absence
+	// forfeit. Required by agentwire.HTTPClient — declaring it here is what makes the
+	// compiler refuse a client this path could not have asked.
+	Health(ctx context.Context, t agentclient.Target) (agentclient.HealthResult, error)
 }
 
 type pushPlayer struct {
@@ -295,7 +301,7 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 				act, outcome, latencyMS, rationale, usage = p.decideRemote(ctx, tr, matchID, id, v)
 				rec.Record(benchmark.Decision{
 					Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
-					Round: v.Day, Action: act.Kind, Rationale: rationale, Usage: usage,
+					Round: v.Day, Action: describeAction(act), Rationale: rationale, Usage: usage,
 					// The INPUT half of the record: the view this seat was handed,
 					// including its own role and what it had heard. Owner-scoped on read.
 					View: v,
@@ -478,4 +484,25 @@ func containsStr(xs []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// describeAction renders a Mafia action as "kind:target", or bare "kind" when the action
+// has no target.
+//
+// The kind alone was being recorded, and that is not enough to say anything about the
+// decision. "vote" tells you a seat voted; it does not tell you WHO it voted for, and who
+// it voted for is the entire question — the engine knows every role, so "did this town
+// agent vote for an actual mafia" is an objective fact the platform could score. Without
+// the target that fact is unrecoverable, and unlike a scorer, DATA CAPTURE CANNOT BE
+// RETROFITTED: every match played without it is permanently unscoreable.
+//
+// Also strictly better in the trace UI, where "vote:5" beats "vote".
+func describeAction(a mf.Action) string {
+	switch a.Kind {
+	case mf.ActVote, mf.ActNightKill, mf.ActInvestigate, mf.ActProtect, mf.ActProfile:
+		return a.Kind + ":" + strconv.Itoa(a.Target)
+	default:
+		// message, abstain and anything else carry no target worth recording.
+		return a.Kind
+	}
 }

@@ -97,9 +97,14 @@ type Match struct {
 	Seed          []byte // secret until finished; never exposed by the API before then
 	State         gs.State
 	RoundDeadline *time.Time
-	Players       []Player
-	WinnerAgent   string // agent public id of the winner; "" for tie/none
-	ReplayHash    string
+	// RoundDeadlineBase is the deadline as FIRST set for this round. Extensions move
+	// RoundDeadline and never this, so it is the only fixed origin from which true
+	// time-on-round can be measured. Nil on a row that predates the column, in which case
+	// readers fall back to RoundDeadline and behave exactly as before.
+	RoundDeadlineBase *time.Time
+	Players           []Player
+	WinnerAgent       string // agent public id of the winner; "" for tie/none
+	ReplayHash        string
 }
 
 func (m *Match) playerBySeat(seat int) *Player {

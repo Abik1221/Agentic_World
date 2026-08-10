@@ -165,3 +165,48 @@ func (e *Engine) repairCost(s *State, seat, perHouse, perHotel int) int {
 	}
 	return cost
 }
+
+// ── Deck movement profile (for analysis, not play) ───────────────────────────
+
+// DeckMovement is how often a deck relocates the player, expressed as card COUNTS.
+//
+// Exported for board analysis — solving the landing-probability chain needs to know how
+// often a draw teleports a player, and that is a property of THIS deck, not of the
+// canonical Rand McNally one. Deriving it here rather than transcribing it into the
+// analysis keeps the two from drifting: edit a card and every consumer follows.
+type DeckMovement struct {
+	Size int // cards in the deck
+	// MoveTo maps destination square → how many cards send the player there.
+	MoveTo      map[int]int
+	ToJail      int // straight to jail
+	NearestRail int // advance to the nearest railroad
+	NearestUtil int // advance to the nearest utility
+	Back3       int // move back three squares
+	// Stay is cards with no movement effect at all.
+	Stay int
+}
+
+func movementOf(deck []card) DeckMovement {
+	m := DeckMovement{Size: len(deck), MoveTo: map[int]int{}}
+	for _, c := range deck {
+		switch c.Kind {
+		case ckMoveTo:
+			m.MoveTo[c.Dest]++
+		case ckGoToJail:
+			m.ToJail++
+		case ckNearestRail:
+			m.NearestRail++
+		case ckNearestUtil:
+			m.NearestUtil++
+		case ckBack3:
+			m.Back3++
+		default:
+			m.Stay++
+		}
+	}
+	return m
+}
+
+// ChanceMovement / ChestMovement describe the two decks actually in play.
+func ChanceMovement() DeckMovement { return movementOf(chanceDeck) }
+func ChestMovement() DeckMovement  { return movementOf(ccDeck) }

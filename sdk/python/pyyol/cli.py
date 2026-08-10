@@ -19,7 +19,8 @@ import os
 import sys
 import time
 import urllib.parse  # cheap; used for quoting/URL parsing everywhere
-from typing import Any, Dict, List, Optional
+import urllib.request  # module-level: _urlopen resolves it at call time, in any import order
+from typing import Any
 
 from . import __version__
 
@@ -133,13 +134,27 @@ def _warn_argv_secret() -> None:
         )
 
 
+# The scheme guard lives in _urlguard so the CLI, the agent runtime and the telemetry client
+# all share one implementation — see that module for why the check sits at the open.
+from ._urlguard import UnsafeURLError  # noqa: E402
+from ._urlguard import urlopen as _urlguard_urlopen  # noqa: E402
+
+
+def _urlopen(req, timeout):
+    """Guarded urlopen; an unsafe scheme becomes a CLI-shaped message, not a traceback."""
+    try:
+        return _urlguard_urlopen(req, timeout)
+    except UnsafeURLError as e:
+        raise SystemExit(f"{e}\nCheck --api, PYYOL_API, or your saved config.") from e
+
+
 def _request(
     url: str,
     method: str,
     secret: str,
-    payload: Optional[Dict[str, Any]],
-    sign_path: Optional[str] = None,
-) -> tuple[int, Dict[str, Any]]:
+    payload: dict[str, Any] | None,
+    sign_path: str | None = None,
+) -> tuple[int, dict[str, Any]]:
     """Send a (optionally signed) request. ``sign_path`` is the path the signature
     binds; defaults to the URL's path."""
     import urllib.error
@@ -157,7 +172,7 @@ def _request(
     _warn_insecure_transport(url, bool(secret))
     body = json.dumps(payload).encode() if payload is not None else b""
     path = sign_path if sign_path is not None else (urlsplit(url).path or "/")
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if payload is not None:
         headers["Content-Type"] = "application/json"
     if secret and payload is not None:
@@ -171,7 +186,7 @@ def _request(
         headers["Authorization"] = "Bearer " + secret
     req = urllib.request.Request(url, data=body or None, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _urlopen(req, timeout=10) as resp:
             raw = resp.read()
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as e:
@@ -195,7 +210,7 @@ def _sibling(url: str, name: str) -> str:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     url, secret = args.url, args.secret or ""
-    checks: List[tuple[str, bool, str]] = []
+    checks: list[tuple[str, bool, str]] = []
 
     # 1. health (unsigned GET on the sibling)
     try:
@@ -429,7 +444,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     _warn_insecure_transport(api, bool(token))
     agent_q = urllib.parse.quote(agent, safe="")  # never interpolate a raw id into the path
 
-    def api_req(method: str, path: str, body: Optional[bytes], ctype: str = "application/json"):
+    def api_req(method: str, path: str, body: bytes | None, ctype: str = "application/json"):
         req = urllib.request.Request(
             api + path,
             data=body,
@@ -437,7 +452,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             headers={"Authorization": "Bearer " + token, "Content-Type": ctype},
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with _urlopen(req, timeout=15) as resp:
                 raw = resp.read()
                 return resp.status, (json.loads(raw) if raw else {})
         except urllib.error.HTTPError as e:
@@ -661,7 +676,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         headers={"Authorization": "Bearer " + creds.access_token},
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as e:
         print(
@@ -770,7 +785,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
             return 2
         token = creds.access_token or creds.api_key or ""
 
-    body: Dict[str, object] = {"game": game}
+    body: dict[str, object] = {"game": game}
     if args.tier:
         body["tier"] = args.tier
     elif args.bid > 0:
@@ -851,7 +866,7 @@ def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
     req = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
     console.emit("match", f"spectating {match_id} (read-only)")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with _urlopen(req, timeout=30) as resp:
             _render_sse(resp, console)
     except KeyboardInterrupt:
         print("\nstopped watching.")
@@ -869,8 +884,8 @@ def _watch(base: str, match_id: str, args: argparse.Namespace) -> int:
 def _render_sse(lines, console) -> None:
     """Parse a text/event-stream and render each frame via the console (read-only).
     Returns when the match reaches a terminal event or the stream closes."""
-    event: Optional[str] = None
-    data: List[str] = []
+    event: str | None = None
+    data: list[str] = []
     for raw in lines:
         line = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else raw
         line = line.rstrip("\r\n")
@@ -930,7 +945,7 @@ def _urlopen_json(req, timeout: float = 15.0):
 
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
                 return resp.status, (json.loads(raw) if raw else {})
         except urllib.error.HTTPError as e:
@@ -1291,7 +1306,7 @@ def _autoplay_set(
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen(req, timeout=15) as resp:
             raw = resp.read()
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as e:
@@ -1312,7 +1327,7 @@ def _autoplay_get(api: str, token: str) -> tuple:
         headers={"Authorization": "Bearer " + token},
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen(req, timeout=15) as resp:
             raw = resp.read()
             return resp.status, (json.loads(raw) if raw else {})
     except urllib.error.HTTPError as e:
@@ -1961,7 +1976,7 @@ def _start_sandbox(base, token, arena, console, attempt_label="", args=None) -> 
 
 
 def _start_ranked(base, token, arena, args, console) -> None:
-    body: Dict[str, object] = {"game": arena}
+    body: dict[str, object] = {"game": arena}
     tier = getattr(args, "tier", "") or "low"
     body["tier"] = tier
     st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
@@ -2229,7 +2244,7 @@ def _winner_label(w) -> str:
     return str(w)
 
 
-def _replay_outcome(resp: Dict[str, Any]):
+def _replay_outcome(resp: dict[str, Any]):
     """Extract (winner_label, scores) from a replay doc. Goofspiel encodes the result
     in a terminal `match_finished` event (winner seat + scores); mafia/monopoly may
     carry a top-level winner. Returns ("", None) when it can't be determined."""
@@ -2260,7 +2275,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from . import config as cfgmod
     from . import credentials
 
-    checks: List[tuple[str, bool, str]] = []
+    checks: list[tuple[str, bool, str]] = []
     creds = credentials.load()
     checks.append(
         (
@@ -2303,6 +2318,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for name, ok, detail in checks:
         all_ok = all_ok and ok
         print(f"  {OK if ok else BAD} {name:<20} {detail}")
+
+    # --- Verified-tier readiness -----------------------------------------------
+    #
+    # Separate from the checks above because these are not errors: an agent can run perfectly
+    # while earning nothing. That is exactly the failure this section exists to prevent — the
+    # platform ranks VERIFIED play, and an agent whose calls are never proven is invisible to the
+    # model board no matter how well it plays. A developer should learn that here, in one second,
+    # rather than from an empty row on a leaderboard weeks later.
+    _print_verified_readiness(base, creds, cfg)
+
     ready = all_ok
     print(
         "\n"
@@ -2315,13 +2340,101 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if ready else 1
 
 
+def _print_verified_readiness(base: str, creds, cfg) -> None:
+    """Report whether this agent will actually earn Verified, and if not, exactly why.
+
+    Three things decide it, and each fails silently on its own:
+
+      1. ROUTING — model calls have to go through the Pyyol gateway. Without it the platform sees
+         no calls at all and every decision is unproven.
+      2. A SYSTEM PROMPT — the scaffold fingerprint is what lets the model board compare two models
+         across ONE harness. Instructions that live in the user turn cannot be told apart from the
+         game state, so such an agent is excluded from paired comparison entirely.
+      3. COVERAGE — the share of decisions actually proven. A badge earned on 5% of play is the
+         thing coverage gating exists to refuse.
+
+    Printed rather than returned as a check because none of these is a failure of the agent: it
+    will run, it just will not be ranked, and conflating the two would train people to ignore a
+    red mark that sometimes means nothing.
+    """
+    from . import _instrument, scaffold
+
+    print("\nverified tier")
+
+    routed = bool(
+        _instrument.gateway_base_url("anthropic") or _instrument.gateway_base_url("openai")
+    )
+    print(
+        f"  {OK if routed else WARN} {'gateway routing':<20} "
+        + (
+            "on — model calls are server-observed"
+            if routed
+            else "off — call pyyol.route(client) after pyyol.instrument(); without it no decision "
+            "can be proven and this agent cannot appear on the model board"
+        )
+    )
+
+    # The scaffold is read from the agent's own source rather than guessed: a developer asking
+    # "why am I not on the board" needs the answer for THEIR code, not for a generic example.
+    hint = _scaffold_hint(cfg)
+    if hint is None:
+        print(
+            f"  {WARN} {'system prompt':<20} could not inspect the agent source; run `pyyol dev` "
+            "and check `scaffold` on a decision in the trace"
+        )
+    elif hint:
+        print(
+            f"  {OK} {'system prompt':<20} found — the harness can be fingerprinted, so this "
+            "agent is eligible for paired model comparison"
+        )
+    else:
+        print(
+            f"  {WARN} {'system prompt':<20} none found. {scaffold.explain(scaffold.ISSUE_NO_SYSTEM_PROMPT)}"
+        )
+
+    if base and creds and creds.access_token:
+        st, body = _api_get(f"{base}/v1/gw/coverage", token=creds.access_token)
+        if st == 200 and isinstance(body, dict) and body.get("decisions"):
+            cov = float(body.get("coverage") or 0)
+            bound, total = body.get("bound_decisions", 0), body.get("decisions", 0)
+            mark = OK if cov >= 0.90 else WARN
+            print(
+                f"  {mark} {'coverage':<20} {bound}/{total} decisions proven ({cov * 100:.1f}%)"
+                + ("" if cov >= 0.90 else " — below the 90% the verified tier requires")
+            )
+        elif st == 200:
+            print(f"  {WARN} {'coverage':<20} no decisions recorded yet — play a match first")
+
+
+def _scaffold_hint(cfg) -> bool | None:
+    """True if the agent's source appears to send a system prompt, False if not, None if unknown.
+
+    A source scan, deliberately shallow: it looks for the shapes the two provider SDKs use for a
+    system prompt. Being approximate is acceptable because the consequence of a wrong answer here
+    is a hint, not a decision — the authoritative answer is the `scaffold` field on a real
+    decision, which is what the message points at when this cannot tell.
+    """
+    if cfg is None or not getattr(cfg, "entry", ""):
+        return None
+    path = str(cfg.entry).split(":", 1)[0]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return None
+    # Anthropic passes `system=`; OpenAI uses a message with role "system" (or "developer").
+    for needle in ("system=", '"system"', "'system'", '"developer"', "'developer'"):
+        if needle in src:
+            return True
+    return False
+
+
 def cmd_update(args: argparse.Namespace) -> int:
-    import urllib.request
 
     print(f"pyyol {__version__}")
     latest = ""
     try:
-        with urllib.request.urlopen("https://pypi.org/pypi/pyyol/json", timeout=5) as resp:
+        with _urlopen("https://pypi.org/pypi/pyyol/json", timeout=5) as resp:
             latest = json.loads(resp.read()).get("info", {}).get("version", "")
     except Exception:  # noqa: BLE001 — offline / not published yet
         pass
@@ -2692,7 +2805,26 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
+    # BARE `pyyol` ON A TTY OPENS THE SHELL.
+    #
+    # The subcommand is required=True, so typing the tool's own name — the first thing anyone
+    # does after installing it — printed a usage error and exited 2. Now it opens the home
+    # screen instead, and every command remains available exactly as before on the command
+    # line: the shell dispatches through this same parser (see pyyol/shell.py).
+    #
+    # TTY-GATED, and that is not a nicety. `pyyol | cat`, a CI step, a cron entry or a
+    # Dockerfile RUN must print help and exit; a prompt waiting on stdin there hangs the
+    # pipeline forever, in exactly the places nobody is watching. argv is checked rather than
+    # sys.argv so a programmatic main([]) keeps its old behaviour.
+    if argv is None and not sys.argv[1:]:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            from . import shell
+
+            return shell.run_shell(build_parser, __version__, DEFAULT_API_BASE)
+        build_parser().print_help()
+        return 0
+
     args = build_parser().parse_args(argv)
     # Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
     # PYYOL_NO_TELEMETRY / DO_NOT_TRACK). Never blocks or affects the command.

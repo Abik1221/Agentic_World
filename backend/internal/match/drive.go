@@ -308,7 +308,15 @@ func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {
 					d.log.Debug("ranked drive: table talk not posted", "err", serr)
 				}
 			}
-			if _, err := s.DriveAct(ctx, id, matchID, v.Round, card); err == nil {
+			// A seat the agent did not answer for goes through the ENGINE's timeout, not
+			// through a normal move. Both produce the same lowest card; only the former
+			// records the miss in State.Timeouts, which is what settlement reads to tell
+			// a seat that went dark from one that merely proved nothing.
+			if outcome.Fallback() {
+				if _, err := s.DriveTimeout(ctx, id, matchID, v.Round); err == nil {
+					acted = true
+				}
+			} else if _, err := s.DriveAct(ctx, id, matchID, v.Round, card); err == nil {
 				acted = true
 			}
 		}
@@ -368,6 +376,19 @@ func (d *driver) decide(ctx context.Context, sd seatDriver, seat int, agentID, m
 		DeadlineMs:       v.DeadlineMs,
 	}
 	var move goofspielTurnMove
+	// The turn carries its own deadline, and this is the line that makes the adaptive
+	// window real. The play client's configured Timeout is only a fallback for callers
+	// that set none; without this, every pushed turn is cut at that constant no matter
+	// what window was computed for the agent — which is exactly how the first version of
+	// this work ended up correct, tested and completely inert.
+	//
+	// v.DeadlineMs is what the engine says is LEFT on this seat's clock, so it already
+	// accounts for the adaptive base and any liveness extension granted by the sweeper.
+	if v.DeadlineMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(v.DeadlineMs)*time.Millisecond)
+		defer cancel()
+	}
 	start := time.Now()
 	err := sd.Turn(ctx, req, &move)
 	latencyMS := time.Since(start).Milliseconds()

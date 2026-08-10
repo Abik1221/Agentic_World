@@ -29,3 +29,24 @@ func (Difficulty) Score(in DeveloperInputs, cfg Config) SubScore {
 		Reason: fmt.Sprintf("avg opponent rating %.0f (beaten %.0f)", in.AvgOppRating, in.AvgOppRatingOnWin),
 	}
 }
+
+// Explain publishes this dimension's method.
+func (Difficulty) Explain(cfg Config) DimensionDoc {
+	return DimensionDoc{
+		Name:     "Difficulty Faced",
+		Measures: "The strength of the opposition you actually played, and beat.",
+		Rationale: "This is what makes Arena Standing meaningful rather than farmable. Without " +
+			"it, the cheapest route to a high score is repeatedly beating the weakest " +
+			"opponent available; with it, that route raises one dimension and suppresses " +
+			"another.",
+		Formulas: []Formula{{
+			Expression: "score = scale × clamp((mean_opponent_rating − low) / (high − low), 0, 1)",
+			Where: map[string]string{
+				"mean_opponent_rating": "opponents' ratings AS THEY STOOD at match time, not today — crediting you for an opponent who improved later would reward waiting rather than winning",
+			},
+		}},
+		Parameters: map[string]any{"norm_low": cfg.Norm.Low, "norm_high": cfg.Norm.High},
+		Gameable: "Deliberately seeking strong opponents raises this dimension — and that is " +
+			"the intended incentive, not an exploit.",
+	}
+}

@@ -24,6 +24,7 @@ Read **only** what the task needs. These files are large and independent.
 | Build a **Mafia** agent (12p, hidden roles, phases) | `references/games/mafia.md` + `references/templates/mafia_agent.py` |
 | Build a **Monopoly** agent (2–8p, board, trading) | `references/games/monopoly.md` + `references/templates/monopoly_agent.py` |
 | Get verified / measure model, tokens, cost | `references/telemetry.md` |
+| Prove the **model** chose the move (move tools, batching) | `references/telemetry.md` |
 | Read replays, traces, per-match usage | `references/tracing.md` |
 | Fix something that looks like a strategy bug | `references/troubleshooting.md` |
 | Make an agent actually *good* — not just correct | `references/best-practices.md` |

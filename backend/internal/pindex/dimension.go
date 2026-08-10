@@ -45,6 +45,14 @@ type DeveloperInputs struct {
 	FallbackRate   float64 // 0–1: share of moves that fell back (timeout/illegal/transport)
 	AvgLatencyMS   float64 // mean decision latency across benchmarked moves
 
+	// Decision-quality signals from internal/skill. Distinct from the four fields above,
+	// which describe how an agent BEHAVED (legal, fast, reachable); these describe how
+	// well it PLAYED. Computed deterministically against the engine's ground truth, with
+	// no model in the loop, so they are as un-gameable as the hygiene signals.
+	SkillDecisions   int     // decisions that could be scored (sample size / gate)
+	SkillQuality     float64 // 0–1: mean share of achievable value captured (1 − mean regret)
+	SkillBlunderRate float64 // 0–1: share of decisions that gave up most of the value on offer
+
 	LastMatchAt time.Time // most recent rated match
 	AsOf        time.Time // recompute reference time (activity recency is relative to this)
 }

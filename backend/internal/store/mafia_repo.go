@@ -165,7 +165,7 @@ func (r *MafiaRepo) Start(ctx context.Context, matchPublicID string, roles map[i
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' AND game='mafia' RETURNING id`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -227,7 +227,7 @@ func (r *MafiaRepo) Advance(ctx context.Context, matchPublicID string, state mf.
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, updated_at=now()
+			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, updated_at=now()
 			 WHERE public_id=$1 AND status='active' AND game='mafia' RETURNING id`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {

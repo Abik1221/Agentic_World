@@ -8,6 +8,7 @@ package matchmaking
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -119,7 +120,30 @@ type Service struct {
 	elig   Eligibility
 	afford Affordability
 	live   Liveness
+	// stakes rejects a bid that is not an enabled tier for the game. Optional (nil = skip)
+	// only so a deployment with no tier table configured still works; once tiers exist it is
+	// the authority.
+	stakes StakeFloor
 }
+
+// StakeFloor validates that a coin amount is a stake the game actually offers.
+//
+// This lives on the SERVICE, not only on the HTTP handler, and that placement is the whole
+// point. The handler already resolved tiers correctly — but autoplay and the pairing driver
+// call Enqueue directly, so their bids never met that check. The result was 870 live matches
+// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after
+// the tiers were seeded and still going.
+//
+// A guard beside one caller is one new caller away from being bypassed. This one cannot be,
+// because nothing enters the queue without passing through here.
+type StakeFloor interface {
+	// ValidStake reports whether coins matches an enabled tier for game, and the lowest
+	// enabled tier so the error can say what to use instead.
+	ValidStake(ctx context.Context, game string, coins int64) (ok bool, lowest int64, err error)
+}
+
+// SetStakeFloor wires tier enforcement into the queue itself.
+func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
 
 // Eligibility gates who may enter the ranked queue — e.g. the certification gate
 // (agent must have an active, endpoint-verified manifest). Satisfied by
@@ -173,6 +197,21 @@ func New(repo Repo, pairer Pairer, rating RatingSource, clk clock, cfg Config, l
 func (s *Service) Enqueue(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (Entry, error) {
 	if bid <= 0 {
 		return Entry{}, httpx.NewError(http.StatusBadRequest, "invalid_request", "bid must be > 0")
+	}
+	// The stake must be one the game actually offers. Checked here rather than only in the
+	// handler because autoplay and the pairing driver enqueue directly; see StakeFloor.
+	if s.stakes != nil {
+		ok, lowest, err := s.stakes.ValidStake(ctx, "goofspiel", bid)
+		if err != nil {
+			// Fail CLOSED. An unreadable tier table is not permission to stake an arbitrary
+			// amount — that is the failure mode that let sub-floor matches run for two days.
+			return Entry{}, httpx.NewError(http.StatusServiceUnavailable, "stakes_unavailable",
+				"Stake tiers could not be read, so the queue cannot verify your stake. Try again shortly.")
+		}
+		if !ok {
+			return Entry{}, httpx.NewError(http.StatusBadRequest, "stake_not_offered",
+				fmt.Sprintf("A stake of %d coins is not offered for goofspiel. The lowest available stake is %d coins.", bid, lowest))
+		}
 	}
 	// Certification gate: only verified agents enter the ranked queue (fail fast so
 	// uncertified agents never pollute pairing).
@@ -243,4 +282,54 @@ func newMetrics(reg *prometheus.Registry) *metrics {
 	}
 	reg.MustRegister(m.enqueued, m.paired, m.depth)
 	return m
+}
+
+// OrphanSweeper is the reconciler side of queue cleanup. Satisfied by *store.MatchmakingRepo.
+type OrphanSweeper interface {
+	SweepOrphanedEntries(ctx context.Context) (int64, error)
+}
+
+// SweepWorker deletes queue entries left pointing at terminal matches.
+//
+// The primary cleanup is in match.finalize; this exists because that hook cannot win a race
+// against the pairing transaction it is trying to undo. An entry orphaned this way is not
+// cosmetic: autoplay counts 'matched' as still-queued, so the agent stops re-entering entirely,
+// and the row is unpairable, so it crowds the queue and starves newcomers.
+type SweepWorker struct {
+	sweeper  OrphanSweeper
+	interval time.Duration
+	log      *slog.Logger
+}
+
+func NewSweepWorker(s OrphanSweeper, interval time.Duration, log *slog.Logger) *SweepWorker {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &SweepWorker{sweeper: s, interval: interval, log: log}
+}
+
+// Run sweeps until ctx is cancelled, once immediately on start.
+func (w *SweepWorker) Run(ctx context.Context) {
+	w.log.Info("matchmaking orphan sweeper started", "interval", w.interval.String())
+	t := time.NewTicker(w.interval)
+	defer t.Stop()
+	for {
+		n, err := w.sweeper.SweepOrphanedEntries(ctx)
+		switch {
+		case err != nil:
+			w.log.Error("matchmaking orphan sweep failed", "error", err)
+		case n > 0:
+			// Logged whenever it fires. A steady trickle means the finalize hook is losing the
+			// race more often than expected, and that is worth seeing rather than silently
+			// papering over on a timer.
+			w.log.Warn("swept ranked-queue entries left on terminal matches",
+				"deleted", n, "note", "primary cleanup is match.finalize; a nonzero count here "+
+					"means it lost a race with the pairing commit")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

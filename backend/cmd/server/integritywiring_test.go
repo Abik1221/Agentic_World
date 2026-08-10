@@ -99,3 +99,40 @@ func TestShareRuleStaysOffByDefault(t *testing.T) {
 			"decisions. Derive this from observed bound_decisions, then set it per-deployment.", m[1])
 	}
 }
+
+// EVERY ranked entry gate must carry the verification check.
+//
+// rankedEntryGate exists so an agent that cannot escrow never sits in the pool — its own
+// comment says it fails such agents "fast at enqueue rather than letting them sit in `waiting`
+// for a pairing that can never escrow". It checked suspension and certification, and not
+// eligibility, which is the one sticky rejection of the three.
+//
+// The cost was a retry storm rather than a wrong outcome, which is why nothing caught it: the
+// matcher claims a pair, CreatePaired refuses on verification_pending, the claim is released
+// "so both re-enter the pool and are retried next tick", and next tick fails identically.
+// Measured on the lab before the fix: 4,205 pairing failures in 30 minutes for FOUR agents,
+// and those four also blocked every agent they were repeatedly paired against.
+//
+// A source assertion for the same reason as the test above: the defect is in the wiring, one
+// layer above anything a unit test on the gate itself can see. A gate constructed without
+// `ver:` compiles, passes every test, and silently reinstates the storm.
+func TestEveryRankedEntryGateCarriesTheVerificationCheck(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	body := string(src)
+
+	lits := regexp.MustCompile(`rankedEntryGate\{[^}]*\}`).FindAllString(body, -1)
+	if len(lits) == 0 {
+		t.Fatal("main.go constructs no rankedEntryGate — the ranked queue has no entry gate at all")
+	}
+	for _, lit := range lits {
+		if !strings.Contains(lit, "ver:") {
+			t.Errorf("this ranked entry gate has no verification check:\n\t%s\n"+
+				"An agent flagged for review can then enter the queue, where every pairing "+
+				"attempt fails on verification_pending and is retried on the next tick forever. "+
+				"Pass ver: verSvc.", lit)
+		}
+	}
+}

@@ -44,13 +44,14 @@ def _openai_chat_resp(model="gpt-4o", prompt=1200, completion=80, cached=0, reas
     )
 
 
-def _anthropic_resp(model="claude-sonnet-4-5", inp=900, out=120, cache_read=0):
+def _anthropic_resp(model="claude-sonnet-4-5", inp=900, out=120, cache_read=0, cache_write=0):
     return SimpleNamespace(
         model=model,
         usage=SimpleNamespace(
             input_tokens=inp,
             output_tokens=out,
             cache_read_input_tokens=cache_read,
+            cache_creation_input_tokens=cache_write,
         ),
     )
 
@@ -73,6 +74,7 @@ def test_extract_openai_chat():
         "prompt_tokens": 1200,
         "completion_tokens": 80,
         "cached_tokens": 300,
+        "cached_write_tokens": 0,
         "reasoning_tokens": 20,
     }
 
@@ -80,8 +82,30 @@ def test_extract_openai_chat():
 def test_extract_anthropic():
     info = extract_usage(_anthropic_resp(cache_read=100))
     assert info["provider"] == "anthropic"
-    assert info["prompt_tokens"] == 900 and info["completion_tokens"] == 120
+    # 900 uncached + 100 cache reads. Anthropic's `input_tokens` counts only the
+    # uncached remainder, so the cache fields are ADDED to recover billable input —
+    # unlike OpenAI, where `prompt_tokens` already contains them.
+    assert info["prompt_tokens"] == 1000 and info["completion_tokens"] == 120
     assert info["cached_tokens"] == 100
+
+
+def test_openai_cached_tokens_stay_a_subset_and_are_not_double_counted():
+    """The mirror image of the Anthropic case. OpenAI reports cached tokens INSIDE
+    prompt_tokens, so adding them would inflate billable input — the same normalization
+    must not fire here."""
+    info = extract_usage(_openai_chat_resp(prompt=1200, cached=300))
+    assert info["prompt_tokens"] == 1200
+    assert info["cached_tokens"] == 300
+
+
+def test_extract_anthropic_cache_write():
+    """Cache CREATION tokens are billed at 1.25x input and were previously not read at
+    all, so a cache-heavy agent's most expensive tokens were recorded as zero."""
+    info = extract_usage(_anthropic_resp(inp=420, out=90, cache_read=1500, cache_write=600))
+    assert info["cached_write_tokens"] == 600
+    assert info["cached_tokens"] == 1500
+    # Every billable input token is accounted for: 420 uncached + 1500 read + 600 written.
+    assert info["prompt_tokens"] == 2520
 
 
 def test_extract_responses_api():
@@ -329,3 +353,156 @@ def test_runtime_no_llm_call_no_usage_key():
 
     resp = _run_turn(agent)
     assert "usage" not in resp["payload"]
+
+
+# --- The HOSTED-ENDPOINT (webhook) transport ------------------------------------
+#
+# These cover the path a live agent exposed as broken: the usage accumulator was installed
+# only by the socket runtime, so an agent served over its manifest `endpoint.url` — the path
+# the platform's own verification flow uses — captured NOTHING. No tokens, no cost, no model,
+# no scaffold. And because the gateway identity headers are read off that accumulator, those
+# agents sent no turn proof either and could never earn Verified however faithfully they
+# routed. The live run showed 13 calls proxied with bound=false on every one.
+
+
+def _post_turn(agent, view=None):
+    """Drive the webhook transport the way the platform does: an unsigned POST to /play."""
+    body = json.dumps(
+        view
+        or {
+            "game": "goofspiel",
+            "match_id": "m_webhook",
+            "round": 4,
+            "turn_proof": "proof-for-round-4",
+            "your_hand": [3, 7, 9],
+            "legal_actions": [3, 7, 9],
+        }
+    ).encode()
+    status, payload = agent.handle("POST", "/play", {}, body)
+    assert status == 200, payload
+    return payload
+
+
+def test_webhook_transport_attaches_usage(fake_openai):
+    """The regression itself. A hosted-endpoint agent must report the same usage a
+    socket-connected one does — the transport is not supposed to change what is measured."""
+    from pyyol import Agent
+
+    instrument(["openai"])
+    client = fake_openai()
+    agent = Agent(supported_games=["goofspiel"], name="t")
+
+    @agent.on_turn("goofspiel")
+    def decide(v):
+        client.create(model="gpt-4o", messages=[{"role": "user", "content": "pick"}])
+        return {"round": v.round, "card": max(v.legal_actions)}
+
+    move = _post_turn(agent)
+    assert move["card"] == 9  # the move still works
+    usage = move.get("usage")
+    assert usage, "no usage attached over the webhook transport — the verified tier is unreachable"
+    assert usage["prompt_tokens"] == 1000 and usage["completion_tokens"] == 100
+    assert usage["model"] == "gpt-4o" and usage["estimated_cost"] > 0
+
+
+def test_webhook_transport_exposes_the_turn_proof_to_the_gateway(fake_openai):
+    """The reason the missing accumulator cost Verified rather than only analytics.
+
+    The gateway identity headers are built from the turn-local accumulator, so with no
+    accumulator there is no match, no round and no proof on the outgoing call — and an
+    unproven call is forwarded but never credited.
+    """
+    from pyyol import Agent
+    from pyyol._instrument import disable_gateway, enable_gateway, gateway_headers
+
+    instrument(["openai"])
+    client = fake_openai()
+    enable_gateway("sk_arena_testkey", "http://pyyol.test/v1")
+    seen = {}
+    agent = Agent(supported_games=["goofspiel"], name="t")
+
+    @agent.on_turn("goofspiel")
+    def decide(v):
+        seen.update(gateway_headers())
+        client.create(model="gpt-4o", messages=[{"role": "user", "content": "pick"}])
+        return {"round": v.round, "card": max(v.legal_actions)}
+
+    try:
+        _post_turn(agent)
+    finally:
+        disable_gateway()
+
+    assert seen.get("X-Pyyol-Match") == "m_webhook"
+    assert seen.get("X-Pyyol-Turn") == "4"
+    assert seen.get("X-Pyyol-Proof") == "proof-for-round-4"
+
+
+def test_webhook_transport_respects_dev_supplied_usage(fake_openai):
+    """Manual reporting is an explicit choice and must not be overwritten by observation."""
+    from pyyol import Agent
+
+    instrument(["openai"])
+    client = fake_openai()
+    agent = Agent(supported_games=["goofspiel"], name="t")
+
+    @agent.on_turn("goofspiel")
+    def decide(v):
+        client.create(model="gpt-4o", messages=[{"role": "user", "content": "pick"}])
+        return {"round": v.round, "card": max(v.legal_actions), "usage": {"prompt_tokens": 7}}
+
+    assert _post_turn(agent)["usage"] == {"prompt_tokens": 7}
+
+
+def test_webhook_transport_omits_usage_when_no_model_was_called():
+    """A rules-based agent must not ship an empty usage block; absent and zero are different
+    claims, and only one of them is true."""
+    from pyyol import Agent
+
+    agent = Agent(supported_games=["goofspiel"], name="t")
+
+    @agent.on_turn("goofspiel")
+    def decide(v):
+        return {"round": v.round, "card": max(v.legal_actions)}
+
+    assert "usage" not in _post_turn(agent)
+
+
+def test_mafia_day_is_used_as_the_round_over_the_webhook_transport(fake_openai):
+    """Mafia calls its round `day`. Missing it made every Mafia proof bind to round 0, so a
+    whole game's decisions failed verification for a field-name reason."""
+    from pyyol import Agent
+    from pyyol._instrument import disable_gateway, enable_gateway, gateway_headers
+
+    instrument(["openai"])
+    client = fake_openai()
+    enable_gateway("sk_arena_testkey", "http://pyyol.test/v1")
+    seen = {}
+    agent = Agent(supported_games=["mafia"], name="t")
+
+    @agent.on_turn("mafia")
+    def decide(v):
+        seen.update(gateway_headers())
+        client.create(model="gpt-4o", messages=[{"role": "user", "content": "who"}])
+        return {"action": "vote", "target": 1}
+
+    try:
+        agent.handle(
+            "POST",
+            "/play",
+            {},
+            json.dumps(
+                {
+                    "game": "mafia",
+                    "match_id": "m_mafia",
+                    "day": 3,
+                    "turn_proof": "p3",
+                    "alive": {"0": True, "1": True},
+                    "your_role": "villager",
+                    "seat": 0,
+                }
+            ).encode(),
+        )
+    finally:
+        disable_gateway()
+
+    assert seen.get("X-Pyyol-Turn") == "3"

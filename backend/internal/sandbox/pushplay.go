@@ -24,6 +24,9 @@ import (
 type Driver interface {
 	State(ctx context.Context, matchPublicID, viewerAgentPublicID string, wait bool, timeout time.Duration) (match.AgentView, error)
 	Act(ctx context.Context, agentPublicID, matchPublicID string, round, card int, signature string) (match.AgentView, error)
+	// Timeout applies the engine's deterministic timeout for a seat that did not answer,
+	// so the miss is recorded rather than disguised as a move the agent chose.
+	DriveTimeout(ctx context.Context, agentPublicID, matchPublicID string, round int) (match.AgentView, error)
 }
 
 // RemoteResolver returns the push-play Target (endpoint URL + bearer token) for an
@@ -39,6 +42,9 @@ type RemoteResolver interface {
 // spectator SSE stream. Nil until EnablePushPlay is called.
 type pushPlayer struct {
 	driver Driver
+	// turns mints the per-turn proof that binds a gateway LLM call to ONE decision.
+	// Nil ⇒ views ship without a proof and nothing here counts as LLM-backed.
+	turns  TurnMinter
 	remote RemoteResolver
 	client *agentclient.Client
 	// enqueue is the durable webhook queue for async /event + /game-end. When set
@@ -107,7 +113,10 @@ func (s *Service) EnablePushPlay(driver Driver, remote RemoteResolver, client *a
 	if log == nil {
 		log = slog.Default()
 	}
-	s.pusher = &pushPlayer{driver: driver, remote: remote, client: client, log: log, maxMatch: 3 * time.Minute}
+	s.pusher = &pushPlayer{
+		driver: driver, remote: remote, client: client, log: log,
+		maxMatch: 3 * time.Minute, turns: s.turns,
+	}
 }
 
 // StartPushPlay opens a no-stakes sandbox match and drives the developer's seat
@@ -237,16 +246,29 @@ func (p *pushPlayer) drive(matchID, agentID string, target agentclient.Target) {
 			return
 		}
 
-		card, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, matchID, v, legal)
+		view := p.turnView(agentID, matchID, v, legal)
+		card, outcome, latencyMS, rationale, usage := p.decide(ctx, tr, target, view)
 		rec.Record(benchmark.Decision{
 			Seat: 0, AgentID: agentID, Outcome: outcome, LatencyMS: latencyMS,
 			Round: v.Round, Action: strconv.Itoa(card), Rationale: rationale, Usage: usage,
+			// The INPUT half of the record: the exact view that was POSTed to the agent,
+			// not a reconstruction of it. Serialized and size-capped by the Recorder.
+			View: view,
 		})
 		if outcome.Fallback() {
 			fallbacks++
 		}
-		if _, err := p.driver.Act(ctx, agentID, matchID, v.Round, card, ""); err != nil {
-			p.log.Warn("pushplay: submit failed, stopping driver", "match", matchID, "round", v.Round, "err", err)
+		// Same rule as the ranked drive: an unanswered turn is the engine's timeout, not a
+		// move made on the agent's behalf. Otherwise a seat can be dark for a whole match
+		// and still finish with an absence tally of zero.
+		var serr error
+		if outcome.Fallback() {
+			_, serr = p.driver.DriveTimeout(ctx, agentID, matchID, v.Round)
+		} else {
+			_, serr = p.driver.Act(ctx, agentID, matchID, v.Round, card, "")
+		}
+		if serr != nil {
+			p.log.Warn("pushplay: submit failed, stopping driver", "match", matchID, "round", v.Round, "err", serr)
 			return
 		}
 	}
@@ -273,11 +295,16 @@ func (p *pushPlayer) dispatchRoundEvents(ctx context.Context, tr agentwire.Trans
 	return highest
 }
 
-// decide asks the agent for a card over the transport and validates it against
-// the legal set, falling back to the lowest legal card on any error or illegal
-// response — so an absent/slow agent can never wedge the match.
-func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID string, v match.AgentView, legal []int) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
-	view := remoteplay.GoofspielView{
+// turnView builds the exact payload this seat is handed for the round.
+//
+// Lifted out of decide so the caller can BOTH push it and record it as the input half
+// of the decision trace. Previously the view existed only inside decide, so
+// agent_match_decisions.input_json was left NULL on every sandbox match — the decision
+// inspector could show what the agent played but never the state it was looking at,
+// which is the half that makes a move judgeable. The three sibling push paths (ranked
+// drive, Mafia, Monopoly) all recorded it; this one silently did not.
+func (p *pushPlayer) turnView(agentID, matchID string, v match.AgentView, legal []int) remoteplay.GoofspielView {
+	return remoteplay.GoofspielView{
 		Game:         "goofspiel",
 		MatchID:      matchID,
 		Seat:         0, // developer is always seat A in a sandbox match
@@ -288,13 +315,39 @@ func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, matchID
 		Scores:       [2]int{v.You.Score, v.Opponent.Score},
 		LegalActions: legal,
 		History:      historyFromView(v), // self-contained: every resolved round so far
+		// The shot clock, so the agent can size its own thinking. Absence is the agent's
+		// own risk under the forfeit rule, which is only fair if it was told the budget.
+		MoveWindowMs: v.MoveWindowMs,
+		DeadlineMs:   v.DeadlineMs,
+		// The proof that binds a gateway LLM call to THIS decision. Sandbox was the only
+		// push path that never minted one, so a developer could wire the gateway perfectly,
+		// watch every call get proxied, and still see bound=false on all of them with nothing
+		// to explain it. A live SDK agent found exactly that: 13 calls, 13 unbound.
+		TurnProof: p.mintProof(agentID, matchID, v.Round),
+		Chat:      chatFromView(v),
 	}
+}
+
+// decide asks the agent for a card over the transport and validates it against
+// the legal set, falling back to the lowest legal card on any error or illegal
+// response — so an absent/slow agent can never wedge the match.
+func (p *pushPlayer) decide(ctx context.Context, tr agentwire.Transport, target agentclient.Target, view remoteplay.GoofspielView) (int, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+	legal := view.LegalActions
 	var move remoteplay.GoofspielMove
+	// Same as the ranked drive: the turn carries the seat's remaining clock, so the play
+	// client's configured Timeout applies only when nobody supplied one.
+	if view.DeadlineMs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(view.DeadlineMs)*time.Millisecond)
+		defer cancel()
+	}
 	start := time.Now()
 	err := tr.Turn(ctx, view, &move)
 	latencyMS := time.Since(start).Milliseconds()
 	switch {
 	case err != nil:
+		// The reachability probe now lives in agentwire.HTTPTransport.Turn, so EVERY
+		// hosted-endpoint path gets it — including the staked ones this driver is not.
 		return lowestInt(legal), benchmark.ClassifyError(err, false), latencyMS, move.Rationale, move.Usage
 	case !containsInt(legal, move.Card):
 		return lowestInt(legal), benchmark.OutcomeIllegal, latencyMS, move.Rationale, move.Usage
@@ -370,4 +423,34 @@ func lowestInt(xs []int) int {
 		}
 	}
 	return m
+}
+
+// chatFromView carries the table talk into the pushed payload.
+//
+// The ranked drive already did this; the sandbox path did not, so an agent practising
+// over its hosted endpoint could speak and never be spoken to. Same data, same shape,
+// so an agent written against sandbox behaves identically in ranked play.
+func chatFromView(v match.AgentView) []remoteplay.ChatLine {
+	if len(v.Chat) == 0 {
+		return nil
+	}
+	out := make([]remoteplay.ChatLine, 0, len(v.Chat))
+	for _, c := range v.Chat {
+		out = append(out, remoteplay.ChatLine{
+			Round: c.Round, Seat: c.Seat, Text: c.Text, Kind: c.Kind, You: c.You,
+		})
+	}
+	return out
+}
+
+// mintProof returns this turn's proof token, or "" when no minter is wired.
+//
+// An empty token is a legitimate state, not an error: with TURN_PROOF_SECRET unset the
+// signer is inert by construction, and a deployment that has not configured verification
+// should ship views without a proof rather than a forgeable placeholder.
+func (p *pushPlayer) mintProof(agentID, matchID string, round int) string {
+	if p.turns == nil {
+		return ""
+	}
+	return p.turns.Mint(agentID, matchID, round)
 }

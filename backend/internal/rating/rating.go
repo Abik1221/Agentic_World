@@ -582,7 +582,12 @@ func wilsonHalfWidth95(k, n int) float64 {
 // model with no finished match showing "0 tokens/min" is honest; extrapolating a rate
 // from a partial match would publish a number nobody could reproduce.
 func deriveModelStat(m *ModelStat) {
-	m.Attribution = attributionName(m.AttrRank)
+	// Derived from COVERAGE, not from the raw rank. The rank says the best tier at which
+	// this model was ever identified; coverage says how much of the row that tier actually
+	// describes. One gateway-verified call out of ten thousand decisions used to be enough to
+	// stamp the whole row "verified", which is the state an agent would engineer to keep a
+	// badge while avoiding the audit. Tier can only ever downgrade, never promote.
+	m.Attribution = Tier(m.AttrRank, m.Verified)
 	m.Class = Classify(m.Provider, m.Model)
 	m.Games = m.Wins + m.Losses + m.Ties
 	if decisive := m.Wins + m.Losses; decisive > 0 {
@@ -639,19 +644,14 @@ func deriveModelStat(m *ModelStat) {
 
 // costBasis is the USD figure the per-match and per-win cost columns divide.
 //
-// Gateway-verified cost when there is any, self-reported otherwise. Verified wins
-// because self-reported cost is gameable — an agent that under-reports its spend
-// would otherwise top a cost-efficiency column by lying. CostBasis records which was
-// used so the UI can say so rather than implying both rows mean the same thing.
+// Delegates to CostForRanking so this and the group rows cannot drift on a rule that decides
+// a published ranking. The rule used to be "verified cost when there is any", which meant one
+// routed call in a thousand made the whole row's cost-per-win 1000x too cheap while labelling
+// it with the tier a reader trusts most. See CostForRanking for both directions of the attack.
 func (m *ModelStat) costBasis() float64 {
-	if m.VerifiedCostUSD > 0 {
-		m.CostBasis = CostVerified
-		return m.VerifiedCostUSD
-	}
-	if m.EstCostUSD > 0 {
-		m.CostBasis = CostSelfReported
-	}
-	return m.EstCostUSD
+	amount, basis := CostForRanking(m.VerifiedCostUSD, m.EstCostUSD, m.Verified)
+	m.CostBasis = basis
+	return amount
 }
 
 // intelligenceScore is the 0..1000 quality composite, using the SAME weights and

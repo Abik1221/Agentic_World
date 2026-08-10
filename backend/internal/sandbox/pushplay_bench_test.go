@@ -47,7 +47,7 @@ func TestSandboxDecide_Classifies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			card, out, latency, _, _ := p.decide(context.Background(), fakeTransport{turn: tc.turn}, "m1", v, legal)
+			card, out, latency, _, _ := p.decide(context.Background(), fakeTransport{turn: tc.turn}, agentclient.Target{}, p.turnView("ag_bench", "m1", v, legal))
 			if card != tc.wantCard {
 				t.Errorf("card=%d want %d", card, tc.wantCard)
 			}

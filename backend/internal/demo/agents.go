@@ -47,7 +47,10 @@ func DevAgentName(i int) string {
 // Unused but documents intent — agents are code-driven, not LLM-backed.
 const FrameworkLabel = "rules-engine"
 
-// MintCoins tops up an agent wallet for dev play.
+// MintCoins funds an agent wallet for dev play, once.
+//
+// The key is fixed on purpose: seeding must not re-mint on every restart. Use TopUp for the
+// recurring case.
 func MintCoins(ctx context.Context, mint *wallet.Service, agentPublicID string, amount int64) error {
 	key := "demo:mint:" + agentPublicID
 	return mint.Mint(ctx, agentPublicID, amount, key)

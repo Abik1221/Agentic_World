@@ -71,6 +71,13 @@ type DeveloperEdge struct {
 	TokensPerWin float64 `json:"tokens_per_win"`
 	CostUSD      float64 `json:"cost_usd"`
 	CostPerWin   float64 `json:"cost_per_win"`
+	// CostBasis names which total CostUSD came from (CostVerified or CostSelfReported), or is
+	// empty when no usable figure exists. Published for the same reason the model board
+	// publishes it: "$0.02 per win" means two different things depending on whether that is
+	// the whole bill or the fifth of it that happened to be routed.
+	CostBasis string `json:"cost_basis,omitempty"`
+	// Verified is the developer's pooled coverage across every model they ran.
+	Verified CoverageStat `json:"verified"`
 
 	// Models the developer ran, best-played first. Capped.
 	Models []string `json:"models,omitempty"`
@@ -98,6 +105,10 @@ type DevModelRow struct {
 	Tokens          int64
 	EstCostUSD      float64
 	VerifiedCostUSD float64
+	// Verified coverage for this (developer, model) pairing, so the pooled cost figure can
+	// choose a coherent basis instead of mixing a partial verified slice with complete
+	// self-reported totals.
+	Verified CoverageStat
 }
 
 // maxEdgeModels bounds the model list shown per developer.
@@ -140,6 +151,12 @@ func BuildDeveloperEdges(rows []DevModelRow, models []ModelStat, minGames int) [
 		byModel     map[string]int
 		sawClosed   bool
 		sawAny      bool
+		// Cost totals kept apart, and coverage counts pooled, so the basis is chosen once on
+		// the developer's whole record rather than row by row.
+		estCostUSD      float64
+		verifiedCostUSD float64
+		boundDecisions  int
+		loggedDecisions int
 	}
 	devs := map[string]*acc{}
 
@@ -157,13 +174,14 @@ func BuildDeveloperEdges(rows []DevModelRow, models []ModelStat, minGames int) [
 		a.Losses += r.Losses
 		a.Ties += r.Ties
 		a.Tokens += r.Tokens
-		// Verified spend when the gateway saw it, self-reported otherwise — the same
-		// rule the model board uses.
-		if r.VerifiedCostUSD > 0 {
-			a.CostUSD += r.VerifiedCostUSD
-		} else {
-			a.CostUSD += r.EstCostUSD
-		}
+		// Keep the two totals APART and choose once, in finish(), on the developer's pooled
+		// coverage. Choosing per row summed a partial gateway slice from one model with the
+		// complete self-reported total from another and divided the mixture by every win —
+		// a figure that is not the cost of anything.
+		a.estCostUSD += r.EstCostUSD
+		a.verifiedCostUSD += r.VerifiedCostUSD
+		a.boundDecisions += r.Verified.BoundDecisions
+		a.loggedDecisions += r.Verified.Decisions
 
 		key := r.Provider + "/" + r.Model
 		a.byModel[key] += r.Wins + r.Losses + r.Ties
@@ -205,9 +223,19 @@ func BuildDeveloperEdges(rows []DevModelRow, models []ModelStat, minGames int) [
 			e.Contribution = float64(a.ownBaseline) / float64(a.baseTotal)
 		}
 		e.Preliminary = e.Games < prelimMinGames
+		// Coverage first, then the cost basis from it, through the SAME function the model and
+		// group rows use. A cost basis that means one thing on the model board and another on
+		// the developer board would make the two impossible to reconcile.
+		e.Verified = NewCoverage(a.loggedDecisions, a.boundDecisions)
+		e.CostUSD, e.CostBasis = CostForRanking(a.verifiedCostUSD, a.estCostUSD, e.Verified)
 		if e.Wins > 0 {
 			e.TokensPerWin = float64(e.Tokens) / float64(e.Wins)
-			e.CostPerWin = e.CostUSD / float64(e.Wins)
+			// Zero CostUSD means "not measured" here, not "free": CostForRanking returns 0 with
+			// an empty basis when the only figure available is known-incomplete, and dividing
+			// that by wins would publish 0.00 per win for an agent that spent real money.
+			if e.CostUSD > 0 {
+				e.CostPerWin = e.CostUSD / float64(e.Wins)
+			}
 		}
 		// Open-weights-only is a positive claim, so it requires having seen at least one
 		// classified model — a developer whose models are all unclassified is not

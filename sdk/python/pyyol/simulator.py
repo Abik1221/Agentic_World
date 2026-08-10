@@ -18,10 +18,12 @@ contains no strategy — your handler decides every move.
 
 from __future__ import annotations
 
+from . import _urlguard
+
 import json
 import random
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import GOOFSPIEL, PROTOCOL_VERSION
 from .signing import (
@@ -35,7 +37,7 @@ from .signing import (
 
 def _signed_headers(
     secret: str, method: str, path: str, body: bytes, nonce: str, ts: str
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Build the headers the platform sends, with a valid signature when a secret
     is configured (matching agentclient)."""
     headers = {
@@ -50,7 +52,7 @@ def _signed_headers(
     return headers
 
 
-def _post(agent, secret: str, path: str, payload: Dict[str, Any], seq: int) -> Dict[str, Any]:
+def _post(agent, secret: str, path: str, payload: dict[str, Any], seq: int) -> dict[str, Any]:
     """POST a JSON body through the agent's real dispatch with a valid signature."""
     body = json.dumps(payload).encode()
     nonce = f"sim_{seq}"
@@ -73,7 +75,7 @@ def simulate_goofspiel(
     seed: int = 1,
     shuffle_prizes: bool = True,
     turn_path: str = "/turn",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Play one Goofspiel match: your agent (seat 0) vs a baseline (seat 1).
 
     Returns a result dict: ``{winner, scores, rounds, moves}``. Raises
@@ -81,7 +83,9 @@ def simulate_goofspiel(
     so a broken decision loop fails loudly in local testing.
     """
     secret = agent.secret
-    rng = random.Random(seed)
+    # Seeded on purpose: a simulated opponent must replay identically for a given seed, which
+    # is the opposite of what a cryptographic generator provides. Nothing here is a secret.
+    rng = random.Random(seed)  # noqa: S311
 
     prizes = list(range(1, hand_size + 1))
     if shuffle_prizes:
@@ -91,7 +95,7 @@ def simulate_goofspiel(
     opp_hand = list(range(1, hand_size + 1))
     scores = [0, 0]
     carried = 0
-    moves: List[Dict[str, Any]] = []
+    moves: list[dict[str, Any]] = []
     seq = 0
 
     # Lifecycle: initialize.
@@ -115,7 +119,7 @@ def simulate_goofspiel(
     # match from one payload — and this harness used to omit `history` entirely. A
     # strategy written exactly as the rules instruct then read an empty list here,
     # played badly, and sent its author hunting a strategy bug that did not exist.
-    history: List[Dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
 
     for rnd, prize in enumerate(prizes, start=1):
         pool = prize + carried
@@ -215,7 +219,7 @@ def simulate_goofspiel(
     }
 
 
-def _baseline_bid(hand: List[int], pool: int) -> int:
+def _baseline_bid(hand: list[int], pool: int) -> int:
     """Deterministic opponent: bid the card nearest the pool value (ties -> lower)."""
     return min(hand, key=lambda c: (abs(c - pool), c))
 
@@ -228,21 +232,21 @@ class LocalClient:
         self.base_url = base_url.rstrip("/")
         self.secret = secret
 
-    def health(self) -> Dict[str, Any]:
+    def health(self) -> dict[str, Any]:
         return self._request("GET", "/health", None)
 
-    def handshake(self) -> Dict[str, Any]:
+    def handshake(self) -> dict[str, Any]:
         return self._request(
             "POST", "/handshake", {"platform": "agent-arena", "protocol": PROTOCOL_VERSION}
         )
 
-    def turn(self, view: Dict[str, Any], turn_path: str = "/turn") -> Dict[str, Any]:
+    def turn(self, view: dict[str, Any], turn_path: str = "/turn") -> dict[str, Any]:
         return self._request("POST", turn_path, view)
 
-    def initialize(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    def initialize(self, body: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/initialize", body)
 
-    def _request(self, method: str, path: str, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
         import urllib.request
 
         body = json.dumps(payload).encode() if payload is not None else b""
@@ -256,6 +260,6 @@ class LocalClient:
         req = urllib.request.Request(
             self.base_url + path, data=body or None, method=method, headers=headers
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _urlguard.urlopen(req, timeout=10) as resp:
             raw = resp.read()
         return json.loads(raw) if raw else {}

@@ -13,7 +13,7 @@ type Engine struct {
 // so the dimension is inert until a config version activates it.
 func NewEngine() *Engine {
 	return &Engine{dims: []Dimension{
-		Arena{}, Consistency{}, Difficulty{}, Activity{}, Intelligence{},
+		Arena{}, Consistency{}, Difficulty{}, Activity{}, Intelligence{}, Skill{},
 	}}
 }
 
@@ -30,6 +30,8 @@ func weightOf(key string, cfg Config) float64 {
 		return cfg.Weights.Activity
 	case keyIntelligence:
 		return cfg.Weights.Intelligence
+	case keySkill:
+		return cfg.Weights.Skill
 	default:
 		return 0
 	}
@@ -85,3 +87,10 @@ func round2(x float64) float64 {
 	}
 	return float64(int64(scaled)) / 100
 }
+
+// Dimensions returns the registered dimensions.
+//
+// Exported so the published methodology is assembled from the SAME list the engine scores
+// with. Deriving the page from a second, hand-maintained list is how a published method
+// starts describing dimensions that no longer exist, or omitting ones that do.
+func (e *Engine) Dimensions() []Dimension { return e.dims }

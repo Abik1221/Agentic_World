@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 // and loginRL rate-limits password logins (brute-force defense); both are
 // injected so the handler stays decoupled from the limiter backend.
 type Handler struct {
+	stakes       StakeSource // cheapest ranked stake, for the max_bid warning
 	svc          *Service
 	authn        *auth.Authenticator
 	privy        *auth.PrivyVerifier  // nil ⇒ Privy login disabled (503)
@@ -419,8 +421,41 @@ func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	// Tell the developer NOW if these limits make ranked play impossible.
+	//
+	// max_bid below the cheapest tier has exactly one effect: the agent can never join a ranked
+	// table. It does not restrict practice, because a zero-fee table skips the limit checks
+	// entirely. So there is no configuration this silently enables — only one it silently
+	// disables, and until now the first sign was a 409 at join time, long after the setting was
+	// saved and forgotten. That is the same shape as the stake floor: the check existed, just not
+	// where the person who needed it would meet it.
+	//
+	// A WARNING and not a rejection, for the reason migration 0070 gives for not backfilling
+	// stored limits: this is the owner's money and their risk cap to choose. Refusing the write
+	// would override a deliberate decision; staying silent would hide an accidental one. Saying
+	// so does neither.
+	out := map[string]any{"status": "updated"}
+	if h.stakes != nil {
+		if lowest, ok := h.stakes.LowestEnabledCoins(r.Context(), "goofspiel"); ok && lowest > 0 && limits.MaxBid < lowest {
+			out["warning"] = fmt.Sprintf(
+				"max_bid is %d, below the cheapest ranked stake of %d coins. This agent can still "+
+					"play practice tables, but it will be rejected from every ranked match until "+
+					"max_bid (and coin_limit_per_match) are at least %d.",
+				limits.MaxBid, lowest, lowest)
+			out["ranked_playable"] = false
+		}
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
+
+// StakeSource exposes the cheapest ranked stake, so the limits endpoint can tell a developer
+// when their own cap has locked them out of ranked play. Satisfied by *gamestakes.Service.
+type StakeSource interface {
+	LowestEnabledCoins(ctx context.Context, game string) (int64, bool)
+}
+
+// SetStakeSource wires the tier table. Optional; without it the warning is simply omitted.
+func (h *Handler) SetStakeSource(src StakeSource) { h.stakes = src }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())

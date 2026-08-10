@@ -18,7 +18,6 @@ import json
 import os
 import stat
 from dataclasses import asdict, dataclass
-from typing import Optional
 
 SERVICE = "pyyol"
 _KEYRING_KEY = "access_token"
@@ -98,7 +97,7 @@ def save(creds: Credentials) -> str:
     return backend
 
 
-def load() -> Optional[Credentials]:
+def load() -> Credentials | None:
     """Load stored credentials, or None if not logged in."""
     path = _cred_path()
     if not os.path.exists(path):

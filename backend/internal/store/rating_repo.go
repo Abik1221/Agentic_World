@@ -23,6 +23,39 @@ func NewRatingRepo(db *pgxpool.Pool) *RatingRepo { return &RatingRepo{db: db} }
 
 var _ rating.Repo = (*RatingRepo)(nil)
 
+// publishedAgent is the "staked but unranked" rule, as SQL.
+//
+// An agent that never routes a model call may play staked tables and win coins. It is simply
+// not published on a ranked surface, because the arena cannot say a model chose its moves. The
+// incentive to verify is reputational, not financial.
+//
+// # Computed for everyone, published for the verified
+//
+// This filters the PUBLICATION, never the computation. Ratings keep updating for every agent,
+// because Glicko/Elo quality depends on a connected comparison graph: 55 of the 75 rated
+// non-house agents here are unverified, and dropping four fifths of the population from the
+// rating maths would degrade the VERIFIED agents' numbers too — the same separability concern
+// the model board already tracks. So every match still moves both seats' ratings; only the
+// board's SELECT is narrowed.
+//
+// # Why this predicate and not a coverage threshold
+//
+// It matches the model board's `no_verified_model` exclusion exactly — a call the gateway
+// PROVED belonged to a decision, which named a model — so "ranked" means one fact rather than
+// two that can drift apart. Measured against the live database, the two candidate definitions
+// (a bound model call vs. any bound decision) selected the identical 20 agents, so the weaker
+// one buys nothing.
+//
+// Deliberately "has EVER proven one", not "proves some percentage". How MUCH of an agent's play
+// is verified is the ranked-integrity threshold's question and it is measured per match; this is
+// the prior question of whether the agent routes at all.
+//
+// alias is the agents-table alias in the calling query.
+func publishedAgent(alias string) string {
+	return `EXISTS (SELECT 1 FROM agent_model_calls mc
+	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> '')`
+}
+
 func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool, error) {
 	if len(in.Players) < 2 {
 		return false, nil
@@ -199,6 +232,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 		          RANK() OVER (ORDER BY r.elo DESC, r.agent_id ASC) AS rnk
 		   FROM ratings r JOIN agents a ON a.id = r.agent_id
 		   WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
+		     AND ` + publishedAgent("a") + `
 		 ) cur
 		 LEFT JOIN LATERAL (
 		   SELECT s.rank FROM rating_rank_snapshots s
@@ -224,9 +258,15 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 	return out, rows.Err()
 }
 
-// SnapshotRanks records the current rank of every non-house agent per (game,
+// SnapshotRanks records the current rank of every PUBLISHED agent per (game,
 // season) for the given day. Idempotent per day via the UNIQUE(taken_on) key, so
 // running it more than once a day (or on multiple instances) is safe.
+//
+// Filtered by the same publishedAgent rule as the board itself, and that is not optional.
+// These snapshots are what the board's `trend` column subtracts from today's rank, so a
+// snapshot taken over a different population than the board displays would report movement
+// nobody made: with 55 unverified agents interleaved in yesterday's ranks and absent from
+// today's, every published agent would appear to have climbed.
 func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int, error) {
 	tag, err := r.db.Exec(ctx,
 		`INSERT INTO rating_rank_snapshots (game, season, agent_id, rank, taken_on)
@@ -234,7 +274,7 @@ func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int,
 		        RANK() OVER (PARTITION BY r.game, r.season ORDER BY r.elo DESC, r.agent_id ASC),
 		        $1::date
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE a.kind <> 'house'
+		 WHERE a.kind <> 'house' AND `+publishedAgent("a")+`
 		 ON CONFLICT (game, season, agent_id, taken_on) DO NOTHING`, takenOn)
 	if err != nil {
 		return 0, err
@@ -295,6 +335,21 @@ fact AS (
          b.estimated_cost,
          COALESCE(v.verified_cost,0) AS verified_cost,
          COALESCE(v.calls,0)         AS verified_calls,
+         -- Verified COVERAGE for this seat: distinct decisions proven LLM-backed by a turn
+         -- proof, over decisions actually logged.
+         --
+         -- The tier used to be MIN(attr_rank) alone, so ONE verified call out of thousands of
+         -- decisions labelled a whole model row "verified". That is exploitable in the
+         -- direction that rewards doing less: cost per win is computed from VERIFIED cost, so
+         -- an agent routing 1% of its calls reports 1% of its spend against 100% of its wins
+         -- and tops a cost-efficiency board precisely BECAUSE it declined to be measured.
+         -- Carrying the denominator is what makes the numerator safe to publish.
+         --
+         -- DISTINCT decisions, not calls: an agent may make forty calls for one decision (a
+         -- best-of-N sample, a tool loop), and counting calls would let volume manufacture
+         -- coverage.
+         COALESCE(bd.bound_decisions,0) AS bound_decisions,
+         COALESCE(dl.logged_decisions,0) AS logged_decisions,
          -- Real match wall-clock. NULL (not 0) when the clock is unusable, so a stuck
          -- or aborted match drops out of the DURATION average without also discarding
          -- the tokens it genuinely burned.
@@ -314,6 +369,14 @@ fact AS (
                 -- credit a model for beating engine bots.
                 AND m.rated
   LEFT JOIN agent_match_verified_cost v ON v.match_id = b.match_id AND v.agent_id = b.agent_id
+  LEFT JOIN (
+    SELECT match_id, agent_id, COUNT(DISTINCT round)::bigint AS bound_decisions
+      FROM agent_match_bound_decisions GROUP BY match_id, agent_id
+  ) bd ON bd.match_id = b.match_id AND bd.agent_id = b.agent_id
+  LEFT JOIN (
+    SELECT match_id, agent_id, COUNT(*)::bigint AS logged_decisions
+      FROM agent_match_decisions GROUP BY match_id, agent_id
+  ) dl ON dl.match_id = b.match_id AND dl.agent_id = b.agent_id
   LEFT JOIN decl dc ON dc.agent_public_id = a.public_id
   WHERE ($1 = '' OR b.game = $1)
 )`
@@ -351,6 +414,8 @@ agg AS (
          COALESCE(SUM(estimated_cost),0)::double precision AS est_cost,
          COALESCE(SUM(verified_cost),0)::double precision  AS verified_cost,
          COALESCE(SUM(verified_calls),0)::bigint           AS verified_calls,
+         COALESCE(SUM(bound_decisions),0)::bigint          AS bound_decisions,
+         COALESCE(SUM(logged_decisions),0)::bigint         AS logged_decisions,
          COALESCE(SUM(match_seconds),0)::double precision  AS play_seconds,
          COUNT(match_seconds)::int                         AS timed_matches
   FROM fact
@@ -385,7 +450,9 @@ SELECT a.provider, a.model, COALESCE(a.game,''), a.is_total, a.attr_rank,
        a.decisions, a.legal, a.fallbacks, a.illegal, a.timeouts, a.transport_errors,
        a.latency_sum_ms, a.latency_min_ms, a.latency_max_ms,
        a.tokens, a.prompt_tokens, a.completion_tokens, a.reasoning_tokens, a.cached_tokens,
-       a.est_cost, a.verified_cost, a.verified_calls, a.play_seconds, a.timed_matches
+       a.est_cost, a.verified_cost, a.verified_calls,
+       a.bound_decisions, a.logged_decisions,
+       a.play_seconds, a.timed_matches
 FROM agg a
 LEFT JOIN elo e ON e.provider = a.provider AND e.model = a.model
                 AND e.is_total = a.is_total
@@ -411,6 +478,10 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 			s                        rating.ModelStat
 			latSum                   int64
 			latMin, latMax           int64
+			// Verified coverage counts. Scanned separately because the row publishes the
+			// FRACTION, and building it in one place keeps the clamp and the
+			// unknown-vs-zero distinction out of the SQL.
+			boundDecisions, loggedDecisions int64
 		)
 		if err := rows.Scan(&provider, &model, &rowGame, &isTotal, &s.AttrRank,
 			&s.Agents, &s.Developers, &s.AvgElo, &s.CoinsWon,
@@ -418,10 +489,15 @@ func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string
 			&s.Decisions, &s.Legal, &s.Fallbacks, &s.Illegal, &s.Timeouts, &s.TransportErrors,
 			&latSum, &latMin, &latMax,
 			&s.Tokens, &s.PromptTokens, &s.CompletionTokens, &s.ReasoningTokens, &s.CachedTokens,
-			&s.EstCostUSD, &s.VerifiedCostUSD, &s.VerifiedCalls, &s.PlaySeconds, &s.TimedMatches); err != nil {
+			&s.EstCostUSD, &s.VerifiedCostUSD, &s.VerifiedCalls,
+			&boundDecisions, &loggedDecisions,
+			&s.PlaySeconds, &s.TimedMatches); err != nil {
 			return nil, err
 		}
 		s.Provider, s.Model = provider, model
+		// Coverage first, then the tier FROM coverage: an identification path can only ever
+		// be downgraded by how little of the row it actually covers, never upgraded.
+		s.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
 		s.MinLatencyMs, s.MaxLatencyMs = int(latMin), int(latMax)
 		if s.Decisions > 0 {
 			s.AvgLatencyMs = int(float64(latSum)/float64(s.Decisions) + 0.5)
@@ -515,26 +591,71 @@ func (r *RatingRepo) ModelRunners(ctx context.Context, season int, game, provide
 // which it must show: a rank is only meaningful next to the arena it is a rank in.
 func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentPublicID string) (rating.Standing, bool, error) {
 	var s rating.Standing
+	var attrRank int
+	var boundDecisions, loggedDecisions int64
 	s.Season = season
 	s.AgentPublicID = agentPublicID
 	err := r.db.QueryRow(ctx,
 		`SELECT r.game, a.name, r.elo, r.wins, r.losses, r.ties, r.coins_earned, r.current_streak,
 		   -- Rank is computed WITHIN r.game rather than within the requested arena, so
 		   -- it stays correct when the arena was resolved here instead of passed in.
+		   -- Rank and total count the PUBLISHED population (see publishedAgent), so this
+		   -- number means the same thing as the one on the board. Counting unverified agents
+		   -- here would tell a developer they are 40th of 75 while the ladder they are
+		   -- comparing against has 20 rows.
 		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
 		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind <> 'house'
+		        AND `+publishedAgent("a2")+`
 		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
 		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
-		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house') AS total,
+		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house'
+		        AND `+publishedAgent("a3")+`) AS total,
+		   -- Whether this agent is itself on the board. An unverified agent still has a real
+		   -- rating and real coins; it is simply not published, and saying so plainly is the
+		   -- whole point of the policy — the alternative is a developer seeing a rank on their
+		   -- own page and not finding themselves on the ladder.
+		   `+publishedAgent("a")+` AS ranked,
 		   -- agent_manifests is keyed by agent_public_id; it has no agent_id column.
 		   -- Referencing one made this whole query fail with "column m.agent_id does not
 		   -- exist", so /v1/rankings/standing answered 500 for every agent and the
 		   -- console's "your rank this season" card silently never rendered.
-		   COALESCE((SELECT model_provider FROM agent_manifests m WHERE m.agent_public_id = a.public_id
-		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
-		   COALESCE((SELECT model_name FROM agent_manifests m WHERE m.agent_public_id = a.public_id
-		             AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), '')
+		   -- Provider/model resolved by TRUST, best source first, mirroring the model board:
+		   -- what the gateway saw the provider return, then what the SDK reported per call,
+		   -- then the manifest. This used to read the manifest alone and present it untagged,
+		   -- so a model the developer merely typed looked exactly like one we had confirmed.
+		   COALESCE(gw.provider, NULLIF(bm.observed_provider,''),
+		            (SELECT model_provider FROM agent_manifests m WHERE m.agent_public_id = a.public_id
+		               AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
+		   COALESCE(gw.model, NULLIF(bm.observed_model,''),
+		            (SELECT model_name FROM agent_manifests m WHERE m.agent_public_id = a.public_id
+		               AND m.status <> 'rejected' ORDER BY created_at DESC LIMIT 1), ''),
+		   -- Which of the three answered (1=gateway, 2=SDK, 3=manifest). Coverage downgrades
+		   -- it afterwards; it can never promote it.
+		   CASE WHEN gw.model IS NOT NULL THEN 1
+		        WHEN NULLIF(bm.observed_model,'') IS NOT NULL THEN 2 ELSE 3 END,
+		   COALESCE(cov.bound_decisions,0), COALESCE(cov.logged_decisions,0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
+		 -- The most recent model the GATEWAY observed on a bound call. Bound only: an unbound
+		 -- call proves nothing about which model decided a move, and this is the top tier.
+		 LEFT JOIN LATERAL (
+		   SELECT mc.provider, mc.model FROM agent_model_calls mc
+		    WHERE mc.agent_id = a.id AND mc.bound AND mc.model <> ''
+		    ORDER BY mc.id DESC LIMIT 1
+		 ) gw ON true
+		 -- The most recent model the SDK reported for a real match.
+		 LEFT JOIN LATERAL (
+		   SELECT b.observed_provider, b.observed_model FROM agent_match_benchmark b
+		    WHERE b.agent_id = a.id AND COALESCE(b.observed_model,'') <> ''
+		    ORDER BY b.updated_at DESC LIMIT 1
+		 ) bm ON true
+		 -- Coverage over this agent's whole logged history, so the tier reflects how much of
+		 -- its play was proven rather than that any single call was.
+		 LEFT JOIN LATERAL (
+		   SELECT (SELECT COUNT(DISTINCT (bd.match_id, bd.round)) FROM agent_match_bound_decisions bd
+		            WHERE bd.agent_id = a.id) AS bound_decisions,
+		          (SELECT COUNT(*) FROM agent_match_decisions dd
+		            WHERE dd.agent_id = a.id) AS logged_decisions
+		 ) cov ON true
 		 WHERE r.season = $1 AND a.public_id = $2 AND ($3 = '' OR r.game = $3)
 		 -- With no arena requested, the agent's most-played arena wins. Most-played
 		 -- rather than highest-ELO on purpose: showing someone their best rating from an
@@ -543,13 +664,16 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		 LIMIT 1`,
 		season, agentPublicID, game).
 		Scan(&s.Game, &s.Name, &s.Elo, &s.Wins, &s.Losses, &s.Ties, &s.CoinsEarned, &s.Streak,
-			&s.Rank, &s.Total, &s.Provider, &s.Model)
+			&s.Rank, &s.Total, &s.Ranked, &s.Provider, &s.Model,
+			&attrRank, &boundDecisions, &loggedDecisions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return rating.Standing{}, false, nil
 	}
 	if err != nil {
 		return rating.Standing{}, false, err
 	}
+	s.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
+	s.Attribution = rating.Tier(attrRank, s.Verified)
 	return s, true, nil
 }
 
@@ -658,7 +782,13 @@ SELECT u.public_id, COALESCE(u.username::text,''), COALESCE(u.display_name,''), 
        COUNT(*) FILTER (WHERE f.result = 'draw')::int    AS ties,
        COALESCE(SUM(f.tokens),0)::bigint                 AS tokens,
        COALESCE(SUM(f.estimated_cost),0)::double precision AS est_cost,
-       COALESCE(SUM(f.verified_cost),0)::double precision  AS verified_cost
+       COALESCE(SUM(f.verified_cost),0)::double precision  AS verified_cost,
+       -- Verified coverage, so the cost columns below can tell a complete self-reported
+       -- total from a partial gateway-observed slice. Without it a developer with one
+       -- thinly-routed model and several unrouted ones produced a CostUSD that mixed the two
+       -- and then divided it by every win.
+       COALESCE(SUM(f.bound_decisions),0)::bigint          AS bound_decisions,
+       COALESCE(SUM(f.logged_decisions),0)::bigint         AS logged_decisions
 FROM fact f
 JOIN agents a ON a.id = f.agent_id
 JOIN users  u ON u.id = a.owner_user_id
@@ -676,11 +806,14 @@ func (r *RatingRepo) DeveloperModelSplit(ctx context.Context, season int, game s
 	var out []rating.DevModelRow
 	for rows.Next() {
 		var d rating.DevModelRow
+		var boundDecisions, loggedDecisions int64
 		if err := rows.Scan(&d.UserPublicID, &d.Username, &d.DisplayName, &d.AvatarURL,
 			&d.Provider, &d.Model, &d.Agents, &d.Matches, &d.Wins, &d.Losses, &d.Ties,
-			&d.Tokens, &d.EstCostUSD, &d.VerifiedCostUSD); err != nil {
+			&d.Tokens, &d.EstCostUSD, &d.VerifiedCostUSD,
+			&boundDecisions, &loggedDecisions); err != nil {
 			return nil, err
 		}
+		d.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
 		out = append(out, d)
 	}
 	return out, rows.Err()

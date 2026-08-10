@@ -35,7 +35,8 @@ import json
 import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Coroutine, Dict, Optional, Tuple, cast
+from typing import Any, cast
+from collections.abc import Callable, Coroutine
 
 from . import __version__
 from .models import (
@@ -46,12 +47,13 @@ from .models import (
     move_to_dict,
     parse_view,
 )
+from .telemetry import turn_usage
 from .signing import ReplayGuard, VerificationError, verify_request
 
 log = logging.getLogger("pyyol")
 
 # (status_code, json_body) — what every dispatch returns.
-Response = Tuple[int, Dict[str, Any]]
+Response = tuple[int, dict[str, Any]]
 
 
 class Agent:
@@ -68,7 +70,7 @@ class Agent:
         supported_games=None,
         name: str = "pyyol-agent",
         skew_seconds: int = 300,
-        verify: Optional[bool] = None,
+        verify: bool | None = None,
     ):
         self.secret = secret
         self.supported_games = list(supported_games or SUPPORTED_GAMES)
@@ -77,15 +79,15 @@ class Agent:
         self._verify = bool(secret) if verify is None else verify
         self._replay = ReplayGuard()
 
-        self._turn_handlers: Dict[str, Callable[[Any], Any]] = {}
-        self._default_turn: Optional[Callable[[Any], Any]] = None
-        self._on_initialize: Optional[Callable[[InitializeRequest], Any]] = None
-        self._on_event: Optional[Callable[[EventNotification], Any]] = None
-        self._on_game_end: Optional[Callable[[GameEndNotification], Any]] = None
+        self._turn_handlers: dict[str, Callable[[Any], Any]] = {}
+        self._default_turn: Callable[[Any], Any] | None = None
+        self._on_initialize: Callable[[InitializeRequest], Any] | None = None
+        self._on_event: Callable[[EventNotification], Any] | None = None
+        self._on_game_end: Callable[[GameEndNotification], Any] | None = None
 
     # --- handler registration (decorators) ---
 
-    def on_turn(self, game: Optional[str] = None):
+    def on_turn(self, game: str | None = None):
         """Register the per-turn decision handler. Pass a game name to scope it;
         omit it for a catch-all used when no game-specific handler is set."""
 
@@ -171,13 +173,39 @@ class Agent:
         # Anything else POSTed is the turn handler (the manifest endpoint.url).
         return self._handle_turn(data)
 
-    def _handle_turn(self, data: Dict[str, Any]) -> Response:
+    def _handle_turn(self, data: dict[str, Any], turn_no: int | None = None) -> Response:
         game = data.get("game", "")
         handler = self._turn_handlers.get(game) or self._default_turn
         if handler is None:
             log.error("no turn handler registered for game %r", game)
             return 501, {"error": "no_turn_handler", "game": game}
         view = parse_view(data)
+        # The turn-local usage accumulator lives HERE, in the one place both transports
+        # share, rather than in each of them.
+        #
+        # It used to live only in the socket runtime, which meant an agent served over its
+        # hosted endpoint — the manifest `endpoint.url` path, the one the platform's own
+        # verification flow uses — captured nothing at all. No tokens, no cost, no model, no
+        # scaffold fingerprint. Worse, the gateway identity headers are read off this
+        # accumulator, so those agents also sent no turn proof and could NEVER earn Verified
+        # no matter how faithfully they routed. A live webhook agent found it: 13 calls
+        # proxied, all of them bound=false.
+        #
+        # The comment below this method already claimed both transports "run identical
+        # decision logic". This is what makes that true.
+        with turn_usage(
+            match_id=data.get("match_id", "") or "",
+            turn=turn_no if turn_no is not None else _turn_number(data),
+            turn_proof=data.get("turn_proof", "") or "",
+        ) as usage:
+            status, move = self._invoke_turn(handler, game, view)
+        # A developer-supplied `usage` always wins: manual reporting is an explicit choice
+        # and must not be overwritten by what we happened to observe.
+        if status == 200 and isinstance(move, dict) and not usage.empty and "usage" not in move:
+            move["usage"] = usage.to_move_usage()
+        return status, move
+
+    def _invoke_turn(self, handler, game: str, view) -> Response:
         try:
             move = handler(view)
             # Support `async def step`: async LLM clients are first-class, so an
@@ -197,22 +225,30 @@ class Agent:
     # --- shared handler invocation (used by both the HTTP path and the socket
     # RuntimeConnector, so both transports run identical decision logic) ---
 
-    def decide_turn(self, view_data: Dict[str, Any]) -> Response:
-        """Run the turn handler for a raw view dict; return ``(status, move)``."""
-        return self._handle_turn(view_data)
+    def decide_turn(self, view_data: dict[str, Any], turn_no: int | None = None) -> Response:
+        """Run the turn handler for a raw view dict; return ``(status, move)``.
 
-    def ack_initialize(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        ``turn_no`` lets the socket runtime supply the round it already derived. Only the
+        runtime can: Monopoly views carry no numeric round, so it falls back to a monotonic
+        per-match counter that a stateless webhook request has no equivalent for. Getting this
+        wrong is not cosmetic — a turn proof is bound to (agent, match, round), so a round that
+        disagrees with the platform's verifies against nothing and the decision silently fails
+        to earn Verified.
+        """
+        return self._handle_turn(view_data, turn_no=turn_no)
+
+    def ack_initialize(self, data: dict[str, Any]) -> dict[str, Any]:
         """Run the initialize handler and return the ack dict."""
         ack = (
             self._on_initialize(InitializeRequest.from_dict(data)) if self._on_initialize else None
         )
         return ack if isinstance(ack, dict) else {"ready": True, "display_name": self.name}
 
-    def notify_event(self, data: Dict[str, Any]) -> None:
+    def notify_event(self, data: dict[str, Any]) -> None:
         if self._on_event:
             self._on_event(EventNotification.from_dict(data))
 
-    def notify_game_end(self, data: Dict[str, Any]) -> None:
+    def notify_game_end(self, data: dict[str, Any]) -> None:
         if self._on_game_end:
             self._on_game_end(GameEndNotification.from_dict(data))
 
@@ -307,7 +343,7 @@ class Adapter:
     supported_games = list(SUPPORTED_GAMES)
     secret: str = ""
 
-    def initialize(self, ctx: "InitializeRequest") -> Any:  # noqa: D401
+    def initialize(self, ctx: InitializeRequest) -> Any:  # noqa: D401
         """Called at match start — but NOT guaranteed, and NOT once per match.
 
         You may be handed a match already in progress (after a reconnect, or when the
@@ -327,12 +363,12 @@ class Adapter:
         """Decide one move for ``view`` and return it. REQUIRED."""
         raise NotImplementedError("implement step(self, view) -> move")
 
-    def shutdown(self, result: "GameEndNotification") -> None:
+    def shutdown(self, result: GameEndNotification) -> None:
         """Called when a match ends. Optional. Like ``initialize``, not guaranteed —
         a dropped connection ends the match without it."""
         return None
 
-    def on_event(self, event: "EventNotification") -> None:
+    def on_event(self, event: EventNotification) -> None:
         """Async match events (round results, opponent actions). Optional.
 
         This used to be unreachable: ``to_agent`` wired the transport's event hook to
@@ -342,7 +378,7 @@ class Adapter:
         """
         return None
 
-    def to_agent(self) -> "Agent":
+    def to_agent(self) -> Agent:
         """Build the underlying :class:`Agent` that drives the real transport."""
         a = Agent(
             secret=self.secret or os.environ.get("PYYOL_SECRET", ""),
@@ -376,7 +412,7 @@ def as_agent(obj: Any) -> Agent:
     )
 
 
-def _load_json(body: bytes) -> Dict[str, Any]:
+def _load_json(body: bytes) -> dict[str, Any]:
     if not body:
         return {}
     try:
@@ -384,3 +420,23 @@ def _load_json(body: bytes) -> Dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+def _turn_number(data: dict[str, Any]) -> int:
+    """The round this view is asking about.
+
+    Read defensively across the names the platform has used for it: a turn proof is bound to
+    (agent, match, round), so a wrong round means the proof verifies against nothing and the
+    decision silently fails to earn Verified.
+    """
+    # `day` is Mafia's round field. Leaving it out made X-Pyyol-Turn 0 for every Mafia turn,
+    # which the existing gateway test caught the moment this logic moved.
+    for key in ("round", "day", "turn", "round_no", "turn_no"):
+        v = data.get(key)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+    return 0

@@ -10,7 +10,7 @@
 import { isSelfHosted } from "./providers.js";
 
 // Bump whenever any rate below changes. Stamped onto every estimate.
-export const PRICING_VERSION = "2026-07-24";
+export const PRICING_VERSION = "2026-08-06";
 
 export interface Rate {
   /** USD per 1M input tokens. */
@@ -144,10 +144,48 @@ export function isKnown(model: string): boolean {
   return canonical(model) !== null;
 }
 
+// Cache-WRITE multipliers, applied to a model's input rate.
+//
+// Writing a prompt into a provider's cache is a separately-billed event from reading it
+// back, and the two go in OPPOSITE directions: Anthropic surcharges a write to 1.25x
+// input and discounts a read to 0.1x, while OpenAI does not bill writes at all. Recording
+// only reads therefore does not merely lose a number — it prices the expensive half of
+// caching at zero, and does so for the agents that cache hardest.
+//
+// Expressed as a multiplier rather than a per-model rate because that is how providers
+// publish it: one ratio per model family. A multiplier also cannot drift out of step with
+// a model's input rate the way a duplicated absolute number can.
+const CACHE_WRITE_MULTIPLIER: ReadonlyArray<readonly [string, number]> = [
+  ["claude-", 1.25], // Anthropic bills a cache write at 1.25x input
+  ["gpt-", 0.0], // OpenAI prompt caching is automatic; writes are not billed
+  ["o1", 0.0],
+  ["o3", 0.0],
+  ["o4", 0.0],
+  ["gemini-", 0.0], // implicit context caching is free
+];
+
+// Multiplier for a family with no published cache-write behaviour: a write costs what an
+// ordinary input token costs. Not 0.0, which would make an unrecognised model's caching
+// silently free — the flattering direction.
+const DEFAULT_CACHE_WRITE_MULTIPLIER = 1.0;
+
+/** USD per 1M tokens for writing a prompt into the provider's cache. */
+export function cacheWriteRate(model: string, provider = ""): number {
+  const rate = rateFor(model, provider);
+  const key = canonical(model, provider) ?? "";
+  for (const [prefix, mult] of CACHE_WRITE_MULTIPLIER) {
+    if (key.startsWith(prefix)) return rate.input * mult;
+  }
+  return rate.input * DEFAULT_CACHE_WRITE_MULTIPLIER;
+}
+
 export interface CostArgs {
   promptTokens?: number;
   completionTokens?: number;
+  /** Prompt-cache READ tokens (a subset of promptTokens). */
   cachedTokens?: number;
+  /** Prompt-cache WRITE/creation tokens (also a subset of promptTokens). */
+  cachedWriteTokens?: number;
   reasoningTokens?: number;
   /** WHO served the call. Decides whether there is a bill at all: the same model id
    *  is billed on a hosted provider and free on the developer's own hardware. */
@@ -155,17 +193,32 @@ export interface CostArgs {
 }
 
 /**
- * USD cost estimate for one model call. `cachedTokens` are a subset of
- * `promptTokens` billed at the cached-input rate; `reasoningTokens` are output
- * tokens already counted in `completionTokens` (kept for reporting).
+ * USD cost estimate for one model call.
+ *
+ * `promptTokens` is the TOTAL billable input, and `cachedTokens` (reads) and
+ * `cachedWriteTokens` (creations) are SUBSETS of it — so the three partition the input
+ * into full-rate, read-rate and write-rate portions. Normalizing onto that convention is
+ * the caller's job (extractUsage does it): providers disagree about whether cache tokens
+ * sit inside their reported input count, and pricing must not have to know which.
+ *
+ * `reasoningTokens` are output tokens already counted in `completionTokens` (kept for
+ * reporting).
  */
 export function estimateCost(model: string, a: CostArgs = {}): number {
   const rate = rateFor(model, a.provider ?? "");
   const prompt = Math.max(0, a.promptTokens ?? 0);
   const completion = Math.max(0, a.completionTokens ?? 0);
-  const cached = Math.max(0, Math.min(a.cachedTokens ?? 0, prompt));
-  const fullInput = prompt - cached;
-  const cachedRate = rate.cachedInput ?? rate.input;
-  const cost = (fullInput * rate.input + cached * cachedRate + completion * rate.output) / 1_000_000;
+  // Reads are taken out first, then writes from what remains, so the two subsets can
+  // never overlap and bill the same token twice.
+  const read = Math.max(0, Math.min(a.cachedTokens ?? 0, prompt));
+  const write = Math.max(0, Math.min(a.cachedWriteTokens ?? 0, prompt - read));
+  const fullInput = prompt - read - write;
+  const readRate = rate.cachedInput ?? rate.input;
+  const cost =
+    (fullInput * rate.input +
+      read * readRate +
+      write * cacheWriteRate(model, a.provider ?? "") +
+      completion * rate.output) /
+    1_000_000;
   return Math.round(cost * 1e8) / 1e8;
 }

@@ -59,6 +59,11 @@ type GroupStat struct {
 	CostPerMatch    float64 `json:"cost_per_match"`
 	CostPerWin      float64 `json:"cost_per_win"`
 	CostBasis       string  `json:"cost_basis,omitempty"`
+	// Verified is the group's pooled coverage: bound decisions over logged decisions across
+	// every model in it. Pooled from raw COUNTS, not averaged from per-model fractions — a
+	// group is verified to the extent its PLAY was proven, and averaging would let one tiny
+	// fully-covered model carry a large uncovered one over the threshold.
+	Verified CoverageStat `json:"verified"`
 
 	Intelligence int `json:"intelligence"`
 
@@ -85,7 +90,11 @@ type accumulator struct {
 	timedMatches int
 	legal        int64
 	fallbacks    int64
-	names        []string
+	// Pooled coverage counts, divided once in finish() for the same reason as every other
+	// average here: each figure has its own correct denominator.
+	boundDecisions  int
+	loggedDecisions int
+	names           []string
 }
 
 // BuildGroups rolls the model rows up along every comparison axis.
@@ -173,6 +182,8 @@ func (a *accumulator) add(m *ModelStat) {
 	a.Tokens += m.Tokens
 	a.EstCostUSD += m.EstCostUSD
 	a.VerifiedCostUSD += m.VerifiedCostUSD
+	a.boundDecisions += m.Verified.BoundDecisions
+	a.loggedDecisions += m.Verified.Decisions
 
 	// ELO is averaged weighted by GAMES, not per model: a model with one rated game
 	// must not move a group's rating as much as one with two hundred.
@@ -217,14 +228,15 @@ func (a *accumulator) finish() GroupStat {
 		g.TokensPerWin = float64(g.Tokens) / float64(g.Wins)
 	}
 
-	// Same rule as a model row: gateway-measured spend when there is any, otherwise
-	// self-reported, and say which.
-	cost := g.EstCostUSD
-	if g.VerifiedCostUSD > 0 {
-		cost, g.CostBasis = g.VerifiedCostUSD, CostVerified
-	} else if cost > 0 {
-		g.CostBasis = CostSelfReported
-	}
+	// Coverage first: the cost rule below reads it, and a zero-value CoverageStat would
+	// silently make every group fall back to self-reported cost.
+	g.Verified = NewCoverage(a.loggedDecisions, a.boundDecisions)
+
+	// Same rule as a model row, through the SAME function — a cost basis that means one thing
+	// on a model row and another on the group containing it would be worse than showing
+	// neither. Verified spend only when coverage says it represents the group.
+	cost, basis := CostForRanking(g.VerifiedCostUSD, g.EstCostUSD, g.Verified)
+	g.CostBasis = basis
 	if g.Matches > 0 {
 		g.CostPerMatch = cost / float64(g.Matches)
 	}

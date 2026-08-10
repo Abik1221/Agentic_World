@@ -44,3 +44,38 @@ func (Activity) Score(in DeveloperInputs, cfg Config) SubScore {
 		Reason: fmt.Sprintf("%d matches, %d arenas, recency %.0f%%", in.TotalMatches, in.DistinctArenas, recency*100),
 	}
 }
+
+// Explain publishes this dimension's method.
+func (Activity) Explain(cfg Config) DimensionDoc {
+	ac := cfg.Activity
+	return DimensionDoc{
+		Name:     "Activity & Breadth",
+		Measures: "Whether you are currently playing, and across how many arenas.",
+		Rationale: "The smallest dimension, and bounded on purpose. A reputation that decays to " +
+			"nothing the moment you stop playing punishes people for having other work; one " +
+			"that ignores recency entirely lets a long-abandoned agent outrank a live one. " +
+			"Diminishing returns on match count are what stop this becoming a grind.",
+		Formulas: []Formula{
+			{
+				Expression: "volume = matches / (matches + k)",
+				Where: map[string]string{
+					"k": fmt.Sprintf("%.0f — the diminishing-returns constant: match %d adds far less than match 10", ac.MatchK, int(ac.MatchK)*10),
+				},
+			},
+			{
+				Expression: "diversity = clamp(distinct_arenas / diversity_target, 0, 1)",
+			},
+			{
+				Expression: "recency = clamp(1 − days_since_last_match / recency_days, 0, 1)",
+			},
+			{
+				Expression: "score = scale × mean(volume, diversity, recency)",
+			},
+		},
+		Parameters: map[string]any{
+			"match_k": ac.MatchK, "diversity_target": ac.DiversityTarget, "recency_days": ac.RecencyDays,
+		},
+		Gameable: "Volume is the one thing here money can buy, which is exactly why it is the " +
+			"smallest weight with the steepest diminishing returns.",
+	}
+}

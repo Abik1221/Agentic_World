@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -30,6 +29,8 @@ import (
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
 	"github.com/agent-arena/arena/internal/config"
+	"github.com/agent-arena/arena/internal/deadline"
+	"github.com/agent-arena/arena/internal/deception"
 	"github.com/agent-arena/arena/internal/demo"
 	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/agent-arena/arena/internal/devprofile"
@@ -45,13 +46,14 @@ import (
 	"github.com/agent-arena/arena/internal/invoices"
 	"github.com/agent-arena/arena/internal/ledger"
 	"github.com/agent-arena/arena/internal/liveness"
-	"github.com/agent-arena/arena/internal/llmgateway"
+	"github.com/agent-arena/arena/internal/llmgw"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/manifest"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/matchmaking"
 	"github.com/agent-arena/arena/internal/media"
 	"github.com/agent-arena/arena/internal/middleware"
+	"github.com/agent-arena/arena/internal/modelboard"
 	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
@@ -68,6 +70,7 @@ import (
 	"github.com/agent-arena/arena/internal/sdkstats"
 	"github.com/agent-arena/arena/internal/secretbox"
 	"github.com/agent-arena/arena/internal/seedadmin"
+	"github.com/agent-arena/arena/internal/skill"
 	"github.com/agent-arena/arena/internal/social"
 	"github.com/agent-arena/arena/internal/solanadeposit"
 	"github.com/agent-arena/arena/internal/spectator"
@@ -132,6 +135,10 @@ func run() error {
 	log = slog.New(telemetry.NewLogHandler(log.Handler(), lens, parseLensLogLevel(cfg.PyyolLensLogLevel)))
 	slog.SetDefault(log)
 	log.Info("starting agent-arena", "env", cfg.Env, "version", version, "port", cfg.Port, "telemetry", lens.Enabled())
+	// Outbound TLS trust, checked before anything relies on it. A container with no CA bundle
+	// starts clean and passes every health check while failing every https call — which surfaced
+	// as "endpoint not verified" on agent onboarding and read as the developer's fault.
+	platform.CheckTLSTrust(log)
 
 	// 3. Signal-aware root context: SIGINT/SIGTERM begin graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -359,6 +366,53 @@ func run() error {
 		MaxBodyBytes: cfg.AgentVerifyMaxBodyBytes,
 		AllowPrivate: cfg.AgentVerifyAllowPrivate,
 	})
+	// Playing a turn is NOT probing an endpoint, and the two must not share a client.
+	//
+	// manifestProbe is tuned for verification: AGENT_VERIFY_TIMEOUT (5s) per attempt,
+	// AGENT_VERIFY_RETRIES (2) attempts. Correct for /health and /handshake, which are
+	// cheap and idempotent. It used to drive live match turns as well, and that was wrong
+	// twice over:
+	//
+	//   1. It capped every decision at ~15s (3 × 5s + backoff) no matter what the game's
+	//      shot clock said. With MOVE_WINDOW_SECONDS=60 configured, 19 of 26 recorded lab
+	//      decisions were still logged as `timeout` at ~15.16s. Any model that thinks for
+	//      longer than 5s — which is most reasoning models — had its real move silently
+	//      replaced by a legal fallback. That then feeds the ranked integrity gate, which
+	//      reads "no provably LLM-backed decisions" and voids the match or withholds the
+	//      payout. A slow model is not a cheating model.
+	//   2. It retried. A turn push is not idempotent from the agent's side: each attempt
+	//      carries a fresh nonce and timestamp (see agentclient.attempt), so the SDK's
+	//      replay dedupe cannot collapse them and the developer is billed for inference
+	//      three times over for one turn.
+	//
+	// So: one attempt, deadline set by the game's own clock. A push that outlives the
+	// window is moot anyway — the sweeper has already applied the deterministic fallback.
+	// Timeout is the FALLBACK for a caller that sets no deadline; MaxTimeout is the
+	// absolute ceiling a caller-supplied deadline is clamped to. They are different
+	// numbers on purpose: the ceiling has to leave room for an adaptive window, or a slow
+	// agent's computed budget is silently truncated back to the base and the whole
+	// adaptive path is inert.
+	newPlayClient := func(window time.Duration) *agentclient.Client {
+		return agentclient.New(agentclient.Config{
+			Timeout:      window,
+			MaxTimeout:   deadline.MaxCeiling,
+			Retries:      0,
+			MaxBodyBytes: cfg.AgentVerifyMaxBodyBytes,
+			AllowPrivate: cfg.AgentVerifyAllowPrivate,
+		})
+	}
+	// Mafia's clock is per-phase rather than per-move; discussion is the longest, so it
+	// sets the ceiling. An explicit MAFIA_PHASE_WINDOW_SECONDS override wins when set.
+	mafiaPlayWindow := cfg.MafiaPhaseWindow
+	if mafiaPlayWindow <= 0 {
+		mafiaPlayWindow = mafiaengine.DiscussionDuration
+	}
+	goofspielPlayClient := newPlayClient(cfg.MoveWindow)
+	mafiaPlayClient := newPlayClient(mafiaPlayWindow)
+	monopolyPlayClient := newPlayClient(cfg.MonopolyMoveWindow)
+	log.Info("agent play clients configured (separate from the verification probe)",
+		"goofspiel", cfg.MoveWindow, "mafia", mafiaPlayWindow, "monopoly", cfg.MonopolyMoveWindow,
+		"retries", 0)
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
 	// Benchmark agent metadata: resolve each agent's active manifest at match time so
@@ -457,7 +511,15 @@ func run() error {
 	launch("webhook-monitor", webhookMonitor.Run)
 
 	// Verification (built in Stage 1) is wired into the match flow now.
+	//
+	// It also gets the completion-binding evidence, so a cryptographic PROOF outranks the
+	// statistical timing guess. The timing detector infers "a human is playing this by hand"
+	// from response-time distribution; binding shows the gateway watched a model emit the move
+	// and the match refuse anything else. Both answer the same question and one of them is
+	// direct — which is why ~112k verification_pending flags sat on deterministic agents that
+	// were provably not human, and why the matchmaker could not pair them.
 	verSvc := verification.New(store.NewVerificationRepo(st.DB))
+	verSvc.SetProvenShare(store.NewLLMGatewayRepo(st.DB))
 
 	// Money: the ledger is the only coin-mover; the wallet service layers
 	// stake/settle/refund and the seven spending limits on top, and serves the
@@ -553,6 +615,40 @@ func run() error {
 	// modular scoring engine and refreshes the season ranking (off the hot path).
 	pindexRepo := store.NewPIndexRepo(st.DB)
 	pindexSvc := pindex.New(pindexRepo, ratingSvc.CurrentSeason, clock, log)
+	// Publish the P-Index method, and version it the way documentation is versioned.
+	//
+	// The methodology endpoint is deliberately public: a reputation number a developer
+	// cannot check the method for is one they are asked to trust. The weights come from the
+	// active config row and the formulas from each dimension's own Explain, so the page
+	// cannot describe a formula the engine is not running.
+	pindexHandler := pindex.NewHandler(pindexRepo, pindex.NewEngine(), authn, cfg.AdminUserIDs)
+
+	// The MODEL board: which model plays best with the developer's harness held constant.
+	//
+	// Refreshed on an interval rather than per request. One fit is a regularized optimization plus
+	// a thousand bootstrap replicates — seconds of CPU that grow with the season — so computing it
+	// per reader would make the board its own denial of service. A snapshot also means every reader
+	// in a window sees the SAME fit, so two people comparing screenshots are not looking at two
+	// different boards.
+	//
+	// 90 days of matches: long enough for the within-harness pairings the estimator needs, short
+	// enough that a model's rating reflects how it plays now rather than a year ago.
+	modelBoardSvc := modelboard.NewService(store.NewModelBoardRepo(st.DB), 90*24*time.Hour, log)
+	modelBoardRepo := store.NewModelBoardRepo(st.DB)
+	// Per-day history, so a rating can be shown as a series. Wired now rather than when the chart
+	// is built: history is the one thing that cannot be backfilled — a fit describes the matches
+	// that existed at a moment, and that moment does not come again.
+	modelBoardSvc.SetHistoryWriter(modelBoardRepo)
+	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
+	modelBoardHandler.SetHistoryReader(modelBoardRepo)
+	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
+	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
+	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
+	// about one afternoon. An imbalance is SILENT — per-wallet balances still add up, the UI still
+	// renders, and the first external symptom is a user disputing a payout. Read-only; it reports
+	// and never repairs, because writing to a ledger that has just been proved untrustworthy would
+	// destroy the evidence of how it broke.
+	launch("ledger-audit", ledger.NewAuditWorker(ledgerSvc, 15*time.Minute, log).Run)
 	// P-Index Intelligence projection: fold each match.benchmark seat into the
 	// per-match decision-quality aggregate the recompute reads (legal/fallback/
 	// latency). Best-effort: a decode failure never wedges the outbox.
@@ -599,6 +695,17 @@ func run() error {
 	})
 	eventBus.On(events.TypeRatingUpdated, pindexSvc.OnRatingUpdated)
 	launch("pindex-recompute", pindex.NewWorker(pindexSvc, log, 5*time.Second).Run)
+
+	// Decision-quality scoring. Runs OFF the match path deliberately: it is a pure
+	// function of columns already persisted (input_json + action), so computing it inline
+	// would add a CPU-heavy regret-matching solve to a live turn for an answer that is
+	// identical whenever it is produced. As a batch it also back-fills every historical
+	// decision and can rescore everything on a scorer improvement (bump skill.ScorerVersion)
+	// with no migration and no replay.
+	//
+	// Feeds the P-Index "skill" dimension, which ships at weight 0 — the scores are
+	// measured and shown but change nobody's ranking until an operator weights them.
+	launch("skill-scoring", skill.NewWorker(store.NewSkillRepo(st.DB), skill.WorkerConfig{}, log).Run)
 
 	// Public developer reputation surface (@handle profile, P-Index transparency,
 	// match history, developer follow graph), aggregated across a developer's agents.
@@ -781,6 +888,9 @@ func run() error {
 	mafiaSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
+	// AND on the service: the bot runner calls CreateTable directly, and mafia's own
+	// DefaultEntryFee of 100 is substituted when no fee is given — both below the 500 floor.
+	mafiaSvc.SetStakeFloor(gameStakesSvc)
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
 	// Monopoly (turn-based property game) on the same patterns as Mafia: pure
@@ -806,7 +916,7 @@ func run() error {
 	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected})
 	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
 	// fill the rest. Reuses the same match machinery + SSE spectating.
-	monopolySvc.EnablePushPlay(manifestSvc, manifestProbe, log)
+	monopolySvc.EnablePushPlay(manifestSvc, monopolyPlayClient, log)
 	monopolySvc.SetWebhookEnqueuer(webhookQueue)
 	monopolySvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	monopolySvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
@@ -815,6 +925,14 @@ func run() error {
 	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
 	monopolySvc.SetIntegrityChecker(store.NewPIndexRepo(st.DB))
 	monopolySvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
+	// Request-path instrumentation. Without this, a Monopoly match played by polling State and
+	// posting Act produces no benchmark fact, no decision log and no board presence — which is
+	// why 2067 finished Monopoly matches contributed nothing to any board while Goofspiel, whose
+	// ranked play is always platform-driven, looked fine. See OBSERVABILITY_COVERAGE_GAP.md.
+	//
+	// The adapter lives here rather than the service importing store: a game service defines the
+	// shape it needs and main.go translates, so the engine never depends on the persistence layer.
+	monopolySvc.SetActDecisionRecorder(monopolyActRecorder{repo: pindexRepo})
 
 	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
 	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
@@ -828,10 +946,14 @@ func run() error {
 			OwnerPublicID: "usr_system",
 		})
 	}
-	mafiaSvc.EnablePushPlay(manifestSvc, manifestProbe, mafiaHouseBots, log)
+	mafiaSvc.EnablePushPlay(manifestSvc, mafiaPlayClient, mafiaHouseBots, log)
 	mafiaSvc.SetWebhookEnqueuer(webhookQueue)
 	mafiaSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	mafiaSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
+	// Request-path instrumentation, as for Monopoly: without it a Mafia match played by polling
+	// state and posting actions produces no benchmark fact, no decision log and no board
+	// presence. See OBSERVABILITY_COVERAGE_GAP.md.
+	mafiaSvc.SetActDecisionRecorder(mafiaActRecorder{repo: pindexRepo})
 
 	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
 	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake; escrowed + settled via MonopolyWallet
@@ -1151,15 +1273,72 @@ func run() error {
 	// actually flow it cannot fire at all. That is the property the gate was written to
 	// have (see rankedIntegrityFailed) and it is the property it now actually has.
 	//
-	// RANKED_INTEGRITY_MIN_PCT is deliberately still 0. The share rule is the part that
-	// needs a number derived from what honest agents score, and guessing it would void the
-	// matches of developers who are genuinely paying for inference. Measure first — the
-	// zero-proof gate needs no threshold, which is exactly why it can ship ahead of one.
+	// RANKED_INTEGRITY_MIN_PCT is deliberately still 0, and the reason has CHANGED.
+	//
+	// # The metric is no longer the blocker
+	//
+	// It used to be. Coverage counted CALLS, so one completion bound one round and an agent
+	// that batched — one call planning three rounds — scored ~33% while playing entirely
+	// model-backed. Phase 4 rewards batching as cost optimisation, so no threshold reconciled
+	// the two: above ~33% voided honest batchers, below it let a cheat binding one round in
+	// three straight through. Range bindings fixed that (internal/movebind CanonPlan): a
+	// completion declares the rounds it decided, each is bound and each is ENFORCED. Measured
+	// on real staked tables after the change:
+	//
+	//	perfect  13/13, 13/13   100%    13 completions
+	//	batcher  13/13, 13/13   100%     5 completions   (was 33-44%)
+	//	flaky    11/13, 12/13   85-92%  15% of calls failing
+	//
+	// The honest floor is now set by PROVIDER FAILURES, which is correct — a call that never
+	// happened genuinely proved nothing — and it sits far above any threshold worth setting.
+	//
+	// # What the number should be, when it is turned on
+	//
+	// False-VOID rate for an honest agent over 13 rounds, by threshold and provider failure
+	// rate (binomial; a void cancels a real staked match):
+	//
+	//	thresh   fail 1%     fail 5%     fail 15%    fail 25%
+	//	  40%    0.0000%     0.0000%     0.0162%     0.5649%
+	//	  50%    0.0000%     0.0001%     0.1268%     2.4290%
+	//	  60%    0.0000%     0.0020%     0.7534%     8.0213%
+	//	  70%    0.0007%     0.3103%    11.8003%    41.5747%
+	//
+	// The cliff is between 60 and 70. 50 is the defensible choice — "more than half of your
+	// decisions must be model-backed" — at roughly one false void in 800 matches against a
+	// pessimistic 15% failure rate. Longer games are safer still, because the tail tightens
+	// with the round count (at 25 rounds, 50% costs 0.0017%).
+	//
+	// # Why it stays 0 anyway: ADOPTION, not the metric
+	//
+	// Rule 2 is ABSOLUTE — it voids a seat for a low share regardless of what the other seat
+	// did — and almost nobody routes through the gateway yet. Measured over the last 48 hours
+	// of staked ranked play: 3863 of 3895 seats proved NOTHING, and a threshold of 50 would
+	// have voided 3523 of them. Turning it on today would cancel essentially every staked
+	// match on the platform.
+	//
+	// So the gate to opening this is no longer a measurement, it is that routing through the
+	// gateway is the NORM for staked play. Rule 1 is the right control until then: it is
+	// relative, so it fires only where proofs actually flow, and it is already on.
+	//
+	//	SELECT count(*) FILTER (WHERE bound = 0), count(*) FROM <seats in staked rated matches>
+	//
+	// When that first figure approaches zero, set this to 50.
 	//
 	// SetTurnMinter must precede EnableRankedDrive: the driver copies the minter at
 	// construction, so installing it afterwards would ship views with no proof token.
 	matchSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	matchSvc.SetIntegrityCheck(store.NewPIndexRepo(st.DB), cfg.RankedIntegrityMinPct)
+	// Adaptive decision windows: each seat's budget is derived from the latency it has
+	// actually demonstrated rather than from one constant that has to serve both a 0.9s
+	// cloud model and a 95s local one. Cached per agent and fails open to cfg.MoveWindow,
+	// so a lookup problem degrades to the previous behaviour instead of stalling a turn.
+	matchSvc.SetWindowProvider(store.NewWindowRepo(st.DB, log))
+	// The other half of the adaptive deadline: at expiry, ask whether the agent is still
+	// there. Alive means it is thinking and earns bounded extra time; gone means stop
+	// waiting now instead of burning the rest of the window on a dead process.
+	matchSvc.SetLivenessProber(store.EndpointProber{
+		Resolve: manifestSvc.PlayTarget, Client: manifestProbe, Log: log,
+	})
 	if cfg.TurnProofSecret == "" {
 		log.Warn("ranked integrity INERT: no TURN_PROOF_SECRET, so no decision can be proven LLM-backed and a scripted agent can take ranked stakes",
 			"fix", "set TURN_PROOF_SECRET to mint per-turn proof tokens",
@@ -1172,15 +1351,74 @@ func run() error {
 	if cfg.RankedAutoDrive {
 		// Hands-free live-vs-live: drive paired agents over their sockets. Off by
 		// default (auto-plays real staked matches) — enable post integration test.
-		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, manifestProbe, lens, benchPersist, benchMeta, log)
+		matchSvc.EnableRankedDrive(agentGateway, manifestSvc, goofspielPlayClient, lens, benchPersist, benchMeta, log)
 		log.Info("ranked auto-drive enabled (paired agents driven over their sockets)")
 	}
+	// The LLM Gateway: a pass-through proxy that turns "which model did this agent use"
+	// from a claim into an observation. The developer brings their own provider key, so
+	// they cannot name a model they are not being billed for — verification is
+	// incentive-compatible rather than trust-based. A call is CREDITED only when its
+	// per-turn proof verifies for the exact decision it claims, which is what stops one
+	// cheap call buying a verified badge for a whole match.
+	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
+	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
+	llmGateway.SetCoverageReader(llmGatewayRepo)
+	// Lens spans for server-observed calls, so a gateway round trip shows up in the same trace
+	// waterfall as the agent's own handler rather than leaving a hole where the slow part was.
+	llmGateway.SetEmitter(lens)
+	// The developer-visible "Verified" badge, granted on an agent's first PROVEN decision.
+	// The retired gateway granted it on any observed call, which made it mean "routed a request
+	// through us"; a bound call is the smallest thing that shows the pipeline actually worked.
+	// An EVENT rather than a direct badge write: badge award is already idempotent and driven
+	// off the event stream, so going through it keeps one path for granting badges instead of
+	// two that can disagree about who has one.
+	llmGateway.SetAwarder(awarderFunc(func(ctx context.Context, agentPublicID string) error {
+		payload, err := json.Marshal(map[string]string{"agent_id": agentPublicID})
+		if err != nil {
+			return err
+		}
+		_, err = store.InsertEvent(ctx, st.DB, events.TypeAgentGatewayVerified, payload)
+		return err
+	}))
+	// COMPLETION BINDING. The gateway extracts the move from the model's own structured tool
+	// call; these three lines are what make the game services CHECK it before applying a move.
+	// Without them the extraction is recorded and enforced nowhere — exactly the shape of bug
+	// this codebase has hit repeatedly, where a correct control sat where the traffic did not go.
+	//
+	// All three games, not one. A control installed on Goofspiel alone would leave Mafia and
+	// Monopoly — the two with more seats and more money on the table — unprotected, and nothing
+	// in a passing Goofspiel test would say so.
+	//
+	// Inert until a turn is actually bound: an agent that does not route through the gateway, or
+	// whose completion carried no move tool call, plays exactly as it does today. Only a move
+	// that CONTRADICTS an attested model output is rejected.
+	matchSvc.SetBoundMoveReader(llmGatewayRepo)
+	// A refused move must not buy more time. tryExtend gives a responsive seat extra window on
+	// the reasoning that it is thinking; a seat that answered and was REJECTED is not, and
+	// without this it holds the round open to the policy ceiling while answering /health
+	// perfectly — roughly two minutes a round on a table an opponent has staked on.
+	matchSvc.SetRejectionLog(store.NewMatchRepo(st.DB))
+	mafiaSvc.SetBoundMoveReader(llmGatewayRepo)
+	monopolySvc.SetBoundMoveReader(llmGatewayRepo)
+	log.Info("completion binding active: a submitted move that contradicts the model's own output is rejected",
+		"games", "goofspiel,mafia,monopoly",
+		"inert_when", "the turn carries no bound move (agent does not route, or no move tool call)")
+
+	llmGatewayHandler := llmgw.NewHandler(llmGateway, authn)
+	if cfg.TurnProofSecret == "" {
+		log.Warn("LLM gateway will record calls but can PROVE none: TURN_PROOF_SECRET is unset, so no call can be bound to a decision and the verified tier stays empty",
+			"fix", "set TURN_PROOF_SECRET")
+	}
+
 	matchHandler := match.NewHandler(matchSvc, authn)
 	// Honour the admin-configured stake tiers on direct table creation too. Without
 	// this, /v1/lobby/create accepted an arbitrary bid while /v1/queue and
 	// /v1/group-queue rejected free-form stakes for the same game — so tier config was
 	// unenforceable across half the ranked surface.
 	matchHandler.SetStakeResolver(gameStakesSvc)
+	// AND on the service. internal/bot/runner.go calls CreateOpen directly with a hardcoded bid,
+	// so the handler's resolver never saw it — the floor has to sit where the escrow happens.
+	matchSvc.SetStakeFloor(gameStakesSvc)
 
 	// Sandbox: risk-free practice vs the seeded house agents, played through the
 	// same match endpoints. Only starting a match is new.
@@ -1188,7 +1426,11 @@ func run() error {
 	// Push-play: drive the developer's seat of a sandbox match from their hosted
 	// agent endpoint (manifest push model). Reuses the hardened verification client
 	// and the same match machinery, so the browser watches it live over SSE.
-	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, manifestProbe, log)
+	// BEFORE EnablePushPlay, which copies the minter onto the pusher. Sandbox mints proofs
+	// for the same reason Mafia and Monopoly do: it is where a developer confirms their
+	// gateway wiring actually earns credit, before anything is at stake.
+	sandboxSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
+	sandboxSvc.EnablePushPlay(matchSvc, manifestSvc, goofspielPlayClient, log)
 	sandboxSvc.SetWebhookEnqueuer(webhookQueue)
 	sandboxSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	sandboxSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
@@ -1199,8 +1441,9 @@ func run() error {
 	// over wait time (never same-owner) and seats them in an already-active match —
 	// making ratings load-bearing and removing the deterministic-rendezvous collusion
 	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
+	matchmakingRepo := store.NewMatchmakingRepo(st.DB)
 	matchmakingSvc := matchmaking.New(
-		store.NewMatchmakingRepo(st.DB),
+		matchmakingRepo,
 		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
@@ -1209,13 +1452,36 @@ func run() error {
 	// with a specific error, instead of getting a misleading 202 and squatting a
 	// `waiting` slot forever for a pairing that CheckEligible would always reject —
 	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
-	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel)})
+	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel), ver: verSvc})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	// Reject an offline agent at enqueue so it never gets matched and forfeit-bleeds its
 	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
 	matchmakingSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
+	// AND on the service itself. The handler check is not enough: autoplay and the pairing driver
+	// call Enqueue directly, so their bids never reached it — which is how 870 matches came to be
+	// staked at 50 and 100 coins against a configured floor of 500, starting two seconds after the
+	// tiers were seeded and continuing for two days without a single error.
+	matchmakingSvc.SetStakeFloor(gameStakesSvc)
+	// Deception index. Public read, like the model board — and served WITH its methodology,
+	// because "this seat deceives 92% of the time" is a claim about conduct and a number without
+	// its chance baseline reads as damning when it is often below random.
+	deceptionHandler := deception.NewHandler(store.NewDeceptionRepo(st.DB))
+	// Reconciler for queue entries the finalize hook could not clear. A match that ends in about
+	// a second can finish BEFORE the pairing transaction that marked its rows 'matched' commits,
+	// so the clear deletes nothing and the row is orphaned afterwards. That is two transactions
+	// racing, not a missing call, so the invariant is restated as a periodic check instead.
+	launch("queue-orphan-sweep", matchmaking.NewSweepWorker(matchmakingRepo, time.Minute, log).Run)
+	// Clear ranked-queue entries when a match ends. Without this an entry stayed 'matched'
+	// forever — live rows were still 'matched' against matches finished an hour earlier — and
+	// autoplay, which counts 'matched' as still-queued, never re-entered the agent. An autoplay
+	// agent played exactly one ranked match and then wedged, reporting "in a ranked match or
+	// waiting in the queue" the whole time.
+	matchSvc.SetQueueClearer(rankedQueueAdapter{mm: matchmakingSvc})
+	// So a developer learns at SET time that their own max_bid locks them out of ranked play,
+	// rather than from a 409 at join time long after the setting was saved and forgotten.
+	idHandler.SetStakeSource(gameStakesSvc)
 
 	// Group matchmaking: the N-player sibling of the 2-player queue above. Gives Mafia
 	// (12) and Monopoly (a configured seat count) the same skill-banded staked play by
@@ -1240,11 +1506,12 @@ func run() error {
 		groupmatch.Config{ShortFormAfter: cfg.GroupShortFormAfter},
 		log, metrics.Registry(),
 	)
-	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg}) // certified + not suspended (game guarded by the queue)
+	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, ver: verSvc}) // certified + not suspended + not flagged (game guarded by the queue)
 	groupSvc.SetAffordability(walletSvc)
 	groupSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	groupHandler := groupmatch.NewHandler(groupSvc, authn)
 	groupHandler.SetStakeResolver(gameStakesSvc)
+	groupSvc.SetStakeFloor(gameStakesSvc)
 
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
@@ -1375,6 +1642,15 @@ func run() error {
 			log.Warn("demo agent seed failed", "error", err)
 		} else {
 			log.Info("demo bots enabled (rules engine, not LLM)", "count", len(agents))
+			// The house roster, as an EXPLICIT id set from the seeder's own return value. This is an
+			// exemption inside a fraud control, so it must be impossible to fall into: matching a slug
+			// or framework label would let any agent that came to look house-shaped inherit it.
+			houseIDs := make([]string, 0, len(agents))
+			for _, a := range agents {
+				houseIDs = append(houseIDs, a.PublicID)
+			}
+			mafiaSvc.SetHouseRoster(houseIDs)
+			monopolySvc.SetHouseRoster(houseIDs)
 			// Dev-only: certify the platform's demo bots so they clear the ranked
 			// certification gate. They have no hosted endpoint, so record a
 			// pre-verified manifest directly. This lets the demo runner produce rated
@@ -1499,6 +1775,7 @@ func run() error {
 			return e
 		}),
 		matchHandler.Register,
+		deceptionHandler.Register,
 		matchmakingHandler.Register,
 		groupHandler.Register,
 		autoplayHandler.Register,
@@ -1510,6 +1787,9 @@ func run() error {
 		mafiaHandler.Register,
 		monopolyHandler.Register,
 		ratingHandler.Register,
+		pindexHandler.Register,
+		modelBoardHandler.Register,
+		llmGatewayHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,
 		devTraceHandler.Register,
@@ -1535,48 +1815,17 @@ func run() error {
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
 	}
-	if cfg.LLMGatewayEnabled {
-		// Verified tier: observe ranked agents' real model/token/cost by proxying
-		// their LLM calls (/gw/*). Off by default; agent-key auth via idSvc.
-		// On the first observed call per agent, emit agent.gateway_verified → awards
-		// the "Verified" badge (dual-badge model). Deduped in-process to one event
-		// per agent per instance; the badge award is idempotent anyway.
-		var gwSeen sync.Map
-		gwVerified := func(ctx context.Context, c llmgateway.VerifiedCall) {
-			// Bound = this call is provably the one made for (MatchID, Round). Recorded
-			// so ranked integrity can count decisions that were genuinely LLM-backed;
-			// it does not change how cost is accumulated, since an unbound call is
-			// still a real call the developer really paid for.
-			if c.Bound {
-				if err := pindexRepo.RecordBoundDecision(context.Background(), c.MatchID, c.AgentID, c.Round); err != nil {
-					log.Warn("gateway: could not record bound decision", "agent", c.AgentID, "match", c.MatchID, "round", c.Round, "err", err)
-				}
-			}
-			// Accumulate per-match verified economics on EVERY observed call (unfakeable
-			// input for the P-Index cost-efficiency dimension, and the only model
-			// attribution on the platform that the agent cannot misreport — the model
-			// name here came out of the provider's own response).
-			if err := pindexRepo.RecordVerifiedCost(context.Background(), store.VerifiedCall{
-				MatchID: c.MatchID, AgentPublicID: c.AgentID, CostUSD: c.CostUSD,
-				Provider: c.Provider, Model: c.Model,
-				PromptTokens: c.PromptTokens, CompletionTokens: c.CompletionTokens, TotalTokens: c.TotalTokens,
-			}); err != nil {
-				log.Warn("gateway: could not record verified cost", "agent", c.AgentID, "match", c.MatchID, "err", err)
-			}
-			// Award the "Verified" badge ONCE per agent (dedup in-process; idempotent
-			// award makes at-least-once safe anyway).
-			if _, seen := gwSeen.LoadOrStore(c.AgentID, struct{}{}); seen {
-				return
-			}
-			payload, _ := json.Marshal(map[string]string{"agent_id": c.AgentID})
-			if _, err := store.InsertEvent(context.Background(), st.DB, events.TypeAgentGatewayVerified, payload); err != nil {
-				gwSeen.Delete(c.AgentID) // let a later call retry
-				log.Warn("gateway: could not emit agent.gateway_verified", "agent", c.AgentID, "err", err)
-			}
-		}
-		mounts = append(mounts, mountLLMGateway(idSvc, lens, gwVerified, turnproof.New(cfg.TurnProofSecret), log))
-		log.Info("Pyyol LLM Gateway mounted at /gw/*")
-	}
+	// internal/llmgateway (mounted at /gw/*) is RETIRED. internal/llmgw at
+	// /v1/gw/{provider}/* replaced it and is wired above with everything the old one did —
+	// turn-proof binding, per-match verified cost, the Lens span, the "Verified" badge — plus
+	// what it never had: separated prompt-cache read/write accounting, a coverage endpoint, and
+	// a coverage-gated verified tier.
+	//
+	// Two gateways writing two different verified stores was the actual defect: the boards read
+	// only the older one, so an agent with every decision proven through the new path was still
+	// reported as merely SDK-observed. agent_match_verified_cost held zero rows platform-wide
+	// at the time of removal, so there was no history to migrate — the old path had never
+	// produced a verified row on this deployment.
 	router := httpx.NewRouter(httpx.Deps{Config: cfg, Logger: log, Metrics: metrics}, mounts...)
 	srv := httpx.NewServer(cfg, router, log)
 
@@ -1770,14 +2019,16 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 }
 
 // rankedEntryGate is the matchmaking.Eligibility gate: an agent may enter the
-// ranked queue only if it is not Super-Admin-suspended AND is certified. The
-// authoritative money/play gate is still CreatePaired (verifierAdapter.CheckEligible);
-// this just fails suspended/uncertified agents fast at enqueue rather than letting
-// them sit in `waiting` for a pairing that can never escrow.
+// ranked queue only if it is not Super-Admin-suspended, is certified, and is not
+// flagged for review. The authoritative money/play gate is still CreatePaired
+// (verifierAdapter.CheckEligible); this fails those agents fast at enqueue rather than
+// letting them sit in `waiting` for a pairing that can never escrow.
 type rankedEntryGate struct {
 	cert *manifest.Service
 	susp *platformcfg.Provider // may be nil (suspension list unavailable)
 	game string                // the only game the ranked queue matchmakes; "" ⇒ skip the game check
+	// ver is the timing/verification check. Nil ⇒ skipped, which is the previous behaviour.
+	ver *verification.Service
 }
 
 func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID string) error {
@@ -1786,6 +2037,32 @@ func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID str
 	}
 	if err := g.cert.RequireCertified(ctx, agentPublicID); err != nil {
 		return err
+	}
+	// Flagged for review, checked HERE and not only at pairing time.
+	//
+	// This gate's whole purpose is to keep an agent that cannot escrow out of the pool, and
+	// eligibility was the one sticky rejection it did not check. The result was a retry storm:
+	// the matcher claims a pair, CreatePaired refuses on verification_pending, the claim is
+	// released "so both re-enter the pool and are retried next tick" — and next tick it fails
+	// for exactly the same reason, forever. Measured on the lab: 4,205 pairing failures in 30
+	// minutes for FOUR agents.
+	//
+	// That release-and-retry is right for a TRANSIENT refusal (a seat that cannot afford the
+	// stake this second). A review flag is not transient: it clears when a human clears it, or
+	// when the agent starts proving its decisions. Retrying it every tick also blocks the
+	// agents it keeps getting paired against.
+	//
+	// Fails OPEN on a lookup error. Refusing entry to the ranked queue because a timing query
+	// hiccuped would lock honest agents out of play, and the authoritative gate still runs at
+	// CreatePaired where the money actually moves.
+	if g.ver != nil {
+		e, err := g.ver.CheckEligibility(ctx, agentPublicID)
+		if err == nil && !e.Eligible {
+			return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending",
+				"Agent flagged for review: "+e.Reason+". Route your model calls through the Pyyol "+
+					"gateway so decisions are provably LLM-backed; a proven agent is not judged on "+
+					"timing alone.")
+		}
 	}
 	// Ranked matchmaking runs one game (Goofspiel). Reject an agent whose manifest
 	// doesn't declare it, so a Mafia/Monopoly-only agent can't be enqueued into the
@@ -2143,4 +2420,46 @@ func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
 		})
 	}
 	return a.r.Rate(ctx, res)
+}
+
+// awarderFunc adapts a plain function to llmgw.Awarder.
+type awarderFunc func(ctx context.Context, agentPublicID string) error
+
+func (f awarderFunc) AwardVerified(ctx context.Context, agentPublicID string) error {
+	return f(ctx, agentPublicID)
+}
+
+// monopolyActRecorder adapts the store to the shape monopoly asks for.
+//
+// A translation layer of two methods, so internal/monopoly does not import internal/store. The
+// alternative compiles and inverts the layering, and every field added later would then live in a
+// persistence type the engine has no business knowing about.
+type monopolyActRecorder struct{ repo *store.PIndexRepo }
+
+func (a monopolyActRecorder) RecordActDecision(ctx context.Context, d monopoly.ActDecision) error {
+	return a.repo.RecordActDecision(ctx, store.ActDecision{
+		MatchID: d.MatchID, AgentPublicID: d.AgentPublicID, Game: "monopoly",
+		Seq: d.Seq, Round: d.Round, Action: d.Action, Outcome: d.Outcome,
+		InputJSON: d.InputJSON,
+	})
+}
+
+func (a monopolyActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
+	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
+}
+
+// mafiaActRecorder adapts the store to the shape mafia asks for, so internal/mafia does not
+// import internal/store. Same reasoning as monopolyActRecorder above.
+type mafiaActRecorder struct{ repo *store.PIndexRepo }
+
+func (a mafiaActRecorder) RecordActDecision(ctx context.Context, d mafia.ActDecision) error {
+	return a.repo.RecordActDecision(ctx, store.ActDecision{
+		MatchID: d.MatchID, AgentPublicID: d.AgentPublicID, Game: "mafia",
+		Seq: d.Seq, Round: d.Round, Action: d.Action, Outcome: d.Outcome,
+		InputJSON: d.InputJSON,
+	})
+}
+
+func (a mafiaActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
+	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
 }

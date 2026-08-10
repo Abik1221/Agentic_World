@@ -83,6 +83,42 @@ func writeBenchFixture(t *testing.T, pool *pgxpool.Pool, f benchFixture) {
 			f.matchID, f.verifiedCost, f.verifiedProvider, f.verifiedModel, f.tokens, f.agentPub); err != nil {
 			t.Fatalf("insert verified cost %s: %v", f.matchID, err)
 		}
+		// The DECISION LOG and its bindings, because coverage is bound ÷ logged and the board
+		// DOWNGRADES attribution by coverage — it can never promote it. A fixture that declared
+		// 250 gateway-verified decisions while logging none produced coverage 0, so the row came
+		// back "observed" and "self-reported" no matter what else it carried, and the test read
+		// as a product defect on a clean database.
+		//
+		// Written to MATCH f.decisions exactly: this seat played that many decisions and every
+		// one of them was proven, which is what "gateway-verified" claims.
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_match_decisions (match_id, agent_id, seq, round)
+			 SELECT $1, a.id, g.i, g.i FROM agents a, generate_series(0, $2 - 1) AS g(i)
+			  WHERE a.public_id = $3
+			 ON CONFLICT DO NOTHING`, f.matchID, f.decisions, f.agentPub); err != nil {
+			t.Fatalf("seed decision log %s: %v", f.matchID, err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_match_bound_decisions (match_id, agent_id, round)
+			 SELECT $1, a.id, g.i FROM agents a, generate_series(0, $2 - 1) AS g(i)
+			  WHERE a.public_id = $3
+			 ON CONFLICT DO NOTHING`, f.matchID, f.decisions, f.agentPub); err != nil {
+			t.Fatalf("seed bound decisions %s: %v", f.matchID, err)
+		}
+		// The BOUND CALL that makes this fixture what it says it is.
+		//
+		// "verified" on this platform means the gateway PROVED a call belonged to a decision
+		// and saw the provider name a model — that one row in agent_model_calls is what the
+		// model board's `no_verified_model` exclusion and the published-ladder filter both
+		// read. Writing only the verified-cost row described a gateway-verified seat while
+		// leaving no evidence any of the code that decides "verified" can see, so the fixture
+		// asserted an attribution its own data did not support.
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_model_calls (agent_id, match_id, round, bound, provider, model, status)
+			 SELECT a.id, $1, 1, true, $2, $3, 200 FROM agents a WHERE a.public_id = $4`,
+			f.matchID, f.verifiedProvider, f.verifiedModel, f.agentPub); err != nil {
+			t.Fatalf("insert bound model call %s: %v", f.matchID, err)
+		}
 	}
 }
 

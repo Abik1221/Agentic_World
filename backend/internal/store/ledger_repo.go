@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/agent-arena/arena/internal/ledger"
@@ -294,4 +295,138 @@ func resolveWallet(ctx context.Context, tx pgx.Tx, ref ledger.WalletRef) (int64,
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// AuditLedger recomputes the double-entry invariants straight from the rows.
+//
+// Deliberately recomputes rather than trusting any counter the writer maintains: a bug in the
+// posting path must not be able to silence the check that would catch it. Read-only, no locks,
+// safe to run against production — and it repairs nothing, because an audit that also fixed
+// things would destroy the evidence of how the imbalance arose.
+//
+// Each check is capped at 20 identifiers. An alert that dumps ten thousand ids is one nobody
+// reads, and the count is reported in full regardless.
+func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error) {
+	rep := ledger.AuditReport{Healthy: true}
+
+	if err := r.db.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM ledger_transactions),
+		(SELECT count(*) FROM ledger_entries),
+		(SELECT count(*) FROM wallets)`).
+		Scan(&rep.Transactions, &rep.Entries, &rep.Wallets); err != nil {
+		return rep, fmt.Errorf("ledger audit: counting rows: %w", err)
+	}
+
+	checks := []struct{ name, severity, query string }{
+		{
+			// Every posting must sum to zero across its entries. A non-zero sum is coins minted
+			// or burned by that single transaction — the gravest finding here, because a payout
+			// could be funded from nowhere.
+			"unbalanced_transactions", ledger.SeverityCritical,
+			`SELECT count(*), coalesce(string_agg(txn_id::text, ',' ORDER BY txn_id), '')
+			   FROM (SELECT txn_id FROM ledger_entries
+			          GROUP BY txn_id HAVING sum(amount) <> 0 LIMIT 20) x`,
+		},
+		{
+			// The stored balance must equal the sum of that wallet's entries. Entries are the
+			// record of truth; balance is a cache of them, so drift means the number a user SEES
+			// is wrong even when the history behind it is right.
+			"wallet_balance_drift", ledger.SeverityHigh,
+			`SELECT count(*), coalesce(string_agg(id::text, ',' ORDER BY id), '')
+			   FROM (SELECT w.id FROM wallets w
+			         LEFT JOIN ledger_entries e ON e.wallet_id = w.id
+			         GROUP BY w.id, w.balance
+			         HAVING w.balance <> coalesce(sum(e.amount), 0) LIMIT 20) y`,
+		},
+		{
+			// The schema forbids this. A row here means the CHECK was bypassed by a direct write,
+			// or dropped by a migration and never restored.
+			"negative_agent_or_escrow_balance", ledger.SeverityCritical,
+			`SELECT count(*), coalesce(string_agg(id::text, ',' ORDER BY id), '')
+			   FROM (SELECT id FROM wallets
+			         WHERE kind IN ('agent','escrow') AND balance < 0 LIMIT 20) z`,
+		},
+		{
+			// An entry whose transaction is gone is a coin move with no recorded reason.
+			"orphan_entries", ledger.SeverityCritical,
+			`SELECT count(*), coalesce(string_agg(eid::text, ',' ORDER BY eid), '')
+			   FROM (SELECT e.id AS eid FROM ledger_entries e
+			         LEFT JOIN ledger_transactions t ON t.id = e.txn_id
+			         WHERE t.id IS NULL LIMIT 20) o`,
+		},
+	}
+
+	// Escrow reconciliation, computed before the row checks so the figures are reported even when
+	// a later check errors. Every coin in escrow must be explained by a match that has not settled
+	// — either still open, or finished with its retention recorded somewhere.
+	//
+	// # payout_holds is the ONLY hold state, and this check is deliberately strict about it
+	//
+	// held_settlements is not a second hold record. payout_holds says a match's payout IS held;
+	// held_settlements carries the multi-winner SPLIT to replay when it is released. Every deny
+	// branch of the real gate (antifraud.Service.Allow) calls RecordHold, so a genuinely held
+	// match always has the payout_holds row — including the Mafia and Monopoly paths, which
+	// write the split in addition to, never instead of, the hold.
+	//
+	// So a match with a split and no hold state is NOT explained escrow, and must keep firing.
+	// It means a deny path wrote the payout map and forgot the hold, which would leave coins
+	// retained with nothing marking them retained and nothing for an admin release to claim.
+	//
+	// I briefly widened this to accept held_settlements alone, after a critical fired on three
+	// such matches. That was wrong: the three came from TestMoneyFlowE2E_TenAgents, whose
+	// denyGate stub refuses without recording a hold — a state the production gate cannot
+	// produce. Widening the check would have masked exactly the defect it exists to catch. The
+	// fixture was fixed instead.
+	const escrowSQL = `
+		WITH staked AS (
+		  SELECT metadata->>'match' AS mid FROM ledger_transactions WHERE kind = 'stake'),
+		closed AS (
+		  SELECT DISTINCT metadata->>'match' AS mid FROM ledger_transactions
+		   WHERE kind IN ('settle','refund')),
+		unsettled AS (
+		  SELECT m.id, m.status,
+		         m.bid * (SELECT count(*) FROM match_players mp WHERE mp.match_id = m.id) AS stake
+		    FROM staked s JOIN matches m ON m.public_id = s.mid
+		   WHERE NOT EXISTS (SELECT 1 FROM closed c WHERE c.mid = s.mid))
+		SELECT
+		  (SELECT coalesce(sum(balance),0) FROM wallets WHERE kind = 'escrow'),
+		  coalesce(sum(stake) FILTER (
+		    WHERE EXISTS (SELECT 1 FROM payout_holds h
+		                   WHERE h.match_id = unsettled.id AND h.status = 'held')), 0),
+		  coalesce(sum(stake) FILTER (
+		    WHERE status NOT IN ('finished','aborted','cancelled')), 0),
+		  coalesce(sum(stake) FILTER (
+		    WHERE status IN ('finished','aborted','cancelled')
+		      AND NOT EXISTS (SELECT 1 FROM payout_holds h
+		                       WHERE h.match_id = unsettled.id AND h.status = 'held')), 0)
+		FROM unsettled`
+	var unexplained int64
+	if err := r.db.QueryRow(ctx, escrowSQL).
+		Scan(&rep.EscrowBalance, &rep.EscrowHeld, &rep.EscrowOpen, &unexplained); err != nil {
+		return rep, fmt.Errorf("ledger audit: escrow reconciliation: %w", err)
+	}
+	if unexplained != 0 {
+		rep.Healthy = false
+		rep.Findings = append(rep.Findings, ledger.AuditFinding{
+			Check: "escrow_unexplained", Count: unexplained, Severity: ledger.SeverityCritical,
+			Detail: "coins in escrow for a terminal match with no payout hold recorded — " +
+				"the stake was taken and there is no story for where it went",
+		})
+	}
+
+	for _, c := range checks {
+		var n int64
+		var detail string
+		if err := r.db.QueryRow(ctx, c.query).Scan(&n, &detail); err != nil {
+			return rep, fmt.Errorf("ledger audit: %s: %w", c.name, err)
+		}
+		if n == 0 {
+			continue
+		}
+		rep.Healthy = false
+		rep.Findings = append(rep.Findings, ledger.AuditFinding{
+			Check: c.name, Count: n, Detail: detail, Severity: c.severity,
+		})
+	}
+	return rep, nil
 }

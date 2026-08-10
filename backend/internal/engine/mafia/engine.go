@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strconv"
 )
 
 // Engine is a pure Mafia rules machine: append-only events, deterministic timeouts.
@@ -63,6 +64,11 @@ func (e *Engine) Act(s State, seat int, act Action) (State, []Event, error) {
 		return s, nil, ErrNotAlive
 	}
 	ns := s.clone() // never mutate the caller's maps
+	// Attendance is recorded at the single entry point, before the phase handlers can
+	// return early, so no path can accept an action without it being counted. act.Forced
+	// is set only by defaultActionFor, so a client posting {"action":"abstain"} is
+	// recorded as PRESENT — it answered, and choosing to pass is legitimate play.
+	ns.noteAsked(seat, act.Forced)
 	switch ns.Phase {
 	case PhaseNight:
 		return e.actNight(ns, seat, act)
@@ -80,6 +86,14 @@ func (e *Engine) actNight(s State, seat int, act Action) (State, []Event, error)
 	// Abstain (timeout no-op): record the seat as done for the night with no effect —
 	// a mafia casts no kill vote, a special gathers no info. The night resolves once
 	// every pending special has acted or abstained.
+	//
+	// Deliberately NO EvSilent here, unlike discussion and voting. Only mafia, detective,
+	// doctor and sheriff are ever pending at night — plain townsfolk return early below
+	// — so "seat 4 took no night action" is a public announcement that seat 4 holds a
+	// night role. That single line would unmask the mafia on the first missed timeout
+	// and hand the town a free detective. Night silence therefore stays unrecorded in
+	// the public log; the seat's absence still shows up where it is safe to show it, in
+	// the discussion and voting phases and in the developer's own trace.
 	if act.Kind == ActAbstain {
 		switch role {
 		case RoleMafia:
@@ -289,7 +303,10 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 
 func (e *Engine) actDiscussion(s State, seat int, act Action) (State, []Event, error) {
 	// Abstain (timeout no-op): the seat stays silent but still counts toward the
-	// discussion quota so the phase advances. No message is emitted (no voice).
+	// discussion quota so the phase advances. No MESSAGE is emitted (the seat has no
+	// voice and the platform will not invent words for it), but the silence itself is
+	// recorded publicly — "nobody spoke for seat 4" is exactly the kind of thing the
+	// table should be able to bring up during the vote.
 	if act.Kind == ActAbstain {
 		if s.NightActs == nil {
 			s.NightActs = map[int]Action{}
@@ -299,10 +316,11 @@ func (e *Engine) actDiscussion(s State, seat int, act Action) (State, []Event, e
 		}
 		s.NightActs[seat] = Action{Kind: ActAbstain}
 		s.Messages++
+		silent := e.emitSilent(&s, seat, PhaseDiscussion, act)
 		if !s.discussionReady() {
-			return s, nil, nil
+			return s, []Event{silent}, nil
 		}
-		return e.openVoting(s, nil)
+		return e.openVoting(s, []Event{silent})
 	}
 	if act.Kind != "message" || act.Text == "" {
 		return s, nil, ErrIllegalAction
@@ -351,7 +369,9 @@ func (e *Engine) openVoting(s State, prefix []Event) (State, []Event, error) {
 
 func (e *Engine) actVote(s State, seat int, act Action) (State, []Event, error) {
 	// Abstain (timeout no-op): record a non-vote so the tally can complete, but it
-	// counts for nobody (pluralityTarget ignores target 0). No vote event is emitted.
+	// counts for nobody (pluralityTarget ignores target 0). No VOTE event is emitted —
+	// the seat did not vote and the log must not imply it did — but a public EvSilent
+	// is, so the surviving agents know this seat went quiet before they weigh the tally.
 	if act.Kind == ActAbstain {
 		if s.Votes == nil {
 			s.Votes = map[int]int{}
@@ -360,6 +380,7 @@ func (e *Engine) actVote(s State, seat int, act Action) (State, []Event, error) 
 			return s, nil, nil
 		}
 		s.Votes[seat] = 0
+		silent := e.emitSilent(&s, seat, PhaseVoting, act)
 		alive := 0
 		for _, ok := range s.Alive {
 			if ok {
@@ -367,9 +388,9 @@ func (e *Engine) actVote(s State, seat int, act Action) (State, []Event, error) 
 			}
 		}
 		if len(s.Votes) < alive {
-			return s, nil, nil
+			return s, []Event{silent}, nil
 		}
-		return e.resolveVote(s, nil)
+		return e.resolveVote(s, []Event{silent})
 	}
 	if act.Kind != "vote" || !s.Alive[act.Target] || act.Target == seat {
 		return s, nil, ErrIllegalAction
@@ -490,14 +511,60 @@ func (e *Engine) ForceTimeout(s State, seed []byte) (State, []Event, error) {
 	return cur, all, nil
 }
 
-// defaultActionFor is the deterministic fallback action for a pending seat.
 // defaultActionFor is the action the server applies for a seat that missed its
 // turn window. Per the universal timeout rule it is a pure ABSTAIN in every phase
 // — no vote, no voice, no discussion, no night action — so a non-responding agent
 // is skipped (and loses by inaction) rather than having a plausible move invented
 // for it. The phase still resolves because abstain marks the seat as having acted.
+//
+// Forced is what makes the resulting silence legible: the engine emits a public
+// EvSilent carrying SilentTimeout, so the rest of the table learns the seat went
+// dark instead of the log simply omitting it.
 func defaultActionFor(s State, seat int, seed []byte) Action {
-	return Action{Kind: ActAbstain}
+	return Action{Kind: ActAbstain, Forced: true}
+}
+
+// silenceReason maps how an abstain arrived onto the reason the table is told.
+func silenceReason(act Action) string {
+	if act.Forced {
+		return SilentTimeout
+	}
+	return SilentAbstain
+}
+
+// silentText is the moderator-style line describing a seat's non-action, phrased so
+// an LLM reading the transcript gets the fact without an editorial verdict attached.
+func silentText(seat int, phase, reason string) string {
+	who := "Seat " + strconv.Itoa(seat)
+	if reason == SilentTimeout {
+		switch phase {
+		case PhaseVoting:
+			return who + " did not vote in time."
+		case PhaseDiscussion:
+			return who + " said nothing before discussion closed."
+		case PhaseNight:
+			return who + " took no night action in time."
+		}
+		return who + " did not act in time."
+	}
+	switch phase {
+	case PhaseVoting:
+		return who + " chose not to vote."
+	case PhaseDiscussion:
+		return who + " chose to stay silent."
+	case PhaseNight:
+		return who + " chose to take no night action."
+	}
+	return who + " chose not to act."
+}
+
+// emitSilent appends the public non-action record for a seat.
+func (e *Engine) emitSilent(s *State, seat int, phase string, act Action) Event {
+	reason := silenceReason(act)
+	return e.emit(s, EvSilent, SilentPayload{
+		Seat: seat, Phase: phase, Reason: reason,
+		Text: silentText(seat, phase, reason),
+	})
 }
 
 func pluralityTarget(votes map[int]int) int {

@@ -17,11 +17,39 @@ afterEach(() => {
   uninstrument();
 });
 
-test("gatewayBaseUrl resolves per provider", () => {
+test("gatewayBaseUrl resolves by WIRE FORMAT, not by a provider list", () => {
   enableGateway("agentA", "https://gateway.pyyol.com/");
-  assert.equal(gatewayBaseUrl("openai"), "https://gateway.pyyol.com/gw/openai/v1");
+  // Anthropic and Google clients append their own version segment, so the base must not.
   assert.equal(gatewayBaseUrl("anthropic"), "https://gateway.pyyol.com/gw/anthropic");
-  assert.equal(gatewayBaseUrl("unknown"), "");
+  assert.equal(gatewayBaseUrl("google"), "https://gateway.pyyol.com/gw/google");
+  // Everything else is OpenAI-wire and needs /v1.
+  assert.equal(gatewayBaseUrl("openai"), "https://gateway.pyyol.com/gw/openai/v1");
+  for (const p of ["groq", "mistral", "deepseek", "cohere", "xai", "together", "openrouter"]) {
+    assert.equal(gatewayBaseUrl(p), `https://gateway.pyyol.com/gw/${p}/v1`);
+  }
+});
+
+test("an unlisted provider still routes", () => {
+  // THE regression this guards. A provider->path table returned "" for anything unlisted, so
+  // Gemini, Mistral, DeepSeek and every remote provider outside the table were NOT routed —
+  // silently. Those agents produced no proofs and could never earn Verified, and nothing told
+  // the developer. The ecosystem adds providers faster than a table can, so an unknown name
+  // must route and let the gateway's own allowlist give a clear answer.
+  enableGateway("agentA", "https://gateway.pyyol.com");
+  assert.equal(
+    gatewayBaseUrl("brand-new-provider"),
+    "https://gateway.pyyol.com/gw/brand-new-provider/v1",
+  );
+});
+
+test("a LOCAL provider is deliberately not routed", () => {
+  // The gateway runs on Pyyol's side and cannot reach a model server on the developer's own
+  // machine, so routing there would break every call. Such play is unverified — and free, so
+  // there is no cost attribution to lose either.
+  enableGateway("agentA", "https://gateway.pyyol.com");
+  for (const p of ["ollama", "vllm", "lmstudio", "llamacpp", "self-hosted"]) {
+    assert.equal(gatewayBaseUrl(p), "", `${p} must not be routed`);
+  }
 });
 
 test("gatewayBaseUrl empty when disabled", () => {

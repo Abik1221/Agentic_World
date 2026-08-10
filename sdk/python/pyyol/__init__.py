@@ -51,6 +51,27 @@ __all__ = [
     "rate_for",
     "is_known",
     "PRICING_VERSION",
+    # Scaffold fingerprinting: the harness identity that makes a paired model comparison
+    # possible (same scaffold, different model). Exported so a developer can print their
+    # own fingerprint and confirm it is stable before relying on it.
+    "scaffold_fingerprint",
+    "scaffold_from_request",
+    "scaffold_eligible_for_pairing",
+    "SCAFFOLD_VERSION",
+    # Structured move tools: how an agent proves its MODEL chose the move it played.
+    # Routing through the gateway proves a call happened for a turn; a tool call is what
+    # proves the model's answer became the move. See pyyol.movetools.
+    "move_tool",
+    "move_tool_choice",
+    "move_from_response",
+    "bound_move",
+    # Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
+    # model made, not calls, so batching no longer costs an agent its verified share.
+    "bound_plan",
+    # Renders a turn view as a prompt the move tools expect. Exported because the documented
+    # example uses it inline, and a docs snippet that needs an undocumented import is a snippet
+    # nobody can paste.
+    "prompt_for",
     # Telemetry + signing primitives (parity with the JS SDK).
     "Span",
     "UsageAccumulator",
@@ -100,6 +121,16 @@ _LAZY = {
     "rate_for": "pricing",
     "is_known": "pricing",
     "PRICING_VERSION": "pricing",
+    "SCAFFOLD_VERSION": "scaffold",
+    "scaffold_fingerprint": "scaffold",
+    "scaffold_from_request": "scaffold",
+    "scaffold_eligible_for_pairing": "scaffold",
+    "move_tool": "movetools",
+    "move_tool_choice": "movetools",
+    "move_from_response": "movetools",
+    "bound_move": "movetools",
+    "bound_plan": "movetools",
+    "prompt_for": "movetools",
     "Span": "telemetry",
     "UsageAccumulator": "telemetry",
     "match_trace_id": "telemetry",

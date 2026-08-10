@@ -80,12 +80,52 @@ type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
 	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
-	CachedTokens     int `json:"cached_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens,omitempty"`
+	// Prompt-cache READS and WRITES, kept apart because they are separately billed and
+	// point opposite ways (on Anthropic, 0.1x input for a read and 1.25x for a write).
+	// Collapsing them into one number makes the cost unrecoverable from what we stored.
+	CachedTokens      int `json:"cached_tokens,omitempty"`
+	CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
+	TotalTokens       int `json:"total_tokens,omitempty"`
 	// Model/Provider observed for THIS move (SDK-reported from the actual call).
 	// Empty falls back to the seat's manifest-declared model.
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	// Scaffold fingerprints the HARNESS this decision ran under — system prompt, tools,
+	// sampling — with the model deliberately excluded. Holding it constant is what turns
+	// "Claude beats GPT" from a confounded observation into a paired comparison.
+	Scaffold string `json:"scaffold,omitempty"`
+	// ScaffoldUnstable means the fingerprint changed mid-turn, which happens when variable
+	// game state sits in the system prompt. Such a decision cannot be paired, and that has
+	// to travel with the data rather than be guessed at later.
+	ScaffoldUnstable bool `json:"scaffold_unstable,omitempty"`
+	// ScaffoldIssue is a short code for why no fingerprint was produced (e.g.
+	// "no_system_prompt"), so an agent excluded from paired comparison is told why rather
+	// than left to discover it. A code, not prose: the reason repeats on every decision.
+	ScaffoldIssue string `json:"scaffold_issue,omitempty"`
+	// ModelCalls is how many model calls this ONE decision took, and CallLatenciesMS how
+	// long each took. An aggregate cannot separate one slow call from six quick ones.
+	ModelCalls      int   `json:"model_calls,omitempty"`
+	CallLatenciesMS []int `json:"call_latencies_ms,omitempty"`
+}
+
+// PriceUsage is the USD cost of one decision's usage, via the versioned price table.
+//
+// One function so the driver path, the pull path and the decision-log projection cannot price
+// the same usage three ways. It previously existed as the same expression written out at each
+// call site, which is how a cache-write parameter gets added in two places and missed in a
+// third — and a cost that differs by transport is not a cost.
+//
+// model is passed separately because a seat's model may be known from the manifest when the
+// per-decision usage did not report one.
+func PriceUsage(model string, u *TokenUsage) float64 {
+	if u == nil {
+		return 0
+	}
+	if model == "" {
+		model = u.Model
+	}
+	return pricing.EstimateCost(model, u.PromptTokens, u.CompletionTokens,
+		u.CachedTokens, u.CachedWriteTokens, u.ReasoningTokens)
 }
 
 // total returns the reported total, or the sum of the parts if total is unset.
@@ -164,11 +204,12 @@ type SeatSummary struct {
 	LatencyMaxMS    int64  `json:"latency_max_ms"`
 	Result          Result `json:"result,omitempty"` // match outcome for this seat
 	// LLM economics (summed across moves that reported usage; 0 if none did).
-	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
-	CompletionTokens int64 `json:"completion_tokens,omitempty"`
-	ReasoningTokens  int64 `json:"reasoning_tokens,omitempty"`
-	CachedTokens     int64 `json:"cached_tokens,omitempty"`
-	TotalTokens      int64 `json:"total_tokens,omitempty"`
+	PromptTokens      int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int64 `json:"completion_tokens,omitempty"`
+	ReasoningTokens   int64 `json:"reasoning_tokens,omitempty"`
+	CachedTokens      int64 `json:"cached_tokens,omitempty"`
+	CachedWriteTokens int64 `json:"cached_write_tokens,omitempty"`
+	TotalTokens       int64 `json:"total_tokens,omitempty"`
 	// EstimatedCost is the summed USD cost across moves that reported usage, priced
 	// per-move by the versioned pricing table (real per-move model when reported,
 	// else the manifest model). PricingVersion records which table produced it.
@@ -336,6 +377,7 @@ func (r *Recorder) Record(d Decision) {
 		s.CompletionTokens += int64(d.Usage.CompletionTokens)
 		s.ReasoningTokens += int64(d.Usage.ReasoningTokens)
 		s.CachedTokens += int64(d.Usage.CachedTokens)
+		s.CachedWriteTokens += int64(d.Usage.CachedWriteTokens)
 		s.TotalTokens += int64(d.Usage.total())
 		// Price this move now (uncapped, unlike DecisionLog): prefer the real
 		// per-move model, else the seat's manifest model.
@@ -344,7 +386,8 @@ func (r *Recorder) Record(d Decision) {
 			model = s.Model
 		}
 		s.EstimatedCost += pricing.EstimateCost(
-			model, d.Usage.PromptTokens, d.Usage.CompletionTokens, d.Usage.CachedTokens, d.Usage.ReasoningTokens,
+			model, d.Usage.PromptTokens, d.Usage.CompletionTokens,
+			d.Usage.CachedTokens, d.Usage.CachedWriteTokens, d.Usage.ReasoningTokens,
 		)
 		s.PricingVersion = pricing.Version
 	}

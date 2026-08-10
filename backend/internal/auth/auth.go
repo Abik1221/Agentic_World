@@ -227,6 +227,23 @@ func RequirePlatformOrAdmin(allowlist map[string]bool) func(http.Handler) http.H
 }
 
 // PrincipalFromContext returns the authenticated principal, or nil.
+// ResolveCredential resolves a raw credential (agent API key or user JWT) to a Principal.
+//
+// Exported for the LLM gateway, which cannot use Middleware. A gateway request carries the
+// DEVELOPER'S PROVIDER credential in the standard auth slot — Anthropic reads x-api-key,
+// OpenAI reads "Authorization: Bearer" — and that credential has to reach the upstream
+// untouched. So Pyyol's own identity travels in X-Pyyol-Key, and the gateway resolves it
+// itself rather than having Middleware consume a header that belongs to someone else.
+func (a *Authenticator) ResolveCredential(ctx context.Context, raw string) (*Principal, error) {
+	return a.resolve(ctx, raw)
+}
+
+// ContextWithPrincipal attaches an already-resolved Principal, so a caller doing its own
+// credential extraction still produces a context PrincipalFromContext understands.
+func ContextWithPrincipal(ctx context.Context, p *Principal) context.Context {
+	return context.WithValue(ctx, principalKey, p)
+}
+
 func PrincipalFromContext(ctx context.Context) *Principal {
 	if p, ok := ctx.Value(principalKey).(*Principal); ok {
 		return p

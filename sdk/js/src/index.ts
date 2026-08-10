@@ -34,4 +34,40 @@ export { instrument, uninstrument, recordResponse, extractUsage, patchPrototype 
 export { route, enableGateway, disableGateway, gatewayBaseUrl, gatewayHeaders } from "./instrument.js";
 export type { ExtractedUsage } from "./instrument.js";
 export { estimateCost, rateFor, isKnown, canonical, PRICING_VERSION } from "./pricing.js";
+// Structured move tools: how an agent proves its MODEL chose the move it played. Routing
+// through the gateway proves a call happened for a turn; a tool call is what proves the
+// model's answer became the move. See src/movetools.ts.
+export {
+  moveTool,
+  moveToolChoice,
+  moveToolName,
+  moveFromResponse,
+  boundMove,
+  // Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
+  // model made, not calls, so batching no longer costs an agent its verified share.
+  boundPlan,
+  canonPlan,
+  PLAN_KEY,
+  MAX_SPAN_ROUNDS,
+  canonMove,
+  canonGoofspiel,
+  canonMafia,
+  canonMonopoly,
+  NO_TARGET,
+  TOOL_GOOFSPIEL,
+  TOOL_MAFIA,
+  TOOL_MONOPOLY,
+  GAME_GOOFSPIEL,
+  GAME_MAFIA,
+  GAME_MONOPOLY,
+} from "./movetools.js";
 export type { Rate, CostArgs } from "./pricing.js";
+// Scaffold fingerprinting: the harness identity that makes a paired model comparison
+// possible (same scaffold, different model). Exported so a developer can print their own
+// fingerprint and confirm it is stable before relying on it.
+export {
+  fingerprint as scaffoldFingerprint,
+  fromRequest as scaffoldFromRequest,
+  eligibleForPairing as scaffoldEligibleForPairing,
+  SCAFFOLD_VERSION,
+} from "./scaffold.js";

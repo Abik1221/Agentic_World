@@ -32,13 +32,13 @@ import functools
 import importlib
 import inspect
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from . import pricing, providers
+from . import pricing, providers, scaffold
 from .telemetry import current_span, current_usage
 
 # (class, method_name, original_callable) for uninstrument().
-_PATCHED: List[Tuple[Any, str, Any]] = []
+_PATCHED: list[tuple[Any, str, Any]] = []
 
 # --- Verified-tier gateway routing (Phase 4c) ---------------------------------
 # When routing is enabled, the instrument wrapper injects the Pyyol identity headers
@@ -47,7 +47,7 @@ _PATCHED: List[Tuple[Any, str, Any]] = []
 # base_url at the gateway. Together they make ranked LLM traffic flow through the
 # gateway with a single opt-in line, and the gateway measures the REAL model/cost.
 
-_gateway: Dict[str, str] = {}  # {"key": agent_key, "base": gateway_base_url}
+_gateway: dict[str, str] = {}  # {"key": agent_key, "base": gateway_base_url}
 
 
 def enable_gateway(agent_key: str, base_url: str) -> None:
@@ -61,26 +61,56 @@ def disable_gateway() -> None:
     _gateway.clear()
 
 
-# Per-provider path on the gateway (see internal/llmgateway routing).
-# Groq speaks the OpenAI wire format, so it uses the same /v1 suffix — but it needs
-# its own gateway path: a Groq model name sent to the OpenAI upstream is just an
-# unknown model.
-_PROVIDER_PATH = {
-    "openai": "/gw/openai/v1",
-    "anthropic": "/gw/anthropic",
-    "groq": "/gw/groq/v1",
-}
+# Which WIRE FORMAT a provider speaks. This decides the gateway path, and it is the only
+# per-provider knowledge routing needs.
+#
+# WHY NOT A PROVIDER->PATH TABLE. There was one, listing openai, anthropic and groq. Every
+# other provider — Gemini, Mistral, DeepSeek, Cohere, xAI, Together, OpenRouter, Fireworks,
+# and every self-hosted vLLM or Ollama server — resolved to "" and was therefore NOT ROUTED,
+# silently. Those agents produced no proofs, could never earn Verified, and in ranked play can
+# have decisions treated as unproven. Nothing told the developer. A table that has to name
+# every provider is always one release behind the ecosystem, so the verified tier was
+# structurally OpenAI-and-Anthropic-only.
+#
+# What actually varies is one bit: does the provider's own SDK append a version segment to the
+# base URL, or not?
+#
+#   OpenAI-wire clients call {base}/chat/completions        -> the base must end in /v1
+#   Anthropic clients call   {base}/v1/messages             -> the base must NOT
+#   Google clients call      {base}/v1beta/models/...       -> the base must NOT
+#
+# So three cases, and OpenAI-wire is the DEFAULT because the overwhelming majority of the
+# ecosystem speaks it. A provider nobody has heard of routes correctly on the day it ships.
+_ANTHROPIC_WIRE = frozenset({"anthropic"})
+_GOOGLE_WIRE = frozenset({"google", "vertex"})
+
+
+def _wire_suffix(provider: str) -> str:
+    """The version segment the gateway base needs for this provider's wire format."""
+    p = (provider or "").lower()
+    if p in _ANTHROPIC_WIRE or p in _GOOGLE_WIRE:
+        return ""
+    return "/v1"
 
 
 def gateway_base_url(provider: str) -> str:
-    """The gateway base_url a `provider` client should point at, or "" if routing is
-    off / the provider is unknown."""
+    """The gateway base_url a `provider` client should point at, or "" if routing is off or
+    the provider cannot be routed.
+
+    Returns "" for a LOCAL/self-hosted provider. That is not an oversight: the gateway runs on
+    Pyyol's side and cannot reach a model server on the developer's own machine, so pointing a
+    client at it would break every call. Such play is unverified — and also free, so there is no
+    cost attribution to lose either.
+    """
     base = _gateway.get("base", "")
-    path = _PROVIDER_PATH.get(provider, "")
-    return base + path if base and path else ""
+    if not base or not provider:
+        return ""
+    if providers.is_self_hosted(provider):
+        return ""
+    return f"{base}/gw/{provider}{_wire_suffix(provider)}"
 
 
-def gateway_headers() -> Dict[str, str]:
+def gateway_headers() -> dict[str, str]:
     """The X-Pyyol-* identity headers for the current turn (empty if routing off)."""
     if not _gateway.get("key"):
         return {}
@@ -100,7 +130,7 @@ def gateway_headers() -> Dict[str, str]:
     return h
 
 
-def route(client: Any, provider: Optional[str] = None) -> Any:
+def route(client: Any, provider: str | None = None) -> Any:
     """Point a provider client at the Pyyol Gateway (sets its base_url). Explicit,
     robust opt-in — operates on the instance the developer hands us, so it doesn't
     depend on provider-internal layout. Returns the same client for chaining. A no-op
@@ -126,6 +156,18 @@ def route(client: Any, provider: Optional[str] = None) -> Any:
 
     url = gateway_base_url(prov)
     if not url:
+        # Two different reasons land here, and conflating them is how the old code hid a real
+        # problem behind a benign one.
+        if _gateway.get("base") and providers.is_self_hosted(prov):
+            # A local model server. The gateway cannot reach the developer's own machine, so
+            # NOT routing is correct — but say so, because "verified" will be absent and the
+            # developer should know that was a consequence of their choice rather than a bug.
+            _warn(
+                f"pyyol.route(): {prov} runs on your own machine, so it cannot be routed "
+                "through the Pyyol Gateway (we cannot reach your host). These calls are free "
+                "and will be recorded as self-reported rather than verified."
+            )
+            return client
         # Routing simply not enabled (no gateway configured) — the normal state in
         # local and sandbox play, where usage is self-reported and that is fine.
         # DELIBERATELY SILENT: warning here would fire on every run for every
@@ -196,10 +238,13 @@ def _resolve_call_provider(resource: Any, patched_as: str) -> str:
         # Routed through us. Recover the upstream from the gateway PATH by matching it
         # back against the routing table, rather than by parsing segments — the table
         # is the thing that defined the path, so the two cannot drift apart.
-        tail = base[len(gw) :]
-        for provider, path in _PROVIDER_PATH.items():
-            if tail.startswith(path):
-                return provider
+        # Recover the upstream from the gateway PATH: /gw/<slug>[/v1]. Parsed structurally now
+        # that there is no table to match against — which also means a provider added tomorrow
+        # is attributed correctly without touching this.
+        tail = base[len(gw) :].strip("/")
+        parts = tail.split("/")
+        if len(parts) >= 2 and parts[0] == "gw" and parts[1]:
+            return parts[1]
         return patched_as
     return providers.resolve(base_url=base, fallback=patched_as)
 
@@ -210,136 +255,297 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
-def _extract_ollama(resp: Any) -> Optional[Dict[str, Any]]:
-    """Ollama's native response shape, which has no ``usage`` object at all.
+# --- Usage normalization, by MEANING rather than by vendor ---------------------------
+#
+# WHY THE VENDOR TABLE HAD TO GO. This had one extractor per provider: OpenAI, Anthropic, the
+# OpenAI Responses API, Ollama, Google, Cohere. Everything else returned None and was recorded as
+# ZERO tokens and zero cost — silently, because a zero is a plausible-looking integer. New
+# providers ship constantly and every self-hosted server (vLLM, LM Studio, llama.cpp, SGLang,
+# TGI) has its own dialect, so the table was always one release behind.
+#
+# What is stable is not the field NAMES but the CONCEPTS: input, output, cache read, cache write,
+# reasoning. Matching on those means `prompt_cache_hit_tokens`, `cache_read_input_tokens`,
+# `cached_tokens` and `cachedContentTokenCount` all land in one bucket without any being listed.
+#
+# This mirrors internal/llmgw/usagenorm.go deliberately. The gateway is the authoritative
+# observer for the verified tier; if the SDK normalized differently, "verified" and
+# "self-reported" would be two different numbers for one call — and the boards rank on cost, so
+# the divergence would land as a silent bias in a public ranking rather than a visible bug.
+# sdk/conformance/usage_pricing.json pins both against the same expectations.
 
-    Counts live at the top level as ``prompt_eval_count`` / ``eval_count``. Without
-    this an agent running Ollama through the native client reported zero tokens
-    forever — it looked instrumented and measured nothing.
+_CONCEPT_INPUT_PROMPT = "input_prompt"  # whole-prompt family: cache is a SUBSET
+_CONCEPT_INPUT_FRESH = "input_fresh"  # fresh-input family: cache is ADDITIVE
+_CONCEPT_OUTPUT = "output"
+_CONCEPT_CACHE_READ = "cache_read"
+_CONCEPT_CACHE_WRITE = "cache_write"
+_CONCEPT_REASONING = "reasoning"
+_CONCEPT_TOTAL = "total"
+
+_MODEL_KEYS = frozenset({"model", "modelversion", "modelid", "modelname", "modelslug"})
+
+
+def _classify_usage_key(key: str) -> str | None:
+    """What a response field MEANS, independent of what it is called.
+
+    Ordered most-specific-first: "cache_read_input_tokens" contains both "cache" and "input" and
+    must read as a cache field, not an input count. Getting that order wrong would make
+    Anthropic's cache read look like its input total.
     """
-    prompt = _get(resp, "prompt_eval_count")
-    completion = _get(resp, "eval_count")
-    if prompt is None and completion is None:
+    k = key.lower().replace("-", "_")
+
+    if "cach" in k:
+        if "creat" in k or "writ" in k:
+            return _CONCEPT_CACHE_WRITE
+        if "miss" in k:
+            # NOT a cache concept. A miss is ordinary uncached input, already inside the prompt
+            # total that accompanies it (DeepSeek documents prompt == hit + miss), so counting it
+            # would double-bill.
+            return None
+        if "read" in k or "hit" in k or "cached" in k:
+            return _CONCEPT_CACHE_READ
+        # A bare cache count with no direction: read is the cheaper and therefore conservative
+        # reading — overstating a discount is worse than understating it.
+        return _CONCEPT_CACHE_READ
+    if "reasoning" in k or "thought" in k:
+        return _CONCEPT_REASONING
+    if "total" in k:
+        return _CONCEPT_TOTAL
+    # Output before input: these are unambiguous, and doing them first keeps the input rules from
+    # having to exclude them.
+    if "completion" in k or "output" in k or "candidates" in k or k == "eval_count":
+        return _CONCEPT_OUTPUT
+    if "prompt" in k:
+        return _CONCEPT_INPUT_PROMPT
+    if "input" in k:
+        return _CONCEPT_INPUT_FRESH
+    return None
+
+
+def _is_model_key(key: str) -> bool:
+    k = key.lower()
+    for ch in ("_", "-", "."):
+        k = k.replace(ch, "")
+    return k in _MODEL_KEYS
+
+
+def _usage_fields(node: Any) -> dict[str, Any] | None:
+    """The named fields of a mapping or a provider SDK object, or None."""
+    if isinstance(node, dict):
+        return node
+    if isinstance(node, (str, bytes, bytearray, int, float, bool)) or node is None:
         return None
-    return {
-        "model": _get(resp, "model", "") or "",
-        "provider": providers.OLLAMA,
-        "prompt_tokens": int(prompt or 0),
-        "completion_tokens": int(completion or 0),
-        "cached_tokens": 0,
-        "reasoning_tokens": 0,
-    }
+    out: dict[str, Any] = {}
+    for klass in reversed(getattr(type(node), "__mro__", ())):
+        for key, value in vars(klass).items():
+            if key.startswith("_") or callable(value) or isinstance(value, property):
+                continue
+            out[key] = value
+    for key in getattr(type(node), "__slots__", ()) or ():
+        if not key.startswith("_"):
+            try:
+                out[key] = getattr(node, key)
+            except Exception:  # noqa: BLE001 - a raising descriptor must not break a call
+                pass
+    data = getattr(node, "__dict__", None)
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if not key.startswith("_"):
+                out[key] = value
+    return out or None
 
 
-def _extract_google(resp: Any) -> Optional[Dict[str, Any]]:
-    """Google Gemini (google-genai / google-generativeai): counts hang off
-    ``usage_metadata`` with their own field names."""
-    um = _get(resp, "usage_metadata")
-    if um is None:
-        return None
-    prompt = _get(um, "prompt_token_count", 0) or 0
-    completion = _get(um, "candidates_token_count", 0) or 0
-    if not prompt and not completion:
-        return None
-    return {
-        # google-genai exposes the resolved model on the response; older shapes do not,
-        # in which case the caller's model kwarg is the only source and we leave it to
-        # the manual path rather than inventing one.
-        "model": _get(resp, "model_version", "") or _get(resp, "model", "") or "",
-        "provider": providers.GOOGLE,
-        "prompt_tokens": int(prompt),
-        "completion_tokens": int(completion),
-        "cached_tokens": int(_get(um, "cached_content_token_count", 0) or 0),
-        "reasoning_tokens": int(_get(um, "thoughts_token_count", 0) or 0),
-    }
+def _harvest_usage(node: Any, acc: dict[str, Any], depth: int = 0) -> None:
+    """Walk any response and accumulate usage by concept.
 
+    Takes the MAXIMUM per concept rather than the last value seen: responses repeat counts, and a
+    later zero for a field the provider is not reporting would erase a real count already found.
 
-def _extract_cohere(resp: Any) -> Optional[Dict[str, Any]]:
-    """Cohere nests counts under ``meta.tokens``."""
-    meta = _get(resp, "meta")
-    if meta is None:
-        return None
-    tokens = _get(meta, "tokens")
-    if tokens is None:
-        return None
-    prompt = _get(tokens, "input_tokens", 0) or 0
-    completion = _get(tokens, "output_tokens", 0) or 0
-    if not prompt and not completion:
-        return None
-    return {
-        "model": _get(resp, "model", "") or "",
-        "provider": "cohere",
-        "prompt_tokens": int(prompt),
-        "completion_tokens": int(completion),
-        "cached_tokens": 0,
-        "reasoning_tokens": 0,
-    }
-
-
-def extract_usage(resp: Any) -> Optional[Dict[str, Any]]:
-    """Pull normalized usage from a provider response, or None if it has none.
-
-    Handles OpenAI Chat Completions (``prompt_tokens``/``completion_tokens`` with
-    ``prompt_tokens_details.cached_tokens`` + ``completion_tokens_details.reasoning_tokens``),
-    Anthropic Messages (``input_tokens``/``output_tokens`` + ``cache_read_input_tokens``),
-    the OpenAI Responses API (``input_tokens``/``output_tokens``), Ollama
-    (``prompt_eval_count``/``eval_count``, no usage object), Google Gemini
-    (``usage_metadata``) and Cohere (``meta.tokens``). Duck-typed so a dict or an SDK
-    object both work.
+    Depth-bounded so a self-referential SDK object cannot spin forever.
     """
-    u = _get(resp, "usage")
-    if u is None:
-        # Shapes that carry no `usage` at all. Checked in order of how distinctive
-        # their marker fields are, so none can claim another's response.
-        for extractor in (_extract_ollama, _extract_google, _extract_cohere):
-            info = extractor(resp)
-            if info is not None:
-                return info
+    if depth > 12:
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            _harvest_usage(item, acc, depth + 1)
+        return
+    fields = _usage_fields(node)
+    if fields is None:
+        return
+    for key in sorted(fields):
+        value = fields[key]
+        if _is_model_key(key) and isinstance(value, str) and value and not acc.get("model"):
+            acc["model"] = value
+            continue
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            concept = _classify_usage_key(key)
+            if concept and value > 0:
+                if value > acc.get(concept, 0):
+                    acc[concept] = int(value)
+                    acc["found"] = True
+            continue
+        _harvest_usage(value, acc, depth + 1)
+
+
+# Container keys that hold accounting. Harvesting these FIRST is what stops an unrelated number
+# elsewhere in the response from being read as a token count — a real risk once the walk is
+# general, and one a "take the largest match" rule gets wrong every time.
+_USAGE_CONTAINER_HINTS = ("usage", "tokens", "accounting", "billing")
+
+
+def _harvest_containers(node: Any, acc: dict[str, Any], depth: int = 0) -> None:
+    """Harvest only inside containers whose NAME says they hold accounting.
+
+    Two-pass exists because of a decoy: a response carrying both a real ``usage`` object and a
+    stray ``prompt_eval_count`` elsewhere must be read from ``usage``. Scanning the whole document
+    and keeping the largest value would prefer whichever number happened to be bigger, which is
+    not a rule — it is a coin flip on the cost of the call.
+    """
+    if depth > 12:
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            _harvest_containers(item, acc, depth + 1)
+        return
+    fields = _usage_fields(node)
+    if fields is None:
+        return
+
+    # The CANONICAL envelope wins outright where it exists. `usage` is what OpenAI, Anthropic,
+    # Bedrock, Mistral and every OpenAI-wire server fill in; the alternatives below are what a
+    # provider uses INSTEAD of it, never alongside. A response carrying both (a proxy echoing
+    # dialects, or a stale field) must be read from `usage` — harvesting every container and
+    # keeping the largest number would let a decoy set the cost of the call.
+    primary = None
+    for key, value in fields.items():
+        if key.lower().replace("-", "").replace("_", "") == "usage" and not isinstance(
+            value, (str, bytes, int, float, bool)
+        ):
+            primary = value
+            break
+
+    for key in sorted(fields):
+        value = fields[key]
+        if _is_model_key(key) and isinstance(value, str) and value and not acc.get("model"):
+            acc["model"] = value
+            continue
+        if primary is not None:
+            continue  # only the canonical envelope, harvested below
+        lowered = key.lower()
+        if any(h in lowered for h in _USAGE_CONTAINER_HINTS) and not isinstance(
+            value, (str, bytes, int, float, bool)
+        ):
+            _harvest_usage(value, acc, depth + 1)
+            continue
+        _harvest_containers(value, acc, depth + 1)
+
+    if primary is not None:
+        _harvest_usage(primary, acc, depth + 1)
+        # Keep descending for a NESTED envelope: Anthropic's streaming shape puts usage inside a
+        # `message` object, so a frame's outer level may hold none of the counts.
+        for key in sorted(fields):
+            if key.lower().replace("-", "").replace("_", "") != "usage":
+                _harvest_containers(fields[key], acc, depth + 1)
+
+
+def _vendor_from_markers(resp: Any) -> str:
+    """A vendor label inferred from DISTINCTIVE container names, not from token field names.
+
+    Kept because the label is user-visible and feeds pricing: an open-weight model is free when
+    self-hosted and billed when a hosted provider serves it, with the same model id either way.
+    Only markers that genuinely identify one vendor are listed, and this is a LAST-RESORT hint —
+    the caller's own resolution from the client's base_url wins wherever it has one, because most
+    of the ecosystem speaks the OpenAI format without being OpenAI.
+    """
+    fields = _usage_fields(resp) or {}
+    keys = {k.lower().replace("-", "").replace("_", "") for k in fields}
+    # A plain `usage` envelope is the OpenAI/Anthropic shape and OUTRANKS every marker below. A
+    # response can legitimately carry both (a proxy that echoes several dialects, or a decoy), and
+    # in that case the primary envelope is the one the provider actually filled in — so the wire
+    # label is decided by the token field names inside it rather than by a marker's presence.
+    if "usage" in keys:
+        return ""
+    if "usagemetadata" in keys:
+        return providers.GOOGLE
+    if "prompteval count".replace(" ", "") in keys or "evalcount" in keys:
+        return providers.OLLAMA
+    meta = fields.get("meta")
+    if meta is not None and (_usage_fields(meta) or {}).get("tokens") is not None:
+        return "cohere"
+    return ""
+
+
+def extract_usage(resp: Any) -> dict[str, Any] | None:
+    """Pull normalized usage from ANY provider response, or None if it carries none.
+
+    Normalizes onto ONE convention: ``prompt_tokens`` is the total billable input, with cache
+    reads and writes as SUBSETS of it. Providers genuinely disagree here and the disagreement is
+    silent, so the rule follows the WORD USED rather than a vendor list:
+
+      * a PROMPT-family key names the whole prompt, so cache is already inside it
+        (OpenAI's ``prompt_tokens``, Google's ``promptTokenCount``, DeepSeek's ``prompt_tokens``)
+      * an INPUT-family key names fresh input, so cache is billed on top
+        (Anthropic's ``input_tokens``, Bedrock's ``inputTokens``)
+
+    A reported total cross-checks the additive case, so a provider using "input" for a
+    cache-inclusive total is corrected by its own arithmetic instead of being over-counted.
+    """
+    acc: dict[str, Any] = {}
+    _harvest_containers(resp, acc)
+    if not acc.get("found"):
+        # No named accounting container. Some providers (Ollama natively) put their counts at the
+        # TOP LEVEL with no envelope, so fall back to the whole document rather than reporting a
+        # local model as free — a zero there is never contradicted by an invoice, which is exactly
+        # why it went unnoticed for so long.
+        _harvest_usage(resp, acc)
+    if not acc.get("found"):
         return None
 
-    model = _get(resp, "model", "") or ""
+    cache_read = acc.get(_CONCEPT_CACHE_READ, 0)
+    cache_write = acc.get(_CONCEPT_CACHE_WRITE, 0)
+    reasoning = acc.get(_CONCEPT_REASONING, 0)
+    completion = acc.get(_CONCEPT_OUTPUT, 0)
+    total = acc.get(_CONCEPT_TOTAL, 0)
+    in_prompt = acc.get(_CONCEPT_INPUT_PROMPT, 0)
+    in_fresh = acc.get(_CONCEPT_INPUT_FRESH, 0)
 
-    prompt = _get(u, "prompt_tokens")
-    completion = _get(u, "completion_tokens")
-    style_openai_chat = prompt is not None or completion is not None
-    if prompt is None:
-        prompt = _get(u, "input_tokens", 0)
-    if completion is None:
-        completion = _get(u, "output_tokens", 0)
-
-    cached = 0
-    reasoning = 0
-    ptd = _get(u, "prompt_tokens_details")
-    if ptd is not None:
-        cached = _get(ptd, "cached_tokens", 0) or 0
-    ctd = _get(u, "completion_tokens_details")
-    if ctd is not None:
-        reasoning = _get(ctd, "reasoning_tokens", 0) or 0
-    if not cached:
-        # Anthropic prompt-cache read tokens.
-        cached = _get(u, "cache_read_input_tokens", 0) or 0
-
-    # Infer provider from the response shape when the patch site didn't say.
-    if style_openai_chat:
-        provider = "openai"
-    elif _get(u, "input_tokens") is not None:
-        provider = "anthropic"
+    if in_prompt > 0:
+        prompt = in_prompt
+    elif in_fresh > 0:
+        prompt = in_fresh + cache_read + cache_write
+        if total > 0 and prompt > total - completion and total - completion >= in_fresh:
+            prompt = total - completion
     else:
-        provider = ""
+        # No input count, but cache counts present: the cache IS the input we know about.
+        prompt = cache_read + cache_write
+
+    # A cache count larger than the prompt total cannot be a subset of it. Raise the total rather
+    # than let pricing clamp the excess away as if it had never been billed.
+    prompt = max(prompt, cache_read + cache_write)
+
+    # The wire FORMAT this looked like, as a last-resort provider label. Not a vendor claim: the
+    # caller's own resolution (which reads the client's base_url) wins wherever it has one,
+    # because most of the ecosystem speaks the OpenAI format without being OpenAI.
+    wire = _vendor_from_markers(resp)
+    if not wire:
+        if in_prompt > 0:
+            wire = "openai"
+        elif in_fresh > 0:
+            wire = "anthropic"
 
     return {
-        "model": model,
-        "provider": provider,
-        "prompt_tokens": int(prompt or 0),
-        "completion_tokens": int(completion or 0),
-        "cached_tokens": int(cached or 0),
-        "reasoning_tokens": int(reasoning or 0),
+        "model": acc.get("model", "") or "",
+        "provider": wire,
+        "prompt_tokens": int(prompt),
+        "completion_tokens": int(completion),
+        "cached_tokens": int(cache_read),
+        "cached_write_tokens": int(cache_write),
+        "reasoning_tokens": int(reasoning),
     }
 
 
-def record_response(
-    resp: Any, *, provider: str = "", latency_ms: int = 0
-) -> Optional[Dict[str, Any]]:
+def record_response(resp: Any, *, provider: str = "", latency_ms: int = 0) -> dict[str, Any] | None:
     """Record usage from a provider response: compute cost, add to the turn
     accumulator, and emit a Lens ``model_call`` span. Returns the extracted usage (or
     None). Also the public manual hook for clients this module doesn't auto-wrap.
@@ -353,6 +559,7 @@ def record_response(
         info["prompt_tokens"],
         info["completion_tokens"],
         cached_tokens=info["cached_tokens"],
+        cached_write_tokens=info["cached_write_tokens"],
         reasoning_tokens=info["reasoning_tokens"],
         # WHO served it, not just what was served. An open-weight model is free when
         # you run it yourself and billed when a hosted provider serves it, and the
@@ -369,7 +576,9 @@ def record_response(
             completion_tokens=info["completion_tokens"],
             reasoning_tokens=info["reasoning_tokens"],
             cached_tokens=info["cached_tokens"],
+            cached_write_tokens=info["cached_write_tokens"],
             estimated_cost=cost,
+            latency_ms=latency_ms,
         )
     current_span().log_model_call(
         provider=prov,
@@ -407,7 +616,7 @@ def _targets_gateway(resource: Any) -> bool:
     return bool(base) and base.startswith(gw)
 
 
-def _inject_gateway_headers(resource: Any, kwargs: Dict[str, Any]) -> None:
+def _inject_gateway_headers(resource: Any, kwargs: dict[str, Any]) -> None:
     """Merge the Pyyol identity headers into the call's extra_headers (both OpenAI and
     Anthropic accept extra_headers). Dev-supplied headers win. No-op when routing off OR
     when the call does not target the gateway — the credential never leaves for a
@@ -435,7 +644,27 @@ def _safe_record(resp: Any, provider: str, start: float, resource: Any = None) -
         pass
 
 
-def _patch_method(module_path: str, class_name: str, method: str, provider: str) -> bool:
+def _safe_scaffold(kwargs: dict[str, Any], endpoint: str) -> None:
+    """Fingerprint the scaffold from the outgoing request, before the model is called.
+
+    Done on the REQUEST rather than the response because the scaffold is the thing the
+    developer wrote — system prompt, tools, sampling — and none of that comes back. Wrapped
+    like every other instrumentation hook: a fingerprinting problem must never be why a
+    developer's model call fails.
+    """
+    try:
+        acc = current_usage()
+        if acc is None:
+            return
+        fp = scaffold.from_request(kwargs, endpoint=endpoint)
+        acc.observe_scaffold(fp, "" if fp else scaffold.issue(kwargs, endpoint=endpoint))
+    except Exception:  # noqa: BLE001 - instrumentation must never break the dev's call
+        pass
+
+
+def _patch_method(
+    module_path: str, class_name: str, method: str, provider: str, endpoint: str = ""
+) -> bool:
     """Wrap ``module.Class.method`` so its return value is recorded. Handles both sync
     and async originals. Idempotent and fully guarded."""
     try:
@@ -455,6 +684,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             resource = args[0] if args else None
             _inject_gateway_headers(resource, kwargs)
+            _safe_scaffold(kwargs, endpoint)
             start = time.perf_counter()
             resp = await orig(*args, **kwargs)
             _safe_record(resp, provider, start, resource)
@@ -466,6 +696,7 @@ def _patch_method(module_path: str, class_name: str, method: str, provider: str)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             resource = args[0] if args else None
             _inject_gateway_headers(resource, kwargs)
+            _safe_scaffold(kwargs, endpoint)
             start = time.perf_counter()
             resp = orig(*args, **kwargs)
             _safe_record(resp, provider, start, resource)
@@ -532,14 +763,17 @@ def _patch_openai() -> bool:
         ("openai.resources.responses", "Responses"),
         ("openai.resources.responses", "AsyncResponses"),
     ):
-        patched |= _patch_method(module_path, class_name, "create", "openai")
+        endpoint = "openai.responses" if "responses" in module_path else "openai.chat.completions"
+        patched |= _patch_method(module_path, class_name, "create", "openai", endpoint)
     return patched
 
 
 def _patch_anthropic() -> bool:
     patched = False
     for class_name in ("Messages", "AsyncMessages"):
-        patched |= _patch_method("anthropic.resources.messages", class_name, "create", "anthropic")
+        patched |= _patch_method(
+            "anthropic.resources.messages", class_name, "create", "anthropic", "anthropic.messages"
+        )
     return patched
 
 
@@ -553,7 +787,9 @@ def _patch_ollama() -> bool:
     patched = False
     for class_name in ("Client", "AsyncClient"):
         for method in ("chat", "generate"):
-            patched |= _patch_method("ollama._client", class_name, method, providers.OLLAMA)
+            patched |= _patch_method(
+                "ollama._client", class_name, method, providers.OLLAMA, f"ollama.{method}"
+            )
     # The module-level conveniences are bound to a default client at import.
     for name in ("chat", "generate"):
         patched |= _patch_bound_module_func("ollama", name, providers.OLLAMA)
@@ -565,13 +801,18 @@ def _patch_google() -> bool:
     patched = False
     for class_name in ("Models", "AsyncModels"):
         patched |= _patch_method(
-            "google.genai.models", class_name, "generate_content", providers.GOOGLE
+            "google.genai.models",
+            class_name,
+            "generate_content",
+            providers.GOOGLE,
+            "google.generate_content",
         )
     patched |= _patch_method(
         "google.generativeai.generative_models",
         "GenerativeModel",
         "generate_content",
         providers.GOOGLE,
+        "google.generate_content",
     )
     return patched
 
@@ -579,7 +820,7 @@ def _patch_google() -> bool:
 def _patch_cohere() -> bool:
     patched = False
     for class_name in ("Client", "AsyncClient", "ClientV2", "AsyncClientV2"):
-        patched |= _patch_method("cohere.client", class_name, "chat", "cohere")
+        patched |= _patch_method("cohere.client", class_name, "chat", "cohere", "cohere.chat")
     return patched
 
 
@@ -596,12 +837,12 @@ _PATCHERS = {
 }
 
 
-def instrument(providers: Optional[List[str]] = None) -> List[str]:
+def instrument(providers: list[str] | None = None) -> list[str]:
     """Auto-capture LLM usage from installed providers. Pass e.g. ``["openai"]`` to
     limit which are patched; default patches every supported backend that is
     installed. Returns the list actually instrumented. Safe to call more than once."""
     want = set(providers) if providers is not None else set(_PATCHERS)
-    done: List[str] = []
+    done: list[str] = []
     for name, patch in _PATCHERS.items():
         if name in want and patch():
             done.append(name)

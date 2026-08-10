@@ -86,18 +86,18 @@ func (r *MatchRepo) ListWaiting(ctx context.Context, game string, bid int64, exc
 func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match, error) {
 	var m match.Match
 	var stateBytes []byte
-	var deadline *time.Time
+	var deadline, base *time.Time
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
-		        COALESCE(m.state, '{}'::jsonb), m.round_deadline,
+		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
 		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
-			&stateBytes, &deadline, &m.WinnerAgent, &m.ReplayHash)
+			&stateBytes, &deadline, &base, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
 		return match.Match{}, err
 	}
@@ -107,6 +107,13 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 		}
 	}
 	m.RoundDeadline = deadline
+	// Fall back to the deadline when no base is recorded. A row that predates the column, or
+	// one written by a path that forgot to set it, then behaves exactly as it did before rather
+	// than losing its extension budget outright.
+	m.RoundDeadlineBase = base
+	if m.RoundDeadlineBase == nil {
+		m.RoundDeadlineBase = deadline
+	}
 
 	players, err := r.loadPlayers(ctx, matchPublicID)
 	if err != nil {
@@ -147,7 +154,7 @@ func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner m
 		var game string
 		var bid int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' RETURNING id, game, bid`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID, &game, &bid)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -172,8 +179,8 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 		err := tx.QueryRow(ctx,
 			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
-			     state, round_deadline, started_at, creator_owner_user_id)
-			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,now(),
+			     state, round_deadline, round_deadline_base, started_at, creator_owner_user_id)
+			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),
 			     (SELECT id FROM users WHERE public_id=$12))
 			 RETURNING id`,
 			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
@@ -199,7 +206,7 @@ func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, updated_at=now()
+			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, updated_at=now()
 			 WHERE public_id=$1 AND status='active' RETURNING id`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -466,4 +473,52 @@ func mustJSON(v any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// ExtendDeadline pushes the current round's deadline out without touching state.
+//
+// Guarded on status='active' so a match that finished between the sweeper's read and this
+// write cannot have a deadline resurrected onto it. Deliberately does NOT bump the state
+// revision: an extension is not a game event — the board is unchanged, an agent is simply
+// still thinking — and writing a revision for it would put a non-move into the replay and
+// invalidate the OCC token a concurrent real move is holding.
+func (r *MatchRepo) ExtendDeadline(ctx context.Context, matchPublicID string, deadline time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE matches SET round_deadline = $2, updated_at = now()
+		  WHERE public_id = $1 AND status = 'active'`,
+		matchPublicID, deadline)
+	return err
+}
+
+// RecordMoveRejection notes that a seat submitted a move for this round and it was refused.
+//
+// Idempotent on (match, agent, round): one refusal answers the question tryExtend asks, and
+// counting attempts would invite tuning a threshold that has no honest value — there is no
+// number of refusals that means "still thinking". A repeat therefore keeps the FIRST reason,
+// which is the one that first told the seat to stop.
+//
+// INSERT…SELECT against agents, so an unknown agent id writes nothing and reports no error.
+func (r *MatchRepo) RecordMoveRejection(ctx context.Context, matchID, agentPublicID string, round int, reason string) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO agent_move_rejections (match_id, agent_id, round, reason)
+		 SELECT $1, a.id, $3, $4 FROM agents a WHERE a.public_id = $2
+		 ON CONFLICT (match_id, agent_id, round) DO NOTHING`,
+		matchID, agentPublicID, round, reason)
+	return err
+}
+
+// MoveRejected reports whether this seat has had a move refused for this round.
+//
+// Read on the deadline-sweep path, once per unsealed seat per expiry. The caller treats an
+// error as "not rejected", so a lookup failure leaves the extension behaviour exactly as it
+// was before this record existed.
+func (r *MatchRepo) MoveRejected(ctx context.Context, matchID, agentPublicID string, round int) (bool, error) {
+	var found bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM agent_move_rejections j
+		     JOIN agents a ON a.id = j.agent_id
+		    WHERE j.match_id = $1 AND a.public_id = $2 AND j.round = $3)`,
+		matchID, agentPublicID, round).Scan(&found)
+	return found, err
 }

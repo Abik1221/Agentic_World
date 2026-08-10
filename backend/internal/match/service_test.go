@@ -499,3 +499,16 @@ func (c *mutableClock) advance(d time.Duration) {
 	defer c.mu.Unlock()
 	c.t = c.t.Add(d)
 }
+
+// ExtendDeadline satisfies match.Repo. Records the push so a test can assert an extension
+// happened without needing a database.
+func (f *fakeRepo) ExtendDeadline(_ context.Context, matchPublicID string, deadline time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if m, ok := f.matches[matchPublicID]; ok {
+		d := deadline
+		m.RoundDeadline = &d
+		f.matches[matchPublicID] = m
+	}
+	return nil
+}

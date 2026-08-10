@@ -28,9 +28,14 @@ type AgentView struct {
 }
 
 // isPublic reports whether an event type is part of the shared transcript.
+//
+// EvSilent is public, and that is the point of it: an agent asked to vote must be able
+// to see which seats went dark, exactly as it sees who spoke and who voted. The engine
+// only ever emits it for the discussion and voting phases — night silence would reveal
+// role membership, so actNight deliberately emits none.
 func isPublic(t EventType) bool {
 	switch t {
-	case EvPhase, EvModerator, EvMessage, EvVote, EvEliminate, EvVictory:
+	case EvPhase, EvModerator, EvMessage, EvVote, EvEliminate, EvVictory, EvSilent:
 		return true
 	}
 	return false

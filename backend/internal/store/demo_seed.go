@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	mafia "github.com/agent-arena/arena/internal/engine/mafia"
 	"log/slog"
 
 	"github.com/agent-arena/arena/internal/demo"
@@ -14,11 +15,54 @@ import (
 )
 
 // EnsureDevAgents creates or loads rule-based demo agents (no LLM). Idempotent on slug.
+// houseStakeCap is what a house bot may stake per match. Tracks the cheapest ranked tier so
+// these agents can sit at the tables they create.
+const houseStakeCap = 500
+
 func (r *IdentityRepo) EnsureDevAgents(ctx context.Context, n int, mint *wallet.Service, log *slog.Logger) ([]demo.Agent, error) {
 	out := make([]demo.Agent, 0, n)
+	// House-bot limits, not user limits.
+	//
+	// The per-match and per-bid caps track the cheapest ranked tier so these agents can actually
+	// sit at the tables they create; they were seeded at 100 before the floor moved to 500, which
+	// blocks every join outright.
+	//
+	// MaxConcurrentMatches is the one that mattered most. DefaultLimits caps it at 1, which is a
+	// USER protection — it stops a developer's agent staking several pots at once. Applied to a
+	// house bot it is nonsense: Mafia needs 12 distinct seats, so a pool where each member may
+	// hold one match cannot seat a single table while any Goofspiel game is running. The result
+	// was 190 aborted Mafia tables against 1 finished, every one holding exactly one seat.
+	//
+	// RosterSize+2 mirrors the pool sizing (12 Mafia seats + 2 Goofspiel) so one bot can hold a
+	// Mafia seat and still take a Goofspiel table without the roster fill failing.
+	// EVERY limit here is a user protection that becomes nonsense on a house bot, and each one
+	// blocked the Mafia roster in turn — concurrency first, then balance, then session loss.
+	// Fixing them one at a time just moved the error message, so they are set together as a
+	// coherent house profile:
+	//
+	//   per-match / max-bid  track the cheapest ranked tier, or the bot cannot sit at the table
+	//                        it just created (seeded at 100 against a 500 floor)
+	//   concurrency          RosterSize+2: Mafia needs 12 DISTINCT seats, and a pool capped at
+	//                        one match each cannot seat one table while Goofspiel runs
+	//   session/daily loss   a house bot is SUPPOSED to lose — it plays both sides of every
+	//                        table. DefaultLimits allows two losses a session at this stake,
+	//                        which stops the bot within minutes of starting
+	//   cooldown             a losing streak is the normal state for a population playing
+	//                        itself; pausing on it stalls the only thing generating matches
+	//
+	// A developer's agent keeps every one of these. They exist to protect someone's money, and a
+	// house bot has none of its own — it is topped up when it runs dry (see demo.TopUp).
 	limits := identity.DefaultLimits()
-	limits.CoinLimitPerMatch = 500
-	limits.MaxBid = 500
+	limits.CoinLimitPerMatch = houseStakeCap
+	limits.MaxBid = houseStakeCap
+	limits.MaxConcurrentMatches = mafia.RosterSize + 2
+	// Loss and cooldown caps are left at the DEFAULTS on purpose. They were raised when house
+	// bots staked; a house that stakes nothing cannot lose a coin, so a raised limit protects
+	// against nothing and reads as a safeguard that is doing work it is not. Concurrency stays
+	// raised because it is not about money — Mafia needs 12 DISTINCT seats and the pool must be
+	// able to hold them.
+	limits.CooldownLosses = 0
+	limits.CooldownSeconds = 0
 	limits.AutoJoin = true
 
 	for i := 0; i < n; i++ {
@@ -30,6 +74,27 @@ func (r *IdentityRepo) EnsureDevAgents(ctx context.Context, n int, mint *wallet.
 			 JOIN users u ON u.id = a.owner_user_id
 			 WHERE a.slug = $1`, slug).
 			Scan(&agentPublicID, &ownerPublicID)
+		if err == nil {
+			// HEAL an existing row. EnsureDevAgents is idempotent on slug, so agents seeded
+			// before the floor moved kept coin_limit_per_match=100 and max_concurrent_matches=1
+			// forever — the exact rows that made Mafia unplayable.
+			//
+			// Migration 0070 deliberately does NOT backfill limits like this, and it is right:
+			// for a DEVELOPER's agent a stored 100 cannot be told apart from a deliberate 100,
+			// and widening someone's risk cap by deploy is never safe. These are house bots.
+			// Nobody chose these values, they are infrastructure, and leaving them stale breaks
+			// a game rather than protecting anyone.
+			if _, uerr := r.db.Exec(ctx,
+				`UPDATE agents SET coin_limit_per_match=$2, max_bid=$3, max_concurrent_matches=$4,
+				        session_loss_limit=$5, daily_loss_limit=$6, cooldown_losses=$7, cooldown_seconds=$8
+				  WHERE slug=$1 AND (coin_limit_per_match<>$2 OR max_bid<>$3 OR max_concurrent_matches<>$4
+				     OR session_loss_limit<>$5 OR daily_loss_limit<>$6)`,
+				slug, limits.CoinLimitPerMatch, limits.MaxBid, limits.MaxConcurrentMatches,
+				limits.SessionLossLimit, limits.DailyLossLimit,
+				limits.CooldownLosses, limits.CooldownSeconds); uerr != nil {
+				return nil, uerr
+			}
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			agentPublicID, ownerPublicID, err = r.insertDevAgent(ctx, slug, name, limits, i)
 			if err != nil {
@@ -103,4 +168,31 @@ func (r *IdentityRepo) insertDevAgent(ctx context.Context, slug, name string, li
 		return "", "", err
 	}
 	return agentPublicID, ownerPublicID, nil
+}
+
+// HouseBotBalances returns every house bot's agent-wallet balance, keyed by agent public id.
+//
+// Reads the wallet rather than any cached figure: the top-up decision is about what the bot can
+// actually stake right now, and a stale number would either starve a broke bot or mint for one
+// that is fine.
+func (r *IdentityRepo) HouseBotBalances(ctx context.Context) (map[string]int64, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id, coalesce(w.balance, 0)
+		   FROM agents a
+		   LEFT JOIN wallets w ON w.agent_id = a.id AND w.kind = 'agent'
+		  WHERE a.slug LIKE 'demo%'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var bal int64
+		if err := rows.Scan(&id, &bal); err != nil {
+			return nil, err
+		}
+		out[id] = bal
+	}
+	return out, rows.Err()
 }

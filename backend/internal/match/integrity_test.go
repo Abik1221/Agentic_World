@@ -31,7 +31,7 @@ func TestVoidsWhenASeatProvesNothing(t *testing.T) {
 	s := &Service{}
 	s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_llm": 13, "ag_script": 0}}, 50)
 
-	failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13)
+	failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13, [2]int{})
 	if !failed {
 		t.Fatal("a seat with zero proven decisions was allowed to settle")
 	}
@@ -46,7 +46,7 @@ func TestSettlesWhenBothSeatsClearTheBar(t *testing.T) {
 	s := &Service{}
 	s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 7, "ag_b": 13}}, 50)
 
-	if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+	if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); failed {
 		t.Fatalf("voided an honest match, blaming %q (7/13 = 54%% clears 50%%)", agent)
 	}
 }
@@ -59,7 +59,7 @@ func TestThresholdIsInclusiveSoMajorityIs51(t *testing.T) {
 	s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 5, "ag_b": 10}}, 51)
 
 	// 5/10 is exactly half — not a majority, so 51 rejects it.
-	if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 10); !failed {
+	if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 10, [2]int{}); !failed {
 		t.Fatal("exactly 50% cleared a majority bar")
 	} else if agent != "ag_a" {
 		t.Fatalf("blamed the wrong seat: %q", agent)
@@ -68,7 +68,7 @@ func TestThresholdIsInclusiveSoMajorityIs51(t *testing.T) {
 	// 6/10 is a majority and must pass.
 	s2 := &Service{}
 	s2.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 6, "ag_b": 10}}, 51)
-	if failed, agent := s2.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 10); failed {
+	if failed, agent := s2.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 10, [2]int{}); failed {
 		t.Fatalf("6/10 is a majority but was voided, blaming %q", agent)
 	}
 }
@@ -79,13 +79,13 @@ func TestAHundredPercentThresholdIsAchievable(t *testing.T) {
 	s := &Service{}
 	s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 13, "ag_b": 13}}, 100)
 
-	if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+	if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); failed {
 		t.Fatalf("13/13 failed a 100%% bar, blaming %q", agent)
 	}
 
 	s2 := &Service{}
 	s2.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 12, "ag_b": 13}}, 100)
-	if failed, _ := s2.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); !failed {
+	if failed, _ := s2.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); !failed {
 		t.Fatal("12/13 cleared a 100% bar")
 	}
 }
@@ -95,13 +95,13 @@ func TestAHundredPercentThresholdIsAchievable(t *testing.T) {
 // still settles — see TestZeroProofGate for why that second case must hold.
 func TestShareRuleDisabledByDefaultAndWhenPctIsZero(t *testing.T) {
 	none := &Service{}
-	if failed, _ := none.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 13); failed {
+	if failed, _ := none.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 13, [2]int{}); failed {
 		t.Fatal("enforced with no checker configured")
 	}
 
 	off := &Service{}
 	off.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 0}}, 0)
-	if failed, _ := off.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 13); failed {
+	if failed, _ := off.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 13, [2]int{}); failed {
 		t.Fatal("minPct=0 must leave the share rule off")
 	}
 
@@ -109,7 +109,7 @@ func TestShareRuleDisabledByDefaultAndWhenPctIsZero(t *testing.T) {
 	// beside one that proved plenty is still refused, with no threshold configured.
 	gate := &Service{}
 	gate.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_llm": 13, "ag_script": 0}}, 0)
-	if failed, agent := gate.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13); !failed {
+	if failed, agent := gate.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13, [2]int{}); !failed {
 		t.Fatal("with minPct=0, a zero-proof seat was still paid — the gate is not active")
 	} else if agent != "ag_script" {
 		t.Fatalf("blamed the wrong seat: %q", agent)
@@ -130,7 +130,7 @@ func TestZeroProofGate(t *testing.T) {
 		s := &Service{}
 		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 0, "ag_b": 0}}, 0)
 
-		if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+		if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); failed {
 			t.Fatalf("voided a match where NO seat proved anything, blaming %q. Before a "+
 				"proof-carrying SDK exists that is every honest match on the platform", agent)
 		}
@@ -141,7 +141,7 @@ func TestZeroProofGate(t *testing.T) {
 		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_llm": 1, "ag_script": 0}}, 0)
 
 		// ONE proof on the table is enough evidence the pipeline was reachable.
-		failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13)
+		failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_llm", "ag_script"), 13, [2]int{})
 		if !failed {
 			t.Fatal("a zero-proof seat settled against an opponent that did prove its calls")
 		}
@@ -154,7 +154,7 @@ func TestZeroProofGate(t *testing.T) {
 		s := &Service{}
 		s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 2, "ag_b": 11}}, 0)
 
-		if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+		if failed, agent := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); failed {
 			t.Fatalf("voided a match where both seats proved something, blaming %q. Few "+
 				"proofs is legitimate (batching, caching, retries) — zero is the signal", agent)
 		}
@@ -164,7 +164,7 @@ func TestZeroProofGate(t *testing.T) {
 		s := &Service{}
 		s.SetIntegrityCheck(fakeIntegrity{err: errors.New("db down")}, 0)
 
-		if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+		if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); failed {
 			t.Fatal("the zero-proof gate voided a match because the store was unreachable")
 		}
 	})
@@ -176,7 +176,7 @@ func TestZeroProofGate(t *testing.T) {
 		}}, 0)
 
 		failed, agent := s.rankedIntegrityFailed(context.Background(),
-			matchWith("ag_a", "ag_b", "ag_quiet", "ag_d"), 13)
+			matchWith("ag_a", "ag_b", "ag_quiet", "ag_d"), 13, [2]int{})
 		if !failed || agent != "ag_quiet" {
 			t.Fatalf("failed=%v agent=%q; want the zero-proof seat named", failed, agent)
 		}
@@ -189,7 +189,7 @@ func TestSettlesWhenTheCheckIsUnavailable(t *testing.T) {
 	s := &Service{}
 	s.SetIntegrityCheck(fakeIntegrity{err: errors.New("db down")}, 50)
 
-	if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13); failed {
+	if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a", "ag_b"), 13, [2]int{}); failed {
 		t.Fatal("voided a match because the integrity store was unreachable")
 	}
 }
@@ -199,7 +199,7 @@ func TestNoDecisionsIsNotAFailure(t *testing.T) {
 	s := &Service{}
 	s.SetIntegrityCheck(fakeIntegrity{bound: map[string]int{"ag_a": 0}}, 50)
 
-	if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 0); failed {
+	if failed, _ := s.rankedIntegrityFailed(context.Background(), matchWith("ag_a"), 0, [2]int{}); failed {
 		t.Fatal("voided a match in which nobody made a decision")
 	}
 }

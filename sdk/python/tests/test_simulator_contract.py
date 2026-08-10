@@ -5,15 +5,15 @@ contradicted the real engine — each one punished a developer for following the
 documentation, which is worse than having no harness at all.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 from pyyol import Agent, simulate_goofspiel
 
 
-def _recording_agent() -> tuple[Agent, List[Dict[str, Any]]]:
+def _recording_agent() -> tuple[Agent, list[dict[str, Any]]]:
     """An agent that plays legally and keeps every turn view it was handed."""
     agent = Agent(secret="sim-secret")
-    seen: List[Dict[str, Any]] = []
+    seen: list[dict[str, Any]] = []
 
     @agent.on_turn("goofspiel")
     def _turn(v):
@@ -84,7 +84,7 @@ def test_adapter_receives_events():
     """
     from pyyol import Adapter
 
-    got: List[Any] = []
+    got: list[Any] = []
 
     class Watcher(Adapter):
         name = "watcher"
