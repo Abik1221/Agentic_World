@@ -4,6 +4,27 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.10.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.9.0...js-v1.10.0) (2026-08-10)
+
+
+### Features
+
+* **scaffold:** fingerprint the harness so model comparison can be paired ([f14bf66](https://github.com/Abik1221/Agentic_World/commit/f14bf66a4796f907ba93f25a29d3c319d9f5680a))
+* **sdk-js:** mirror the verified-tier readiness, byte for byte ([b5dafce](https://github.com/Abik1221/Agentic_World/commit/b5dafce08d8d92fbb4248f6bb8b311de6c0256d2))
+* verified inference end to end ([#42](https://github.com/Abik1221/Agentic_World/issues/42)) ([0dbefe9](https://github.com/Abik1221/Agentic_World/commit/0dbefe91308ce7b81d626e2eac304b3476bff64a))
+
+
+### Bug Fixes
+
+* **scaffold:** a prompt in the user turn is not a scaffold identity ([bafe306](https://github.com/Abik1221/Agentic_World/commit/bafe3069ae81fed1e27b1da1f8d8ad68b0a06e59))
+* **sdk-js:** mirror cache accounting + add cross-language conformance ([e7b5052](https://github.com/Abik1221/Agentic_World/commit/e7b5052e5546f86754e8d4c92abc0c2add0607fb))
+
+
+### Documentation
+
+* **sdk:** document the shot clock, latency, and the absence forfeit ([8b9ba20](https://github.com/Abik1221/Agentic_World/commit/8b9ba208fde15c7012cefe1f91ce68c7931c5fda))
+* the verified-inference story was undocumented, and the CLI reference was the wrong page ([0f9e43d](https://github.com/Abik1221/Agentic_World/commit/0f9e43db272e9b042aa2b4ad37e52eca373bd9e2))
+
 ## [1.9.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.8.0...js-v1.9.0) (2026-08-05)
 
 
