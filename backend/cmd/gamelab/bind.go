@@ -46,6 +46,19 @@ var BindThroughGateway = false
 // BindGatewayBase is the gateway's base URL as seen from the agent process.
 var BindGatewayBase = ""
 
+// BindProvider names the gateway upstream to route through, and BindKey is the developer's
+// own credential for it. Empty ⇒ the local stand-in provider on the anthropic path, which is
+// what every other lab run uses.
+//
+// Exists so the lab can drive a REAL model end to end — the stand-in proves the plumbing, but
+// only a real provider proves that the usage block we normalize, the cost we record and the
+// tool call we bind are the ones that provider actually sends.
+var (
+	BindProvider = ""
+	BindKey      = ""
+	BindModel    = ""
+)
+
 // BindStream routes the decision as a STREAMED completion. Worth a separate run: streamed
 // responses were captured nowhere before completion binding, so the reassembly path is newer
 // and less exercised than the single-object one.
@@ -171,7 +184,7 @@ type bindResult struct {
 // lab's own persona logic), and the provider is simply made to say what the strategy decided.
 // That keeps the match's play identical to a non-bound run, which is what makes the two
 // comparable.
-func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string) (bindResult, error) {
+func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string, legal []int, prize int) (bindResult, error) {
 	if BindGatewayBase == "" {
 		return bindResult{}, fmt.Errorf("gateway base URL not set")
 	}
@@ -203,21 +216,61 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 			"content": fmt.Sprintf("Round %d. Choose a card and report it with the tool.", round),
 		}},
 	}
+	// OPENAI WIRE for anything that is not Anthropic. Groq, and every other OpenAI-compatible
+	// provider, nests the tool under `function` and names the forcing field differently — send
+	// the Anthropic shape and it is a 400, not a silent mis-parse.
+	if BindProvider != "" && BindProvider != "anthropic" {
+		reqBody = map[string]any{
+			"model":      BindModel,
+			"max_tokens": 256,
+			"stream":     BindStream,
+			"tools": []map[string]any{{
+				"type": "function",
+				"function": map[string]any{
+					"name":        movebind.ToolGoofspiel,
+					"description": "Play one card from your hand for this round.",
+					"parameters":  moveToolSchema(len(span)),
+				},
+			}},
+			"tool_choice": map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": movebind.ToolGoofspiel},
+			},
+			"messages": []map[string]any{{
+				"role": "user",
+				"content": fmt.Sprintf(
+					"Goofspiel round %d. Your legal cards are %v. The prize is worth %d. "+
+						"Call play_card with exactly one card from that list.",
+					round, legal, prize),
+			}},
+		}
+	}
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
 		return bindResult{}, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, BindGatewayBase+"/v1/gw/anthropic/v1/messages",
-		bytes.NewReader(raw))
+	// The gateway routes /v1/gw/{provider}/*, so the path after the provider is the
+	// provider's OWN path — Anthropic's /v1/messages, OpenAI-wire /v1/chat/completions.
+	route := "/v1/gw/anthropic/v1/messages"
+	if BindProvider != "" && BindProvider != "anthropic" {
+		route = "/v1/gw/" + BindProvider + "/v1/chat/completions"
+	}
+	req, err := http.NewRequest(http.MethodPost, BindGatewayBase+route, bytes.NewReader(raw))
 	if err != nil {
 		return bindResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// The developer's own provider credential, passed through untouched. A placeholder here
 	// because the upstream is a stand-in; the gateway must not care either way.
-	req.Header.Set("x-api-key", "lab-provider-key")
-	req.Header.Set("anthropic-version", "2023-06-01")
+	if BindKey != "" {
+		// The developer's OWN credential, passed through. This is the whole trust model: they
+		// cannot claim a model they are not billed for.
+		req.Header.Set("Authorization", "Bearer "+BindKey)
+	} else {
+		req.Header.Set("x-api-key", "lab-provider-key")
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
 	// Pyyol identity and the per-turn proof. The proof is what makes the match/turn headers
 	// trustworthy — without it the gateway records the call but binds nothing.
 	req.Header.Set("X-Pyyol-Key", a.AgentKey)

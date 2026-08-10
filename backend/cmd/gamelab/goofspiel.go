@@ -175,7 +175,7 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 		if isSpanAnchor(v.Round) {
 			span = buildSpan(v.Round, card, legal, BindBatchRounds)
 		}
-		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, span, v.TurnProof)
+		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, span, v.TurnProof, legal, v.CurrentPrize)
 		if err != nil {
 			// LOUD and fatal to the turn. A run that fell back to playing unbound would report
 			// a completed match and prove nothing about binding, which is worse than failing.

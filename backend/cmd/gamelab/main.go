@@ -58,6 +58,8 @@ func main() {
 	// Honest-but-unbound behaviour, for measuring the ranked threshold against a realistic
 	// population rather than against a harness that binds every round by construction.
 	bindFailPct := flag.Int("bind-fail-pct", 0, "with -bind, this %% of turns have their model call FAIL; the agent falls back to its strategy and plays on, unbound (honest, not cheating)")
+	bindProvider := flag.String("bind-provider", "", "gateway upstream to route through (e.g. groq); default is the local stand-in on the anthropic path")
+	bindModel := flag.String("bind-model", "llama-3.1-8b-instant", "model id to ask that provider for")
 	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
 	flag.Parse()
 
@@ -71,6 +73,7 @@ func main() {
 	// server the match is actually running on.
 	BindThroughGateway, BindStream, SubstituteAtRound = *bindGw, *bindStream, *substituteAt
 	BindFailPct, BindBatchRounds = *bindFailPct, *bindBatch
+	BindProvider, BindKey, BindModel = *bindProvider, os.Getenv("PYYOL_PROVIDER_KEY"), *bindModel
 	BindGatewayBase = base
 	if BindThroughGateway {
 		lg := log.New(os.Stdout, "", log.Ltime)

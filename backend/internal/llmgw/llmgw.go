@@ -839,8 +839,27 @@ var hopByHop = map[string]bool{
 func copyUpstreamHeaders(src, dst http.Header) {
 	for k, vs := range src {
 		lk := strings.ToLower(k)
+		// ACCEPT-ENCODING IS DROPPED, and this one is load-bearing.
+		//
+		// Go's transport adds its own Accept-Encoding and transparently decompresses the
+		// response — but ONLY when it added the header itself. Forwarding the agent's header
+		// disables that, so the gateway received COMPRESSED bytes and teed them into the
+		// capture buffer. Both readers then failed on gzip:
+		//
+		//   usage   → "could not read usage" on all 26 calls of a live Groq match, costed $0
+		//   binding → 24 bound rows with ZERO extracted moves, against 26/26 for a provider
+		//             that does not compress
+		//
+		// The usage half was LOUD, as designed. The binding half failed SILENTLY, because
+		// "no move extracted" is indistinguishable from "the agent sent no move tool call" —
+		// and that must never reject, which is exactly the rule that hid it. So completion
+		// binding, the strongest control on the platform, was inert for every provider that
+		// gzips. Groq does, by default.
+		//
+		// Dropping the header costs one uncompressed hop between the gateway and the agent and
+		// buys a body every reader can actually read.
 		if hopByHop[lk] || strings.HasPrefix(lk, "x-pyyol-") || lk == "host" ||
-			lk == "content-length" {
+			lk == "content-length" || lk == "accept-encoding" {
 			continue
 		}
 		for _, v := range vs {
