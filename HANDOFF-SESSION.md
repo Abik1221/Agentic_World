@@ -312,6 +312,45 @@ and is withdrawn. The single biggest lever is `urllib.request` at 53ms of the im
 a deliberate module-level import (documented for import-order and test patching) used in 55
 places, so that regression risk was not taken for ~40ms. Noted, not done.
 
+### Groq end to end — and the two defects it found
+
+Run against the real api.groq.com through the gateway, on a staked Goofspiel table.
+
+**Completion binding was INERT for any provider that gzips, and Groq does.** Go's transport
+decompresses transparently only when it added Accept-Encoding itself; the proxy forwarded the
+agent's header, so the gateway teed COMPRESSED bytes into its capture buffer.
+
+| | before | after |
+|---|---|---|
+| bound rows / with a move | 24 / **0** | 10 / **10** |
+| tokens recorded | 0 | 2886 prompt + 103 completion |
+| verified cost | $0 | $7.6e-05 per seat |
+| "could not read usage" warnings | 26 | **0** |
+
+The usage half was **loud**, exactly as designed — it named the file to edit and costed at zero
+rather than guessing. The binding half failed **silently**, because "no move extracted" is
+indistinguishable from "the agent sent no move tool call", and that must never reject. The rule
+that makes binding safe to enforce is the rule that hid its absence.
+
+**A Groq-served llama was priced at $0.** `llama` sat under "open-weight / self-hosted (no
+per-token bill)" in the Go table, so `llama-3.3-70b-versatile` → `llama` → $0. Open weight does
+not mean free. The Python SDK already scoped pricing by provider — with a comment saying its own
+tests caught it — and Go was never updated. A shared fixture built from a real Groq response
+surfaced the divergence the first time it was asked.
+
+**Groq reports no cache fields at all** — confirmed by sending a byte-identical 1609-token
+prompt twice: same 1609 prompt tokens, no cache key, only timing floats that are not token
+counts. So Phase 4's cache-hit ratio will be 0 for Groq, honestly. Pinned as a fixture in all
+three languages.
+
+**Everything else checked out on the same match:** coin flow exact (2×500 staked → escrow,
+winner paid 950, 50 rake, all ledger entries summing to zero), ledger audit clean and escrow
+reconciling, replay 96 events with 42 chat lines, Lens span carrying `meter_source=gateway` with
+real tokens and cost, and P-Index recomputed with its arena/consistency/intelligence components.
+
+**SDK setup:** `pip install` 21s + `pyyol init` 1s = **22 seconds** to a scaffolded agent whose
+comments show the two-line verified-LLM pattern. Well inside three minutes.
+
 ## Open queue, in priority order
 
 ### 1. Phase 4 — reward cost skill (PARTIALLY done)
