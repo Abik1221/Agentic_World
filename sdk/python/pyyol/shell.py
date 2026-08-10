@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import shlex
 import sys
+import threading
 from typing import Any, Callable, TextIO
 
 _RESET = "\x1b[0m"
@@ -107,6 +108,123 @@ _GROUPS: list[tuple[str, list[str]]] = [
     ("Account", ["login", "whoami", "logout", "update"]),
     ("Advanced", ["run", "validate", "simulate"]),
 ]
+
+
+
+# ── The live strip ──────────────────────────────────────────────────────────────
+#
+# What is actually happening, on the line above the prompt, refreshed while you sit there.
+# The arena's whole proposition is that agents are playing right now, and a home screen that
+# shows a URL instead of that number is describing the tool rather than the platform.
+#
+# Polled rather than streamed because the overview has no SSE — /v1/matches/{id}/watch streams
+# ONE match, and opening three sockets to count games would cost more than a 200-byte read.
+#
+# It redraws IN PLACE and only while the input line is empty. Rewriting the terminal under
+# someone mid-word is how a live display becomes a thing people disable, so a partially typed
+# command always wins.
+_LIVE_EVERY_S = 5.0
+
+
+class _LiveStrip:
+    def __init__(self, api: str, s: _Style, stream: TextIO) -> None:
+        self.api, self.s, self.stream = api, s, stream
+        # Shown until the first fetch lands, which is a fraction of a second on a healthy
+        # arena and honest on an unhealthy one.
+        self.text = "  " + s("LIVE", _DIM) + "  " + s("checking…", _DIM)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    # -- rendering -------------------------------------------------------------
+    def _render(self, games: list[dict[str, Any]]) -> str:
+        s = self.s
+        if not games:
+            return "  " + s("arena unreachable", _DIM)
+        parts = []
+        total_live = total_wait = 0
+        for g in games:
+            name = str(g.get("game", "?"))
+            live = int(g.get("live", 0) or 0)
+            playing = int(g.get("playing", 0) or 0)
+            waiting = int(g.get("waiting", 0) or 0)
+            total_live += live
+            total_wait += waiting
+            if live:
+                parts.append(
+                    s("●", _OK) + " " + s(name, _BOLD) + " " + s(f"{live} live · {playing} playing", _DIM)
+                )
+            elif waiting:
+                parts.append(s("◌", _WARN) + " " + s(name, _BOLD) + " " + s(f"{waiting} queued", _DIM))
+            else:
+                parts.append(s("·", _DIM) + " " + s(name, _DIM) + " " + s("idle", _DIM))
+        head = s("LIVE", _DIM) if (total_live or total_wait) else s("LIVE", _DIM)
+        return "  " + head + "  " + s("   ", _DIM).join(parts)
+
+    def fetch(self) -> None:
+        """Never raises, and never takes long enough to be noticed.
+
+        A SHORT timeout and no retries, unlike the command helpers: this is a decorative poll,
+        so a slow arena must degrade to "unreachable" rather than hold anything up. The shared
+        helper defaults to 15s and retries a 429 three times — up to 45 seconds, which on the
+        open path would look exactly like a hung tool.
+        """
+        games: list[dict[str, Any]] = []
+        try:
+            import urllib.request
+
+            from .cli import _urlopen_json
+
+            st, resp = _urlopen_json(
+                urllib.request.Request(f"{self.api}/v1/games", method="GET"), timeout=2.0
+            )
+            if st == 200:
+                games = (resp or {}).get("games") or []
+        except Exception:
+            games = []
+        self.text = self._render(games)
+
+    # -- the idle refresh ------------------------------------------------------
+    def _typing(self) -> bool:
+        try:
+            import readline
+
+            return bool(readline.get_line_buffer())
+        except Exception:
+            return False
+
+    def _loop(self) -> None:
+        # The FIRST fetch happens here, not on the open path. Blocking the door on a network
+        # call is how a CLI comes to feel slow — and it is worst exactly when the platform is
+        # having a bad day, which is when someone most needs the prompt.
+        self.fetch()
+        self._redraw()
+        while not self._stop.wait(_LIVE_EVERY_S):
+            before = self.text
+            self.fetch()
+            if self.text != before:
+                self._redraw()
+
+    def _redraw(self) -> None:
+        """Repaint the strip in place, and only while nothing is half-typed."""
+        if self._typing():
+            return
+        # Save cursor, step up onto the strip, clear it, rewrite, come back. The prompt and
+        # anything typed on it are untouched.
+        try:
+            self.stream.write("\x1b[s\x1b[1A\x1b[2K\r" + self.text + "\x1b[u")
+            self.stream.flush()
+        except Exception:
+            return
+
+    def start(self) -> None:
+        if not self.s.color:
+            self.fetch()  # no ANSI to redraw with, so fetch once and let it be printed
+            return
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def _banner(s: _Style, version: str, api: str, who: dict[str, Any] | None) -> str:
@@ -215,6 +333,107 @@ def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
     )
 
 
+
+# ── The picker ──────────────────────────────────────────────────────────────────
+#
+# What "/" gives you when the terminal can do it: a list you arrow through, filter by typing,
+# and choose with Enter. Every other agent CLI has this and it is the difference between
+# twenty-five commands being a menu and being a wall.
+#
+# POSIX raw mode only, and it degrades rather than fails: without termios (Windows, a dumb
+# terminal, a pipe) "/" prints the grouped palette instead, which is the same information
+# without the cursor. A picker that crashed on an unusual terminal would be worse than the
+# printed list it replaced.
+
+
+def _pick(
+    s: _Style, cmds: dict[str, str], groups: list[tuple[str, list[str]]], stream: TextIO
+) -> str | None:
+    """Return the chosen command name, or None to cancel (Esc / Ctrl-C / no terminal)."""
+    try:
+        import termios
+        import tty
+    except Exception:
+        return None
+    if not (stream.isatty() and sys.stdin.isatty()):
+        return None
+
+    # Flattened in the SAME order the palette groups use, so the picker and the printed list
+    # never disagree about what comes first.
+    ordered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _title, names in groups:
+        for n in names:
+            if n in cmds and n not in seen:
+                ordered.append((n, cmds[n]))
+                seen.add(n)
+    for n in sorted(set(cmds) - seen):
+        ordered.append((n, cmds[n]))
+
+    query = ""
+    idx = 0
+    rows = min(10, len(ordered))
+    drawn = 0
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+
+    def matches() -> list[tuple[str, str]]:
+        if not query:
+            return ordered
+        q = query.lower()
+        return [(n, h) for n, h in ordered if q in n.lower()]
+
+    def draw() -> None:
+        nonlocal drawn
+        if drawn:
+            stream.write(f"\x1b[{drawn}A")
+        stream.write("\x1b[J")
+        hits = matches()
+        head = "  " + s("/" + query, _BOLD) + s("   ↑↓ move · enter run · esc cancel", _DIM)
+        stream.write(head + "\n")
+        shown = hits[: rows]
+        for i, (name, help_text) in enumerate(shown):
+            mark = s(" ❯ ", _BRAND) if i == idx else "   "
+            label = s(name.ljust(12), _BRAND if i == idx else _DIM)
+            stream.write(f"{mark}{label} {s(help_text[:60], _DIM)}\n")
+        if not shown:
+            stream.write("   " + s("no command matches", _DIM) + "\n")
+        drawn = 1 + max(1, len(shown))
+        stream.flush()
+
+    try:
+        tty.setraw(fd)
+        while True:
+            draw()
+            ch = sys.stdin.read(1)
+            hits = matches()
+            if ch == "\x1b":  # escape, or an arrow key's prefix
+                nxt = sys.stdin.read(1) if sys.stdin.readable() else ""
+                if nxt != "[":
+                    return None
+                key = sys.stdin.read(1)
+                if key == "A":
+                    idx = max(0, idx - 1)
+                elif key == "B":
+                    idx = min(max(0, min(rows, len(hits)) - 1), idx + 1)
+                continue
+            if ch in ("\r", "\n"):
+                return hits[idx][0] if hits else None
+            if ch == "\x03":  # Ctrl-C cancels the menu, not the session
+                return None
+            if ch in ("\x7f", "\b"):
+                query = query[:-1]
+                idx = 0
+                continue
+            if ch.isprintable():
+                query += ch
+                idx = 0
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        stream.write("\x1b[J")
+        stream.flush()
+
+
 def _install_readline(cmds: dict[str, str]) -> None:
     """History and tab completion. Optional: a platform without readline still gets a shell,
     it just does not complete — which is worth having rather than refusing to start."""
@@ -252,9 +471,33 @@ def run_shell(
     out.flush()
     _install_readline(cmds)
 
+    # What is happening right now, fetched once before the first prompt so the opening screen
+    # already carries it, then refreshed in place while the prompt is idle.
+    strip = _LiveStrip(api_base, s, out)
+    strip.start()
+
     prompt = s("pyyol", _BRAND) + s(" › ", _DIM) if s.color else "pyyol > "
 
+    try:
+        return _loop(parser, cmds, s, out, prompt, strip)
+    finally:
+        strip.stop()
+
+
+def _loop(
+    parser: Any,
+    cmds: dict[str, str],
+    s: _Style,
+    out: TextIO,
+    prompt: str,
+    strip: "_LiveStrip",
+) -> int:
     while True:
+        # Reprinted each cycle so it always sits directly above the prompt — a command's
+        # output scrolls the previous one away, and a strip stranded mid-scrollback is worse
+        # than none because it goes stale where nobody looks.
+        out.write(strip.text + "\n")
+        out.flush()
         try:
             line = input(prompt).strip()
         except (EOFError, KeyboardInterrupt):
@@ -269,9 +512,15 @@ def run_shell(
 
         bare = line[1:].strip() if line.startswith("/") else line
         if not bare:
-            # A lone "/" is the menu. This is the affordance the banner advertises, and it is
-            # what every developer coming from another agent CLI reaches for first.
-            _print_help(s, cmds, out)
+            # A lone "/" is the menu — the affordance the banner advertises, and the first
+            # thing anyone coming from another agent CLI reaches for. An interactive pick
+            # where the terminal allows it, the printed palette where it does not.
+            chosen = _pick(s, cmds, _GROUPS, out)
+            if chosen is None:
+                _print_help(s, cmds, out)
+                continue
+            out.write(s("  /" + chosen, _BRAND) + "\n")
+            _dispatch(parser, [chosen], s, out)
             continue
         head = bare.split()[0].lower()
 
