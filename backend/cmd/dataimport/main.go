@@ -89,6 +89,44 @@ type Bundle struct {
 	ModelCalls []ModelCall `json:"model_calls"`
 	Benchmarks []Benchmark `json:"benchmarks"`
 	Decisions  []Decision  `json:"decisions"`
+	// VerifiedCost is TIER ONE of the attribution ladder and the reason the
+	// benchmark surfaces name a model at all. Without it the ladder falls through
+	// to observed_*, which on this data is fragmented across three spellings of two
+	// models (`Anthropic`/`claude-opus-4` beside `anthropic`/`claude-opus-4-20260501`,
+	// plus an `OpenAI`/`gpt-5.2` row with no bound call behind it at all) and would
+	// render as three models where there are two.
+	VerifiedCost []VerifiedCost `json:"verified_cost"`
+	// BoundDecisions are the per-round binding receipts. They are what
+	// `bound_decisions` counts, which is how a surface says how much of a match was
+	// proven rather than merely claimed.
+	BoundDecisions []BoundDecision `json:"bound_decisions"`
+}
+
+// VerifiedCost is what the GATEWAY measured and billed, per (match, agent) — the
+// only cost figure an agent cannot self-report.
+type VerifiedCost struct {
+	MatchID          string    `json:"match_id"`
+	AgentPublicID    string    `json:"agent_public_id"`
+	VerifiedCost     float64   `json:"verified_cost"`
+	Calls            int       `json:"calls"`
+	Provider         string    `json:"provider"`
+	Model            string    `json:"model"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	TotalTokens      int64     `json:"total_tokens"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// BoundDecision is one proof that a specific round's move came from the model's
+// own structured output. extracted_move and completion_hash are the evidence.
+type BoundDecision struct {
+	MatchID        string    `json:"match_id"`
+	AgentPublicID  string    `json:"agent_public_id"`
+	Round          int       `json:"round"`
+	ExtractedMove  string    `json:"extracted_move,omitempty"`
+	CompletionHash string    `json:"completion_hash,omitempty"`
+	BindReceipt    string    `json:"bind_receipt,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Identity only. No email, no password hash, no wallet, no Stripe id, no TOTP
@@ -333,6 +371,8 @@ func summarize(verb string, b *Bundle, file string) {
 	fmt.Printf("  bound model calls%d\n", len(b.ModelCalls))
 	fmt.Printf("  benchmarks       %d\n", len(b.Benchmarks))
 	fmt.Printf("  decisions        %d (scores deliberately absent)\n", len(b.Decisions))
+	fmt.Printf("  verified cost    %d  <- tier 1 attribution\n", len(b.VerifiedCost))
+	fmt.Printf("  bound receipts   %d\n", len(b.BoundDecisions))
 }
 
 func fatal(err error) {
@@ -494,6 +534,33 @@ func export(ctx context.Context, db *pgxpool.Pool) (*Bundle, error) {
 				&x.EstimatedCost, &x.CreatedAt)
 		}); err != nil {
 		return nil, fmt.Errorf("decisions: %w", err)
+	}
+
+	if err := collect(ctx, db, verifiedMatchesCTE+`
+		SELECT vc.match_id, a.public_id, vc.verified_cost, vc.calls, vc.provider, vc.model,
+		       vc.prompt_tokens, vc.completion_tokens, vc.total_tokens, vc.updated_at
+		  FROM verified v
+		  JOIN agent_match_verified_cost vc ON vc.match_id = v.public_id
+		  JOIN agents a ON a.id = vc.agent_id AND a.kind <> 'house'`,
+		&b.VerifiedCost, func(r pgx.Row, x *VerifiedCost) error {
+			return r.Scan(&x.MatchID, &x.AgentPublicID, &x.VerifiedCost, &x.Calls,
+				&x.Provider, &x.Model, &x.PromptTokens, &x.CompletionTokens,
+				&x.TotalTokens, &x.UpdatedAt)
+		}); err != nil {
+		return nil, fmt.Errorf("verified cost: %w", err)
+	}
+
+	if err := collect(ctx, db, verifiedMatchesCTE+`
+		SELECT bd.match_id, a.public_id, bd.round, COALESCE(bd.extracted_move,''),
+		       COALESCE(bd.completion_hash,''), COALESCE(bd.bind_receipt,''), bd.created_at
+		  FROM verified v
+		  JOIN agent_match_bound_decisions bd ON bd.match_id = v.public_id
+		  JOIN agents a ON a.id = bd.agent_id AND a.kind <> 'house'`,
+		&b.BoundDecisions, func(r pgx.Row, x *BoundDecision) error {
+			return r.Scan(&x.MatchID, &x.AgentPublicID, &x.Round, &x.ExtractedMove,
+				&x.CompletionHash, &x.BindReceipt, &x.CreatedAt)
+		}); err != nil {
+		return nil, fmt.Errorf("bound decisions: %w", err)
 	}
 
 	return b, nil
@@ -704,6 +771,37 @@ func importBundle(ctx context.Context, db *pgxpool.Pool, b *Bundle, dryRun, firs
 			d.Provider, d.Model, d.PromptTokens, d.CompletionTokens, d.ReasoningTokens,
 			d.CachedTokens, d.TotalTokens, d.EstimatedCost, d.CreatedAt); err != nil {
 			return fmt.Errorf("decision %s/%s#%d: %w", d.MatchID, d.AgentPublicID, d.Seq, err)
+		}
+	}
+
+	for _, v := range b.VerifiedCost {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_match_verified_cost (match_id, agent_id, verified_cost, calls,
+			      provider, model, prompt_tokens, completion_tokens, total_tokens, updated_at)
+			 SELECT $1, a.id, $3, $4, $5, $6, $7, $8, $9, $10
+			   FROM agents a WHERE a.public_id = $2
+			 ON CONFLICT (match_id, agent_id) DO UPDATE SET
+			   verified_cost = EXCLUDED.verified_cost, calls = EXCLUDED.calls,
+			   provider = EXCLUDED.provider, model = EXCLUDED.model,
+			   prompt_tokens = EXCLUDED.prompt_tokens,
+			   completion_tokens = EXCLUDED.completion_tokens,
+			   total_tokens = EXCLUDED.total_tokens, updated_at = EXCLUDED.updated_at`,
+			v.MatchID, v.AgentPublicID, v.VerifiedCost, v.Calls, v.Provider, v.Model,
+			v.PromptTokens, v.CompletionTokens, v.TotalTokens, v.UpdatedAt); err != nil {
+			return fmt.Errorf("verified cost %s/%s: %w", v.MatchID, v.AgentPublicID, err)
+		}
+	}
+
+	for _, d := range b.BoundDecisions {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_match_bound_decisions (match_id, agent_id, round,
+			      extracted_move, completion_hash, bind_receipt, created_at)
+			 SELECT $1, a.id, $3, NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), $7
+			   FROM agents a WHERE a.public_id = $2
+			 ON CONFLICT DO NOTHING`,
+			d.MatchID, d.AgentPublicID, d.Round, d.ExtractedMove, d.CompletionHash,
+			d.BindReceipt, d.CreatedAt); err != nil {
+			return fmt.Errorf("bound decision %s/%s#%d: %w", d.MatchID, d.AgentPublicID, d.Round, err)
 		}
 	}
 

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-11T17:03:55.804865258Z",
+  "generated_at": "2026-08-11T17:20:33.373464635Z",
   "note": "Gateway-verified play only: every match here had a seated, non-house agent make a model call the gateway bound to a decision, naming a model. Decision scores are deliberately absent — the stored views they were computed from are the post-move state. No ledger, balance or escrow data is included.",
   "users": [
     {
@@ -28348,6 +28348,4849 @@
       "total_tokens": 0,
       "estimated_cost": 0,
       "created_at": "2026-08-10T04:26:17.566622Z"
+    }
+  ],
+  "verified_cost": [
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "verified_cost": 0.42480000000000007,
+      "calls": 16,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 40320,
+      "completion_tokens": 1440,
+      "total_tokens": 41760,
+      "updated_at": "2026-08-08T21:23:43.126805Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "verified_cost": 0.42480000000000007,
+      "calls": 16,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 40320,
+      "completion_tokens": 1440,
+      "total_tokens": 41760,
+      "updated_at": "2026-08-08T21:23:50.967501Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "verified_cost": 0.39825000000000005,
+      "calls": 15,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 37800,
+      "completion_tokens": 1350,
+      "total_tokens": 39150,
+      "updated_at": "2026-08-08T10:50:50.525085Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "verified_cost": 0.4513500000000001,
+      "calls": 17,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 42840,
+      "completion_tokens": 1530,
+      "total_tokens": 44370,
+      "updated_at": "2026-08-08T10:51:03.883704Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "verified_cost": 0.34515,
+      "calls": 13,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 32760,
+      "completion_tokens": 1170,
+      "total_tokens": 33930,
+      "updated_at": "2026-08-06T13:29:01.910172Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "verified_cost": 0.4779000000000001,
+      "calls": 18,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 45360,
+      "completion_tokens": 1620,
+      "total_tokens": 46980,
+      "updated_at": "2026-08-08T12:43:07.225344Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "verified_cost": 0.8230499999999996,
+      "calls": 31,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 78120,
+      "completion_tokens": 2790,
+      "total_tokens": 80910,
+      "updated_at": "2026-08-08T11:04:29.593568Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "verified_cost": 0.4779000000000001,
+      "calls": 18,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 45360,
+      "completion_tokens": 1620,
+      "total_tokens": 46980,
+      "updated_at": "2026-08-08T11:04:39.029897Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "verified_cost": 0.7699499999999997,
+      "calls": 29,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 73080,
+      "completion_tokens": 2610,
+      "total_tokens": 75690,
+      "updated_at": "2026-08-08T12:43:33.758215Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "verified_cost": 0.34515,
+      "calls": 13,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 32760,
+      "completion_tokens": 1170,
+      "total_tokens": 33930,
+      "updated_at": "2026-08-06T13:40:12.824182Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "verified_cost": 0.4779000000000001,
+      "calls": 18,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 45360,
+      "completion_tokens": 1620,
+      "total_tokens": 46980,
+      "updated_at": "2026-08-08T20:20:57.3352Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "verified_cost": 0.42480000000000007,
+      "calls": 16,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 40320,
+      "completion_tokens": 1440,
+      "total_tokens": 41760,
+      "updated_at": "2026-08-08T17:02:08.346988Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "verified_cost": 0.42480000000000007,
+      "calls": 16,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 40320,
+      "completion_tokens": 1440,
+      "total_tokens": 41760,
+      "updated_at": "2026-08-08T17:02:11.252624Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "verified_cost": 0.4779000000000001,
+      "calls": 18,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 45360,
+      "completion_tokens": 1620,
+      "total_tokens": 46980,
+      "updated_at": "2026-08-08T20:21:10.671172Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "verified_cost": 0.37170000000000003,
+      "calls": 14,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 35280,
+      "completion_tokens": 1260,
+      "total_tokens": 36540,
+      "updated_at": "2026-08-08T16:46:20.275917Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "verified_cost": 0.42480000000000007,
+      "calls": 16,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 40320,
+      "completion_tokens": 1440,
+      "total_tokens": 41760,
+      "updated_at": "2026-08-08T16:46:23.594825Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "verified_cost": 0.34515,
+      "calls": 13,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 32760,
+      "completion_tokens": 1170,
+      "total_tokens": 33930,
+      "updated_at": "2026-08-08T21:22:13.047457Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_qeutlkj3wnijbcrs",
+      "verified_cost": 0.13275,
+      "calls": 5,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 12600,
+      "completion_tokens": 450,
+      "total_tokens": 13050,
+      "updated_at": "2026-08-08T21:22:17.221132Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "verified_cost": 0.34515,
+      "calls": 13,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 32760,
+      "completion_tokens": 1170,
+      "total_tokens": 33930,
+      "updated_at": "2026-08-08T13:59:31.953174Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "verified_cost": 0.39825000000000005,
+      "calls": 15,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 37800,
+      "completion_tokens": 1350,
+      "total_tokens": 39150,
+      "updated_at": "2026-08-08T13:59:58.116618Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "verified_cost": 0.3186,
+      "calls": 12,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 30240,
+      "completion_tokens": 1080,
+      "total_tokens": 31320,
+      "updated_at": "2026-08-08T21:22:22.180595Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_u3v6ruvctfp5v5c3",
+      "verified_cost": 0.1593,
+      "calls": 6,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 15120,
+      "completion_tokens": 540,
+      "total_tokens": 15660,
+      "updated_at": "2026-08-08T21:22:28.88666Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "verified_cost": 0.18585,
+      "calls": 7,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 17640,
+      "completion_tokens": 630,
+      "total_tokens": 18270,
+      "updated_at": "2026-08-09T07:16:06.450268Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "verified_cost": 0.13275,
+      "calls": 5,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 12600,
+      "completion_tokens": 450,
+      "total_tokens": 13050,
+      "updated_at": "2026-08-09T09:25:47.385304Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "verified_cost": 0.13275,
+      "calls": 5,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 12600,
+      "completion_tokens": 450,
+      "total_tokens": 13050,
+      "updated_at": "2026-08-09T09:25:51.933188Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "verified_cost": 0.39825000000000005,
+      "calls": 15,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 37800,
+      "completion_tokens": 1350,
+      "total_tokens": 39150,
+      "updated_at": "2026-08-09T07:16:30.186079Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cqz5esjkfszh6ev4",
+      "verified_cost": 0.13275,
+      "calls": 5,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 12600,
+      "completion_tokens": 450,
+      "total_tokens": 13050,
+      "updated_at": "2026-08-09T06:48:46.996984Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cam4qsjvveztuwca",
+      "verified_cost": 0.1593,
+      "calls": 6,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 15120,
+      "completion_tokens": 540,
+      "total_tokens": 15660,
+      "updated_at": "2026-08-09T06:48:59.704344Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "verified_cost": 0.37170000000000003,
+      "calls": 14,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 35280,
+      "completion_tokens": 1260,
+      "total_tokens": 36540,
+      "updated_at": "2026-08-09T07:16:37.881828Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "verified_cost": 0,
+      "calls": 13,
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "updated_at": "2026-08-10T04:09:05.33089Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "verified_cost": 0,
+      "calls": 13,
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "updated_at": "2026-08-10T04:09:14.733177Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "verified_cost": 0.13275,
+      "calls": 5,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 12600,
+      "completion_tokens": 450,
+      "total_tokens": 13050,
+      "updated_at": "2026-08-09T07:02:26.507674Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "verified_cost": 0.21239999999999998,
+      "calls": 8,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 20160,
+      "completion_tokens": 720,
+      "total_tokens": 20880,
+      "updated_at": "2026-08-09T07:02:55.859708Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_xhogfqrqg7b5ug55",
+      "verified_cost": 0.02655,
+      "calls": 1,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 2520,
+      "completion_tokens": 90,
+      "total_tokens": 2610,
+      "updated_at": "2026-08-09T07:10:08.815083Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_em5c3tn5h4pxzq75",
+      "verified_cost": 0.0531,
+      "calls": 2,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 5040,
+      "completion_tokens": 180,
+      "total_tokens": 5220,
+      "updated_at": "2026-08-09T07:10:23.615489Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "verified_cost": 0.39825000000000005,
+      "calls": 15,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 37800,
+      "completion_tokens": 1350,
+      "total_tokens": 39150,
+      "updated_at": "2026-08-09T09:59:21.926682Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "verified_cost": 0.6371999999999999,
+      "calls": 24,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 60480,
+      "completion_tokens": 2160,
+      "total_tokens": 62640,
+      "updated_at": "2026-08-09T09:59:29.246304Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_tl6yfu5sxqakv6wc",
+      "verified_cost": 0.00007645,
+      "calls": 9,
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "prompt_tokens": 1441,
+      "completion_tokens": 55,
+      "total_tokens": 1496,
+      "updated_at": "2026-08-10T04:26:07.301868Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_uxxijljm3bmwqjaa",
+      "verified_cost": 0.00007609,
+      "calls": 10,
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "prompt_tokens": 1445,
+      "completion_tokens": 48,
+      "total_tokens": 1493,
+      "updated_at": "2026-08-10T04:26:22.40523Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "verified_cost": 0.55755,
+      "calls": 21,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 52920,
+      "completion_tokens": 1890,
+      "total_tokens": 54810,
+      "updated_at": "2026-08-09T11:17:40.573719Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "verified_cost": 0.55755,
+      "calls": 21,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 52920,
+      "completion_tokens": 1890,
+      "total_tokens": 54810,
+      "updated_at": "2026-08-09T11:17:45.161663Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "verified_cost": 0.3186,
+      "calls": 12,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 30240,
+      "completion_tokens": 1080,
+      "total_tokens": 31320,
+      "updated_at": "2026-08-09T08:06:56.795183Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "verified_cost": 0.3186,
+      "calls": 12,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 30240,
+      "completion_tokens": 1080,
+      "total_tokens": 31320,
+      "updated_at": "2026-08-09T08:07:11.861555Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "verified_cost": 0.34515,
+      "calls": 13,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 32760,
+      "completion_tokens": 1170,
+      "total_tokens": 33930,
+      "updated_at": "2026-08-09T07:15:17.428423Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "verified_cost": 0.34515,
+      "calls": 13,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 32760,
+      "completion_tokens": 1170,
+      "total_tokens": 33930,
+      "updated_at": "2026-08-09T07:15:24.200349Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "verified_cost": 0.18585,
+      "calls": 7,
+      "provider": "anthropic",
+      "model": "claude-opus-4-20260501",
+      "prompt_tokens": 17640,
+      "completion_tokens": 630,
+      "total_tokens": 18270,
+      "updated_at": "2026-08-09T07:15:57.691943Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "verified_cost": 0,
+      "calls": 13,
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "updated_at": "2026-08-10T04:17:26.158151Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "verified_cost": 0,
+      "calls": 13,
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0,
+      "updated_at": "2026-08-10T04:17:40.235829Z"
+    }
+  ],
+  "bound_decisions": [
+    {
+      "match_id": "m_5rl3glcwgifna26a",
+      "agent_public_id": "ag_4rgeagoxxwme22mm",
+      "round": 5,
+      "created_at": "2026-08-06T09:39:55.171086Z"
+    },
+    {
+      "match_id": "m_5rl3glcwgifna26a",
+      "agent_public_id": "ag_4rgeagoxxwme22mm",
+      "round": 24,
+      "created_at": "2026-08-06T09:43:48.078174Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 1,
+      "created_at": "2026-08-06T11:45:19.105653Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 2,
+      "created_at": "2026-08-06T11:45:19.246696Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 3,
+      "created_at": "2026-08-06T11:45:19.364751Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 4,
+      "created_at": "2026-08-06T11:45:19.479757Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 5,
+      "created_at": "2026-08-06T11:45:19.594921Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 6,
+      "created_at": "2026-08-06T11:45:19.71893Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 7,
+      "created_at": "2026-08-06T11:45:19.833529Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 8,
+      "created_at": "2026-08-06T11:45:19.949394Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 9,
+      "created_at": "2026-08-06T11:45:20.069476Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 10,
+      "created_at": "2026-08-06T11:45:20.190634Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 11,
+      "created_at": "2026-08-06T11:45:20.321727Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 12,
+      "created_at": "2026-08-06T11:45:20.458492Z"
+    },
+    {
+      "match_id": "m_olu4abs2lfgeicuv",
+      "agent_public_id": "ag_jy5wsp523ol5d4uv",
+      "round": 13,
+      "created_at": "2026-08-06T11:45:20.584184Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 1,
+      "created_at": "2026-08-06T13:29:00.450522Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 2,
+      "created_at": "2026-08-06T13:29:00.589885Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 3,
+      "created_at": "2026-08-06T13:29:00.709451Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 4,
+      "created_at": "2026-08-06T13:29:00.827346Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 5,
+      "created_at": "2026-08-06T13:29:00.943277Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 6,
+      "created_at": "2026-08-06T13:29:01.065216Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 7,
+      "created_at": "2026-08-06T13:29:01.183809Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 8,
+      "created_at": "2026-08-06T13:29:01.308148Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 9,
+      "created_at": "2026-08-06T13:29:01.426032Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 10,
+      "created_at": "2026-08-06T13:29:01.559778Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 11,
+      "created_at": "2026-08-06T13:29:01.673758Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 12,
+      "created_at": "2026-08-06T13:29:01.796071Z"
+    },
+    {
+      "match_id": "m_255x6e5htxgjwqlr",
+      "agent_public_id": "ag_66plcwrbixjnz57u",
+      "round": 13,
+      "created_at": "2026-08-06T13:29:01.910607Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 1,
+      "created_at": "2026-08-06T13:40:11.388596Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 2,
+      "created_at": "2026-08-06T13:40:11.537619Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 3,
+      "created_at": "2026-08-06T13:40:11.65955Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 4,
+      "created_at": "2026-08-06T13:40:11.775002Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 5,
+      "created_at": "2026-08-06T13:40:11.888942Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 6,
+      "created_at": "2026-08-06T13:40:12.010204Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 7,
+      "created_at": "2026-08-06T13:40:12.125776Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 8,
+      "created_at": "2026-08-06T13:40:12.240314Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 9,
+      "created_at": "2026-08-06T13:40:12.36796Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 10,
+      "created_at": "2026-08-06T13:40:12.48099Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 11,
+      "created_at": "2026-08-06T13:40:12.5955Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 12,
+      "created_at": "2026-08-06T13:40:12.708456Z"
+    },
+    {
+      "match_id": "m_ojc7v34pwsciy2yr",
+      "agent_public_id": "ag_t33fjcisdl36fjig",
+      "round": 13,
+      "created_at": "2026-08-06T13:40:12.824631Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 1,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "KZ08_aqoS87HKs-ErTvT03bYB6aLo_XZbJTLvno2EVk",
+      "created_at": "2026-08-08T10:47:35.016613Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "IfPbx8WWdmW87d3Lz2_kpQTq0ybdKXKKLNoqcRn8RJg",
+      "created_at": "2026-08-08T10:47:41.946914Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 2,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "TphH1ujAeyUKmOqDzwu8-qynt4FdH-I8tOPxDJXFaRE",
+      "created_at": "2026-08-08T10:47:46.113738Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 2,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "-6LppsEOT3F_ToDz1V5GM96FezeoD0Hj2MdDa337tbc",
+      "created_at": "2026-08-08T10:47:52.523308Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 3,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "VMT69jhsO7M1wJt0HOgB8JcJOD5IX5VxDorKRPrguGU",
+      "created_at": "2026-08-08T10:47:56.023293Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 3,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "IpThaJnsL35pc-Z8FOfz6s4W2Bh3HtxaBndDKHMT7-4",
+      "created_at": "2026-08-08T10:48:01.212697Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "L5-K0RIarGDX8qoCX6D2lj-xbWwZ51mT--ztizncFQk",
+      "created_at": "2026-08-08T10:48:15.39979Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 4,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "kL_Uv0G3K4Mp1HWCoqX4GoZwHwHOdm4mBADSKSyAL1w",
+      "created_at": "2026-08-08T10:48:09.06008Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 5,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "gpUYYmnSHXjmTg2g5p11alZLtOANsVcNK3FvPGRPsug",
+      "created_at": "2026-08-08T10:48:27.85862Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 5,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "2ppocSVKX0Fm3U96X4tBfY1pnQYohOAhtTYDC8Y421I",
+      "created_at": "2026-08-08T10:48:34.750302Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 6,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "mXBnYGzAzwaNkJe5kqQoHhyelDk2RGa2j7A5VDbXJgY",
+      "created_at": "2026-08-08T10:48:43.649923Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 6,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "BYZFfjrxzORC-wM-A9msIpWoHJM5oKr7cQVw5FYbvRQ",
+      "created_at": "2026-08-08T10:48:51.161671Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 7,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "lrVES8QzEVBNKmE_kvoTHe6nY2f8OxdjdgXyAemg4F8",
+      "created_at": "2026-08-08T10:49:04.696636Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "usWD87WlD1UShuUmB2XK6cLQmaOntRO_b4bJ2S-4RSo",
+      "created_at": "2026-08-08T10:49:50.800456Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 7,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "8yyqf7E3gfIAXB6Boya3AKMmlXMPqOo34-Gzm2-v83o",
+      "created_at": "2026-08-08T10:49:00.229892Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 8,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "mRnISJ36rqep8SXnku4MHV32qdAp2c5AHeLV4Ty8MJ0",
+      "created_at": "2026-08-08T10:49:29.682691Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 8,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "dEU6mUSFsjPTtENCBqoEXgo8X_--J0G2Wky0kBd3KxY",
+      "created_at": "2026-08-08T10:49:34.665982Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "9EstyeBKrfdzZuOJqNpyo8s178MKNwowIj395l9epVs",
+      "created_at": "2026-08-08T10:49:42.582623Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 10,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "z07p2UbVbbIgxTwH8u8Evyb9asHlWacswXYaSxZV4TU",
+      "created_at": "2026-08-08T10:50:04.109414Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "7y9Q8O286KsKZIMdPCg_0kKiRymUGjIpfOH7DbMwki4",
+      "created_at": "2026-08-08T10:50:11.197035Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 11,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "9ln0ecNJSgtCOyTfGgm4Cg404sbiEcUDlCsVn7JUTIA",
+      "created_at": "2026-08-08T10:50:14.667218Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 11,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "aTCzZ_3MQ9WSN838hwqYlDamqsxp29slPzC5_clNFvo",
+      "created_at": "2026-08-08T10:50:21.632437Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 12,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "LMxCordlWGSgyKs-kBMhmy9kyU2Fx5Va2zY1N_7OI1o",
+      "created_at": "2026-08-08T10:50:28.606913Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 12,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "xywFm1Ns7ztZtL97O5F2Xfhps7KT6fEgT1FkODP4dsc",
+      "created_at": "2026-08-08T10:50:33.729069Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_u5z2e4ejdqerp3rx",
+      "round": 13,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "HlEwPnfXrUuJiO4Qf4Z96bwqmJbWo5VwHx6PLheDVxI",
+      "created_at": "2026-08-08T10:50:50.527085Z"
+    },
+    {
+      "match_id": "m_v6ntsh3dsl6nf4gf",
+      "agent_public_id": "ag_fbxyiwy2xqqk7wma",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "g567t5Ovm7zGpeaF3rIX9uO3W7MnEAomh4yRbH5fvUU",
+      "created_at": "2026-08-08T10:51:03.884248Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 1,
+      "created_at": "2026-08-10T04:05:25.061215Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 1,
+      "created_at": "2026-08-10T04:05:40.900665Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 2,
+      "created_at": "2026-08-10T04:06:05.648743Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "round": 3,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "5YR2cdVxuBzkzJ8ngX0xbQAPRY7FemlGWmPdz-yXoFw",
+      "created_at": "2026-08-08T11:00:12.725426Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 3,
+      "created_at": "2026-08-10T04:06:14.801097Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 3,
+      "created_at": "2026-08-10T04:06:24.472557Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 4,
+      "created_at": "2026-08-10T04:06:45.399906Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 5,
+      "created_at": "2026-08-10T04:06:51.517818Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 5,
+      "created_at": "2026-08-10T04:06:57.445972Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 6,
+      "created_at": "2026-08-10T04:07:00.612899Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 8,
+      "created_at": "2026-08-10T04:07:25.510183Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 9,
+      "created_at": "2026-08-10T04:07:43.829071Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 10,
+      "created_at": "2026-08-10T04:08:20.360722Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 11,
+      "created_at": "2026-08-10T04:08:40.444569Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 11,
+      "created_at": "2026-08-10T04:08:45.791355Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 12,
+      "created_at": "2026-08-10T04:09:01.352186Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 13,
+      "created_at": "2026-08-10T04:09:05.332563Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 13,
+      "created_at": "2026-08-10T04:09:14.735543Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 1,
+      "created_at": "2026-08-10T04:14:16.710387Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 2,
+      "created_at": "2026-08-10T04:14:29.171695Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 3,
+      "created_at": "2026-08-10T04:14:36.42054Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 3,
+      "created_at": "2026-08-10T04:14:42.808408Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 4,
+      "created_at": "2026-08-10T04:14:50.557177Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 4,
+      "created_at": "2026-08-10T04:14:56.132497Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 5,
+      "created_at": "2026-08-10T04:15:03.597408Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 5,
+      "created_at": "2026-08-10T04:15:22.420799Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 6,
+      "created_at": "2026-08-10T04:15:34.470341Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 7,
+      "created_at": "2026-08-10T04:15:39.325734Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 7,
+      "created_at": "2026-08-10T04:15:47.551597Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 8,
+      "created_at": "2026-08-10T04:15:51.181608Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 8,
+      "created_at": "2026-08-10T04:16:01.987794Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 9,
+      "created_at": "2026-08-10T04:16:11.240545Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 9,
+      "created_at": "2026-08-10T04:16:21.165424Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 10,
+      "created_at": "2026-08-10T04:16:24.713304Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 10,
+      "created_at": "2026-08-10T04:16:36.481445Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 11,
+      "created_at": "2026-08-10T04:16:40.628736Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 11,
+      "created_at": "2026-08-10T04:16:44.942048Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 12,
+      "created_at": "2026-08-10T04:16:53.221591Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 12,
+      "created_at": "2026-08-10T04:17:07.566258Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 13,
+      "created_at": "2026-08-10T04:17:26.159263Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_7wtfxncrq76e3bch",
+      "round": 13,
+      "created_at": "2026-08-10T04:17:40.239185Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_uxxijljm3bmwqjaa",
+      "round": 1,
+      "extracted_move": "card:13",
+      "completion_hash": "5f1d9fe046dd4df3fe211f5a846c3444e051fa7deb33a0d6dc709e2cfb12cf85",
+      "bind_receipt": "31DQp5Vyc57fpWSdKJF52-gMFI73EFDE1inS5kYCwxQ",
+      "created_at": "2026-08-10T04:21:19.550633Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_tl6yfu5sxqakv6wc",
+      "round": 2,
+      "extracted_move": "card:5",
+      "completion_hash": "06c3e45f3ade7637dd5aded6d39a88ff09152f8d270f7882cb7a882afc8bbc7c",
+      "bind_receipt": "jrKdn7_c0Mu3xCOoth03DdNiX8jMn6panywtkXtw5Dc",
+      "created_at": "2026-08-10T04:21:56.757768Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_uxxijljm3bmwqjaa",
+      "round": 3,
+      "extracted_move": "card:10",
+      "completion_hash": "ec11541156c87992603c7399fdd6e003df4a4204da7a6435ebe51d2ee74bf959",
+      "bind_receipt": "am7SYzLrdO9byDpgHV6gM9ISrOZMc9AxY9m2viGTL_Q",
+      "created_at": "2026-08-10T04:22:06.225858Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_tl6yfu5sxqakv6wc",
+      "round": 3,
+      "extracted_move": "card:12",
+      "completion_hash": "4ad78ab8bb8abcbab7f9b4ecede32bd8cda62ff146ea6070bb2438be32daa333",
+      "bind_receipt": "dLBObOFAEPRPnVl0pH81hrjmFdg73EDuKkFhYkxwKQs",
+      "created_at": "2026-08-10T04:22:18.820492Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_uxxijljm3bmwqjaa",
+      "round": 4,
+      "extracted_move": "card:9",
+      "completion_hash": "ee6c3e7252a28d3b966a1a1fa4a16babfcdf6e7f9bb940c5dc2c5191b79d3a7b",
+      "bind_receipt": "MM8rlSZ03FEtQOKu9E2ZXTEN03aIAer5S84KgRN8N2o",
+      "created_at": "2026-08-10T04:22:31.07471Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_uxxijljm3bmwqjaa",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "f114897e8a0a8d788896601303a15acba8f72f786f5b9c05dd323ebd66740f6d",
+      "bind_receipt": "86KqzQfgyGkZYhMXSjQPbARmuohXid5GC794cjrE7uA",
+      "created_at": "2026-08-10T04:23:01.448985Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_tl6yfu5sxqakv6wc",
+      "round": 5,
+      "extracted_move": "card:10",
+      "completion_hash": "92ac11419197a2841111b9730f531ddf3a4efa590ef5449d4d7a1d0bc9fbfd62",
+      "bind_receipt": "vZCMap7qtcsaEv5E7RhqoWiPBxniiXAhzEfp4PQ-r7Q",
+      "created_at": "2026-08-10T04:23:14.19463Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "round": 1,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "yhncckARxm4y81xZNKepLCY89yGUQA5sk4sYuw_3XMk",
+      "created_at": "2026-08-08T10:59:39.079104Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 2,
+      "created_at": "2026-08-10T04:05:51.761098Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 4,
+      "created_at": "2026-08-10T04:06:32.362335Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 6,
+      "created_at": "2026-08-10T04:07:05.9499Z"
+    },
+    {
+      "match_id": "m_ehehyhm4nn632i6b",
+      "agent_public_id": "ag_p3z2iqm6iyushkbg",
+      "round": 6,
+      "created_at": "2026-08-10T04:15:26.399968Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_tl6yfu5sxqakv6wc",
+      "round": 1,
+      "extracted_move": "card:13",
+      "completion_hash": "aae783f77c1e2ab3e6515aeb2a997a518ace67c582e81a10a60814f81b8723ea",
+      "bind_receipt": "h6LnEqy-QYJ9u_90XHFxDyC4vF02_-cBgUNBm5_HQBY",
+      "created_at": "2026-08-10T04:21:33.404657Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_tl6yfu5sxqakv6wc",
+      "round": 6,
+      "extracted_move": "card:11",
+      "completion_hash": "37971b5510bfea05ccb9fc43d9f53c6391ff4ccb4a3cc45f31139279deed911d",
+      "bind_receipt": "cNAlsST3fGQ0IeE-P-3EzabGFcMo_3kIQYzfnrMX2zY",
+      "created_at": "2026-08-10T04:23:27.450193Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "RwrEpdzvVkXOk0jX6dNhH0vZOspzVFn4Q4ComxOozCs",
+      "created_at": "2026-08-08T10:59:44.465017Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 7,
+      "created_at": "2026-08-10T04:07:09.795792Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 7,
+      "created_at": "2026-08-10T04:07:20.062004Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_6ig5lran5l73ii4w",
+      "round": 9,
+      "created_at": "2026-08-10T04:07:54.392509Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "round": 5,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "a-6z2qeCtt1nUqQ31hf8fnJHbwKREjNPbH8ewFp3DsQ",
+      "created_at": "2026-08-08T11:03:21.407957Z"
+    },
+    {
+      "match_id": "m_afokhh3k3q3qyezy",
+      "agent_public_id": "ag_s7hsisiemlba4cww",
+      "round": 10,
+      "created_at": "2026-08-10T04:07:58.98846Z"
+    },
+    {
+      "match_id": "m_ehcmlsa6iqura77f",
+      "agent_public_id": "ag_uxxijljm3bmwqjaa",
+      "round": 2,
+      "extracted_move": "card:11",
+      "completion_hash": "d66bbcd85d72c40a64e35bb49f886d9b8b9fa92f2d8f382575b099358719795c",
+      "bind_receipt": "fFb_IOKe-cWRikLN8EwcfVICDGNXfFSKXNJ8ruMNs6I",
+      "created_at": "2026-08-10T04:21:43.518197Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "MrKTIb3wv7pDJxK3pluAZiDyZCISobbyZjjOXgrDSl8",
+      "created_at": "2026-08-08T11:03:14.642824Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "LZTfuEldEnPCa90GHa3f9XJQg9e2N3n_HoYQxacAJiw",
+      "created_at": "2026-08-08T10:59:52.561378Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "round": 2,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "0ABFB2c3CFPwE5ASFRebGGnU_noSjRae2NE8ukb2rQE",
+      "created_at": "2026-08-08T11:00:02.557175Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "round": 3,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "rKbH3LkNNca7oj2NBO0U0U3rec5RtqgDz-XPotfbIGM",
+      "created_at": "2026-08-08T11:00:05.535843Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 2,
+      "extracted_move": "card:6",
+      "completion_hash": "c18a6e298a490e64ab0dae2aa9f789a7e19abe16294fcc7feca240c651b6f420",
+      "bind_receipt": "rCpDgpGYftaJ-YeyRsxClueFTusd7XdgUNByWtBTJko",
+      "created_at": "2026-08-08T13:55:45.015492Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "round": 4,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "qRlRfb7nBaBwuInnndsDOH5g-mb8bvlCtIWfunERuXY",
+      "created_at": "2026-08-08T12:40:43.546875Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "round": 4,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "T6ci8tIdLHLLwk8bDQhEUNh5ea7uo2tVS-WiIE20oco",
+      "created_at": "2026-08-08T11:01:28.601305Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 2,
+      "extracted_move": "card:9",
+      "completion_hash": "08d021517886430dc6669e2525af092ab7f22bbd965089e64fcc78bbe636412f",
+      "bind_receipt": "S6WBPFNEQi7EtdLETPrt9kjQBhAiMJ6UWfHxAbC9uqM",
+      "created_at": "2026-08-08T13:55:55.18192Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "round": 4,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "4fUbekgqxFIWDXvNZKP6wcO8v75TjHI9G0_4xM8mRMw",
+      "created_at": "2026-08-08T12:40:37.661583Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "round": 5,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "DxiEoiY0wgG176fLPs9hJq_ZaLA3erlvlaL3AFn7K0k",
+      "created_at": "2026-08-08T12:42:01.751656Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 3,
+      "extracted_move": "card:13",
+      "completion_hash": "95f2580ea3752eeb41a7816e0d6a36a36f8ad280d8dd165f228f1a8bd7a708d2",
+      "bind_receipt": "iWDlobZuOCgOT7bnjObNcBiAmvvOTSrzUD3l5CWj4Gs",
+      "created_at": "2026-08-08T13:56:03.422185Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "gqckoj9Jb9t1oF9tKhOsRd3qNEyOzmhHQhdbLIo8LNA",
+      "created_at": "2026-08-08T12:42:10.012022Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "round": 4,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "GKN033Jv6hdij_rQQtlTc9Eg5S57nxy848RrvOhdHZo",
+      "created_at": "2026-08-08T11:01:36.956615Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_uwsjhkkph76lwkxi",
+      "round": 6,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "Ie9uAcx9vNldhC7DJ5K12m-xYg2doAkRTo0upmiJGfE",
+      "created_at": "2026-08-08T11:04:29.601523Z"
+    },
+    {
+      "match_id": "m_sspdkaz3rob2np35",
+      "agent_public_id": "ag_bzmac4d4b2j2uw5m",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "ypIzeAVor-hj0lDqA18UPegLAxpd4FqjjzjeZCaxB5g",
+      "created_at": "2026-08-08T11:04:39.032297Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "round": 1,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "IyYFQg__ryuM5dZgFBpvZHdm6V0Le16a0Uox6wdOOVw",
+      "created_at": "2026-08-08T12:38:37.738632Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "Syx0IqUhYFMsiUYCMfwv0LQYHxgAqxMOLoLWZM_7tiA",
+      "created_at": "2026-08-08T12:38:42.292894Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "cQEPOuIZdfqMEDqOqG_NE9g249qGNCTVehY50WBxcNo",
+      "created_at": "2026-08-08T12:38:57.606734Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "round": 2,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "OCImVeaErXsTBRMI4L0F3jnatG4GZgr2BODY0jGeKys",
+      "created_at": "2026-08-08T12:39:03.601478Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 3,
+      "extracted_move": "card:8",
+      "completion_hash": "a07bd4e9caec648081308f80318cfd94ac0349e0b00a7623d2b82ad276377a87",
+      "bind_receipt": "VfL_JaOz7seLezS-hE3PjJUZsihm80nmqDG05thJfTA",
+      "created_at": "2026-08-08T13:56:10.693579Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "940ea50fda6f6a99f2ba460ffab368f3b182aac1a4ffeb92282aee52b02c45e0",
+      "bind_receipt": "uxHGdhctdCrU4ovqRzlCaXJM6FItiseQ5ua9saouGm8",
+      "created_at": "2026-08-08T13:56:22.536156Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "940ea50fda6f6a99f2ba460ffab368f3b182aac1a4ffeb92282aee52b02c45e0",
+      "bind_receipt": "QHZf8jfPSjajjBlyrBdK8wBTqHr4-eeSNEcHOZTyrPQ",
+      "created_at": "2026-08-08T13:56:43.827671Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 5,
+      "extracted_move": "card:11",
+      "completion_hash": "cf7985c15e3f0e02f9492933814b5094e697e34041a95098732525eb4d351bab",
+      "bind_receipt": "UUd6js0CPo4_H2SIw4OyXlEBsIsUihJ5gwKryg8eqTI",
+      "created_at": "2026-08-08T13:56:48.115185Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "AEI02vOycN4QVtLBqTYwfT7L_41vcWJCk1cx7vkGE6M",
+      "created_at": "2026-08-08T12:39:15.339737Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 5,
+      "extracted_move": "card:7",
+      "completion_hash": "9df197011a857ca5bf580b8d24fce44c52789d8ef2a6d9afacabd8c7d2a2d804",
+      "bind_receipt": "z1SlXvvSQ-_k7c2NpbCddt0u94j3spNoESCUYiFRh3Q",
+      "created_at": "2026-08-08T13:56:53.144428Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 6,
+      "extracted_move": "card:3",
+      "completion_hash": "b9269bb46d488afbdccc5a0a5f998495638b1b2f5cab79c102d9cf61dc68d8c9",
+      "bind_receipt": "OyxQxAMrNKAH_1LibpS9QNORVCvsLolXiPezY5LJbuw",
+      "created_at": "2026-08-08T13:56:59.673432Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 6,
+      "extracted_move": "card:3",
+      "completion_hash": "b9269bb46d488afbdccc5a0a5f998495638b1b2f5cab79c102d9cf61dc68d8c9",
+      "bind_receipt": "2GqbO8P7OGYdHNPrebE4UVxeeu7DrF3QxXhGAxc-2NI",
+      "created_at": "2026-08-08T13:57:05.162685Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_dysgy5ocinxf7dip",
+      "round": 6,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "bNSTGSU36gcWOBmMVVTdk3zcbkMjQxCpMLdq8-t9yPo",
+      "created_at": "2026-08-08T12:42:29.598904Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 7,
+      "extracted_move": "card:12",
+      "completion_hash": "c707fd4449542236cd10f3894a414484cdb387a251c6f40340556c077c8fa323",
+      "bind_receipt": "m0iNnmKaRQELRidHIK406QCzPxQ7o9ZmAVS2UdDrWRg",
+      "created_at": "2026-08-08T13:57:19.462925Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 7,
+      "extracted_move": "card:10",
+      "completion_hash": "f607019265a364aa05a2f47931f6299c2a82b95b406fc6a983130c785f390cc1",
+      "bind_receipt": "dUWh_iQGl3Ii4hq7d48wT5HofoK6AEsEc616A8O5lvA",
+      "created_at": "2026-08-08T13:57:24.882564Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 8,
+      "extracted_move": "card:5",
+      "completion_hash": "af155c263f07c68b54d386e96b144f67717192c0a8747ea6ecca989e82c080fd",
+      "bind_receipt": "zXGtt368I8BSBKVb6lkIuiDU-d1oSwTifsKmVjoE__E",
+      "created_at": "2026-08-08T13:57:35.351433Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 8,
+      "extracted_move": "card:4",
+      "completion_hash": "4b74bd4f522dec5440a0faf81022477b7813d27413a6124396080bd1cea3f391",
+      "bind_receipt": "ptBBK9wHnZ0OiXoB-jEYoOL_s-LQqf0wKgGssUmez-8",
+      "created_at": "2026-08-08T13:57:41.332644Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "round": 3,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "wlEH46XIB98zgaDrczE33dAbLLwdQXs5pEUbnputt2A",
+      "created_at": "2026-08-08T12:39:07.187695Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "08d021517886430dc6669e2525af092ab7f22bbd965089e64fcc78bbe636412f",
+      "bind_receipt": "jyvr48jCIV34RMKOjJHwJDKGj8Py1smpzWdBGyugoq8",
+      "created_at": "2026-08-08T13:57:45.398374Z"
+    },
+    {
+      "match_id": "m_huomhkeekafbmewb",
+      "agent_public_id": "ag_7s42ny5gxdg5g2lv",
+      "round": 6,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "5QLLFtCIqIjlctFgwlEygqzPJ-UoL2s6x20iz9iDpHk",
+      "created_at": "2026-08-08T12:42:25.010438Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 1,
+      "extracted_move": "card:8",
+      "completion_hash": "a07bd4e9caec648081308f80318cfd94ac0349e0b00a7623d2b82ad276377a87",
+      "bind_receipt": "YBmpltl10MNtydbbC0E2BXKnI-9bbzh2tly4HEXRDcY",
+      "created_at": "2026-08-08T13:55:32.281381Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "79de3da4683684a9f47b4a0ca998a1a785136909e540fce027fc82cb3f099501",
+      "bind_receipt": "v7pDB6J8108grFcbxAsw1ZvXFeBuB0y7CArpZA3Ltdg",
+      "created_at": "2026-08-08T13:55:39.600039Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 11,
+      "extracted_move": "card:4",
+      "completion_hash": "4b74bd4f522dec5440a0faf81022477b7813d27413a6124396080bd1cea3f391",
+      "bind_receipt": "cE1lzLKRXAgblBNKyABR0FlC8B0lI3oMN59BZhUZNks",
+      "created_at": "2026-08-08T13:58:30.093029Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 9,
+      "extracted_move": "card:6",
+      "completion_hash": "c18a6e298a490e64ab0dae2aa9f789a7e19abe16294fcc7feca240c651b6f420",
+      "bind_receipt": "9pIgZE8oV_Xrhi_lgV5zBIQOwHLGyE0THJex3LN4M2c",
+      "created_at": "2026-08-08T13:57:50.135151Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 10,
+      "extracted_move": "card:1",
+      "completion_hash": "79de3da4683684a9f47b4a0ca998a1a785136909e540fce027fc82cb3f099501",
+      "bind_receipt": "N0AcRUE8NthW93SQqzznArCK1TRAWhksqHOMb7b2WQY",
+      "created_at": "2026-08-08T13:58:03.558543Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 10,
+      "extracted_move": "card:5",
+      "completion_hash": "af155c263f07c68b54d386e96b144f67717192c0a8747ea6ecca989e82c080fd",
+      "bind_receipt": "2y8yja0cCAdSba1AtgXTCYuX5oDUlzm7IEgdmFX841w",
+      "created_at": "2026-08-08T13:58:25.947438Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "cf7985c15e3f0e02f9492933814b5094e697e34041a95098732525eb4d351bab",
+      "bind_receipt": "ZVLM9GyEj2a6gcNchlLy56AWji80mWMGLn4wLfSqtMI",
+      "created_at": "2026-08-08T13:58:54.176239Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 12,
+      "extracted_move": "card:7",
+      "completion_hash": "9df197011a857ca5bf580b8d24fce44c52789d8ef2a6d9afacabd8c7d2a2d804",
+      "bind_receipt": "r5cq1mee6spKi53oYjSspNnB6ftcwuSBU1VClP-QtzQ",
+      "created_at": "2026-08-08T13:58:59.683315Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "c707fd4449542236cd10f3894a414484cdb387a251c6f40340556c077c8fa323",
+      "bind_receipt": "LXwVEua1M6zODMy5V5ISMMWKggygOfP5-9tC-xXQBV4",
+      "created_at": "2026-08-08T13:59:25.976455Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_bpx3kb7uko6xxx4y",
+      "round": 13,
+      "extracted_move": "card:10",
+      "completion_hash": "f607019265a364aa05a2f47931f6299c2a82b95b406fc6a983130c785f390cc1",
+      "bind_receipt": "WNlBTPuhBhHGUfQatqau3m_FWYqksKVPTAkE_FeN1l0",
+      "created_at": "2026-08-08T13:59:31.957623Z"
+    },
+    {
+      "match_id": "m_dxaaw54dcbz7bpli",
+      "agent_public_id": "ag_2tpptulkoefouqci",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "95f2580ea3752eeb41a7816e0d6a36a36f8ad280d8dd165f228f1a8bd7a708d2",
+      "bind_receipt": "U1tqPwRDOknKVAKORPwxoaMIf9HYir76KymC1VOrL1Q",
+      "created_at": "2026-08-08T13:59:58.117898Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 1,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "SuN9lklHrorlpoCVUR35me6D0_bZwVAaSpa6uPxGWOM",
+      "created_at": "2026-08-08T16:42:24.876592Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "tj9tylYpbJIEbLpO9G0kbCAXNK5S2J749kTyILUT9yY",
+      "created_at": "2026-08-08T16:42:46.924634Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "fH8vR7Zp6OEE1aT-PKgWV5HZzcA2veCAKIShLtPLpjI",
+      "created_at": "2026-08-08T16:42:54.161448Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 2,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "Q_JEwzbM3U97aY_ODytRZBnMATJrnxOqNBulCnZUZ70",
+      "created_at": "2026-08-08T16:43:02.809281Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 3,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "ReszDbQ6QFWzxy5kId8C0h5GkmGNrcN7Po2iiFfxdzc",
+      "created_at": "2026-08-08T16:43:20.36615Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 3,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "bo0purwUXigqsWLkLVOKGiwxm4bFR_sLrsIOzxy6NOY",
+      "created_at": "2026-08-08T16:43:29.093539Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 4,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "fdqXr4tzEVvvxyLTqEd-qpx_xuz-iBKzQsvsPqWFb-k",
+      "created_at": "2026-08-08T16:43:37.908619Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 4,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "xTBkzN3clejQMGglz2YI_-QQFtwPLTn3hZ5h_qHSU-w",
+      "created_at": "2026-08-08T16:43:48.949982Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 5,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "urcWxZO7-eGnAwpmDWFKe_QujyupdJHsAHOdeI7BqPA",
+      "created_at": "2026-08-08T16:43:54.977672Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 5,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "kcN643bGItEUateCHXvd77b7ziCmXgBTRyKhEyRdHzI",
+      "created_at": "2026-08-08T16:44:06.060632Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "nxUX7-4_9TJ9YHZ0WHcGWKqU2z-Sm2hDdyDLKLeVY8I",
+      "created_at": "2026-08-08T16:44:21.056636Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 6,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "OTbp-Re85El20nMr5no63V1J3rDmBFBZiZIGwICWgQo",
+      "created_at": "2026-08-08T16:44:38.571443Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 7,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "glcP4HmG7mlEXk0BKlHGTDtD58tbLNcJW-ccWwgxhaU",
+      "created_at": "2026-08-08T16:44:50.327709Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 3,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "1sUhSEV6CUbWZQtyyGH-LjaaYKQH4Gx3VtscIkkDHbo",
+      "created_at": "2026-08-08T16:59:24.481196Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 4,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "k-VBrfbFLNLRmZIQgAwKLePEt7SzfRneYSBtnPxAPiU",
+      "created_at": "2026-08-08T16:59:29.401872Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 7,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "2tP1a2JaofXKkmWyJJsVzpNEKmo4gfiQKR_jOUUln6Q",
+      "created_at": "2026-08-08T16:44:41.392067Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 8,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "HYd3nTjsbFDdVjUNUlWAvb6hvaGkqmOMgMOLLlbxW6M",
+      "created_at": "2026-08-08T16:45:03.364929Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 8,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "mSyoY97RcFxYzTBR1heaB6sNk73bFa-YW-wXMUF80x4",
+      "created_at": "2026-08-08T16:45:08.921967Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "ZR3itdswWf2XlV-rTjSxFiWdkmrUYPEkVZlK2s5JtC8",
+      "created_at": "2026-08-08T16:45:18.20361Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 9,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "zf4a-xb8RKbuuxmaoWLif3f-XWJYtEfO6Zu9-kgyTpc",
+      "created_at": "2026-08-08T16:45:31.941499Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "EJjlpOP8K5R87Jy0KeE8vVQwpllYkoxrzGIx9trBuOg",
+      "created_at": "2026-08-08T16:45:41.485336Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 10,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "ohbZX2MGmbxLjL2DSrZpC69jiDeo1zcMg1Y-Y2-FGw8",
+      "created_at": "2026-08-08T16:45:48.493222Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "fRoQTI8vicLxD-wkccYPueJuRJZ5RjIrpkU6ocyuxCE",
+      "created_at": "2026-08-08T16:45:54.359368Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 11,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "dhVTTf3RRS1KxwtGcgRonmTrNUkrFIGrEQjvq-POFrU",
+      "created_at": "2026-08-08T16:46:00.118986Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "xEIMLrTZr0xCcrrFSDvxx1709KjXy5P2mzxBZj3z-Oo",
+      "created_at": "2026-08-08T16:46:04.676638Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 12,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "a2B3Cn_aDhhPcrOPuRBSWdBoZ-JFu7GafQU9gpiKt_Y",
+      "created_at": "2026-08-08T16:46:13.65423Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_ym56gnvbf4ykvboo",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "vp8boRbmvImENSmULq1ay7E7pcnZ9NQbQvCNxOBw9wI",
+      "created_at": "2026-08-08T16:46:20.27634Z"
+    },
+    {
+      "match_id": "m_hxvphqfmm47hzmda",
+      "agent_public_id": "ag_2gdtv2aiobjnxufe",
+      "round": 13,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "c2RNi5243V0YSqReYOo0eiGn_78I9o3nr0TEbrjzdlI",
+      "created_at": "2026-08-08T16:46:23.595259Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 1,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "sHP5qcfS9D8r2lrXiyOkxuNppDVSBeL2czH7UQOkUpQ",
+      "created_at": "2026-08-08T16:58:14.551621Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "CUJ8dqUlcJmIPmhzDkHiWeuQ2rQA3PZwGqaql7DBcsY",
+      "created_at": "2026-08-08T16:58:25.52503Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 2,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "SGSLEC28No3b6GKi1KME4JAAJ2SKCIrlla0UefeWIjg",
+      "created_at": "2026-08-08T16:58:44.062014Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 2,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "-cvbTq9u5O1UfKPn5i-VXvr5TloL2HianJCI2uY-RIY",
+      "created_at": "2026-08-08T16:58:49.560126Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 3,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "n1Ttu-hbzYm7yHkDFPLdPORj_1wDG9fTU9WFKGuttHA",
+      "created_at": "2026-08-08T16:59:07.640549Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 4,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "aaQ5qNZV0c7lqlqZ-CYa1ovzuF7BcJpOUs8xaLYuUwg",
+      "created_at": "2026-08-08T16:59:35.221902Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 5,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "8jbJ_vb_Zb0saFCDDL8pPnVyFXS0S07QShESkfGqC0s",
+      "created_at": "2026-08-08T16:59:38.131866Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 5,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "uc8w5l1tYueGnxVdZFCrfL29B_8mYK0T4nb5sPjNgDA",
+      "created_at": "2026-08-08T16:59:47.959363Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 6,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "4ylt116iRTU3RRxNEZKBAQxleQB5JNNQyISm8UT_YAc",
+      "created_at": "2026-08-08T17:00:00.724127Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 6,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "xC0muySqx_pweveWsN1tnB7ZHc7sMmNkVOCOjQm-dHs",
+      "created_at": "2026-08-08T17:00:06.578676Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 7,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "5QKr3_rAPdVSRI4CQQEi67Sd7487cqfoL7zDZrqvdDA",
+      "created_at": "2026-08-08T17:00:18.348235Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 7,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "HHp14m5baYzDqWy1z3ILZOHR-zX5zvoQzGItE6k8IQk",
+      "created_at": "2026-08-08T17:00:14.202218Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 8,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "pmzk_D5bMAp4F6qkC2XKztE4IT_2R29kmN21YAQqEMI",
+      "created_at": "2026-08-08T17:00:35.5564Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 8,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "ojwctOysuI3GjIvd7cjaLawcwzxY1ikhd63DQO6rRk4",
+      "created_at": "2026-08-08T17:00:41.153997Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 9,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "JealYKWSo7rFtXrkXx9KSkhZcYj04LCFO2xpOLOtVt4",
+      "created_at": "2026-08-08T17:00:50.448971Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 9,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "GcWEOpZIOEiFMecQhtcNTnjw0Hc73rXcu-SmpiGi-vU",
+      "created_at": "2026-08-08T17:00:54.504796Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 10,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "xV6rqUHzJSdgQgTZCFnQE4YXqHkAzdPAbdmxilYH3Z0",
+      "created_at": "2026-08-08T17:01:03.273052Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 10,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "9m2BGuYYDkMKrFSh_ZlNLrbfX5chU302t0RPg9BLrE8",
+      "created_at": "2026-08-08T17:01:21.844551Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 11,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "uk9xxWWOa6OAylnazAnuzdKGl4uWZHbVe-IAxhCxphw",
+      "created_at": "2026-08-08T17:01:38.045965Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 11,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "O1AoED7R5bUMBI9REcJcyPLQ3h2abRmrihg3CjCEujY",
+      "created_at": "2026-08-08T17:01:41.175976Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 12,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "_7MzJJ6WgXC2X9hEx9TjMQkPBTYy5xpAZTzq3RWuxNA",
+      "created_at": "2026-08-08T17:01:47.56803Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 12,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "9pdU6bo26ca5LSio38YzwgWsiyupG8lc5Ee1hmCBl3A",
+      "created_at": "2026-08-08T17:01:55.24605Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_gzjfjvkz7l7aqwpm",
+      "round": 13,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "YOikqQbdffhFhJaV1BvWDsYbuBb1OPnLC0GSRAqbKHw",
+      "created_at": "2026-08-08T17:02:08.348204Z"
+    },
+    {
+      "match_id": "m_vkjiitite5cw3obr",
+      "agent_public_id": "ag_djqgzrwpe2d3wtlf",
+      "round": 13,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "zaPNB5grWrFbANY_M9LmSajIvtrdj8HezT2pjC3aoZg",
+      "created_at": "2026-08-08T17:02:11.253166Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 1,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "zEWj_l5Deg4gdOg7Z4qQSFzn6jl_MWSnIDSU6AyWP-U",
+      "created_at": "2026-08-08T20:16:13.254458Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "W2Ez0j9l1r9GTxrb_6t8Gm8I9Bn6BX_Gc8nvjKPNKv4",
+      "created_at": "2026-08-08T20:16:21.166916Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 2,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "f0Q-Q5JTJ-1Z67cD1CC5hlMGRIwcIawJqn4DyAYwOM0",
+      "created_at": "2026-08-08T20:16:25.50687Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 2,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "5dvjvWwFth1ezhrhtcGM3FvOkSXjlZ0Mv1hSfv5zf_E",
+      "created_at": "2026-08-08T20:16:34.213535Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 3,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "sdoctz1r0VJqAIOC6-_zww9ufkKqgPnlItUXSulR3hI",
+      "created_at": "2026-08-08T20:16:48.961436Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 3,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "lg5WdYlpkQiviikWZ1VuYk-TNvjXnuGnFRfjHToqouQ",
+      "created_at": "2026-08-08T20:16:58.324731Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 4,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "iqXT16KGpQka2Xm-DiC_6IwurjlAhJfTvxLcXFD4dfk",
+      "created_at": "2026-08-08T20:17:07.063902Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "yQqrkcN1oiasdJcibtzjuvlaXHtoMmDzpr1ihLJ1Wos",
+      "created_at": "2026-08-08T20:17:14.283593Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "l1m3BwMRjLCW2fd9MNzDrE192DZu4CsgU1Q4xgptXig",
+      "created_at": "2026-08-08T20:17:34.390891Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 5,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "T_QLuCcPi_2bkoKvW3F1mi8PoU7U7nDvsMXZUy7lApc",
+      "created_at": "2026-08-08T20:17:18.594903Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 6,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "SU1mgqlPrPpKabwjDKOIl13s4iAuB2yx-km5zL5r6uc",
+      "created_at": "2026-08-08T20:18:02.563141Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 6,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "2JU_dnrm0IO5JqM1wOZE6WCAxnCVbzeKyvlZ75OILA0",
+      "created_at": "2026-08-08T20:18:06.416118Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "BQmXDxLSuv3rrzHtUnwVVyqEkHcyyyuv0PUlB--nE6k",
+      "created_at": "2026-08-08T20:18:17.95569Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 7,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "kiteILb5G3Q_kdGzh8_u6KuAp73V2I94YbzFSOQwWDI",
+      "created_at": "2026-08-08T20:18:24.127234Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 8,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "rYTV6Qk7QkU63wtcFZTsExRfDIeAGapb-em0hvJ-oZ0",
+      "created_at": "2026-08-08T20:18:55.01391Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 8,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "mWT080N66XuG2syg6IW4zszcbROxZ_y3WlMNXuSsgbA",
+      "created_at": "2026-08-08T20:19:10.342083Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "JhtnK7TJQrjAkk9wPRgnEPkN1-6FIecF-weW4lTST7M",
+      "created_at": "2026-08-08T20:19:36.55009Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 9,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "3zCIKj_yqMDFpjyoNg3KEM-Pa2DX4Sq-qcBRrsDkiSI",
+      "created_at": "2026-08-08T20:19:55.154839Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 10,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "ezeEz_RRhzdz5rd2tNB9g-qgd0HhHEFIMU8SdSmTFjI",
+      "created_at": "2026-08-08T20:20:25.168745Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "uv5ctGtDUQ6AnPc-ja9vg9Gw7gmyWYxLV4n_8cfMTRE",
+      "created_at": "2026-08-08T20:20:02.376859Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 11,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "B6-ZsC5tweiOANS4WeWqcULUdH_i_J_DQd_LwE8W_Y4",
+      "created_at": "2026-08-08T20:20:36.765494Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "Ja4W-DLCLAdUoegfK0vVE5uIqDLgahiw1E0V3XavjQU",
+      "created_at": "2026-08-08T20:20:41.784101Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_rl4nx5o235enpwe3",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "b3q7TcMqpmY9qw0p2sHl2KPCIZYQapvu124utdmuuvI",
+      "created_at": "2026-08-08T20:20:52.069534Z"
+    },
+    {
+      "match_id": "m_y2g5hqu32wuavxtr",
+      "agent_public_id": "ag_ibcfhmxqwnbgd53g",
+      "round": 12,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "poUm1FZlHRlB-RqyPHJaBWELEK_ZoxW1kX-AYBaWBIQ",
+      "created_at": "2026-08-08T20:20:47.237833Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_u3v6ruvctfp5v5c3",
+      "round": 1,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "-Zd5dEzalY0JQ6HWlrA9tFpBWq-1kinHHCYFaSi6X60",
+      "created_at": "2026-08-08T21:18:52.388878Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 1,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "TI-beW3Tm2Z1zfBa6Qnrwd7fiZg1XyQMb_qzB9y4AfU",
+      "created_at": "2026-08-08T21:18:55.29825Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_qeutlkj3wnijbcrs",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "xSgcfK7fkcPgRBkVZ8NZsRw9p_oBXePbmyCLquynK5M",
+      "created_at": "2026-08-08T21:19:00.635505Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "DXAgCnVOWcP_Mwn-rBnHdrMfLeDSX_CUBu4m9eOFWW8",
+      "created_at": "2026-08-08T21:19:10.26493Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 2,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "9yDCOTVP0D5jSjnwKzSJLtwD11C6ObOysq67uXQ_3mQ",
+      "created_at": "2026-08-08T21:19:13.777392Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 1,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "YOouA-r5nQ1hXFiNv5CgDh-xxzCCgUx8m12bqdssaHk",
+      "created_at": "2026-08-08T21:18:55.685434Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 2,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "gzXWKLML9NCz7qTa8KUk2njXVx890waeIhUUGlk3GU8",
+      "created_at": "2026-08-08T21:19:22.220549Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 3,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "a9ZHTCnZtJGbtJqeJ_6lGLduU5oI6AdKC2CNpEOIJqU",
+      "created_at": "2026-08-08T21:19:24.420517Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_u3v6ruvctfp5v5c3",
+      "round": 4,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "cMwBqflKD7A_tyH8oS6ObtCbtnABN9F1ORF_y5lCcTE",
+      "created_at": "2026-08-08T21:19:28.66396Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_qeutlkj3wnijbcrs",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "miHwiPfh13jH_ufdjvN-WJqRV0y7BbXtY7qqrR0um0s",
+      "created_at": "2026-08-08T21:19:32.81596Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 2,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "7Eu6JaWJcJ8VIFAKxSJ2_SCulLQHuA3NPYktwOAK6vQ",
+      "created_at": "2026-08-08T21:19:39.631252Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 3,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "bu0fujc2UnuqBpe2B1lrYcAqZT7UXGlijJsiJdiJsjQ",
+      "created_at": "2026-08-08T21:19:41.89843Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "GHjN-bBGZkDXL8VHdxaudD36PeQyiLNepesx0aVUePc",
+      "created_at": "2026-08-08T21:19:50.854169Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 3,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "sbM1TJskhI8N79E9DqOmo-EC3gyLjfW8hD_8UoJgnIc",
+      "created_at": "2026-08-08T21:19:52.425385Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "iEbwlkUDep_EUS_vvDI17x_g1lu54F4hwlmYT5Oocpo",
+      "created_at": "2026-08-08T21:19:55.598133Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 3,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "PEQUxpgjQrtdGlLoB4wz4ayYgxJAoYc11a34xpygpCE",
+      "created_at": "2026-08-08T21:19:49.227378Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "ZTLxyPL0u9Zozu4vwPUK16vDHGIsV0qUH_1t9f3SU-Q",
+      "created_at": "2026-08-08T21:20:02.502863Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 4,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "QN5ZfXZFnv0C4UWyJ8EiU9RJYzNIbc7nfSpeU_0ShwE",
+      "created_at": "2026-08-08T21:20:05.88955Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "n9U16gvns3SMQI1Z5LqbJghU3BhZ3Gxec_aTkcNiay4",
+      "created_at": "2026-08-08T21:20:07.189638Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_u3v6ruvctfp5v5c3",
+      "round": 7,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "vxJhBYXV-MqSY8LkOKDag7U88LJvR7PDfJrENbSvHEc",
+      "created_at": "2026-08-08T21:20:09.535577Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 6,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "5eaQ40mhqAnskyLe4tGNUHvDyf3odbIjmc_sfprmw6k",
+      "created_at": "2026-08-08T21:20:11.46953Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_qeutlkj3wnijbcrs",
+      "round": 7,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "erW_UyznKaqWGsC7JjKC6ZZeTLWmUJhFyeSnzvijNs4",
+      "created_at": "2026-08-08T21:20:15.708724Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 4,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "CiDl6R4NsnCdEzTdQ0M4JO8mVTeOK1NBPblmAv4WXiE",
+      "created_at": "2026-08-08T21:20:16.4285Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "aFDyLWRuqBGUlKbQjlmnoi-tOESayM3Q40J1xP1hXLQ",
+      "created_at": "2026-08-08T21:20:24.133561Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 5,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "fdCXI0o9El77XnTvLt8DXjv8NQLo7VNSkyDK8un2lFo",
+      "created_at": "2026-08-08T21:20:26.086146Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 7,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "58FK7t2L-l5KYUIdO8jDPywerlbG7Ya6CIze4uZR3W8",
+      "created_at": "2026-08-08T21:20:29.222696Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 5,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "M410DiBwpOuXYt0_U0WheVVi5FnpM_f2bcfO6_kL0Cw",
+      "created_at": "2026-08-08T21:20:20.620565Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 6,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "Zf_0GLG1rXrqU9iB_GTZI152d-6U-lQS_89a4mfWj7A",
+      "created_at": "2026-08-08T21:20:37.913021Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 9,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "JB63OzLMLNfCr1jJIAn8rDXDjWgREYtKTPXTQupJotY",
+      "created_at": "2026-08-08T21:21:09.512951Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 6,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "Rh_2RtWrVYvauSGVdTCFQ2MzE9x0E22i8rx5giOTBPE",
+      "created_at": "2026-08-08T21:20:44.264489Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 7,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "Q3V6M1iiYt5oJnqhwSKxzFotYOzAjOeI-RHqwXfMxEM",
+      "created_at": "2026-08-08T21:20:35.062424Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_u3v6ruvctfp5v5c3",
+      "round": 10,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "maFKp5hJGQG2Dlqbrp4llZ0xN_aHNSkGcDsi9sm2A5w",
+      "created_at": "2026-08-08T21:20:49.959343Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 8,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "I5VCkrlr7Sp6iuFpnWaqkfTGRRJdbhf9drTh7XOh188",
+      "created_at": "2026-08-08T21:20:56.069869Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 8,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "wd-0dsg5pqXn621hIcligIAXr6M_Zg7NR0PQZ5LpWTo",
+      "created_at": "2026-08-08T21:21:04.693512Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 7,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "TR0tKUVUoKGtTe82x6E0Z32wTBMDmRbkKQOwdvOQxBY",
+      "created_at": "2026-08-08T21:21:10.410823Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_qeutlkj3wnijbcrs",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "8NTcAPjCeWphBnLvvnxSdwC7FMJJa5Lv9pXnjge1nrA",
+      "created_at": "2026-08-08T21:21:16.082329Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 9,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "WyaYsQE5duB-SP6f0UN8iu36hKTZDgW-wru_DH4fyJc",
+      "created_at": "2026-08-08T21:21:17.983016Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 10,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "-sGWlqMmHbOQ81tBYj5bnzLcUzqg5vwraTYFwNsTs4Q",
+      "created_at": "2026-08-08T21:21:21.381805Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 7,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "GbDxhTWksxxsfqQzQvPRFlqmg0Bq-QXmdEgKfM99P0c",
+      "created_at": "2026-08-08T21:21:23.771913Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 8,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "8TsvlefT4MrzO3IJ2hznRPXrrOUDCTev-nTlNf3p8SU",
+      "created_at": "2026-08-08T21:21:28.012193Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_qeutlkj3wnijbcrs",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "6GZBLTJkQya6UF8Hkfm9fZ3iTgqglw7f78pVF5nWEHQ",
+      "created_at": "2026-08-08T21:22:17.259619Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 11,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "EnbW-Dq7aOgV8hqVihbur5u25On9cCErlnuUazKr9Gc",
+      "created_at": "2026-08-08T21:22:36.816093Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "_6ct3VP5yKovzQSYdXW8ogz_FlIxELFsAFqL0fKmExg",
+      "created_at": "2026-08-08T21:23:39.744178Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "4T4kut6gBAqV5CUao47ECEKdHZufDEWiN8foZhZylJ8",
+      "created_at": "2026-08-08T21:21:33.542761Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 8,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "gt2GvElOocF2vTgcpcjXo-DryZ3L09nFJ8FcGfEkx2M",
+      "created_at": "2026-08-08T21:21:35.336325Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 11,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "lKM_3tNyN94foYWJ3mNuz5AcV7QgogiMmnF17uPCPnM",
+      "created_at": "2026-08-08T21:21:41.84352Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 9,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "bjN-i5Fg-sfaQ-RcAgPBJiTiVYBKex1nUnxJVMAbnFk",
+      "created_at": "2026-08-08T21:21:44.852833Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "GOPqMkm5to6HgmNRxFYHOGtROUhktqQfdK5NAQZs_3E",
+      "created_at": "2026-08-08T21:22:22.198468Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "GH2T3kXutyDYvvNeS0YWsyEnrmFSjK3vGrAbZYjoKWs",
+      "created_at": "2026-08-08T21:21:47.982376Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_4sqqbf5dkn5p7vec",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "fUcq3WQNvvMdGmkx_W3xPNUe3uGjkuZxmmLlTbUZYT8",
+      "created_at": "2026-08-08T21:21:56.981086Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 12,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "_vZAUBvi12a7at2ebvZMwUc3V3HRi3o4i86vY2PTk6M",
+      "created_at": "2026-08-08T21:22:03.216797Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 10,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "EnRR7cdcrI_WltErYTDE0SCtnnIgGgbcT2WS6GHdW3g",
+      "created_at": "2026-08-08T21:22:14.76921Z"
+    },
+    {
+      "match_id": "m_4lfkxuasps7xsljp",
+      "agent_public_id": "ag_u3v6ruvctfp5v5c3",
+      "round": 13,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "PqsNputa5nmiDA45eY2If6xn7sK4qfnAttxJfmKM80E",
+      "created_at": "2026-08-08T21:22:09.59469Z"
+    },
+    {
+      "match_id": "m_hq6zf5l5jxmmeozv",
+      "agent_public_id": "ag_3ydftiwi2lmc333t",
+      "round": 13,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "x-XwA91cd9XmMAXzYHsr_u5unhMJbzk6ZFYtN53ipHM",
+      "created_at": "2026-08-08T21:22:13.062096Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 10,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "aoo8q4T6KSv_xUcTvlhPnDTFtTpkt2TQ-c1J8CrcHAo",
+      "created_at": "2026-08-08T21:22:20.464863Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 12,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "XbQGQwxolLIA9Fntr8RzQkO57Pbe5IUKPwSbV_UkoQk",
+      "created_at": "2026-08-08T21:23:15.314312Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 11,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "DW3IDDsPevxZ44XoIZ-Zf1esW_jnTQze4LAEjjDHJN4",
+      "created_at": "2026-08-08T21:23:02.957026Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_e23rs2t3vos4ume4",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "aKEnnK0fB5EJ4DWlcrHTfIf8DmeaQU9fQGH74ELrPdA",
+      "created_at": "2026-08-08T21:23:28.605911Z"
+    },
+    {
+      "match_id": "m_4juo2fmy332hcy7n",
+      "agent_public_id": "ag_76jnbtijhd22gfk5",
+      "round": 13,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "i2gQxsOhFBHbZkSKa8AwqfQ01Ie8L0wp5WgnON6B5lA",
+      "created_at": "2026-08-08T21:23:31.842114Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cqz5esjkfszh6ev4",
+      "round": 1,
+      "created_at": "2026-08-09T06:45:28.616079Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cam4qsjvveztuwca",
+      "round": 1,
+      "created_at": "2026-08-09T06:45:32.854584Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cqz5esjkfszh6ev4",
+      "round": 4,
+      "created_at": "2026-08-09T06:46:14.932753Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cam4qsjvveztuwca",
+      "round": 4,
+      "created_at": "2026-08-09T06:46:22.564763Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cqz5esjkfszh6ev4",
+      "round": 7,
+      "created_at": "2026-08-09T06:46:53.158354Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cam4qsjvveztuwca",
+      "round": 7,
+      "created_at": "2026-08-09T06:47:04.216718Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cqz5esjkfszh6ev4",
+      "round": 10,
+      "created_at": "2026-08-09T06:47:54.391014Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cam4qsjvveztuwca",
+      "round": 10,
+      "created_at": "2026-08-09T06:48:08.590028Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cqz5esjkfszh6ev4",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "YjxRYtjvLLvMynGv3lv_x6mAT9f-l-nlT2gP6uWyqj8",
+      "created_at": "2026-08-09T06:48:47.003398Z"
+    },
+    {
+      "match_id": "m_zlloyonn2547rnip",
+      "agent_public_id": "ag_cam4qsjvveztuwca",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "GlCQ1NJtQY47BXSc_BRXgLG1esGGontyzYzgLz_v-AU",
+      "created_at": "2026-08-09T06:48:59.72868Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 1,
+      "extracted_move": "card:12",
+      "completion_hash": "9151e9956e9514c8a7fefa360b705258ed1a512afa1e1931a8fcabc9907bfdaa",
+      "bind_receipt": "Ec4kbIlhv0K1V61eACYzWiD4AUp0ZyZbRbGaT2Ebvhc",
+      "created_at": "2026-08-09T06:57:53.81074Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 2,
+      "extracted_move": "card:1",
+      "completion_hash": "9151e9956e9514c8a7fefa360b705258ed1a512afa1e1931a8fcabc9907bfdaa",
+      "bind_receipt": "B_p0l0mcE25OU2fDy9uegl9W7ixvWGWmdeiJUZcvPcY",
+      "created_at": "2026-08-09T06:57:53.814293Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "9151e9956e9514c8a7fefa360b705258ed1a512afa1e1931a8fcabc9907bfdaa",
+      "bind_receipt": "JfdXCn9nZq-BjSXdaVRhT4H5jnnq7xP3BUx6Dkcj25I",
+      "created_at": "2026-08-09T06:57:53.816129Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "8561e7f5d1af823d3692aa8178756b6827fa58523678d0e842baca7036aa739a",
+      "bind_receipt": "j0QrPy4SYOWPPbETvWL6TH83GddXByOBaVU_jRpCu8o",
+      "created_at": "2026-08-09T07:00:28.505262Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 8,
+      "extracted_move": "card:8",
+      "completion_hash": "8561e7f5d1af823d3692aa8178756b6827fa58523678d0e842baca7036aa739a",
+      "bind_receipt": "7eTh13I8X-VBxzYIxgESidqKScuWuUb5rAa4e1MOBTw",
+      "created_at": "2026-08-09T07:00:28.506569Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "8561e7f5d1af823d3692aa8178756b6827fa58523678d0e842baca7036aa739a",
+      "bind_receipt": "JqR17gj0vCfIrl9iyoI7v_dim6YIiAk1_jF-ogJAHfc",
+      "created_at": "2026-08-09T07:00:28.507579Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "n9JGf9fAWkR6y1fAl3bLj4eufHwWiePyqFZFnB9Bop4",
+      "created_at": "2026-08-09T06:58:02.563662Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "4nEg3qZq3d-dcoxpcDvCEtdEdkFBPsHobOUpKAWQj2s",
+      "created_at": "2026-08-09T06:58:02.56732Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 3,
+      "extracted_move": "card:3",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "KZTCwtV5yKmhTbnafm8iUrMhg8Tc2arrl-TuhjtklpM",
+      "created_at": "2026-08-09T06:58:02.571877Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "8d7a47203c1f31e230e2453b5b94568fc891ba18a288e09e932c0c032a2e14fd",
+      "bind_receipt": "qmATZpn7e44-90CCmiQAJneNBrQKKEjWy5ek8stCZsE",
+      "created_at": "2026-08-09T06:59:04.32322Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "8d7a47203c1f31e230e2453b5b94568fc891ba18a288e09e932c0c032a2e14fd",
+      "bind_receipt": "RMRNOBfgYhQWU1STiyNMawmvOsyYU0ExIGbfTn6E2Jk",
+      "created_at": "2026-08-09T06:59:04.334294Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 6,
+      "extracted_move": "card:5",
+      "completion_hash": "8d7a47203c1f31e230e2453b5b94568fc891ba18a288e09e932c0c032a2e14fd",
+      "bind_receipt": "OLu1sf3e6mV4-aI74d9o3PDp2gYodagGM1aYK7jINx0",
+      "created_at": "2026-08-09T06:59:04.336068Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "77c4debd44a89c38ff10b7e5d10efa919894e39a3b6448341ed7d194e2217200",
+      "bind_receipt": "mc29UVGYpzsIOPJoAKP22c8mS7rDsYH45RZ5DasTCm4",
+      "created_at": "2026-08-09T06:59:22.607962Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "77c4debd44a89c38ff10b7e5d10efa919894e39a3b6448341ed7d194e2217200",
+      "bind_receipt": "xkrFs6bFLQjUUgRwWPVF3AkksSD1baggv3I6hyLyCG8",
+      "created_at": "2026-08-09T06:59:22.609789Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "77c4debd44a89c38ff10b7e5d10efa919894e39a3b6448341ed7d194e2217200",
+      "bind_receipt": "fM7tKawvFGRDHpzEgZC-ng9IhK64evxd_VicQkPfIQU",
+      "created_at": "2026-08-09T06:59:22.611982Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "f2a8c5b3691dc377be3ccbf939f284b5cbcfbe3f2a9915f1ecb6cd22a4520e8c",
+      "bind_receipt": "0BZ5UwEAiD3b30vC7z2UWIRKe96HYHFTri7vP1Yq6fM",
+      "created_at": "2026-08-09T07:00:23.58319Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 8,
+      "extracted_move": "card:6",
+      "completion_hash": "f2a8c5b3691dc377be3ccbf939f284b5cbcfbe3f2a9915f1ecb6cd22a4520e8c",
+      "bind_receipt": "FQetgXl0C6XINGkKggYeMHvob57AbLra9GK2GOynt9c",
+      "created_at": "2026-08-09T07:00:23.587839Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 9,
+      "extracted_move": "card:8",
+      "completion_hash": "f2a8c5b3691dc377be3ccbf939f284b5cbcfbe3f2a9915f1ecb6cd22a4520e8c",
+      "bind_receipt": "4AOv4DwCTVYhKnVFjwX3sj9VbGWV0RGykPeYnHjhuQw",
+      "created_at": "2026-08-09T07:00:23.589788Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 10,
+      "extracted_move": "card:9",
+      "completion_hash": "44fbaa0bf5f2d532a9dd45aec4c30dac6c6e8e52ca44e7e5e9565a6a5cc6cb1c",
+      "bind_receipt": "cxOWKUkIYE21dLC2bkjrTr1E_AOVWHCpGTFIq44s8h0",
+      "created_at": "2026-08-09T07:01:04.690462Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 11,
+      "extracted_move": "card:10",
+      "completion_hash": "44fbaa0bf5f2d532a9dd45aec4c30dac6c6e8e52ca44e7e5e9565a6a5cc6cb1c",
+      "bind_receipt": "LBM2TKXvkHXfmbM_TpiXYXkEv8T0HPsbZzT4rN2XBEU",
+      "created_at": "2026-08-09T07:01:04.702696Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 12,
+      "extracted_move": "card:11",
+      "completion_hash": "44fbaa0bf5f2d532a9dd45aec4c30dac6c6e8e52ca44e7e5e9565a6a5cc6cb1c",
+      "bind_receipt": "rTJlqvvDCejNOsH6TgEh4TYdhQT-rrq8JpusnzVRamI",
+      "created_at": "2026-08-09T07:01:04.718627Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "325c1bfa215d49a5402833c0e6dee5b927f7502554fee5c9a4bd35d13f9372ec",
+      "bind_receipt": "IU4kkm1am-yuTriA-6MO4cqf8uX3VvdHeRv_j4T7NqY",
+      "created_at": "2026-08-09T07:01:18.965149Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "325c1bfa215d49a5402833c0e6dee5b927f7502554fee5c9a4bd35d13f9372ec",
+      "bind_receipt": "vc1ZdjE7TTfLtZdTERkuDQhV-W6CWMxrqC_8R-c29_I",
+      "created_at": "2026-08-09T07:01:18.984726Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "325c1bfa215d49a5402833c0e6dee5b927f7502554fee5c9a4bd35d13f9372ec",
+      "bind_receipt": "u1pbwZcOW6hNUmNcuplERaAyAlFrYyJImwla83oBu5I",
+      "created_at": "2026-08-09T07:01:18.991791Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_mkdhadehesuz77rv",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "OqYjhA-9N05kKuXRmjgyQlZy8v1EHLPEzFp7XkKhIX0",
+      "created_at": "2026-08-09T07:02:26.511738Z"
+    },
+    {
+      "match_id": "m_hjg7catl6trxedst",
+      "agent_public_id": "ag_ymh3tlqoggzxo7n5",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "GVPlkvz47m85AvikjcHjLAF5BaC6EfOAaceYWS-G7-o",
+      "created_at": "2026-08-09T07:02:41.527707Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_xhogfqrqg7b5ug55",
+      "round": 1,
+      "extracted_move": "card:7",
+      "completion_hash": "4a231c1f5a28278d1fd2dcf1d9de7dee5fdff4c4442c8349f08994f3cb2f28eb",
+      "bind_receipt": "5aDOfnvTuOstglNFH-VBxyXmFzysWdJyCmg1cETo8AM",
+      "created_at": "2026-08-09T07:10:08.840495Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_xhogfqrqg7b5ug55",
+      "round": 2,
+      "extracted_move": "card:1",
+      "completion_hash": "4a231c1f5a28278d1fd2dcf1d9de7dee5fdff4c4442c8349f08994f3cb2f28eb",
+      "bind_receipt": "wwvyEAYTfYd5pkidrsmTNabwkTKcv9QCE1dqklzSUhY",
+      "created_at": "2026-08-09T07:10:08.859087Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_xhogfqrqg7b5ug55",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "4a231c1f5a28278d1fd2dcf1d9de7dee5fdff4c4442c8349f08994f3cb2f28eb",
+      "bind_receipt": "9cMJmT3DqEq7Rea-odYmAyhRr4RrAjehwSB0zPmBNW0",
+      "created_at": "2026-08-09T07:10:08.869952Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_em5c3tn5h4pxzq75",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "2CLkGI5LoYes0uJtMQvVero1muY5rZCdKM51tO7T0G4",
+      "created_at": "2026-08-09T07:10:16.273378Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_em5c3tn5h4pxzq75",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "wHI2lspeoZMXNwSnEOMItll9xFtzYaZbLQ0KOeBFECE",
+      "created_at": "2026-08-09T07:10:16.276625Z"
+    },
+    {
+      "match_id": "m_yoyejg3i3oapkr3k",
+      "agent_public_id": "ag_em5c3tn5h4pxzq75",
+      "round": 3,
+      "extracted_move": "card:3",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "sxHxG9uwjDAqwxbNNqgyxpOEFpMAqj7X0Am9tQcBHZk",
+      "created_at": "2026-08-09T07:10:16.285389Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 1,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "sx-d_OAExSShVQKqSIUvy-lPo2s0Bj2pFyGDFo9PRUA",
+      "created_at": "2026-08-09T07:11:49.52637Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 1,
+      "extracted_move": "card:9",
+      "completion_hash": "6f25ccb7003895dcd400d2877657b99c60729ad6cb01f482bd90ec9cce335d02",
+      "bind_receipt": "wThtijXnz9ReQ1mdXUTnzlk_j5DcJePrSf0FuPUE-wA",
+      "created_at": "2026-08-09T07:12:04.216977Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 2,
+      "extracted_move": "card:1",
+      "completion_hash": "6f25ccb7003895dcd400d2877657b99c60729ad6cb01f482bd90ec9cce335d02",
+      "bind_receipt": "71VEiJmvqInc8OLC3IGOHylKLXxV2LDuVZ9szm5AP80",
+      "created_at": "2026-08-09T07:12:04.226024Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "6f25ccb7003895dcd400d2877657b99c60729ad6cb01f482bd90ec9cce335d02",
+      "bind_receipt": "uCKaub9l0nr_3H01nnBJJiqVOPqBtUzQd253Gy0Ewic",
+      "created_at": "2026-08-09T07:12:04.227737Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 1,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "bFF0lJKm-qi8o_mrjPZg2gxwE_njScYfcrTst74RiTI",
+      "created_at": "2026-08-09T07:12:07.446881Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "_3DXmmXk1Cel6F-vUDPZI5s7uK9b95xGX4JG6R0PIhc",
+      "created_at": "2026-08-09T07:12:08.436478Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "fP3ajKRADm6ZwFIoEujii1rxsvIEEUbjnzaIZuyRBu0",
+      "created_at": "2026-08-09T07:12:12.433126Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "-rfeySaerpukHTADQrS2r-h-wB2xGCaEJQLsJ8uQ_AE",
+      "created_at": "2026-08-09T07:12:12.437624Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 3,
+      "extracted_move": "card:3",
+      "completion_hash": "7f685dc05a69212a3dcf96b95859eaf2225e199d7e4621491c3a2a49280f04d5",
+      "bind_receipt": "fGVygkIMbIuVCJi73RuDApLfIUqgRN75igN47ThBFVE",
+      "created_at": "2026-08-09T07:12:12.439592Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "AnwIQ9Ttw1WTHbpfLcHdILeBpyCa61U3wnGryHBBvcU",
+      "created_at": "2026-08-09T07:12:12.743319Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 2,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "F8aIHx8uMHKkxT9eRiaU49LpXrpYlrstPiiG7TzkOMg",
+      "created_at": "2026-08-09T07:12:16.214992Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 2,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "GcwONaxdys2GLg043KYlQRZra0gMvQ0U8b8389YooHQ",
+      "created_at": "2026-08-09T07:12:21.189324Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 2,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "bUGLRyyzUFLHDvM9J1AeBPkmXmMOvwaBUYuH3h1p72U",
+      "created_at": "2026-08-09T07:12:27.442776Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 3,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "8bMYUGg8EjXVyaeCJq2ljq5fnpePxPKEv93ku6_scf0",
+      "created_at": "2026-08-09T07:12:37.715463Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 2,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "d8i9JJiOxmdfLwcgsgtKL3g0gQsN98Vgl2URDAqpP7M",
+      "created_at": "2026-08-09T07:12:39.841026Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 3,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "mssuL0io_Dbmfl-aIP2UsSazDFM3fDoHvJHVPDJEqo4",
+      "created_at": "2026-08-09T07:12:45.766451Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 3,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "TvPgqmZgT4g4EQi5VnMWVkjOHbcOeiibaVURaIL2ShM",
+      "created_at": "2026-08-09T07:12:50.030795Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 4,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "duEnO96-_n4oeRwYeDH8aI6lnLy9rjbNUG3baSVi7TY",
+      "created_at": "2026-08-09T07:12:53.71671Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 3,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "RgyiOKYA4DfJpWATUi-NSfNIfOqqfM8xrIzIihxbh4g",
+      "created_at": "2026-08-09T07:12:56.79552Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "ck7tPkfY5Cg-xo3dxyYCT2g612bWg2_YgkNlr5SSQ7w",
+      "created_at": "2026-08-09T07:13:00.250304Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "-KRKzHZ9zM1VUfeOW7LckxZ8zlV57ZaUlxAcx5Ry0S4",
+      "created_at": "2026-08-09T07:13:05.336361Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 4,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "t2p-rAr6dTQUhD8O90UtD23Ky4J-EpCpntXPK3QAWpg",
+      "created_at": "2026-08-09T07:13:06.6147Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 5,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "CrX4wM00lVKgM-e1OkSmkPOSxxzMHE1RpfqPADMkGn4",
+      "created_at": "2026-08-09T07:13:10.164398Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "I8zAYZzaagxVg-634wU7LOlcWy1jl_E9_KqfSv7kfvs",
+      "created_at": "2026-08-09T07:13:11.615975Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 4,
+      "extracted_move": "card:5",
+      "completion_hash": "49a7f41e116356d277caf83c84dc097d3493f6f20f7a371d5fbf5b093650eed6",
+      "bind_receipt": "hPx_DXQgx_h3nMQu6Gl5raosinDjM9QByWPgjBwr3JM",
+      "created_at": "2026-08-09T07:13:11.709789Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 5,
+      "extracted_move": "card:4",
+      "completion_hash": "49a7f41e116356d277caf83c84dc097d3493f6f20f7a371d5fbf5b093650eed6",
+      "bind_receipt": "uP9tIW8YLLsMMA1kK_V4PPQeptf4BYWQ53EGkcGoXOA",
+      "created_at": "2026-08-09T07:13:11.718788Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "49a7f41e116356d277caf83c84dc097d3493f6f20f7a371d5fbf5b093650eed6",
+      "bind_receipt": "kOaoArThRo8NGIcGuZ1GGlBL-lZY9eEQXIFi_5Vl3bU",
+      "created_at": "2026-08-09T07:13:11.723023Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 5,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "hoCigE3ub7tQai_9pbaGdDH6mtTETc8YHdVckI1uz44",
+      "created_at": "2026-08-09T07:13:14.792768Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 7,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "7Z7BiRYx2qd93IJE66plvFasL2O908QfubkPjWEbeOc",
+      "created_at": "2026-08-09T07:13:36.199506Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 6,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "QSD4a6tPzNLPDjuTuLIeS3mpuL7EFvI8fqkk5Rb-ezI",
+      "created_at": "2026-08-09T07:13:29.722108Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 6,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "-azKesBEnWXHNvuembRpgjw2W9yZqyZf1x9SvaHalok",
+      "created_at": "2026-08-09T07:13:17.870688Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "8d7a47203c1f31e230e2453b5b94568fc891ba18a288e09e932c0c032a2e14fd",
+      "bind_receipt": "3vlGXhn7y0QSHCy4FRrp21IiRNzcIhFd0zNLV8qXHCo",
+      "created_at": "2026-08-09T07:13:03.050423Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "8d7a47203c1f31e230e2453b5b94568fc891ba18a288e09e932c0c032a2e14fd",
+      "bind_receipt": "neTBeT-K38MfNgO2QM8-uESW259UJM-348NTvwEze0w",
+      "created_at": "2026-08-09T07:13:03.054457Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 6,
+      "extracted_move": "card:5",
+      "completion_hash": "8d7a47203c1f31e230e2453b5b94568fc891ba18a288e09e932c0c032a2e14fd",
+      "bind_receipt": "gszIWBwo0ZHKeOfMJg3dAxPfwhjRSRzK84lVSBXnXcE",
+      "created_at": "2026-08-09T07:13:03.056145Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 6,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "PA2EEX1toYCQX5be7eiCRxQHriEzJjMsDBSNR3uETTs",
+      "created_at": "2026-08-09T07:13:28.325894Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 7,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "wzfX3bg6XhPGep7INIuE4RH6b-R1d_o6c_Fjj4XIrdg",
+      "created_at": "2026-08-09T07:13:42.545372Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 8,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "TfYkW0gIJuObzu1J10qwwdEkpG919JVPEA2oajoU6xg",
+      "created_at": "2026-08-09T07:13:46.711305Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 7,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "C1miIWr8VTnIBJfLZdCKl3zJGzK12R5GmjfGt5yDNt0",
+      "created_at": "2026-08-09T07:13:51.330443Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 9,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "63vlomeWv4R7QLnpEy8TcStr-vUoGyE8owVh-1cV8Jg",
+      "created_at": "2026-08-09T07:14:20.014672Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "8561e7f5d1af823d3692aa8178756b6827fa58523678d0e842baca7036aa739a",
+      "bind_receipt": "biVvxGS6fZ30fuXaVm1TfIFRhJJ1q3N3WAChkwIj4qs",
+      "created_at": "2026-08-09T07:13:52.568814Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 8,
+      "extracted_move": "card:8",
+      "completion_hash": "8561e7f5d1af823d3692aa8178756b6827fa58523678d0e842baca7036aa739a",
+      "bind_receipt": "6Q2iW8wpP02Pp3pQB6pQ7FdvrIiWbJNnBDzELX3-2r0",
+      "created_at": "2026-08-09T07:13:52.571377Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "8561e7f5d1af823d3692aa8178756b6827fa58523678d0e842baca7036aa739a",
+      "bind_receipt": "tyWz38Ory_w2KA38Lfpk0odasPLqDALBmK5OWijiylo",
+      "created_at": "2026-08-09T07:13:52.573746Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 12,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "tVwrkLCdui8RXNLX2oMZbpwd6FgX1r_7YwCsSK3kQu8",
+      "created_at": "2026-08-09T07:15:12.733621Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 13,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "Ky5N8X1n0CqBd4mdxC3gD9-bpdzMH7AVgk8mc8HrUj4",
+      "created_at": "2026-08-09T07:15:17.429363Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 7,
+      "extracted_move": "card:8",
+      "completion_hash": "9d9390de14bf51c118e0758f01c85e7fb572ccf8a0b5655ea4c39b0628c0fd6b",
+      "bind_receipt": "r_sf--QlIn7uoiZAld-tYrri8s7ez8XSvjVgs6ubX9M",
+      "created_at": "2026-08-09T07:13:57.507419Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 8,
+      "extracted_move": "card:6",
+      "completion_hash": "9d9390de14bf51c118e0758f01c85e7fb572ccf8a0b5655ea4c39b0628c0fd6b",
+      "bind_receipt": "I65rjgwIVE19rriHk1iJr33xcATmd9O00GS2NwZEobA",
+      "created_at": "2026-08-09T07:13:57.545855Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 9,
+      "extracted_move": "card:7",
+      "completion_hash": "9d9390de14bf51c118e0758f01c85e7fb572ccf8a0b5655ea4c39b0628c0fd6b",
+      "bind_receipt": "4fteKOhn9j292GaIeLz-RYJpsUOHxL_U7YlEYGKOyfk",
+      "created_at": "2026-08-09T07:13:57.569695Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 10,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "RCgUPvSp7hm38asl5Ul9eWd73VjNDCCRAdYeSdn7dBM",
+      "created_at": "2026-08-09T07:14:41.436778Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 11,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "6P4C7TjTHAab7Y6XHFe1OIi3d-9x7uM1NNGj6xbbHro",
+      "created_at": "2026-08-09T07:15:04.410888Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 12,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "IIHiBTceVfdSb3DbxyvKs_DaxWwndJs87IE4_7FC6Zk",
+      "created_at": "2026-08-09T07:15:08.483617Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 8,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "Ki3Gp9tKWS7ZafHdt88qxGKIYCTrSR_13BDBixH4tQ8",
+      "created_at": "2026-08-09T07:14:01.809135Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "325c1bfa215d49a5402833c0e6dee5b927f7502554fee5c9a4bd35d13f9372ec",
+      "bind_receipt": "8rzqfEp1kVGmm77BbVmMWdfoZ_xJTkKTsrYt0FFlRdE",
+      "created_at": "2026-08-09T07:14:42.931828Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "325c1bfa215d49a5402833c0e6dee5b927f7502554fee5c9a4bd35d13f9372ec",
+      "bind_receipt": "nYe43_-VuKbuY17iAKbTobq9UhD7f--EIL7espoFEIk",
+      "created_at": "2026-08-09T07:14:42.939723Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "325c1bfa215d49a5402833c0e6dee5b927f7502554fee5c9a4bd35d13f9372ec",
+      "bind_receipt": "2ADBQwx56jSkWXo6go1AU8U9hHmh1Ov7EypOO2Xmlv0",
+      "created_at": "2026-08-09T07:14:42.942422Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 9,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "5PtvnLQNITKewSJrapUNQAsppNt6VYFGBvourPz6p8k",
+      "created_at": "2026-08-09T07:14:11.342167Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 10,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "SNJQfwbwwvruGWkeuwOXFqXmpqdcKXkPz5pze91hF8U",
+      "created_at": "2026-08-09T07:14:31.720313Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_ietsynqlanrite6h",
+      "round": 13,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "-pWCg2HipYGeZpQwtQfuTAGA4QHWb-KPtMA950OWKaQ",
+      "created_at": "2026-08-09T07:15:24.203393Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 7,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "-JUGwRPpl40xpRoCnxDVxdCkInzC_j1eINetYQ61b-M",
+      "created_at": "2026-08-09T07:14:02.438031Z"
+    },
+    {
+      "match_id": "m_wanazeuzhaasg6eh",
+      "agent_public_id": "ag_cy2syced4bq4xjxf",
+      "round": 11,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "mYCrZPT_cNLRylJYib6_YuTObxJoxdniWCvyJ9dCLNo",
+      "created_at": "2026-08-09T07:14:50.417033Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 10,
+      "extracted_move": "card:13",
+      "completion_hash": "281bd74231d8b1c444ceaf1c8d56930020e9eb2434e2e6dc21ea0b27a15879e7",
+      "bind_receipt": "ufxcOYVJQzFcVg4yZ_ZmHUriG6zwxhUaq0GQcaAqFM0",
+      "created_at": "2026-08-09T07:14:50.418012Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 11,
+      "extracted_move": "card:10",
+      "completion_hash": "281bd74231d8b1c444ceaf1c8d56930020e9eb2434e2e6dc21ea0b27a15879e7",
+      "bind_receipt": "l7WL31o1370hIm7gXkS-NyB4rwInx8W268b4pnWSV1Q",
+      "created_at": "2026-08-09T07:14:50.429672Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 12,
+      "extracted_move": "card:11",
+      "completion_hash": "281bd74231d8b1c444ceaf1c8d56930020e9eb2434e2e6dc21ea0b27a15879e7",
+      "bind_receipt": "Vk0gXzyyfitR4GN8XQCxAq-LEqZy3iLJy0rMcnZSKbE",
+      "created_at": "2026-08-09T07:14:50.43378Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 8,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "9QM5mPhQq3bq99amBmxQdBazge5uMYlQNbTyxQQVyBI",
+      "created_at": "2026-08-09T07:14:32.026919Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 9,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "C_NQPBnKVwsk9VAn8Vc2vFdm8aAQk_KabyoOexrq4jM",
+      "created_at": "2026-08-09T07:15:22.04975Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "oA286RwzjepawdreoS5hE6Z2zbaRocF4yR-koQrz8uA",
+      "created_at": "2026-08-09T07:15:31.778096Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "PJDc1TIN8pYoZrKO6ONFx4MHCJLJnQUJypV0ibyert4",
+      "created_at": "2026-08-09T07:15:03.237673Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 10,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "yxL9dNJXtTGTn_DaspFyxy156BOF95GR9zs8KugBGkY",
+      "created_at": "2026-08-09T07:15:26.737498Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 11,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "Z00LGU0lE8Sk4Y6NxIAdglQJv4OOtaJmZN1wSsrmOaY",
+      "created_at": "2026-08-09T07:15:40.578402Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 11,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "OXHMc0QjMzS0viN5QjNZ6i8ZjO92CNEuFVJIxSzLegk",
+      "created_at": "2026-08-09T07:15:45.588541Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_4hgoqkh55g3iq7ez",
+      "round": 13,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "F0h1uAS55unnCvqR_8Irn0O3yLVjkdJGVu5Wz-Y_REM",
+      "created_at": "2026-08-09T07:15:57.692736Z"
+    },
+    {
+      "match_id": "m_5qmo34vkvulyapgc",
+      "agent_public_id": "ag_fx7bjwis66raazke",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "LuIMuP7VbUZHKW1v9X_DWz6-UfvnKzBqek1yZmglGOU",
+      "created_at": "2026-08-09T07:16:06.453943Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 12,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "vZ7cJ3gjLPd6iom_kCbXZZO-_WZ1qw6am40ID0IN4eY",
+      "created_at": "2026-08-09T07:16:07.256814Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 4,
+      "extracted_move": "card:8",
+      "completion_hash": "b971f0fd6468eb89ddd04a685f54832a21d0cf30751f2cae68550e0073ea0dcf",
+      "bind_receipt": "N-82As4WZ0Uo72vMNKsFqKp2qXGGwiEzCDT4ooHouMk",
+      "created_at": "2026-08-09T09:23:25.796622Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "al31KJWybuGUTySGbHfMbDGD3CxOt3VwenSjUeQhowU",
+      "created_at": "2026-08-09T07:16:03.937765Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_luwtrvb7wxjmwr62",
+      "round": 13,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "tDoTNgxiiMQHDPSAkU32dU8YDvmBsjCkvc5iDaiQdb8",
+      "created_at": "2026-08-09T07:16:30.18778Z"
+    },
+    {
+      "match_id": "m_7qzpqiilhjj44lna",
+      "agent_public_id": "ag_medrnf47xvrkjdiz",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "h97SkrjB7ZYToufzHMVPK2A2RGhSu6eRNs-qLRNRqbo",
+      "created_at": "2026-08-09T07:16:37.882316Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 1,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "VeAo8ADTqHIej7X6gvWaIPaQ_SsCxL0eT5Q3TwdsizA",
+      "created_at": "2026-08-09T08:03:56.489722Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "rc9JP9S1dWucX9sm2rvgrG-Dj4MssDiLirwJf58w3BU",
+      "created_at": "2026-08-09T08:04:11.160695Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 2,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "QK9pmehCedxJkHa1pKCSfYutLZdjZoGzhy-kqrd4aIw",
+      "created_at": "2026-08-09T08:04:14.618341Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 2,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "XI12eGhG5KBTYg2KSw7HcoZpZMwky5ovLpGgi-CFP20",
+      "created_at": "2026-08-09T08:04:19.08412Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 3,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "6yNlywcwRVEkFgbAVy_ds48AIYHTKvb4ECTDr8KaXU0",
+      "created_at": "2026-08-09T08:04:24.469777Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "RgcIOE2FoRzU4l05B_4gV1aNjqWDN4ntiYzLwIHm95g",
+      "created_at": "2026-08-09T08:04:44.050508Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 4,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "c7FHXWDjh-r8RIq41sp458HH9JiV_AuvLVZLyAllXrc",
+      "created_at": "2026-08-09T08:04:47.364263Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 4,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "WP4TO8Gm9Mzs_OL6ive2xu2N8pLNUG5pNKicXV8A69Y",
+      "created_at": "2026-08-09T08:04:55.031925Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "973CoTXoqphn3f7TZ8vMl1E94dTRn_JcavHhkzDMh18",
+      "created_at": "2026-08-09T08:05:11.982268Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "PWDW1erz2VJccvNG6xEx3XAsO3EZBHPNROHfo9lWuxM",
+      "created_at": "2026-08-09T08:05:24.51474Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 6,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "VyOBZdGBS6OOweKaG0ija-pvkpDnn9trBk6_rbluDIQ",
+      "created_at": "2026-08-09T08:05:44.802444Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "e8I-lpdNw_LLdn1zgIOZHRO_GQsIZ0pmdghMT7Gjq2k",
+      "created_at": "2026-08-09T08:05:52.823092Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 7,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "wXeTEgacKbsXSmqL2j2xzPC9-k292anHsKuXYm7GLDE",
+      "created_at": "2026-08-09T08:05:56.71997Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 7,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "6sLtfLs8AYFB98r9Y886BcrJAutIqpwuugJCGUjsPac",
+      "created_at": "2026-08-09T08:06:03.305828Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 8,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "qpdGVW7a0wuIwpB1es8A2zFUiQ8KfoVo-_OiUc04uFQ",
+      "created_at": "2026-08-09T08:06:06.826527Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 8,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "tfUUqmuiO8qiunwlYa9dLDclgOROKk_wgSKv0kZm1Vc",
+      "created_at": "2026-08-09T08:06:16.94191Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 9,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "5hzURMxlca4It9H5FOAoYZw3GPNIMj9NWOhVEHTcGyY",
+      "created_at": "2026-08-09T08:06:20.269214Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "i9SHCwE2-eaSYvI8eSvGELmEVnLLNKH7FH_CW8qtJok",
+      "created_at": "2026-08-09T08:06:33.93071Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 10,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "Rk7WUycM32EeLrA4iT72cffSkMwy5OkiYudSNYLi9Os",
+      "created_at": "2026-08-09T08:06:37.266489Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "msYXguglo18nnz8zLCT2l1vwhOE6F_u5f_hisiu-DFY",
+      "created_at": "2026-08-09T08:06:43.411295Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 11,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "vS1SSSG9NhgC-23xb-ZV4eGUpqPvZ9oV-UY-1o2lMHE",
+      "created_at": "2026-08-09T08:06:46.655648Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_uzvend6knwr5ph6n",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "139e9ab545fe70f2067e2c07cbef27380a13b65507777b6f4ff5909e0da7ac21",
+      "bind_receipt": "1vVzbn5-f9EQaRWVL5wXGh3cyhhWnM-JqR64HAY98Gs",
+      "created_at": "2026-08-09T08:06:56.797693Z"
+    },
+    {
+      "match_id": "m_mymvbvdtkwvdndrh",
+      "agent_public_id": "ag_ry3ka6qdnwxsyagp",
+      "round": 12,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "j0oEuqWhquTwF6VTY3EyphKP8sBuvWrCr9UlX2bOsW4",
+      "created_at": "2026-08-09T08:07:11.863115Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 1,
+      "extracted_move": "card:6",
+      "completion_hash": "a99df364a3743689fdd401cd0737323ab27058c2e2f9e89de058f560730f38b4",
+      "bind_receipt": "TBDVAmFA_ulXri-2egSsJhsymU-qMcjNqTa0fsJwEmE",
+      "created_at": "2026-08-09T09:22:43.467134Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 2,
+      "extracted_move": "card:1",
+      "completion_hash": "a99df364a3743689fdd401cd0737323ab27058c2e2f9e89de058f560730f38b4",
+      "bind_receipt": "06RGE0TgBJMHyiBjtP1T7MQhhohObGQ24hvlACiq2Dc",
+      "created_at": "2026-08-09T09:22:43.473208Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "a99df364a3743689fdd401cd0737323ab27058c2e2f9e89de058f560730f38b4",
+      "bind_receipt": "np1NcSyhcJERXqqr5AGIjb2sTnG7x6Y_O-x6EKqFtbU",
+      "created_at": "2026-08-09T09:22:43.474505Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "1c26b44143376fd553e94d9d46e849a3abd77282e9a9dad95b4f1a1b52dbf8b9",
+      "bind_receipt": "uag5HOXnn9mOX_tVIXo8G5xrLPvCBDWhOUlz26ZvS8w",
+      "created_at": "2026-08-09T09:22:49.516186Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 2,
+      "extracted_move": "card:2",
+      "completion_hash": "1c26b44143376fd553e94d9d46e849a3abd77282e9a9dad95b4f1a1b52dbf8b9",
+      "bind_receipt": "jX8DLtuQ_KcaYpwpAN6C8hBrhSYb-LJ1N-GIJo4jK4I",
+      "created_at": "2026-08-09T09:22:49.517179Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 3,
+      "extracted_move": "card:3",
+      "completion_hash": "1c26b44143376fd553e94d9d46e849a3abd77282e9a9dad95b4f1a1b52dbf8b9",
+      "bind_receipt": "x_dvRE5LnB5mhbDPU18qCCpkDFbmJlk-qrsWvGgilgg",
+      "created_at": "2026-08-09T09:22:49.517646Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "b971f0fd6468eb89ddd04a685f54832a21d0cf30751f2cae68550e0073ea0dcf",
+      "bind_receipt": "20FuAuT9SXGFbiG-w0xa5FWAExcuVb74lzHyKCn31PU",
+      "created_at": "2026-08-09T09:23:25.797635Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 6,
+      "extracted_move": "card:4",
+      "completion_hash": "b971f0fd6468eb89ddd04a685f54832a21d0cf30751f2cae68550e0073ea0dcf",
+      "bind_receipt": "gdDQ9fTZhdMi2awsGJMS-CxXFcR8vuqPpl75TtGvw2c",
+      "created_at": "2026-08-09T09:23:25.798056Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "839c36b778a2169dd38a7edd428a01bc3f0104ad8ef71dc00d7c3a178dacb530",
+      "bind_receipt": "hXkop1pfqylD3JtSWlIQBsAXGXZQY5Xj5XBRSyIpmU4",
+      "created_at": "2026-08-09T09:23:39.349421Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "839c36b778a2169dd38a7edd428a01bc3f0104ad8ef71dc00d7c3a178dacb530",
+      "bind_receipt": "dcZTInch0c-K95jJH4WEdrapPzAWHWHTbw2192U7_Ek",
+      "created_at": "2026-08-09T09:23:39.350252Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "839c36b778a2169dd38a7edd428a01bc3f0104ad8ef71dc00d7c3a178dacb530",
+      "bind_receipt": "rn8yYJxa22iAeLArLd1SzSj33rwwZqajQgzsBksDY8M",
+      "created_at": "2026-08-09T09:23:39.350945Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "00b4d12af4fdb4e0c749ed248a014aff8dfcaf3f6f55f31523dac20d8177a835",
+      "bind_receipt": "15yhCn2u9UwPugBvYq3_2xNWEZiVPAeWKYyIYlj32tA",
+      "created_at": "2026-08-09T09:24:04.864055Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 8,
+      "extracted_move": "card:5",
+      "completion_hash": "00b4d12af4fdb4e0c749ed248a014aff8dfcaf3f6f55f31523dac20d8177a835",
+      "bind_receipt": "koiqY8bYGzVDu6L4fbz3uqm1RYHCWlaSHSxOK519Pyc",
+      "created_at": "2026-08-09T09:24:04.866064Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "00b4d12af4fdb4e0c749ed248a014aff8dfcaf3f6f55f31523dac20d8177a835",
+      "bind_receipt": "6mhHA1ANpkO_tSYIElBCf0Yy5TwzSIKHXQ6URC1LDkI",
+      "created_at": "2026-08-09T09:24:04.866645Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "ce765e54bf8a95b7e5027d788f7d90f925db809089705042374ac3c0fa9cead3",
+      "bind_receipt": "rfd0dcM7K1FlSNnAMUXbQTffsPHqIyd1yDtcELsYUeE",
+      "created_at": "2026-08-09T09:24:16.962205Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 8,
+      "extracted_move": "card:8",
+      "completion_hash": "ce765e54bf8a95b7e5027d788f7d90f925db809089705042374ac3c0fa9cead3",
+      "bind_receipt": "MSDsVtUYW4H3jv-Oz2OSS9oTQck1L-GBIDeDBK_hznk",
+      "created_at": "2026-08-09T09:24:16.963406Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 9,
+      "extracted_move": "card:9",
+      "completion_hash": "ce765e54bf8a95b7e5027d788f7d90f925db809089705042374ac3c0fa9cead3",
+      "bind_receipt": "azET8NeCaXbp7oOdORA2MKsChM805sqaF65PFTOIoPo",
+      "created_at": "2026-08-09T09:24:16.964076Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 10,
+      "extracted_move": "card:13",
+      "completion_hash": "7d087fe45037d06199a357439c4440180890f13b29796dcd884e796ec5a3b25c",
+      "bind_receipt": "HV-ute55ewncBSD3WfehMXa9lexIF4uBIlML8vYelrM",
+      "created_at": "2026-08-09T09:25:07.193407Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 11,
+      "extracted_move": "card:10",
+      "completion_hash": "7d087fe45037d06199a357439c4440180890f13b29796dcd884e796ec5a3b25c",
+      "bind_receipt": "Th3toenEKK8ZP7xDkm4YIMaGUBdTuZbZRjFbKu1LVS0",
+      "created_at": "2026-08-09T09:25:07.195242Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 12,
+      "extracted_move": "card:11",
+      "completion_hash": "7d087fe45037d06199a357439c4440180890f13b29796dcd884e796ec5a3b25c",
+      "bind_receipt": "_x2icEhtnVRGHXqq-97BeqLgr2z4-WaauTw4aLV4oc8",
+      "created_at": "2026-08-09T09:25:07.195852Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 10,
+      "extracted_move": "card:10",
+      "completion_hash": "2b1deb9ceceae231f52e75377487b78deefbdb292f55e34e8972506af65e54c2",
+      "bind_receipt": "XCZsBR9dQhef37oW-C7kOfowUXHMC6TNRqkcEKbUiIc",
+      "created_at": "2026-08-09T09:25:15.363181Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 11,
+      "extracted_move": "card:11",
+      "completion_hash": "2b1deb9ceceae231f52e75377487b78deefbdb292f55e34e8972506af65e54c2",
+      "bind_receipt": "-UOR16CfsbMSeop0_choty2wq9MGzkq4Vh2vux9fRLg",
+      "created_at": "2026-08-09T09:25:15.366166Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 12,
+      "extracted_move": "card:12",
+      "completion_hash": "2b1deb9ceceae231f52e75377487b78deefbdb292f55e34e8972506af65e54c2",
+      "bind_receipt": "AVlGjyA_Z2WRXmm1mHC9HLnzgIwDJxwJ6gIJFvbdCUU",
+      "created_at": "2026-08-09T09:25:15.369062Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_fij4x5kiyut64oiy",
+      "round": 13,
+      "extracted_move": "card:12",
+      "completion_hash": "c707fd4449542236cd10f3894a414484cdb387a251c6f40340556c077c8fa323",
+      "bind_receipt": "19ZGaFAYwJVbabdmO_vV4uq19kQEQgIey_R9-kpB_d8",
+      "created_at": "2026-08-09T09:25:47.386445Z"
+    },
+    {
+      "match_id": "m_w54cpnpesa6l3afi",
+      "agent_public_id": "ag_5rrbrh52ko2nr2e7",
+      "round": 13,
+      "extracted_move": "card:13",
+      "completion_hash": "95f2580ea3752eeb41a7816e0d6a36a36f8ad280d8dd165f228f1a8bd7a708d2",
+      "bind_receipt": "yeR8HtbARb9TuSyCNjYhamRwMpGsrAmDmn6Be9lvhWs",
+      "created_at": "2026-08-09T09:25:51.935769Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 1,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "ZtwccOJNUztrRHYTN3mYyITmjJDmcNm63L3UK0c68Dg",
+      "created_at": "2026-08-09T09:51:15.279422Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "KT3IkMCMpYGw4MOxtrsh13SW1-Yff2gkQ9K4FVh1SfM",
+      "created_at": "2026-08-09T09:51:20.185524Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 2,
+      "extracted_move": "card:8",
+      "completion_hash": "0b8e89f0ab6263ff0ea014defd1311681fe77074dff9434b49f3fda683f5b938",
+      "bind_receipt": "TwqRT3h4bAodQMtxG_Lmdexs6MBmWGZG03oIwkEljFY",
+      "created_at": "2026-08-09T09:51:29.184986Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 2,
+      "extracted_move": "card:13",
+      "completion_hash": "f1a1b915d8a15775f7aef6be9cbca11288c6282d54f4626bf66edf95fbb4ded5",
+      "bind_receipt": "SIqcOWUVMPj6oqmD6ZDJSRXwJoHtXCSpUHoa3rV4TAo",
+      "created_at": "2026-08-09T09:51:35.989605Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 3,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "o6K8t6zrkMAYL6XWu1SDF3wNNUXXEMEqc4FIt1mbGRs",
+      "created_at": "2026-08-09T09:51:41.330311Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "QA7-_rwxq6ZUWtc48IuowkoKrx8So5v5-kd3en6ikO4",
+      "created_at": "2026-08-09T09:54:33.384734Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "ZwIWI3HNvDGDVvf_USiGN9vKEjeYRve_KgHip-1ofv8",
+      "created_at": "2026-08-09T09:51:50.754326Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 4,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "Tr4jr7r3qK-Hepx-eycV-xpxzduQLTpMxH2k9Tq9RIc",
+      "created_at": "2026-08-09T09:52:34.223726Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 4,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "oSSs7e3_PUH0tZsxBS9dkeIIXVLu-2gblWnS67TlZaA",
+      "created_at": "2026-08-09T09:53:00.742738Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 7,
+      "extracted_move": "card:10",
+      "completion_hash": "d5153cd003bb70bd7b5a62602350b4c8be324a0bd28489abcafe214bed0edd31",
+      "bind_receipt": "4gosvmge3miEFuBBbKBdZ1x11ffQLqamhu-0ouWKn_4",
+      "created_at": "2026-08-09T09:55:13.075524Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 7,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "K6pShW3_YtdLP25SXjLnN0LJY3EcP_-hsfpOllzA8D4",
+      "created_at": "2026-08-09T09:55:21.771617Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 5,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "Fth94jY32530zGJ4MFv2CgHiVYr4l77ennGyPbFUe4Q",
+      "created_at": "2026-08-09T09:53:52.572979Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 5,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "gyXVwVPV_U4z77dInq3rDRzmod_EvwhHhu4jx7GANsY",
+      "created_at": "2026-08-09T09:53:43.155131Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "N1DqkBbMweOEY2M0XokYbU7Gr_FgjfJ_-Y9YR-I8f54",
+      "created_at": "2026-08-09T09:54:41.813107Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 2,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "LdhwyPpaosoQ1MWEzegjQkojnNUVQAaQi8IAMDAX7fc",
+      "created_at": "2026-08-09T11:13:11.260569Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 2,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "KakS7s13-KxSanEQ1FT1EyW37e-Pl2rUTaQZc2AgDWA",
+      "created_at": "2026-08-09T11:13:05.693935Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_nd2iqm5sd7ygyace",
+      "round": 8,
+      "extracted_move": "card:9",
+      "completion_hash": "fc7623d014608b4a87e94c495acfa83acbc5652b602aa84682ec743923eeed7e",
+      "bind_receipt": "KzKnWD-OirWLjkRzCX0Kxc80tUaMTIft6HUSKOYDl6Y",
+      "created_at": "2026-08-09T09:59:11.351213Z"
+    },
+    {
+      "match_id": "m_26szxgqfqnp33nle",
+      "agent_public_id": "ag_s442sxqwqf5bizgn",
+      "round": 8,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "-QpyJoO001eGu-1Y8psPfLiVIDv_GiKYsUlP64zVbBM",
+      "created_at": "2026-08-09T09:59:18.616129Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 1,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "d5f1oCCJUojSYz05GuC9pi5FoRO_v5A4Xh2tvoYtzuw",
+      "created_at": "2026-08-09T11:12:46.267697Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 1,
+      "extracted_move": "card:1",
+      "completion_hash": "5948d4edd2341d41dc058843dea797b96ad635082fb324ca7b2e92e047d915e9",
+      "bind_receipt": "eTodAQQoep6fWJ3mhFkX2h2cnEu4YfkOi1Z3E1W8FOU",
+      "created_at": "2026-08-09T11:12:54.200437Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 3,
+      "extracted_move": "card:3",
+      "completion_hash": "1f7b1ffc5abe5d86f0a76c5f9d3269d8e21e707167c8e4f9757188bc39b43c13",
+      "bind_receipt": "WQxQQ9kyzyGTyf6V7-dPSXAGbhywP_A5cpNfowSOV4g",
+      "created_at": "2026-08-09T11:14:14.386807Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 3,
+      "extracted_move": "card:2",
+      "completion_hash": "2da4b65ee3a950efbfe8243c7853b87eed2aa956bfca466e3175de70d7666b2b",
+      "bind_receipt": "jTVnWDTCnnQB3hyacKRB0zwnOtMpQ2Q4md34AKFkpB8",
+      "created_at": "2026-08-09T11:14:24.389266Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 4,
+      "extracted_move": "card:12",
+      "completion_hash": "b5195267dd6287e2a848326d00677d1c15f0ca7b67afb35e44a67893fef94d62",
+      "bind_receipt": "y49PoV4wu_1wj1B0LxgGwftK5pdAUTCCSMDAFx13ptA",
+      "created_at": "2026-08-09T11:14:58.079302Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 4,
+      "extracted_move": "card:4",
+      "completion_hash": "5f21bda18fe9a14fc94ff6e3a16d26d9d65701acf152410510dddc00dcbf7526",
+      "bind_receipt": "HwTa1yqmCXzvty7G4-v7IgJpUTyEayFKCiP2p8GAMrM",
+      "created_at": "2026-08-09T11:14:50.493979Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "nv2Je03OKLb1j_zAGNktrvxGP8YZKSxDZlYJb7GKqOw",
+      "created_at": "2026-08-09T11:15:41.529524Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 5,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "yNM4AbCralmg9zPOYR9GSCwE6thblZDR8MZ7zJr4SmQ",
+      "created_at": "2026-08-09T11:15:33.226848Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 6,
+      "extracted_move": "card:6",
+      "completion_hash": "ec4b381a5e9c819e3f356bb7ef0065df77686712c9c73015cff7e338952c590a",
+      "bind_receipt": "jUCAdbf2eDf6OYGCxFaKpQdMxyBkVK2JUt9ypkUG4ew",
+      "created_at": "2026-08-09T11:16:18.486376Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 6,
+      "extracted_move": "card:5",
+      "completion_hash": "75fa8e334189f56f31ff4e2022b8adbd8de902f663f1e0702a9d31b227d9f6b0",
+      "bind_receipt": "RzXzYnV4HRisWMwewRD0sv5X-WelTDgK5LdvB4UeNi4",
+      "created_at": "2026-08-09T11:16:38.299653Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_dmq32ojctqtklb7h",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "ayqwKJXjWv-0bxC9Xray1Uuh9Vs3YCkfHTRSjPTsXO8",
+      "created_at": "2026-08-09T11:17:03.928182Z"
+    },
+    {
+      "match_id": "m_l3sjyem4mbosrgk6",
+      "agent_public_id": "ag_p263alnsjn55zbo7",
+      "round": 7,
+      "extracted_move": "card:7",
+      "completion_hash": "c4f0f6ee4ca7699d2dff100a7c0e70ddaf5ba284685722aa0089bfeeda5757ed",
+      "bind_receipt": "H2-UskETrzwDU0wEfG4cHyrNz5HpiyLZOeh4jsCq32M",
+      "created_at": "2026-08-09T11:17:09.383969Z"
     }
   ]
 }
