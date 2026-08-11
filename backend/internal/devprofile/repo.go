@@ -116,19 +116,24 @@ type LeaderRow struct {
 // but has never played is still discoverable (Ranked=false, PIndex=0). This is what
 // the /u search page lists.
 type DirectoryRow struct {
-	Developer   string    `json:"developer"`
-	Username    string    `json:"username,omitempty"`
-	DisplayName string    `json:"display_name,omitempty"`
-	AvatarURL   string    `json:"avatar_url,omitempty"`
-	Country     string    `json:"country,omitempty"`
-	Segment     string    `json:"segment"`
-	PIndex      float64   `json:"p_index"`     // 0 when never computed
-	GlobalRank  int       `json:"global_rank"` // 0 when unranked
-	Ranked      bool      `json:"ranked"`      // has a P-Index snapshot this season
-	Matches     int       `json:"matches"`
-	Wins        int       `json:"wins"`
-	Agents      int       `json:"agents"`
-	JoinedAt    time.Time `json:"joined_at"`
+	Developer   string  `json:"developer"`
+	Username    string  `json:"username,omitempty"`
+	DisplayName string  `json:"display_name,omitempty"`
+	AvatarURL   string  `json:"avatar_url,omitempty"`
+	Country     string  `json:"country,omitempty"`
+	Segment     string  `json:"segment"`
+	PIndex      float64 `json:"p_index"`     // 0 when never computed
+	GlobalRank  int     `json:"global_rank"` // 0 when unranked
+	// Ranked is "appears on the developer leaderboard": a P-Index snapshot this season AND
+	// at least one agent that proved a model call. NOT merely "has been computed" — a
+	// developer whose agents never routed a proven call keeps a P-Index but is not published,
+	// the same way an agent that stakes without verifying keeps its Elo and stays off the
+	// ladder. The board's filter and this flag read one predicate so they cannot disagree.
+	Ranked   bool      `json:"ranked"`
+	Matches  int       `json:"matches"`
+	Wins     int       `json:"wins"`
+	Agents   int       `json:"agents"`
+	JoinedAt time.Time `json:"joined_at"`
 	// MatchedAgent is the agent whose name matched the search, when that is why this
 	// row was returned. Empty for an unfiltered list or a handle/name match. The UI
 	// shows it so a result that looks nothing like the query still explains itself.
@@ -159,6 +164,10 @@ type Repo interface {
 	// ("all" = every segment) and window (0 = all-time; 7/30 = active in the last
 	// N days).
 	Leaderboard(ctx context.Context, season int, segment string, windowDays, limit, offset int) ([]LeaderRow, error)
+	// LeaderboardExcluded counts developers who WOULD be on that board but for having no
+	// agent that ever proved a model call. Same season/segment/window filters, so the count
+	// describes the board actually being looked at rather than the platform as a whole.
+	LeaderboardExcluded(ctx context.Context, season int, segment string, windowDays int) (int, error)
 	// Directory lists PUBLIC developers matching q (blank = everyone), whether or not
 	// they have a P-Index yet. sort is "top" (played-first, then P-Index) or "recent"
 	// (newest signups first).
