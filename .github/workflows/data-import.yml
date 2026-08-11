@@ -1,21 +1,33 @@
 name: data-import
 
-# Loads a reviewed bundle of gateway-VERIFIED play into a target arena database.
+# Loads a reviewed bundle of gateway-VERIFIED play into the production arena
+# database, by running the importer BESIDE that database.
 #
-# MANUAL ONLY (workflow_dispatch). This writes to a live database, so it must never
-# be something a push can trigger by accident — there is no branch or path filter
-# that would make an automatic run safe.
+# # Why not straight from the runner
 #
-# The bundle is produced separately and committed under data/, so what gets applied
-# is reviewable in a diff before anyone runs this. See cmd/dataimport for what the
-# exporter will and will not include: no ledger, no balances, no escrow, no decision
-# scores, and only matches where a SEATED non-house agent made a gateway-bound model
-# call naming a model.
+# The first version of this workflow took a DATABASE_URL secret and connected from
+# the GitHub runner. That could never work, and the reason is a property of the
+# deployment rather than a missing secret: production Postgres publishes NO host
+# port. It listens only on the compose networks, as `arena-postgres`. There was no
+# secret to add — and adding one would have meant exposing the database to
+# anything holding it.
 #
-# Default is a DRY RUN. It does the identical work inside a transaction and rolls
-# back, so it exercises every constraint the real run will and reports the same
-# counts — a rehearsal that can actually fail. Flipping `apply` to true is the
-# deliberate step.
+# deploy-backend has always reached it the way this now does: SSH to the host and
+# operate there. The runner builds static binaries, ships them, and runs them as a
+# container ON the shared `pyyol` network, addressing the database by the same
+# container name the server uses.
+#
+# MANUAL ONLY (workflow_dispatch). This writes to a live database, so it must
+# never be something a push can trigger by accident.
+#
+# Default is a DRY RUN: identical work inside a transaction, then rollback. It
+# exercises every constraint the real run will and reports the same counts — a
+# rehearsal that can genuinely fail. Flipping `apply` to true is the deliberate
+# step, and the dry run still runs first even then.
+#
+# See cmd/dataimport for what does and does not cross: no ledger, no balances, no
+# escrow, no decision scores, and only matches where a SEATED non-house agent made
+# a gateway-bound model call naming a model.
 
 on:
   workflow_dispatch:
@@ -25,7 +37,7 @@ on:
         required: true
         default: "data/verified-play.json"
       apply:
-        description: "false = dry run (rolls back). true = COMMIT to the target database."
+        description: "false = dry run (rolls back). true = COMMIT to the production database."
         required: true
         default: "false"
       recompute_pindex:
@@ -37,10 +49,21 @@ permissions:
   contents: read
 
 concurrency:
-  # One import at a time. Two concurrent runs against one database would interleave
-  # their transactions for no benefit; the job is idempotent, not parallel-safe.
-  group: data-import-${{ github.ref }}
+  # One import at a time. The job is idempotent, not parallel-safe: two runs would
+  # interleave their transactions against one database for no benefit.
+  group: data-import
   cancel-in-progress: false
+
+env:
+  REMOTE_DIR: "/opt/agent-arena"
+  # Postgres publishes no host port, so 127.0.0.1:5432 on the box does NOT reach
+  # it. These are the container name and external network the server already uses.
+  PG_HOST: "arena-postgres"
+  PG_USER: "arena"
+  PG_DB: "arena"
+  PG_NET: "pyyol"
+  # The binaries are CGO-free and static, so the smallest base image can run them.
+  RUN_IMAGE: "alpine:3.20"
 
 jobs:
   import:
@@ -53,31 +76,134 @@ jobs:
 
       - name: Bundle exists
         run: |
+          set -euo pipefail
           test -f "${{ github.event.inputs.bundle }}" \
             || { echo "::error::bundle not found: ${{ github.event.inputs.bundle }}"; exit 1; }
           echo "bundle bytes: $(wc -c < "${{ github.event.inputs.bundle }}")"
 
-      # Always. Even when apply=true, the rehearsal runs first — if the bundle
-      # cannot be applied cleanly, that is discovered before anything commits.
-      - name: Dry run
+      # Built here, not on the host: the server is not a build box, and a binary
+      # compiled from this exact commit is what makes the run reproducible.
+      #
+      # pindex-recompute is built too, deliberately. backend/Dockerfile produces an
+      # image containing only /server, so reaching for it via `compose exec server`
+      # would fail at precisely the point where the boards depend on it having run.
+      - name: Build the importer and the P-Index recompute (static, linux/amd64)
         working-directory: backend
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/dataimport ./cmd/dataimport
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/pindex-recompute ./cmd/pindex-recompute
+          ls -l /tmp/dataimport /tmp/pindex-recompute
+
+      - name: Set up SSH
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: go run ./cmd/dataimport -mode=import -in="../${{ github.event.inputs.bundle }}" -dry-run
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Ship the binaries and the bundle
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          # Same retry shape as deploy-backend, for the same reason: a runner IP
+          # tripping fail2ban, or a blip between GitHub and the VPS, has failed real
+          # deploys here with the box perfectly healthy. Only connection setup is
+          # retried; every transfer overwrites, so a retry after a partial one is
+          # safe.
+          retry_ssh() {
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge 4 ]; then
+                echo "::error::ssh/scp failed after $n attempts — check the VPS is reachable on port $PORT (sshd up? firewall? fail2ban ban on the runner IP?)"
+                return 1
+              fi
+              echo "attempt $n failed; retrying in $((n * 15))s..."
+              sleep $((n * 15))
+              n=$((n + 1))
+            done
+          }
+          SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=15"
+
+          retry_ssh ssh -i ~/.ssh/id_deploy -p "$PORT" $SSH_OPTS "$SSH_USER@$SSH_HOST" "mkdir -p $REMOTE_DIR/import"
+          retry_ssh scp -i ~/.ssh/id_deploy -P "$PORT" $SSH_OPTS \
+            /tmp/dataimport "$SSH_USER@$SSH_HOST:$REMOTE_DIR/import/dataimport"
+          retry_ssh scp -i ~/.ssh/id_deploy -P "$PORT" $SSH_OPTS \
+            /tmp/pindex-recompute "$SSH_USER@$SSH_HOST:$REMOTE_DIR/import/pindex-recompute"
+          retry_ssh scp -i ~/.ssh/id_deploy -P "$PORT" $SSH_OPTS \
+            "${{ github.event.inputs.bundle }}" "$SSH_USER@$SSH_HOST:$REMOTE_DIR/import/bundle.json"
+
+      # Runs even when apply=true: if the bundle cannot be applied cleanly, that is
+      # discovered before anything commits.
+      - name: Dry run (real transaction, rolled back)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" \
+            "cd $REMOTE_DIR && set -a && . ./.env && set +a && chmod +x import/dataimport && \
+             docker run --rm --network $PG_NET -v $REMOTE_DIR/import:/import:ro \
+               -e DATABASE_URL=\"postgres://$PG_USER:\$POSTGRES_PASSWORD@$PG_HOST:5432/$PG_DB?sslmode=disable\" \
+               $RUN_IMAGE /import/dataimport -mode=import -in=/import/bundle.json -dry-run"
 
       - name: Apply
         if: ${{ github.event.inputs.apply == 'true' }}
-        working-directory: backend
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: go run ./cmd/dataimport -mode=import -in="../${{ github.event.inputs.bundle }}"
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" \
+            "cd $REMOTE_DIR && set -a && . ./.env && set +a && \
+             docker run --rm --network $PG_NET -v $REMOTE_DIR/import:/import:ro \
+               -e DATABASE_URL=\"postgres://$PG_USER:\$POSTGRES_PASSWORD@$PG_HOST:5432/$PG_DB?sslmode=disable\" \
+               $RUN_IMAGE /import/dataimport -mode=import -in=/import/bundle.json"
 
-      # The developer board and the landing spotlight read developer_pindex, which
-      # is computed rather than imported — without this they stay empty even though
-      # the matches and ratings arrived.
+      # developer_pindex is COMPUTED, not imported. Without this the developer board
+      # and the landing spotlight stay empty even though the matches and ratings
+      # arrived correctly — which reads as "the import did nothing".
       - name: Recompute P-Index
         if: ${{ github.event.inputs.apply == 'true' && github.event.inputs.recompute_pindex == 'true' }}
-        working-directory: backend
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: go run ./cmd/pindex-recompute -write
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" \
+            "cd $REMOTE_DIR && set -a && . ./.env && set +a && chmod +x import/pindex-recompute && \
+             docker run --rm --network $PG_NET -v $REMOTE_DIR/import:/import:ro \
+               -e DATABASE_URL=\"postgres://$PG_USER:\$POSTGRES_PASSWORD@$PG_HOST:5432/$PG_DB?sslmode=disable\" \
+               $RUN_IMAGE /import/pindex-recompute -write"
+
+      # The binaries are build artifacts, not something to leave in a deploy
+      # directory. The bundle stays: it is the record of what was applied.
+      - name: Remove the shipped binaries
+        if: always()
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          PORT="${SSH_PORT:-22}"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" \
+            "rm -f $REMOTE_DIR/import/dataimport $REMOTE_DIR/import/pindex-recompute" || true
+          rm -f ~/.ssh/id_deploy
