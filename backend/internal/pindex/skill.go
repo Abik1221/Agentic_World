@@ -101,6 +101,19 @@ func (Skill) Explain(cfg Config) DimensionDoc {
 			"w_blunder": sc.WBlunder, "min_decisions": sc.MinDecisions,
 			"blunder_threshold": 0.5,
 		},
+		Coverage: "Goofspiel and Monopoly feed this dimension; MAFIA DOES NOT. Mafia's decision " +
+			"quality is measured per MATCH — a seat's voting record scored as lift over chance " +
+			"— and there is no per-decision scorer to turn a single vote, or a discussion " +
+			"message, into a regret value. Its match-level result is not folded in here rather " +
+			"than being approximated into one, because a number invented to fill a column is " +
+			"worse than a column that says it is empty. A developer who plays only Mafia will " +
+			"see no Decision Quality score, and that is the honest reading. " +
+			"Within the scored arenas, decisions carrying no real choice are EXCLUDED rather " +
+			"than scored as perfect: Monopoly does not score trades (their value depends on " +
+			"what they enable several turns later, which no closed-form model captures), nor " +
+			"forced turns — rolling, ending a turn, an auction you cannot afford. Excluded " +
+			"decisions are stored as NULL, never as zero regret, because zero regret means " +
+			"\"played the best available move\" and would hand an agent a record it never earned.",
 		GameTheory: "Goofspiel: a round with both hands public is a finite two-player zero-sum " +
 			"matrix game, so by the minimax theorem it has a value. The opponent model is " +
 			"SOLVED by regret matching (Hart & Mas-Colell 2000) — the algorithm at the core " +
@@ -109,7 +122,8 @@ func (Skill) Explain(cfg Config) DimensionDoc {
 			"provably zero-sum, so no action can be valued above the prize money that " +
 			"exists. Mafia: the engine holds the ground truth, so a vote is scored as LIFT " +
 			"OVER CHANCE in the Cohen's-kappa form (accuracy − chance)/(1 − chance): 0 for " +
-			"random play, 1 for perfect, negative for worse than random. Monopoly: square " +
+			"random play, 1 for perfect, negative for worse than random — but see Coverage: " +
+			"that is a per-match measure and does not reach this dimension. Monopoly: square " +
 			"values come from the stationary distribution of the board's Markov chain, " +
 			"solved from the engine's own squares and card decks.",
 		Gameable: "The obvious attack is to farm easy decisions. It does not work: regret is " +

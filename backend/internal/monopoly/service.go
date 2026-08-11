@@ -676,6 +676,21 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 		return AgentView{}, err
 	}
 
+	// The state this decision was made FROM, snapshotted BEFORE the engine steps.
+	//
+	// This is the whole input to decision scoring, and it has to be captured here rather than
+	// reusing the view built for the response below. That view is the POST-move state — what
+	// the agent will see NEXT — so pairing it with the action just taken stored a decision
+	// against the board that resulted from it. internal/skill then scored an action against a
+	// state it could not have been chosen from, and correctly refused nearly all of it:
+	// on the lab database 1,207,717 Monopoly decisions had been through the scorer and 549
+	// carried a score, with `buy` filed under the manage phase and `roll` under acquire.
+	//
+	// Marshalled immediately, not held as a Match: eng.Step is free to reuse the state's
+	// backing arrays, so a struct copy taken here is not a snapshot. The bytes are.
+	decisionInput := s.marshalDecisionView(m, agentPublicID)
+	decisionRound := m.State.TurnCount
+
 	state, events, err := eng.Step(m.State, p.Seat, act, m.Seed)
 	if err != nil {
 		return AgentView{}, mapEngineErr(err)
@@ -701,7 +716,7 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	// Keyed by the PRE-move NextSeq, which the engine guarantees gap-free and monotonic, so a
 	// retried Act at the same state reuses its seq and refreshes one row rather than inventing a
 	// second decision that never happened.
-	s.recordActDecision(ctx, m, agentPublicID, signSeq, act.Kind, view)
+	s.recordActDecision(ctx, m, agentPublicID, signSeq, decisionRound, act.Kind, decisionInput)
 	return view, nil
 }
 
@@ -715,17 +730,33 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 // thinking — it received a finished action — so any figure here would be the time WE spent
 // applying it, which is not what the latency column means anywhere else on the boards. Left at
 // zero, which reads as "not measured" and is true.
-func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, seq int, action string, view AgentView) {
+// marshalDecisionView renders the view an agent decided from, as stored bytes.
+//
+// Returns nil rather than an error on a marshal failure: a decision that cannot be
+// serialised is one the scorer must never see, and nil persists as a NULL input_json,
+// which every reader already treats as "no state recorded". A half-written view would be
+// worse than none — it would be scored.
+func (s *Service) marshalDecisionView(m Match, agentPublicID string) []byte {
+	b, err := json.Marshal(s.view(m, agentPublicID))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// recordActDecision persists one request-path decision.
+//
+// input is the PRE-move view and round is the PRE-move turn count; both are passed in
+// rather than derived from m, because by the time this is called m has already been
+// re-read at the post-move state. Taking them from m is the bug this signature exists to
+// make impossible to reintroduce.
+func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, seq, round int, action string, input []byte) {
 	if s.actDecisions == nil {
 		return
 	}
-	input, err := json.Marshal(view)
-	if err != nil {
-		input = nil
-	}
 	if err := s.actDecisions.RecordActDecision(ctx, ActDecision{
 		MatchID: m.PublicID, AgentPublicID: agentPublicID,
-		Seq: seq, Round: m.State.TurnCount, Action: action,
+		Seq: seq, Round: round, Action: action,
 		Outcome:   string(benchmark.OutcomeOK),
 		InputJSON: input,
 	}); err != nil {
