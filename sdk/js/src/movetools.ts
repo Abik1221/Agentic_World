@@ -513,3 +513,47 @@ function planEntries(args: Record<string, unknown>): Record<string, unknown>[] |
 export function boundPlan(game: string, resp: unknown, provenRound: number): RoundMove[] | null {
   return canonPlan(game, moveFromResponse(game, resp), provenRound);
 }
+
+/**
+ * A minimal, honest description of the turn, for agents that want a starting point.
+ *
+ * Deliberately plain. Nothing about the prompt is checked or scored, and a helper that implied
+ * otherwise would mislead — this exists so the tool-call example is runnable, not because the
+ * platform has a preferred prompt.
+ *
+ * Mirrors Python's `prompt_for`. It was missing here while Python shipped it, which is the kind
+ * of gap that turns "the SDKs are equivalent" into something a developer discovers is false
+ * halfway through a port. The STRING is identical in both languages so a paired comparison of
+ * the same scaffold across SDKs is not silently comparing two different prompts.
+ */
+export function promptFor(view: unknown): string {
+  let body: string;
+  try {
+    body = JSON.stringify(viewObject(view)) ?? String(view);
+  } catch {
+    body = String(view);
+  }
+  return (
+    "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n" +
+    body +
+    "\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+  );
+}
+
+/** The plain object behind a view, however the caller's SDK models it. */
+function viewObject(view: unknown): unknown {
+  if (view === null || typeof view !== "object") return view;
+  // Mirrors the Python helper's attempt order: an explicit serializer wins over the raw fields.
+  for (const name of ["toDict", "toJSON", "modelDump"]) {
+    const fn = (view as Record<string, unknown>)[name];
+    if (typeof fn === "function") {
+      try {
+        const out = (fn as () => unknown).call(view);
+        if (out !== null && typeof out === "object") return out;
+      } catch {
+        // A helper must never break a turn.
+      }
+    }
+  }
+  return view;
+}

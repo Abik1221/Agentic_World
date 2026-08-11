@@ -255,3 +255,8 @@ def estimate_cost(
         + max(0, completion_tokens) * rate.output
     ) / 1_000_000.0
     return round(cost, 8)
+
+
+# The JS SDK exports this as `canonical`; here it was private, so "which table key will my model
+# resolve to?" was answerable in one SDK and not the other. Same function, public name.
+canonical = _canonical

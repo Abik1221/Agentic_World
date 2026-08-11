@@ -50,7 +50,11 @@ __all__ = [
     "estimate_cost",
     "rate_for",
     "is_known",
+    "canonical",
+    "cache_write_rate",
     "PRICING_VERSION",
+    # The wire protocol version the SDK speaks. JS exports it; here it lived in pyyol.models.
+    "PROTOCOL_VERSION",
     # Scaffold fingerprinting: the harness identity that makes a paired model comparison
     # possible (same scaffold, different model). Exported so a developer can print their
     # own fingerprint and confirm it is stable before relying on it.
@@ -65,6 +69,24 @@ __all__ = [
     "move_tool_choice",
     "move_from_response",
     "bound_move",
+    # The rest of the move-tool surface, exported here because the JS SDK exports all of it at
+    # top level and a developer porting between the two should not have to discover that one
+    # language hides half of it in a submodule. Same functions, same names modulo case.
+    "move_tool_name",
+    "canon_move",
+    "canon_plan",
+    "canon_goofspiel",
+    "canon_mafia",
+    "canon_monopoly",
+    "PLAN_KEY",
+    "MAX_SPAN_ROUNDS",
+    "NO_TARGET",
+    "TOOL_GOOFSPIEL",
+    "TOOL_MAFIA",
+    "TOOL_MONOPOLY",
+    "GAME_GOOFSPIEL",
+    "GAME_MAFIA",
+    "GAME_MONOPOLY",
     # Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
     # model made, not calls, so batching no longer costs an agent its verified share.
     "bound_plan",
@@ -89,6 +111,11 @@ __all__ = [
     "MafiaMove",
     "parse_view",
     "move_to_dict",
+    # The game names themselves. JS exports these from its models module at top level; here they
+    # sat in pyyol.models, so `pyyol.GOOFSPIEL` worked in one SDK and not the other.
+    "GOOFSPIEL",
+    "MONOPOLY",
+    "MAFIA",
     "game_rules",
     "__version__",
 ]
@@ -131,6 +158,24 @@ _LAZY = {
     "bound_move": "movetools",
     "bound_plan": "movetools",
     "prompt_for": "movetools",
+    "move_tool_name": "movetools",
+    "canon_move": "movetools",
+    "canon_plan": "movetools",
+    "canon_goofspiel": "movetools",
+    "canon_mafia": "movetools",
+    "canon_monopoly": "movetools",
+    "PLAN_KEY": "movetools",
+    "MAX_SPAN_ROUNDS": "movetools",
+    "NO_TARGET": "movetools",
+    "TOOL_GOOFSPIEL": "movetools",
+    "TOOL_MAFIA": "movetools",
+    "TOOL_MONOPOLY": "movetools",
+    "GAME_GOOFSPIEL": "movetools",
+    "GAME_MAFIA": "movetools",
+    "GAME_MONOPOLY": "movetools",
+    "canonical": "pricing",
+    "cache_write_rate": "pricing",
+    "PROTOCOL_VERSION": "models",
     "Span": "telemetry",
     "UsageAccumulator": "telemetry",
     "match_trace_id": "telemetry",
@@ -146,6 +191,9 @@ _LAZY = {
     "MafiaMove": "models",
     "parse_view": "models",
     "move_to_dict": "models",
+    "GOOFSPIEL": "models",
+    "MONOPOLY": "models",
+    "MAFIA": "models",
 }
 
 
