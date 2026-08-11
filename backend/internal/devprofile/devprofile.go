@@ -209,6 +209,18 @@ type LeaderboardPage struct {
 	Window     string      `json:"window"`
 	Entries    []LeaderRow `json:"entries"`
 	NextCursor int         `json:"next_cursor,omitempty"` // >0 ⇒ pass as ?cursor= for the next page; absent ⇒ last page
+	// Excluded counts the developers this board declined to rank, by reason. The only
+	// reason today is "no_verified_model" — deliberately the SAME key the model board's
+	// seat census uses, because it is the same fact about the same play, and two names for
+	// one exclusion is how a UI ends up explaining it two different ways.
+	//
+	// It exists so a short board is legible. Filtering to published developers removes real
+	// rows, and a board that simply got shorter reads as "nobody plays here" — which is both
+	// wrong and the discouraging version of the truth. The count says: these developers
+	// played, they are not ranked, and here is the one thing that would change that.
+	//
+	// omitempty, and absent on a census read error: the board must render without it.
+	Excluded map[string]int `json:"excluded,omitempty"`
 }
 
 // Leaderboard ranks developers by P-Index. window ∈ {all, weekly, monthly}; segment
@@ -247,7 +259,14 @@ func (s *Service) Leaderboard(ctx context.Context, window, segment string, seaso
 	if len(rows) == limit {
 		next = offset + limit // a full page ⇒ there may be more
 	}
-	return LeaderboardPage{Season: season, Segment: segment, Window: window, Entries: rows, NextCursor: next}, nil
+	page := LeaderboardPage{Season: season, Segment: segment, Window: window, Entries: rows, NextCursor: next}
+	// Best-effort, and deliberately not part of the error path: the census explains the
+	// board, it is not the board. A read error here must not take a working leaderboard down
+	// with it — absence never rejects.
+	if n, err := s.repo.LeaderboardExcluded(ctx, season, segment, windowDays); err == nil && n > 0 {
+		page.Excluded = map[string]int{"no_verified_model": n}
+	}
+	return page, nil
 }
 
 // DirectoryPage is a page of the public developer directory.

@@ -721,6 +721,31 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 		return AgentView{}, err
 	}
 
+	// The turn this decision belongs to, and the state it was made FROM — both captured
+	// BEFORE the engine acts.
+	//
+	// The view has to be snapshotted here rather than reusing the one built for the response
+	// below: that one is the POST-move state, so storing it against the action just taken
+	// files a decision under the board that resulted from it. The decision inspector then
+	// shows a developer a state their move could not have been chosen from, and any scorer
+	// reading these rows is scoring the wrong pair — the same defect the Monopoly path had,
+	// where it drove the skill dimension to 549 scores out of 1.2M decisions.
+	//
+	// decisionTurn is the same expression movebind.Enforce keys on a few lines above. It was
+	// being recomputed from the POST-move day/phase, so a decision's identity in the log
+	// disagreed with the identity of the proof that verified it — and a night action, which
+	// resolves the phase, was filed under the turn AFTER the one it was made in.
+	//
+	// Costs a second LoadEvents on the Act path when instrumentation is enabled. That is the
+	// honest price of recording the state a decision was actually made against; the cheaper
+	// version was recording the wrong one.
+	decisionTurn := turnproof.MafiaTurn(m.State.Day, m.State.Phase)
+	decisionDay := m.State.Day
+	var decisionInput []byte
+	if s.actDecisions != nil {
+		decisionInput = s.marshalDecisionView(ctx, m, agentPublicID)
+	}
+
 	state, events, err := s.eng.Act(m.State, p.Seat, act)
 	if err != nil {
 		return AgentView{}, mapEngineErr(err)
@@ -754,7 +779,7 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	// overwrite the previous one — Monopoly can use its engine NextSeq for this, Mafia cannot.
 	// Using the same encoding the turn proof binds to also keeps a decision's identity
 	// consistent with the proof that verifies it.
-	s.recordActDecision(ctx, m, agentPublicID, act, view)
+	s.recordActDecision(ctx, m, agentPublicID, decisionTurn, decisionDay, act, decisionInput)
 	return view, nil
 }
 
@@ -766,18 +791,33 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 // Latency is deliberately not reported — on the request path the platform never observed the
 // agent thinking, it received a finished action, so any figure would be OUR apply time. Zero
 // reads as "not measured", which is true.
-func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, act mf.Action, view AgentView) {
+// marshalDecisionView renders the view an agent decided from, as stored bytes.
+//
+// nil rather than an error on a marshal failure: a view that cannot be serialised is one
+// no scorer or inspector must see, and nil persists as NULL input_json, which every reader
+// already treats as "no state recorded". A half-written view would be worse than none,
+// because it would be read.
+func (s *Service) marshalDecisionView(ctx context.Context, m Match, agentPublicID string) []byte {
+	b, err := json.Marshal(s.viewFor(ctx, m, agentPublicID))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// recordActDecision persists one request-path decision.
+//
+// turn, day and input are all PRE-move and are passed in rather than derived from m: by the
+// time this runs, m has been re-read at the post-move state. Deriving them here is exactly
+// the bug this signature exists to make impossible to reintroduce.
+func (s *Service) recordActDecision(ctx context.Context, m Match, agentPublicID string, turn, day int, act mf.Action, input []byte) {
 	if s.actDecisions == nil {
 		return
 	}
-	input, err := json.Marshal(view)
-	if err != nil {
-		input = nil
-	}
 	if err := s.actDecisions.RecordActDecision(ctx, ActDecision{
 		MatchID: m.PublicID, AgentPublicID: agentPublicID,
-		Seq:   turnproof.MafiaTurn(m.State.Day, m.State.Phase),
-		Round: m.State.Day, Action: string(act.Kind),
+		Seq:   turn,
+		Round: day, Action: string(act.Kind),
 		Outcome:   string(benchmark.OutcomeOK),
 		InputJSON: input,
 	}); err != nil {

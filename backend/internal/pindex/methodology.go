@@ -54,6 +54,17 @@ type DimensionDoc struct {
 	// Empty for dimensions that are plain bookkeeping — claiming a theoretical basis a
 	// dimension does not have would be worse than claiming none.
 	GameTheory string `json:"game_theory,omitempty"`
+	// Coverage states which arenas and which decisions actually REACH this dimension, and
+	// what is excluded.
+	//
+	// It exists because a methodology page describes a method, and a reader reasonably
+	// assumes the method is applied everywhere the platform plays. The Skill dimension
+	// documented a scoring approach for all three arenas while one of them had no
+	// per-decision scorer wired at all — so the page described work the engine was not
+	// doing, and a developer whose season was mostly that arena saw an empty dimension with
+	// no way to learn why. A gap that is stated is a known limitation; the same gap
+	// unstated is the page being wrong.
+	Coverage string `json:"coverage,omitempty"`
 	// Gameable is an honest note on how a developer could try to inflate this dimension,
 	// and what stops them. Publishing it is deliberate: an index that hides its attack
 	// surface is trusted less by the people best placed to probe it, not more.

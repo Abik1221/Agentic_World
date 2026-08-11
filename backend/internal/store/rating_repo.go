@@ -56,6 +56,34 @@ func publishedAgent(alias string) string {
 	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> '')`
 }
 
+// publishedDeveloper is the same rule one level up: a developer is published once ANY of
+// their real agents is.
+//
+// The developer board and the model board are described as one dataset seen two ways, and
+// only one of them enforced it. The model board ranks proven decisions; the developer board
+// ranked whoever had a P-Index row, so a developer could hold a public rank built on
+// self-reported attribution while the model board refused to name their model at all. The
+// two surfaces disagreed about what "ranked" means, and the weaker one was the one with a
+// number on it.
+//
+// Defined in terms of publishedAgent rather than beside it. A second EXISTS spelling of
+// "verified" would be a second definition — it would pass review, and then drift the first
+// time the model-call schema changes and only one of the two is updated.
+//
+// ANY agent, not ALL: a developer who verified one agent and is still wiring up a second is
+// published, exactly as an agent that proved one call is. "How much of their play is
+// verified" is the ranked-integrity threshold's question, measured per match.
+//
+// House agents are excluded here, matching every other developer-facing query — the house
+// never stakes and its owner is not a competitor.
+//
+// alias is the users-table alias in the calling query.
+func publishedDeveloper(alias string) string {
+	return `EXISTS (SELECT 1 FROM agents a_pub
+	                 WHERE a_pub.owner_user_id = ` + alias + `.id AND a_pub.kind <> 'house'
+	                   AND ` + publishedAgent("a_pub") + `)`
+}
+
 func (r *RatingRepo) ApplyMatch(ctx context.Context, in rating.ApplyInput) (bool, error) {
 	if len(in.Players) < 2 {
 		return false, nil
@@ -232,7 +260,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 		          RANK() OVER (ORDER BY r.elo DESC, r.agent_id ASC) AS rnk
 		   FROM ratings r JOIN agents a ON a.id = r.agent_id
 		   WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
-		     AND ` + publishedAgent("a") + `
+		     AND `+publishedAgent("a")+`
 		 ) cur
 		 LEFT JOIN LATERAL (
 		   SELECT s.rank FROM rating_rank_snapshots s

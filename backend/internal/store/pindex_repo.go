@@ -637,20 +637,63 @@ func (r *PIndexRepo) ClearDirty(ctx context.Context, userPublicID string, token 
 	return ct.RowsAffected() > 0, nil
 }
 
+// Rank recomputes global_rank and percentile over the PUBLISHED population — the same
+// population DevProfileRepo.Leaderboard shows, via the same publishedDeveloper predicate.
+//
+// Ranking everyone and publishing only some is the bug this shape exists to avoid, and the
+// published ladder learned it first (see SnapshotRanks): a rank computed over one population
+// and displayed on a board drawn from another is a number that cannot be found. A developer
+// would read "rank 7" on their own profile, open the board, and be absent from it — while the
+// six above them silently included agents the arena will not vouch for.
+//
+// Two statements, deliberately, because an unpublished developer needs their rank CLEARED and
+// not merely left out of the UPDATE. Leaving it out is what makes a stale rank outlive the
+// verification that earned it: a developer who once had a bound call keeps rank 7 forever if
+// the row is only ever written and never reset. 0 is already the wire value for "unranked"
+// (see openapi.yaml global_rank, and the directory's COALESCE), so this says the true thing
+// in the vocabulary the API already has.
+//
+// p_index itself is NOT touched by either statement. It is computed for everyone, exactly as
+// ratings are, and an unpublished developer keeps theirs — only its rank is withheld.
+//
+// best_rank likewise only ever moves on the published side. It is a lifetime high-water mark,
+// so an unpublished developer keeps the best rank they held while published rather than having
+// it zeroed; nothing about losing publication makes a past position untrue.
 func (r *PIndexRepo) Rank(ctx context.Context, season int) error {
-	_, err := r.db.Exec(ctx,
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// One transaction so the board is never read between the two writes, when a developer
+	// could otherwise be ranked by neither statement or counted by both.
+	if _, err := tx.Exec(ctx,
 		`WITH ranked AS (
-		   SELECT user_id,
-		          ROW_NUMBER() OVER (ORDER BY p_index DESC, user_id) AS rnk,
-		          COUNT(*)     OVER ()                               AS total
-		   FROM developer_pindex WHERE season = $1
+		   SELECT d.user_id,
+		          ROW_NUMBER() OVER (ORDER BY d.p_index DESC, d.user_id) AS rnk,
+		          COUNT(*)     OVER ()                                   AS total
+		   FROM developer_pindex d JOIN users u ON u.id = d.user_id
+		   WHERE d.season = $1 AND `+publishedDeveloper("u")+`
 		 )
 		 UPDATE developer_pindex d SET
 		   global_rank = r.rnk,
 		   percentile  = CASE WHEN r.total > 0 THEN ROUND(100.0 * r.rnk / r.total, 2) ELSE 0 END,
 		   best_rank   = CASE WHEN d.best_rank = 0 THEN r.rnk ELSE LEAST(d.best_rank, r.rnk) END
-		 FROM ranked r WHERE d.user_id = r.user_id AND d.season = $1`, season)
-	return err
+		 FROM ranked r WHERE d.user_id = r.user_id AND d.season = $1`, season); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE developer_pindex d SET global_rank = 0, percentile = 0
+		 FROM users u
+		 WHERE u.id = d.user_id AND d.season = $1
+		   AND NOT `+publishedDeveloper("u")+`
+		   AND (d.global_rank <> 0 OR d.percentile <> 0)`, season); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *PIndexRepo) Get(ctx context.Context, userPublicID string, season int) (pindex.Snapshot, bool, error) {
