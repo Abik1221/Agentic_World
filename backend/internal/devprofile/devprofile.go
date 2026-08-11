@@ -372,42 +372,91 @@ func (s *Service) Directory(ctx context.Context, q, sort string, season, limit, 
 	}, nil
 }
 
+// SeasonModel is the season's leading MODEL — the other half of "who is winning
+// here". A developer answers "who", a model answers "with what".
+type SeasonModel struct {
+	// Provider as the gateway recorded it, so the UI can resolve a brand mark.
+	Provider string `json:"provider"`
+	// Model is the EXACT id. Never a family name: two builds of one model are
+	// priced and capable differently, and this is the field a reader acts on.
+	Model string `json:"model"`
+	// Matches is the seat count behind the average — published because an average
+	// over four seats and one over four hundred are not the same claim.
+	Matches int `json:"matches"`
+	Wins    int `json:"wins"`
+	// WinRate is 0–1 across the season's verified matches for this model.
+	WinRate float64 `json:"win_rate"`
+	// Decisions and LegalRate describe HOW it played, not just whether it won —
+	// the same hygiene signals the benchmark surface ranks on.
+	Decisions int     `json:"decisions"`
+	LegalRate float64 `json:"legal_rate"`
+	// Verified is true when the attribution came from the gateway rather than
+	// from what the agent said about itself.
+	Verified bool `json:"verified"`
+}
+
 // Spotlight is the single developer featured on the landing page.
 type Spotlight struct {
 	Developer DirectoryRow `json:"developer"`
 	TopGame   string       `json:"top_game,omitempty"`
+	// TopModel is the season's leading model. Absent when no verified play
+	// exists yet — omitted rather than zeroed, so the card can tell "no data"
+	// from "a model that won nothing".
+	TopModel *SeasonModel `json:"top_model,omitempty"`
 	// Reason explains which rule picked them: "top_p_index" (highest-rated developer
 	// who has actually played), "most_active", or "newest" (nobody has played yet).
 	Reason string `json:"reason"`
 }
 
-// Spotlight picks the developer to feature on the landing page: the highest-ranked
-// developer who has actually played a match; if nobody has played yet, the newest
-// public developer — so the slot is never empty once a single developer exists.
+// Spotlight features the season's HIGHEST-RANKED developer, or nobody.
+//
+// It used to read the directory's "top" sort and take the first row. That sort
+// ends `… ORDER BY p_index DESC, matches DESC, created_at DESC`, so the moment a
+// season had no ranked play the tiebreakers walked all the way down to
+// created_at and the slot went to whoever signed up most recently. On a
+// pre-launch platform that is every time — the landing page introduced the newest
+// account as though it were the best, and it changed every time somebody
+// registered. A "featured developer" that means "most recent signup" is worse
+// than an empty slot, because an empty slot is not a claim.
+//
+// So the source is now the leaderboard itself: the same publishedDeveloper gate,
+// the same p_index ordering, the same population. Whoever the board puts first is
+// who gets featured, and if the board is empty the section renders nothing.
+// One definition of "top", used by both surfaces.
 func (s *Service) Spotlight(ctx context.Context, season int) (Spotlight, bool, error) {
 	if season <= 0 {
 		season = s.season()
 	}
-	rows, err := s.repo.Directory(ctx, season, "", "top", 1, 0, "")
+	// Rank 1 on the developer board. Segment "all", no activity window: the
+	// spotlight is the season's best, not the best of some slice of it.
+	top, err := s.repo.Leaderboard(ctx, season, "all", 0, 1, 0)
 	if err != nil {
 		return Spotlight{}, false, err
 	}
-	if len(rows) == 0 {
+	if len(top) == 0 {
+		// No developer has proven a model call this season. Nothing to feature,
+		// and inventing something to fill the space is the bug above.
 		return Spotlight{}, false, nil
 	}
-	row := rows[0]
-	out := Spotlight{Developer: row}
-	switch {
-	case row.Ranked && row.Matches > 0:
-		out.Reason = "top_p_index"
-	case row.Matches > 0:
-		out.Reason = "most_active"
-	default:
-		out.Reason = "newest"
+
+	// The full directory row carries the record (matches, wins, agents) the card
+	// renders. Fetched by id rather than re-sorted, so it is unambiguously the
+	// same developer the board ranked first.
+	row, found, err := s.repo.DirectoryRowFor(ctx, season, top[0].Developer)
+	if err != nil || !found {
+		return Spotlight{}, false, err
 	}
+
+	out := Spotlight{Developer: row, Reason: "top_p_index"}
 	// Their busiest arena — best-effort; an empty game just hides the label.
 	if st, _, serr := s.repo.Stats(ctx, row.Developer, season); serr == nil {
 		out.TopGame = st.FavoriteArena
+	}
+	// The season's leading MODEL, beside the leading developer. Best-effort for
+	// the same reason: this is a second fact on the card, and losing it must not
+	// cost the card.
+	if m, ok, merr := s.repo.TopModel(ctx, season); merr == nil && ok {
+		out.TopModel = &m
 	}
 	return out, true, nil
 }

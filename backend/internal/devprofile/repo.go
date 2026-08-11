@@ -168,6 +168,10 @@ type Repo interface {
 	// agent that ever proved a model call. Same season/segment/window filters, so the count
 	// describes the board actually being looked at rather than the platform as a whole.
 	LeaderboardExcluded(ctx context.Context, season int, segment string, windowDays int) (int, error)
+	// TopModel returns the season's leading model by win rate over VERIFIED play.
+	// (model, false, nil) when no verified match exists yet — an absent leader is a
+	// real answer on a platform that has not been played on.
+	TopModel(ctx context.Context, season int) (SeasonModel, bool, error)
 	// Directory lists PUBLIC developers matching q (blank = everyone), whether or not
 	// they have a P-Index yet. sort is "top" (played-first, then P-Index) or "recent"
 	// (newest signups first).

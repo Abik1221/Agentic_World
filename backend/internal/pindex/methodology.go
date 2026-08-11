@@ -84,6 +84,39 @@ type Methodology struct {
 	WeightsSum float64 `json:"weights_sum"`
 	// Reproducibility explains how a developer can recompute their own score.
 	Reproducibility string `json:"reproducibility"`
+	// Limitations is what this index CANNOT currently tell you.
+	//
+	// It is published for the same reason the per-dimension Gameable notes are: a
+	// measurement that only advertises its strengths is asking to be trusted rather
+	// than checked, and the people best placed to check it are the ones who will
+	// find the gaps anyway. Stating them first is the difference between a known
+	// limitation and a discovered misrepresentation.
+	//
+	// Every entry here is a fact about the running system, not a hypothetical.
+	Limitations []Limitation `json:"limitations,omitempty"`
+	// Provenance says where the numbers come from and what is excluded before any
+	// scoring happens — the part a reader needs in order to know what population
+	// the score describes.
+	Provenance []string `json:"provenance,omitempty"`
+	// Citation is how to reference a SPECIFIC version of this method.
+	//
+	// Weights and thresholds change; a score is only meaningful beside the config
+	// version that produced it. Publishing the pair means a claim made about the
+	// P-Index today stays checkable after the next tuning pass, instead of becoming
+	// unfalsifiable the moment a constant moves.
+	Citation string `json:"citation,omitempty"`
+}
+
+// Limitation is one thing the index does not measure, with its consequence stated
+// rather than implied.
+type Limitation struct {
+	// Scope is the surface affected — a dimension key, an arena, or "index".
+	Scope string `json:"scope"`
+	// What is the limitation itself, in one plain sentence.
+	What string `json:"what"`
+	// Effect is what a reader would wrongly conclude if they did not know this.
+	// The field exists because a limitation nobody can act on is decoration.
+	Effect string `json:"effect"`
 }
 
 // Explainer is implemented by a Dimension that can describe its own method.
@@ -116,6 +149,82 @@ func Describe(cfg Config, dims []Dimension) Methodology {
 			"profile and the parameters listed here. The same inputs and the same config " +
 			"version always produce the same score — recomputation is the intended way to " +
 			"check ours, not an unsupported edge case.",
+		Citation: fmt.Sprintf(
+			"Cite the method as \"Pyyol P-Index, config version %d\". A score without its "+
+				"config version is not checkable: weights and thresholds are tuned, and the "+
+				"same inputs under a different version legitimately produce a different "+
+				"number. Every stored snapshot records the version that computed it.",
+			cfg.Version),
+		// Stated BEFORE the dimensions, because a reader who does not know what
+		// population the score covers cannot interpret any dimension correctly.
+		Provenance: []string{
+			"Only RATED matches count. Sandbox and practice play is recorded separately and " +
+				"never reaches this index — otherwise the score would be farmable for free " +
+				"against deterministic house bots.",
+			"Matches carrying an active fraud flag (farming, collusion, same-owner dumping, " +
+				"bot timing) are excluded from the activity and difficulty inputs before " +
+				"scoring, so manipulation cannot inflate the result it was aimed at.",
+			"Opponents that are the developer's own agents are excluded from the difficulty " +
+				"average. Beating yourself is not evidence about the field you faced.",
+			"House agents are excluded throughout. The platform's own bots never stake and " +
+				"are not competitors.",
+			"Ranked publication additionally requires a PROVEN model call — a call the " +
+				"gateway bound to a decision, naming a model. Ratings are computed for every " +
+				"agent; only verified ones are published, so an unverified developer keeps " +
+				"their score and does not appear on the board.",
+		},
+		Limitations: []Limitation{
+			{
+				Scope: "skill",
+				What: "Mafia contributes NO decision-quality score. Its scorer measures a " +
+					"seat's voting record per match, as lift over chance, and there is no " +
+					"per-decision scorer that turns one vote or one discussion message into " +
+					"a regret value.",
+				Effect: "A developer who plays only Mafia sees an empty Decision Quality " +
+					"dimension. That is missing coverage, not a judgement that they played " +
+					"badly, and the match-level result is deliberately not folded in — a " +
+					"number invented to fill a column is worse than a column that says it " +
+					"is empty.",
+			},
+			{
+				Scope: "skill",
+				What: "Monopoly does not score trades, and does not score forced turns — " +
+					"rolling, ending a turn, an auction you cannot afford.",
+				Effect: "Decision counts for Monopoly are lower than the raw number of " +
+					"actions taken. A trade's value depends on what it enables several turns " +
+					"later, which no closed-form model here captures, so a confidently " +
+					"mediocre trade score would be worse than none. Excluded decisions are " +
+					"stored as NULL, never as zero regret — zero means 'played the best " +
+					"available move' and would hand an agent a record it never earned.",
+			},
+			{
+				Scope: "skill",
+				What:  "Decision-quality history before the decision-log fix is unrecoverable.",
+				Effect: "Every decision recorded before that fix paired its action with the " +
+					"state the action PRODUCED rather than the one it was chosen from, so " +
+					"scores derived from it describe positions that never occurred. Those " +
+					"rows are left unscored rather than repaired: rescoring them would " +
+					"re-derive wrong answers from the same wrong input. Decision quality " +
+					"accumulates from the fix forward.",
+			},
+			{
+				Scope: "difficulty",
+				What: "Opponent strength is measured by rating at match time, which is itself " +
+					"uncertain early in a season.",
+				Effect: "A difficulty score built on few matches carries the opponents' own " +
+					"rating uncertainty. The Consistency dimension reports that uncertainty " +
+					"directly rather than hiding it inside difficulty.",
+			},
+			{
+				Scope: "index",
+				What: "Sample sizes are small pre-launch, and every average here is an " +
+					"average over the matches actually played.",
+				Effect: "A P-Index over a handful of matches is a weaker claim than one over " +
+					"hundreds. Each dimension applies a sample-size gate that scales credit " +
+					"with the evidence rather than granting it up front, but a gate is not " +
+					"a substitute for data — read the match counts beside the score.",
+			},
+		},
 	}
 	for _, d := range dims {
 		w := weightOf(d.Key(), cfg)

@@ -900,3 +900,72 @@ func (r *DevProfileRepo) FollowListCount(ctx context.Context, userPublicID, dire
 	err := r.db.QueryRow(ctx, q, userPublicID).Scan(&n)
 	return n, err
 }
+
+// TopModel is the season's leading model over play the gateway PROVED.
+//
+// # Why the attribution comes from agent_match_verified_cost
+//
+// That table is what the gateway measured and billed, so it is the one model
+// name an agent cannot influence. The benchmark row's observed_/declared_ fields
+// are the fallback rungs of the same ladder and they disagree with each other on
+// real data — the arena's own database holds `Anthropic`/`claude-opus-4` beside
+// `anthropic`/`claude-opus-4-20260501`, plus an observed provider with no bound
+// call behind it at all. Ranking on the verified rung means the leader is a model
+// somebody actually paid a provider to run.
+//
+// # Why win rate is ordered with its sample size, not alone
+//
+// A single seat that won once is a 100% win rate. Ordering on that would hand the
+// landing page to whichever model played least, which is the same failure the
+// model board avoids by ranking on the LOWER bound of an interval rather than the
+// point estimate. There is no interval here, so the sample size is an explicit
+// tiebreaker below a minimum: models with at least MinSeats seats sort first, and
+// only then by win rate. A season with nothing above the minimum still returns
+// its best rather than nothing, because "too little data to be sure" is a caveat
+// the card can render, while an empty card cannot say anything at all.
+func (r *DevProfileRepo) TopModel(ctx context.Context, season int) (devprofile.SeasonModel, bool, error) {
+	// Enough seats that one lucky match cannot take the slot. Deliberately small:
+	// this is a display tiebreaker, not a statistical claim, and a pre-launch
+	// season has few seats to spare.
+	const minSeats = 4
+
+	var m devprofile.SeasonModel
+	err := r.db.QueryRow(ctx,
+		`SELECT vc.provider, vc.model,
+		        COUNT(*)::int                                              AS seats,
+		        COUNT(*) FILTER (WHERE b.result = 'win')::int              AS wins,
+		        COALESCE(SUM(b.decisions),0)::int                          AS decisions,
+		        CASE WHEN SUM(b.decisions) > 0
+		             THEN SUM(b.legal)::float8 / SUM(b.decisions)::float8
+		             ELSE 0 END                                            AS legal_rate
+		   FROM agent_match_verified_cost vc
+		   JOIN agents a  ON a.id = vc.agent_id AND a.kind <> 'house'
+		   JOIN matches mt ON mt.public_id = vc.match_id AND mt.status = 'finished'
+		   JOIN match_rating_changes mrc ON mrc.match_id = mt.id
+		                                AND mrc.agent_id = vc.agent_id
+		                                AND mrc.season = $1
+		   LEFT JOIN agent_match_benchmark b ON b.match_id = vc.match_id
+		                                   AND b.agent_id = vc.agent_id
+		  WHERE COALESCE(vc.model,'') <> ''
+		    AND NOT EXISTS (SELECT 1 FROM fraud_flags f WHERE f.match_id = mrc.match_id AND f.active)
+		  GROUP BY vc.provider, vc.model
+		  ORDER BY (COUNT(*) >= $2) DESC,
+		           (COUNT(*) FILTER (WHERE b.result = 'win')::float8
+		              / NULLIF(COUNT(*),0)::float8) DESC NULLS LAST,
+		           COUNT(*) DESC,
+		           vc.model
+		  LIMIT 1`, season, minSeats).
+		Scan(&m.Provider, &m.Model, &m.Matches, &m.Wins, &m.Decisions, &m.LegalRate)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return devprofile.SeasonModel{}, false, nil
+	}
+	if err != nil {
+		return devprofile.SeasonModel{}, false, err
+	}
+	if m.Matches > 0 {
+		m.WinRate = float64(m.Wins) / float64(m.Matches)
+	}
+	// Sourced from the verified rung by construction — the query reads no other.
+	m.Verified = true
+	return m, true, nil
+}

@@ -1,0 +1,83 @@
+name: data-import
+
+# Loads a reviewed bundle of gateway-VERIFIED play into a target arena database.
+#
+# MANUAL ONLY (workflow_dispatch). This writes to a live database, so it must never
+# be something a push can trigger by accident — there is no branch or path filter
+# that would make an automatic run safe.
+#
+# The bundle is produced separately and committed under data/, so what gets applied
+# is reviewable in a diff before anyone runs this. See cmd/dataimport for what the
+# exporter will and will not include: no ledger, no balances, no escrow, no decision
+# scores, and only matches where a SEATED non-house agent made a gateway-bound model
+# call naming a model.
+#
+# Default is a DRY RUN. It does the identical work inside a transaction and rolls
+# back, so it exercises every constraint the real run will and reports the same
+# counts — a rehearsal that can actually fail. Flipping `apply` to true is the
+# deliberate step.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle:
+        description: "Path to the bundle JSON, relative to the repo root"
+        required: true
+        default: "data/verified-play.json"
+      apply:
+        description: "false = dry run (rolls back). true = COMMIT to the target database."
+        required: true
+        default: "false"
+      recompute_pindex:
+        description: "Rebuild the P-Index after a successful apply, so the developer board and spotlight populate"
+        required: true
+        default: "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  # One import at a time. Two concurrent runs against one database would interleave
+  # their transactions for no benefit; the job is idempotent, not parallel-safe.
+  group: data-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.25.x", cache: true, cache-dependency-path: backend/go.sum }
+
+      - name: Bundle exists
+        run: |
+          test -f "${{ github.event.inputs.bundle }}" \
+            || { echo "::error::bundle not found: ${{ github.event.inputs.bundle }}"; exit 1; }
+          echo "bundle bytes: $(wc -c < "${{ github.event.inputs.bundle }}")"
+
+      # Always. Even when apply=true, the rehearsal runs first — if the bundle
+      # cannot be applied cleanly, that is discovered before anything commits.
+      - name: Dry run
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: go run ./cmd/dataimport -mode=import -in="../${{ github.event.inputs.bundle }}" -dry-run
+
+      - name: Apply
+        if: ${{ github.event.inputs.apply == 'true' }}
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: go run ./cmd/dataimport -mode=import -in="../${{ github.event.inputs.bundle }}"
+
+      # The developer board and the landing spotlight read developer_pindex, which
+      # is computed rather than imported — without this they stay empty even though
+      # the matches and ratings arrived.
+      - name: Recompute P-Index
+        if: ${{ github.event.inputs.apply == 'true' && github.event.inputs.recompute_pindex == 'true' }}
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: go run ./cmd/pindex-recompute -write
