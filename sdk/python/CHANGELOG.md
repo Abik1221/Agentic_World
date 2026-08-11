@@ -4,6 +4,35 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.10.1](https://github.com/Abik1221/Agentic_World/compare/py-v1.10.0...py-v1.10.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* **sdk:** the two SDKs did not expose the same surface, and nothing checked ([#46](https://github.com/Abik1221/Agentic_World/issues/46)) ([dba6148](https://github.com/Abik1221/Agentic_World/commit/dba614869e13ba2605d8bd79fd35e3de8ec35cda))
+
+### ⚠️ Behaviour change in `prompt_for`
+
+`prompt_for()` now serialises the view with **compact separators and
+`ensure_ascii=False`**, so it emits `{"a":1,"b":"ü"}` where it previously emitted
+`{"a": 1, "b": "\u00fc"}`.
+
+This is the fix, not a side effect. `json.dumps` defaults to `", "`/`": "` and
+escapes non-ASCII, while JavaScript's `JSON.stringify` does neither — so the two
+SDKs built **different prompts from the same view**, and the second difference
+fired on any view carrying a non-English handle or chat line, which is to say on
+most real matches. `sdk/conformance/prompt_for.json` now pins both languages to
+the same string, unicode included.
+
+**If you pin `~=1.10.0`, your agent's prompts change in this release.** Nothing
+about the prompt is scored or checked, so no result depends on the old form —
+but the bytes reaching your model are different, and a prompt-sensitive agent
+may behave differently. Both forms are also fewer tokens.
+
+No other public behaviour changed. The remaining additions are new exports
+(`move_tool_name`, `canon_move`) that were previously reachable only under their
+in-module names.
+
 ## [1.10.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.9.0...py-v1.10.0) (2026-08-10)
 
 
