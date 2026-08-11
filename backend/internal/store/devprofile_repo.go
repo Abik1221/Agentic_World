@@ -308,6 +308,20 @@ func (r *DevProfileRepo) Badges(ctx context.Context, userPublicID string) ([]dev
 	return out, rows.Err()
 }
 
+// Leaderboard publishes the developer board, filtered to PUBLISHED developers.
+//
+// The gate is publishedDeveloper — the same predicate, ultimately the same EXISTS, that the
+// model board and the published ladder use. Without it this board ranked anyone holding a
+// P-Index row, so a developer whose agents never routed a single proven model call could sit
+// on a public ranking built on nothing but their own attribution, while the model board
+// declined to name their model. The arena cannot say a model chose their moves; it must not
+// print a rank that implies otherwise.
+//
+// Like the ladder, this filters the PUBLICATION and not the computation: developer_pindex
+// rows keep being written for everyone, an unpublished developer keeps their P-Index, their
+// matches and their coins, and PIndex() on their own profile still answers. Only the board's
+// SELECT is narrowed. PIndexRepo.Rank narrows to the same population, so the global_rank a
+// row carries is a position on the board it is actually shown on.
 func (r *DevProfileRepo) Leaderboard(ctx context.Context, season int, segment string, windowDays, limit, offset int) ([]devprofile.LeaderRow, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT u.public_id, COALESCE(u.username::text,''), COALESCE(u.display_name,''),
@@ -315,6 +329,7 @@ func (r *DevProfileRepo) Leaderboard(ctx context.Context, season int, segment st
 		        d.p_index, d.global_rank
 		 FROM developer_pindex d JOIN users u ON u.id = d.user_id
 		 WHERE d.season = $1
+		   AND `+publishedDeveloper("u")+`
 		   AND ($2 = 'all' OR u.segment = $2)
 		   AND ($3 = 0 OR EXISTS (
 		         SELECT 1 FROM match_rating_changes mrc JOIN agents a ON a.id = mrc.agent_id
@@ -337,6 +352,27 @@ func (r *DevProfileRepo) Leaderboard(ctx context.Context, season int, segment st
 	return out, rows.Err()
 }
 
+// LeaderboardExcluded counts the developers Leaderboard filtered out.
+//
+// Every filter is repeated EXCEPT the publication gate, which is negated — so the count and
+// the board partition one population and cannot describe different sets. Written as one query
+// against the same tables for the same reason DirectoryCount wraps directoryBaseSQL: a count
+// maintained separately from the rows it describes is a number that goes wrong quietly.
+func (r *DevProfileRepo) LeaderboardExcluded(ctx context.Context, season int, segment string, windowDays int) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`SELECT COUNT(*)
+		 FROM developer_pindex d JOIN users u ON u.id = d.user_id
+		 WHERE d.season = $1
+		   AND NOT `+publishedDeveloper("u")+`
+		   AND ($2 = 'all' OR u.segment = $2)
+		   AND ($3 = 0 OR EXISTS (
+		         SELECT 1 FROM match_rating_changes mrc JOIN agents a ON a.id = mrc.agent_id
+		         WHERE a.owner_user_id = u.id AND mrc.created_at >= now() - make_interval(days => $3)))`,
+		season, segment, windowDays).Scan(&n)
+	return n, err
+}
+
 // directoryBaseSQL lists every PUBLIC developer with their season record, LEFT
 // JOINing developer_pindex so an unranked developer (signed up, no match yet) is
 // still returned — the whole point of the directory vs. the leaderboard.
@@ -355,7 +391,9 @@ func (r *DevProfileRepo) Leaderboard(ctx context.Context, season int, segment st
 // Every output column is ALIASED. Not cosmetic: DirectoryCount and DirectoryRowFor wrap
 // this query as a subselect, and an unaliased `COALESCE(...)` cannot be referenced from
 // the outer WHERE.
-const directoryBaseSQL = `
+// A var rather than a const because `ranked` is built from publishedDeveloper. That is the
+// point: the directory must not be able to answer "ranked" differently from the board.
+var directoryBaseSQL = `
 WITH pub AS (
     SELECT u.id, u.public_id,
            COALESCE(u.username::text,'') AS username,
@@ -381,7 +419,12 @@ WITH pub AS (
 SELECT pub.public_id AS public_id, pub.username AS username, pub.display_name AS display_name,
        pub.avatar_url AS avatar_url, pub.country AS country, pub.segment AS segment,
        COALESCE(d.p_index, 0)::float8 AS p_index, COALESCE(d.global_rank, 0)::int AS global_rank,
-       (d.user_id IS NOT NULL) AS ranked,
+       -- Ranked means "on the board", so it is the board's own predicate and not merely
+       -- "has a P-Index row". A directory that answered the weaker question would tell a
+       -- developer they are ranked and then not list them anywhere they could look.
+       -- Stated directly rather than read off global_rank > 0, so a developer who verifies
+       -- between two runs of PIndexRepo.Rank is not briefly reported as unranked.
+       (d.user_id IS NOT NULL AND ` + publishedDeveloper("pub") + `) AS ranked,
        COALESCE(rec.matches, 0) AS matches, COALESCE(rec.wins, 0) AS wins,
        COALESCE(rec.agents, 0) AS agents,
        pub.created_at AS created_at,
@@ -684,7 +727,7 @@ func (r *DevProfileRepo) Unfollow(ctx context.Context, followerUserPublicID, fol
 //
 // The enrichment (P-Index, record, agent count) is LEFT JOINed for the same reason: absent
 // for a brand-new account, rather than excluding them.
-const followListSQL = `
+var followListSQL = `
 SELECT u.public_id AS public_id,
        COALESCE(u.username::text,'') AS username,
        COALESCE(u.display_name,'')   AS display_name,
@@ -693,7 +736,7 @@ SELECT u.public_id AS public_id,
        u.segment                     AS segment,
        COALESCE(d.p_index, 0)::float8 AS p_index,
        COALESCE(d.global_rank, 0)::int AS global_rank,
-       (d.user_id IS NOT NULL)        AS ranked,
+       (d.user_id IS NOT NULL AND ` + publishedDeveloper("u") + `) AS ranked,
        COALESCE(rec.matches, 0)       AS matches,
        COALESCE(rec.wins, 0)          AS wins,
        COALESCE(rec.agents, 0)        AS agents,
