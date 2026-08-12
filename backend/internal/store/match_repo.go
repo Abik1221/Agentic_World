@@ -522,3 +522,147 @@ func (r *MatchRepo) MoveRejected(ctx context.Context, matchID, agentPublicID str
 		matchID, agentPublicID, round).Scan(&found)
 	return found, err
 }
+
+// ── ready check ──────────────────────────────────────────────────────────────
+//
+// The write half of internal/readycheck. Added ALONGSIDE CreatePairedActive rather than
+// replacing it: pairing must keep working at every commit, so the switch happens once the
+// ready endpoint and the sweeper exist to drive this path. Until then these are unused.
+
+// CreatePairedReadyCheck persists a paired table that has NOT started and whose stakes have
+// NOT been escrowed.
+//
+// Three deliberate differences from CreatePairedActive, and each one is the point:
+//
+//   - status is 'ready_check', not 'active' — so no move is accepted (tryAct requires active)
+//     and the table is not in the lobby (both lobby indexes are WHERE status = 'waiting').
+//   - started_at and round_deadline stay NULL. The match has not begun; writing a start time
+//     for a table nobody has agreed to play would make every latency and deadline derived
+//     from it wrong.
+//   - no match.started event. Emitting it here would tell every consumer — boards, traces,
+//     the SDK — that a match began, and the whole point is that it has not.
+func (r *MatchRepo) CreatePairedReadyCheck(ctx context.Context, in match.CreatePairedInput) error {
+	return r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
+			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
+			     state, creator_owner_user_id)
+			 VALUES ($1,$2,'ready_check',COALESCE(NULLIF($12,''),'competitive'),NULLIF($13,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+			     (SELECT id FROM users WHERE public_id=$11))
+			 RETURNING id`,
+			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
+			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
+			mustJSON(in.State), in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy).Scan(&matchID)
+		if err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatA); err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatB); err != nil {
+			return err
+		}
+		// Events are the dealt opening state and are kept: the deal is already committed to
+		// (prize_seed_commit), and re-dealing on start would break that commitment.
+		return insertEvents(ctx, tx, matchID, in.Events)
+	})
+}
+
+// MarkReady records that a seat has acknowledged. IDEMPOTENT on (match, agent).
+//
+// Idempotent because a retry is the same agent answering once. Without the guard a resent ack
+// would refresh ready_at, and a seat that answered early would keep looking like it answered
+// just now — which is exactly the signal used to explain why a table started when it did.
+//
+// Returns whether this call was the one that marked it, so a caller can tell a first ack from
+// a duplicate without a second query.
+func (r *MatchRepo) MarkReady(ctx context.Context, matchPublicID, agentPublicID string, at time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE match_players mp SET ready_at = $3
+		   FROM matches m, agents a
+		  WHERE mp.match_id = m.id AND mp.agent_id = a.id
+		    AND m.public_id = $1 AND a.public_id = $2
+		    AND m.status = 'ready_check'
+		    AND mp.ready_at IS NULL`,
+		matchPublicID, agentPublicID, at)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReadySeats reads a table's readiness for readycheck.Evaluate.
+//
+// Ordered by seat so a decision is reproducible: the sweeper's Drop list feeds requeues and
+// refunds-that-never-happened, and a set that reorders between reads makes an incident
+// impossible to reconstruct.
+func (r *MatchRepo) ReadySeats(ctx context.Context, matchPublicID string) ([]match.ReadySeat, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id, u.public_id, mp.seat, mp.ready_at, mp.ready_asks, mp.ready_asked_at
+		   FROM match_players mp
+		   JOIN matches m ON m.id = mp.match_id
+		   JOIN agents  a ON a.id = mp.agent_id
+		   JOIN users   u ON u.id = mp.owner_user_id
+		  WHERE m.public_id = $1
+		  ORDER BY mp.seat`, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []match.ReadySeat
+	for rows.Next() {
+		var s match.ReadySeat
+		if err := rows.Scan(&s.AgentPublicID, &s.OwnerPublicID, &s.Seat,
+			&s.ReadyAt, &s.Asks, &s.AskedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// RecordAsk notes that a seat was asked, so its window can be measured and its second chance
+// counted. Bumps the count and resets the clock in one statement — two statements could leave
+// a seat asked-but-untimed if the process died between them, and an untimed ask never expires.
+func (r *MatchRepo) RecordAsk(ctx context.Context, matchPublicID, agentPublicID string, at time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE match_players mp SET ready_asks = mp.ready_asks + 1, ready_asked_at = $3
+		   FROM matches m, agents a
+		  WHERE mp.match_id = m.id AND mp.agent_id = a.id
+		    AND m.public_id = $1 AND a.public_id = $2
+		    AND m.status = 'ready_check'`,
+		matchPublicID, agentPublicID, at)
+	return err
+}
+
+// ActivateAfterReady flips a ready table to active once its stakes are escrowed.
+//
+// The caller escrows FIRST and calls this second. Ordering matters: if escrow succeeds and
+// this fails, the caller refunds — the same shape CreatePaired already uses. The reverse
+// order would start a staked match with nothing behind it.
+//
+// Guarded on status = 'ready_check' so two sweepers racing cannot both start the same table;
+// the loser affects no rows and is told so.
+func (r *MatchRepo) ActivateAfterReady(ctx context.Context, matchPublicID string, startsAt, deadline time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches
+		    SET status = 'active', started_at = now(), starts_at = $2,
+		        round_deadline = $3, round_deadline_base = $3
+		  WHERE public_id = $1 AND status = 'ready_check'`,
+		matchPublicID, startsAt, deadline)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// AbandonReadyCheck releases a table that can never start. Nothing is refunded because
+// nothing was ever escrowed — which is the entire point of the ready check.
+func (r *MatchRepo) AbandonReadyCheck(ctx context.Context, matchPublicID string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE matches SET status = 'aborted' WHERE public_id = $1 AND status = 'ready_check'`,
+		matchPublicID)
+	return err
+}

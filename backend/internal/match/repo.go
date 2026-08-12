@@ -106,6 +106,24 @@ type CreateMatchInput struct {
 // CreatePairedInput is the data needed to open an already-active, two-seat match
 // (matchmaking). Unlike CreateMatchInput it carries both players plus the dealt
 // initial snapshot/deadline/events, since there is no separate join step.
+// ReadySeat is one seat's readiness, as the ready-check sweeper sees it.
+//
+// Mirrors readycheck.Seat but carries the owner and the seat index too: a dropped seat has to
+// be requeued (which needs the owner) and replaced (which needs the seat), and re-reading them
+// after the decision would race the very sweep that made it.
+//
+// ReadyAt and AskedAt are pointers because NULL is meaningful in both: not ready, and never
+// asked. A zero time.Time would read as 1 January year 1, which is a very expired ask — and
+// dropping a seat that was never asked is precisely the mistake this design refuses to make.
+type ReadySeat struct {
+	AgentPublicID string
+	OwnerPublicID string
+	Seat          int
+	ReadyAt       *time.Time
+	Asks          int
+	AskedAt       *time.Time
+}
+
 type CreatePairedInput struct {
 	PublicID      string
 	Game          string
