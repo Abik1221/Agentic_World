@@ -1483,8 +1483,17 @@ func run() error {
 	// service alone and every paired table lands in ready_check with nothing to release it,
 	// which looks precisely like matchmaking having died — no error anywhere, every layer
 	// behaving as designed.
-	matchSvc.SetReadyCheck(matchRepo, nil, readyRequeue{matchmakingSvc})
-	launch("ready-check-sweeper", match.NewReadySweeper(matchSvc, matchRepo, log, time.Second).Run)
+	//
+	// OFF BY DEFAULT, and the default is the whole point. Neither SDK calls
+	// POST /v1/match/{id}/ready yet, so turning this on today means every paired table is
+	// asked, re-asked, dropped when its window expires and requeued — forever. Matchmaking
+	// would produce no games and report no error, because each layer would be doing exactly
+	// what it was built to do. Enable it only once the SDKs acknowledge.
+	if cfg.ReadyCheckEnabled {
+		matchSvc.SetReadyCheck(matchRepo, nil, readyRequeue{matchmakingSvc})
+		launch("ready-check-sweeper", match.NewReadySweeper(matchSvc, matchRepo, log, time.Second).Run)
+		log.Warn("ready check ENABLED — paired tables wait for every seat to acknowledge before any stake is escrowed; agents that do not call /ready will be dropped and requeued")
+	}
 	// Clear ranked-queue entries when a match ends. Without this an entry stayed 'matched'
 	// forever — live rows were still 'matched' against matches finished an hour earlier — and
 	// autoplay, which counts 'matched' as still-queued, never re-entered the agent. An autoplay

@@ -448,6 +448,17 @@ type Config struct {
 	// live. The developer's own provider key is forwarded upstream untouched.
 	LLMGatewayEnabled bool
 
+	// ReadyCheckEnabled gates the pre-match ready check: a paired table waits for every
+	// seat to acknowledge before ANY stake is escrowed (internal/readycheck).
+	//
+	// DEFAULT OFF, and it must stay off until the SDKs call POST /v1/match/{id}/ready.
+	// Neither SDK does yet, and with this on and no acknowledgement coming, every paired
+	// table is asked, re-asked, dropped after its window and requeued — forever. No match
+	// would ever start and nothing would report an error, because every layer would be
+	// behaving exactly as designed. That is the failure this flag exists to make impossible
+	// to cause by deploying.
+	ReadyCheckEnabled bool
+
 	// Platform bus (cross-service Redis channel with the Super Admin). Ed25519
 	// keys authenticate messages: the engine signs the events it publishes with
 	// its private key and verifies config against the Admin's public key. Empty
@@ -648,6 +659,7 @@ func Load() (*Config, error) {
 
 		PyyolLensEnabled:         l.boolVal("PYYOL_LENS_ENABLED", true),
 		LLMGatewayEnabled:        l.boolVal("PYYOL_LLM_GATEWAY_ENABLED", false),
+		ReadyCheckEnabled:        l.boolVal("PYYOL_READY_CHECK_ENABLED", false),
 		PyyolLensEndpoint:        l.str("PYYOL_LENS_ENDPOINT", ""),
 		PyyolLensAPIKey:          l.str("PYYOL_LENS_API_KEY", ""),
 		PyyolLensProject:         l.str("PYYOL_LENS_PROJECT", "pyyol-arena"),
