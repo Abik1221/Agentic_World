@@ -1490,7 +1490,20 @@ func run() error {
 	// would produce no games and report no error, because each layer would be doing exactly
 	// what it was built to do. Enable it only once the SDKs acknowledge.
 	if cfg.ReadyCheckEnabled {
-		matchSvc.SetReadyCheck(matchRepo, nil, readyRequeue{matchmakingSvc})
+		// The ask is POST /initialize — the lifecycle call the protocol already has, whose
+		// InitializeResponse.Ready both SDKs already return and the transports have always
+		// discarded. So the ready check works against agents that have already shipped,
+		// without asking any developer to change a line.
+		//
+		// Socket first: a locally-run `pyyol run` agent is on the WebSocket, which is both
+		// open already and the case a developer watching a terminal is actually in.
+		asker := match.InitializeAsker{
+			Resolver: manifestSvc,
+			Client:   goofspielPlayClient,
+			Sockets:  agentGateway,
+			Log:      log,
+		}
+		matchSvc.SetReadyCheck(matchRepo, asker, readyRequeue{matchmakingSvc})
 		launch("ready-check-sweeper", match.NewReadySweeper(matchSvc, matchRepo, log, time.Second).Run)
 		log.Warn("ready check ENABLED — paired tables wait for every seat to acknowledge before any stake is escrowed; agents that do not call /ready will be dropped and requeued")
 	}
