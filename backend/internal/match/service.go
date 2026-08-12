@@ -103,6 +103,7 @@ type Service struct {
 	readyRepo    ReadyRepo
 	readyAsker   ReadyAsker
 	readyRequeue ReadyRequeuer
+	readyStarter ReadyStarter
 }
 
 // SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).

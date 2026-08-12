@@ -2,6 +2,7 @@ package match
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -45,6 +46,21 @@ type ReadyAsker interface {
 	AskReady(ctx context.Context, agentPublicID, matchPublicID string, deadline time.Time) error
 }
 
+// ReadyStarter tells a seat its table is about to begin, and when.
+//
+// One-way, delivered through the SAME outbox that carries every other game event, so it is
+// signed, retried and health-gated like the rest rather than being a bespoke push. The
+// existing "event" lifecycle call is reused rather than a new frame type invented: both SDKs
+// already handle /event, so a match_start needs no protocol version bump and no SDK release —
+// the same reasoning that let the ready ask reuse /initialize.
+//
+// Optional. Without it an agent still plays: it simply learns the match began by receiving its
+// first turn, which is what happens today. What it loses is the ability to show a countdown,
+// which is the whole point for a developer watching a terminal.
+type ReadyStarter interface {
+	EnqueueEvent(ctx context.Context, agentPublicID, game, matchID string, seq int, eventType string, payload []byte) error
+}
+
 // ReadyRequeuer puts a dropped seat's agent back into matchmaking.
 //
 // A seat that missed its window loses its place, not its money. Requeueing is what makes that
@@ -58,6 +74,38 @@ type ReadyRequeuer interface {
 // exactly as before, which is the safe default: no ready gate rather than a half-driven one.
 func (s *Service) SetReadyCheck(r ReadyRepo, asker ReadyAsker, requeue ReadyRequeuer) {
 	s.readyRepo, s.readyAsker, s.readyRequeue = r, asker, requeue
+}
+
+// SetReadyStarter installs the match_start notifier. Nil ⇒ no countdown is announced and
+// agents learn the match began from their first turn, exactly as they do today.
+func (s *Service) SetReadyStarter(n ReadyStarter) { s.readyStarter = n }
+
+// announceStart tells both seats when play begins.
+//
+// Best-effort and AFTER activation: the match is already live and already escrowed, so a failed
+// announcement costs a countdown, never a game. Blocking activation on a notification would let
+// an unreachable agent hold up a table that has already taken everyone's stake.
+func (s *Service) announceStart(ctx context.Context, m Match, startsAt time.Time, seats []ReadySeat) {
+	if s.readyStarter == nil {
+		return
+	}
+	// Absolute instant plus the server's clock, the same pair the view ships — so a terminal
+	// and a browser count to the same moment instead of each counting down from ten and
+	// drifting apart. server_now is what lets a client with a skewed clock still be right.
+	payload, err := json.Marshal(map[string]any{
+		"match_id":   m.PublicID,
+		"game":       m.Game,
+		"starts_at":  startsAt.UTC(),
+		"server_now": s.clock.Now().UTC(),
+	})
+	if err != nil {
+		return
+	}
+	for _, seat := range seats {
+		if err := s.readyStarter.EnqueueEvent(ctx, seat.AgentPublicID, m.Game, m.PublicID, 0, "match_start", payload); err != nil {
+			slog.Debug("ready check: could not announce the start", "match", m.PublicID, "agent", seat.AgentPublicID, "error", err)
+		}
+	}
 }
 
 // Ready records that a seat has acknowledged it is present and willing to play.
@@ -230,6 +278,7 @@ func (s *Service) startAfterReady(ctx context.Context, m Match, seats []ReadySea
 	// rejection. TestEveryActivationPathStartsTheDriver is the guard: an activation path
 	// that forgets to drive leaves a live staked table nobody is playing.
 	s.publish(m.PublicID, m.State, nil)
+	s.announceStart(ctx, m, startsAt, seats)
 	s.maybeDrive(m.PublicID, a, b)
 	slog.Info("ready check: every seat is ready — escrowed and starting",
 		"match", m.PublicID, "starts_at", startsAt, "countdown", in)
