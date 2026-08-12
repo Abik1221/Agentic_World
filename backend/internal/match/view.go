@@ -21,6 +21,19 @@ type AgentView struct {
 	Deadline         *time.Time  `json:"deadline,omitempty"`
 	MoveWindowMs     int64       `json:"move_window_ms"`        // total per-move budget (the shot clock)
 	DeadlineMs       int64       `json:"deadline_ms,omitempty"` // ms remaining until the deadline (0 once elapsed / not your turn)
+	// StartsAt is when the first turn begins, as an ABSOLUTE instant. Present only for a
+	// match that went through a ready check.
+	//
+	// Absolute on purpose. A countdown shipped as "10" and counted down independently by a
+	// terminal and a browser drifts apart within seconds, and two surfaces disagreeing about
+	// when a staked match begins is worse than no countdown at all. Both count TO this.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+	// ServerNow is the platform's clock at the moment this view was built.
+	//
+	// Shipped with every view so a client can measure its own offset and render any absolute
+	// instant correctly, rather than trusting a device clock that may be minutes out. It costs
+	// one field and removes a whole class of "the timer was wrong on my machine".
+	ServerNow time.Time `json:"server_now"`
 	You              sideView    `json:"you"`
 	Opponent         oppView     `json:"opponent"`
 	LegalActions     legalView   `json:"legal_actions"`
@@ -134,6 +147,12 @@ func (s *Service) view(m Match, viewerAgentPublicID string) AgentView {
 		PrizeOrderCommit: m.Commit,
 		Stake:            stakeView{YourCoins: m.Bid, OppCoins: m.Bid, RakePct: m.RakePct},
 		MoveWindowMs:     s.cfg.MoveWindow.Milliseconds(),
+		// The platform's own clock, on every view. A client that knows both this and an
+		// absolute instant can render a correct countdown regardless of how wrong its own
+		// device clock is — which is the difference between a terminal and a browser
+		// agreeing on when a staked match starts and merely appearing to.
+		ServerNow: s.clock.Now().UTC(),
+		StartsAt:  m.StartsAt,
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline

@@ -86,18 +86,18 @@ func (r *MatchRepo) ListWaiting(ctx context.Context, game string, bid int64, exc
 func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match, error) {
 	var m match.Match
 	var stateBytes []byte
-	var deadline, base *time.Time
+	var deadline, base, startsAt *time.Time
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
-		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base,
+		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base, m.starts_at,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
 		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
-			&stateBytes, &deadline, &base, &m.WinnerAgent, &m.ReplayHash)
+			&stateBytes, &deadline, &base, &startsAt, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
 		return match.Match{}, err
 	}
@@ -107,6 +107,7 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 		}
 	}
 	m.RoundDeadline = deadline
+	m.StartsAt = startsAt
 	// Fall back to the deadline when no base is recorded. A row that predates the column, or
 	// one written by a path that forgot to set it, then behaves exactly as it did before rather
 	// than losing its extension budget outright.

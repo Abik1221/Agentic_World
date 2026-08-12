@@ -106,6 +106,13 @@ type Match struct {
 	// time-on-round can be measured. Nil on a row that predates the column, in which case
 	// readers fall back to RoundDeadline and behave exactly as before.
 	RoundDeadlineBase *time.Time
+	// StartsAt is the ABSOLUTE instant the first turn begins, set when a ready check
+	// activates the table. Nil on a match that never went through one.
+	//
+	// Absolute, not a duration, and that is the entire point: a terminal and a browser each
+	// counting down from ten drift apart within seconds and visibly disagree. Both counting
+	// TO the same instant cannot. Every surface renders from this one value.
+	StartsAt *time.Time
 	Players           []Player
 	WinnerAgent       string // agent public id of the winner; "" for tie/none
 	ReplayHash        string
