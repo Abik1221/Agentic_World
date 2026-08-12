@@ -98,6 +98,11 @@ type Service struct {
 	// rejections records that a seat's move was refused this round, so tryExtend can tell a
 	// slow agent from one that answered and was turned away. Nil ⇒ extensions unchanged.
 	rejections RejectionLog
+	// Ready-check collaborators. All nil ⇒ no ready gate, which is the pre-existing
+	// behaviour rather than a half-driven state machine.
+	readyRepo    ReadyRepo
+	readyAsker   ReadyAsker
+	readyRequeue ReadyRequeuer
 }
 
 // SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).

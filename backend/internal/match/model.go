@@ -15,7 +15,11 @@ import (
 
 // Status values for a match row.
 const (
-	StatusWaiting  = "waiting"
+	// StatusReadyCheck is a PAIRED table whose seats have not yet confirmed they are there,
+	// and whose stakes have NOT been escrowed. Distinct from waiting, which means an open
+	// table anyone may join and is indexed as exactly that — a paired table has no free seat.
+	StatusReadyCheck = "ready_check"
+	StatusWaiting    = "waiting"
 	StatusActive   = "active"
 	StatusFinished = "finished"
 	StatusAborted  = "aborted"
