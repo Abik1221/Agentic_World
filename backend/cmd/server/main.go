@@ -1473,6 +1473,18 @@ func run() error {
 	// so the clear deletes nothing and the row is orphaned afterwards. That is two transactions
 	// racing, not a missing call, so the invariant is restated as a periodic check instead.
 	launch("queue-orphan-sweep", matchmaking.NewSweepWorker(matchmakingRepo, time.Minute, log).Run)
+
+	// READY CHECK. Wired HERE, after matchmaking exists, because a dropped seat is requeued
+	// through it — and wired in the same breath as the sweeper on purpose.
+	//
+	// CreatePaired only takes the ready path when this is configured; without it, pairing
+	// escrows and starts exactly as it always did. That guard is what makes this safe to add,
+	// but it also means the sweeper and the service must be installed TOGETHER: install the
+	// service alone and every paired table lands in ready_check with nothing to release it,
+	// which looks precisely like matchmaking having died — no error anywhere, every layer
+	// behaving as designed.
+	matchSvc.SetReadyCheck(matchRepo, nil, readyRequeue{matchmakingSvc})
+	launch("ready-check-sweeper", match.NewReadySweeper(matchSvc, matchRepo, log, time.Second).Run)
 	// Clear ranked-queue entries when a match ends. Without this an entry stayed 'matched'
 	// forever — live rows were still 'matched' against matches finished an hour earlier — and
 	// autoplay, which counts 'matched' as still-queued, never re-entered the agent. An autoplay
@@ -2462,4 +2474,17 @@ func (a mafiaActRecorder) RecordActDecision(ctx context.Context, d mafia.ActDeci
 
 func (a mafiaActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
 	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
+}
+
+// readyRequeue returns a seat that missed its ready window to the matchmaking queue.
+//
+// A thin adapter rather than a dependency from match → matchmaking: the match service must not
+// know how agents are queued, only that a dropped seat gets another chance. Missing a window
+// costs a place, not coins — nothing was escrowed — and without this it would silently cost a
+// place in the arena too.
+type readyRequeue struct{ svc *matchmaking.Service }
+
+func (r readyRequeue) Requeue(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) error {
+	_, err := r.svc.Enqueue(ctx, agentPublicID, ownerPublicID, bid)
+	return err
 }

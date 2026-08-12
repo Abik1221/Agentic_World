@@ -739,28 +739,45 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 	state, events := eng.Init(seed)
 
 	publicID := platform.NewID(platform.PrefixMatch)
-	// Escrow both stakes atomically before persisting the match (mirrors Join).
-	if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
-		return "", err
-	}
-	deadline := s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
 	in := CreatePairedInput{
 		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.rakePct(),
 		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
 		FairnessMode: gs.FairnessShuffled, Seed: seed,
 		SeatA: Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
 		SeatB: Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
-		State: state, Deadline: deadline, Events: events,
+		State: state, Events: events,
 	}
-	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
-		// Persisting failed after staking — return both bids so no coins are stuck.
-		_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
+
+	// NO READY CHECK CONFIGURED ⇒ the original behaviour, unchanged: escrow now and start
+	// now. A deployment that has not wired the sweeper must not create tables nothing can
+	// release, which would look exactly like matchmaking having died.
+	if s.readyRepo == nil {
+		if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
+			return "", err
+		}
+		in.Deadline = s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
+		if err := s.repo.CreatePairedActive(ctx, in); err != nil {
+			// Persisting failed after staking — return both bids so no coins are stuck.
+			_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
+			return "", err
+		}
+		s.publish(publicID, state, events)
+		s.maybeDrive(publicID, aAgent, bAgent)
+		return publicID, nil
+	}
+
+	// THE READY PATH. Nothing is escrowed and no deadline is set: the table is dealt but not
+	// started, and the sweeper takes it from here — asking each seat, then escrowing and
+	// activating once both have answered. A developer who typed a command in a terminal now
+	// gets the chance to open the match before any of their coins are committed, and an agent
+	// that was paired mid-startup is dropped rather than staked.
+	//
+	// Deliberately NOT published and NOT driven yet. Publishing would announce a match that
+	// has not begun, and driving would ask for a move on a table whose seats have not agreed
+	// to play. Both happen in startAfterReady.
+	if err := s.readyRepo.CreatePairedReadyCheck(ctx, in); err != nil {
 		return "", err
 	}
-	s.publish(publicID, state, events)
-	// Auto-drive connected agents over their sockets (no-op unless enabled + at
-	// least one seat is connected); a non-connected seat self-drives via HTTP.
-	s.maybeDrive(publicID, aAgent, bAgent)
 	return publicID, nil
 }
 

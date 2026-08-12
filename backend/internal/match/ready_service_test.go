@@ -77,6 +77,9 @@ type fakeReadyRepo struct {
 	marked     []string
 }
 
+func (r *fakeReadyRepo) CreatePairedReadyCheck(_ context.Context, _ match.CreatePairedInput) error {
+	return nil
+}
 func (r *fakeReadyRepo) MarkReady(_ context.Context, _, agent string, _ time.Time) (bool, error) {
 	r.marked = append(r.marked, agent)
 	return true, nil

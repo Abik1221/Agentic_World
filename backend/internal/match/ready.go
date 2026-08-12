@@ -23,6 +23,11 @@ import (
 // widening the main Repo interface — the ready check is a self-contained state machine and a
 // deployment without it should not have to implement five methods to compile.
 type ReadyRepo interface {
+	// CreatePairedReadyCheck persists a dealt-but-unstarted table. On ReadyRepo rather than
+	// the main Repo interface on purpose: it is only ever reachable when a ready check is
+	// configured, so widening Repo would force every implementation — and every test fake —
+	// to carry a method most of them can never call.
+	CreatePairedReadyCheck(ctx context.Context, in CreatePairedInput) error
 	MarkReady(ctx context.Context, matchPublicID, agentPublicID string, at time.Time) (bool, error)
 	ReadySeats(ctx context.Context, matchPublicID string) ([]ReadySeat, error)
 	RecordAsk(ctx context.Context, matchPublicID, agentPublicID string, at time.Time) error
@@ -197,6 +202,14 @@ func (s *Service) startAfterReady(ctx context.Context, m Match, seats []ReadySea
 		_ = s.wallet.RefundStakes(ctx, m.PublicID, a, b, m.Bid)
 		return err == nil, err
 	}
+	// Publishing and driving move HERE from CreatePaired, and both had to move together.
+	// Announcing the match at pairing would tell every consumer a game began before its
+	// seats had agreed to play, and driving it would ask for a move on a table that is not
+	// active yet — tryAct would refuse, and the driver would burn its first turn on a
+	// rejection. TestEveryActivationPathStartsTheDriver is the guard: an activation path
+	// that forgets to drive leaves a live staked table nobody is playing.
+	s.publish(m.PublicID, m.State, nil)
+	s.maybeDrive(m.PublicID, a, b)
 	slog.Info("ready check: every seat is ready — escrowed and starting",
 		"match", m.PublicID, "starts_at", startsAt, "countdown", in)
 	return true, nil
