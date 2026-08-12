@@ -26,6 +26,7 @@ from . import _urlguard
 
 import json
 import logging
+from datetime import datetime
 import threading
 import time
 from typing import Any
@@ -375,7 +376,12 @@ class RuntimeConnector:
             ack = self.agent.ack_initialize(payload)
             send({"t": RESPONSE, "id": frame.get("id", ""), "payload": ack})
         elif t == EVENT:
-            self._emit("event", frame.get("kind", "event"), seq=frame.get("seq"))
+            kind = frame.get("kind", "event")
+            if kind == "match_start":
+                self._emit("match_start", _countdown_line(frame.get("payload")),
+                           match=frame.get("match_id"))
+            else:
+                self._emit("event", kind, seq=frame.get("seq"))
             self.agent.notify_event(self._event_dict(frame))
         elif t == GAME_END:
             result = frame.get("payload")
@@ -493,3 +499,44 @@ def _summarize_result(result: Any) -> str:
             bits.append(f"{k}={inner[k]}")
             break
     return "game finished" + (" · " + " · ".join(str(b) for b in bits) if bits else "")
+
+def _countdown_line(payload: Any) -> str:
+    """How long until play begins, as a line for the terminal.
+
+    The platform sends an ABSOLUTE ``starts_at`` and its own ``server_now``, never a
+    duration. Both are needed: the instant is what the browser also counts to, so the two
+    surfaces agree rather than each counting down from ten and drifting apart; and
+    ``server_now`` is what lets this line be right on a machine whose clock is wrong.
+
+    So the remaining time is measured against the SERVER's clock, not ours::
+
+        remaining = starts_at - server_now
+
+    Reading the local clock here would reintroduce exactly the skew the pair exists to
+    remove — a developer whose laptop is two minutes fast would see a countdown that had
+    already finished.
+
+    Falls back to a plain "starting" on anything unparseable. A malformed timestamp must not
+    stop an agent playing; the countdown is a courtesy, the match is not.
+    """
+    if not isinstance(payload, dict):
+        return "match starting"
+    try:
+        starts = _parse_ts(payload.get("starts_at"))
+        now = _parse_ts(payload.get("server_now"))
+        if starts is None or now is None:
+            return "match starting"
+        secs = max(0, round((starts - now).total_seconds()))
+        return f"match starts in {secs}s"
+    except Exception:  # noqa: BLE001 - a countdown must never break the run loop
+        return "match starting"
+
+
+def _parse_ts(v: Any) -> "datetime | None":
+    """Parse an RFC3339 timestamp, tolerating the trailing Z Go emits."""
+    if not isinstance(v, str) or not v:
+        return None
+    try:
+        return datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None

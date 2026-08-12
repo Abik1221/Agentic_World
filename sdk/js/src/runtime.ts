@@ -445,7 +445,11 @@ export class RuntimeConnector {
           match_id: frame.match_id ?? "", game: frame.game ?? "",
           seq: frame.seq ?? 0, type: frame.kind ?? "", payload: frame.payload,
         });
-        this.feed("event", `${frame.kind ?? "event"}${frame.seq !== undefined ? ` seq=${frame.seq}` : ""}`);
+        if (frame.kind === "match_start") {
+          this.feed("match_start", countdownLine(frame.payload));
+        } else {
+          this.feed("event", `${frame.kind ?? "event"}${frame.seq !== undefined ? ` seq=${frame.seq}` : ""}`);
+        }
         break;
       case GAME_END:
         await this.agent.notifyGameEnd({
@@ -457,4 +461,43 @@ export class RuntimeConnector {
         break;
     }
   }
+}
+
+/** How long until play begins, as a line for the terminal.
+ *
+ *  Mirrors _countdown_line in the Python SDK, and must keep mirroring it: the two SDKs
+ *  disagreeing about when a match starts is the same class of divergence sdk/conformance
+ *  exists to prevent.
+ *
+ *  The platform sends an ABSOLUTE `starts_at` and its own `server_now`, never a duration.
+ *  Both are needed. The instant is what the browser counts to as well, so the two surfaces
+ *  agree instead of each counting down from ten and drifting apart; `server_now` is what
+ *  makes this line correct on a machine whose clock is wrong.
+ *
+ *  So the remaining time is measured against the SERVER's clock:
+ *
+ *      remaining = starts_at - server_now
+ *
+ *  Reading Date.now() here would reintroduce exactly the skew that pair exists to remove — a
+ *  developer whose laptop is two minutes fast would see a countdown that had already ended on
+ *  a match that has not started.
+ *
+ *  Fails soft to "match starting": a malformed timestamp must never stop an agent playing.
+ *  The countdown is a courtesy, the match is not.
+ */
+function countdownLine(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "match starting";
+  const p = payload as Record<string, unknown>;
+  const starts = parseTs(p.starts_at);
+  const now = parseTs(p.server_now);
+  if (starts === null || now === null) return "match starting";
+  const secs = Math.max(0, Math.round((starts - now) / 1000));
+  return `match starts in ${secs}s`;
+}
+
+/** Parse an RFC3339 timestamp to epoch ms, or null. Go emits a trailing Z, which Date handles. */
+function parseTs(v: unknown): number | null {
+  if (typeof v !== "string" || !v) return null;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : t;
 }
