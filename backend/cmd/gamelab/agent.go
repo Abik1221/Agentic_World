@@ -233,6 +233,21 @@ func (a *labAgent) serve() error {
 			if p == "/game-end" {
 				a.log.Printf("GAME END received: %s", compactJSON(body))
 			}
+			// /initialize answers {"ready": true}, because that is what a REAL agent answers.
+			// Both SDKs return it — the Python server sends {"ready": true, "display_name": …}
+			// and the JS one the same — and the ready check reads exactly that field to decide
+			// whether a seat may be staked.
+			//
+			// This harness answered {"ok": true}. Measured consequence, not a hypothetical: with
+			// the ready check enabled, every lab table was asked twice, dropped and aborted,
+			// because the simulated agents were silently failing a check every real agent passes.
+			// A lab that models an agent WRONGLY is worse than no lab — it reports a platform
+			// failure that only exists in the harness.
+			if p == "/initialize" {
+				a.log.Printf("READY — acknowledging %s", compactJSON(body))
+				writeJSON(w, map[string]any{"ready": true, "display_name": a.Persona.Name})
+				return
+			}
 			writeJSON(w, map[string]any{"ok": true})
 		})
 	}

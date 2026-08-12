@@ -129,12 +129,33 @@ func (s *Service) ReadyTick(ctx context.Context, matchPublicID string) (done boo
 				return false, err
 			}
 			if s.readyAsker != nil {
-				if err := s.readyAsker.AskReady(ctx, agent, matchPublicID, now.Add(pol.Window)); err != nil {
-					// Best-effort: an undeliverable ask is the same as an unanswered one,
-					// and the next tick handles it. Aborting here would let one unreachable
-					// seat freeze the table for everyone.
-					slog.Debug("ready check: could not deliver the ask", "match", matchPublicID, "agent", agent, "error", err)
+				err := s.readyAsker.AskReady(ctx, agent, matchPublicID, now.Add(pol.Window))
+				if err == nil {
+					// THE ASK IS SYNCHRONOUS AND ITS ANSWER IS THE ACKNOWLEDGEMENT.
+					//
+					// /initialize returns {"ready": true} in the same round trip, so a
+					// successful ask means the seat has already answered — there is no
+					// second message coming. Recording it here is what turns the answer
+					// into readiness.
+					//
+					// Without this the ack was detected and DISCARDED: the asker read
+					// resp.Ready, returned success, and nothing ever called MarkReady. Every
+					// table was asked twice and dropped while its agents were answering
+					// correctly the whole time. Found by running it, not by reading it — the
+					// unit tests pass an asker that only reports delivery, so they could not
+					// see the gap.
+					//
+					// MarkReady is idempotent, so an agent that ALSO calls /ready explicitly
+					// (the async path) is the same seat answering once.
+					if _, mErr := s.readyRepo.MarkReady(ctx, matchPublicID, agent, now); mErr != nil {
+						slog.Debug("ready check: could not record an acknowledgement", "match", matchPublicID, "agent", agent, "error", mErr)
+					}
+					continue
 				}
+				// Best-effort: an undeliverable ask is the same as an unanswered one, and the
+				// next tick handles it. Aborting here would let one unreachable seat freeze
+				// the table for everyone.
+				slog.Debug("ready check: could not deliver the ask", "match", matchPublicID, "agent", agent, "error", err)
 			}
 		}
 		return false, nil

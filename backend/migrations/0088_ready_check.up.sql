@@ -1,3 +1,15 @@
+-- LOCK SAFETY. Both ALTERs below need ACCESS EXCLUSIVE on their table, which queues behind any
+-- in-flight read and then blocks every query that arrives after it. That is not hypothetical
+-- here: the model board fit scans match events for minutes at a time (measured at 217s), and
+-- this migration was observed waiting on exactly that lock during startup, holding the whole
+-- server behind it.
+--
+-- Adding a nullable column is cheap in Postgres 11+ (no table rewrite) — the risk is entirely
+-- the WAIT, not the work. lock_timeout makes it fail fast and loudly instead of wedging the
+-- database: a migration that errors is retried in seconds, a migration that blocks takes the
+-- platform down with it.
+SET lock_timeout = '5s';
+
 -- ready_check: a matched table waits for every seat to say it is there BEFORE any money moves.
 --
 -- WHY THIS EXISTS. CreatePaired documents its own behaviour: it "escrows both stakes, deals the
