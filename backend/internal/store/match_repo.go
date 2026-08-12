@@ -666,3 +666,35 @@ func (r *MatchRepo) AbandonReadyCheck(ctx context.Context, matchPublicID string)
 		matchPublicID)
 	return err
 }
+
+// ReadyCheckMatches lists tables still collecting acknowledgements, oldest first.
+//
+// Oldest first because a table that has been waiting longest is closest to a decision —
+// either it starts or someone is dropped — and serving newer tables ahead of it would let a
+// busy arena starve the ones already holding agents.
+//
+// Bounded by limit so one sweep tick cannot stall on a backlog. Uses the partial index added
+// in 0088; ready_check is a brief state, so this is a small set in practice.
+func (r *MatchRepo) ReadyCheckMatches(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 32
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT public_id FROM matches
+		  WHERE status = 'ready_check'
+		  ORDER BY created_at
+		  LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
