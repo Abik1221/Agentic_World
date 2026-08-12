@@ -39,6 +39,12 @@ func (h *Handler) Register(r chi.Router) {
 		// Table talk. Separate from /action on purpose: speaking is not a move, is
 		// not turn-gated, and may happen any number of times per round.
 		r.With(agent).Post("/v1/match/{id}/say", h.say)
+		// Readiness. AGENT-scoped like every other seat action: the thing being asserted is
+		// "this agent is present and willing", which only the agent's own credential can say.
+		// An owner token must not be able to ready a seat on its agent's behalf — that would
+		// let a developer commit a stake for a process that is not actually running, which is
+		// the precise situation the ready check exists to prevent.
+		r.With(agent).Post("/v1/match/{id}/ready", h.ready)
 	})
 	r.Get("/v1/match/{id}/replay", h.replay) // public
 	// Public seat → agent identity, so a spectator can name the players (the event
@@ -196,6 +202,23 @@ func (h *Handler) say(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, view)
+}
+
+// ready acknowledges that this seat is present and willing to play.
+//
+// No body: there is nothing to say beyond "I am here", and a payload would invite a future
+// where an agent readies with conditions attached.
+//
+// 204, not 200 with a view. A ready-check match has no state worth returning — it has not
+// dealt a turn, and handing back a view would suggest there is something to act on. The agent
+// learns the table actually started from match_start, which carries the countdown.
+func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	if err := h.svc.Ready(r.Context(), p.AgentPublicID, chi.URLParam(r, "id")); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusNoContent, nil)
 }
 
 // roster returns the public identity of both seats. No hidden state: a sealed card
