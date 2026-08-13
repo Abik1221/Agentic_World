@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/adminapi"
+	"github.com/agent-arena/arena/internal/devplatform"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -341,6 +342,260 @@ func (a QueueHealthAdapter) ByOwner(ctx context.Context, since time.Duration, li
 			OwnerPublicID: r.OwnerPublicID, OwnerName: r.OwnerName,
 			Enqueued: r.Enqueued, Matched: r.Matched, Dropped: r.Dropped,
 			NeverMatched: r.NeverMatched, WorstWaitMs: r.WorstWaitMs,
+		})
+	}
+	return out, nil
+}
+
+// ── self-service reporting (a developer's OWN agents only) ────────────────────
+
+// QueueAgentRow is one agent's queue experience over the window.
+type QueueAgentRow struct {
+	AgentPublicID string `json:"agent_public_id"`
+	AgentName     string `json:"agent_name"`
+	Game          string `json:"game"`
+	Enqueued      int64  `json:"enqueued"`
+	Matched       int64  `json:"matched"`
+	Dropped       int64  `json:"dropped"`
+	Requeued      int64  `json:"requeued"`
+	NeverMatched  bool   `json:"never_matched"`
+	WorstWaitMs   int64  `json:"worst_wait_ms"`
+	LastEventAt   string `json:"last_event_at"`
+	// CurrentlyWaitingMs is how long this agent has been sitting in the queue RIGHT NOW,
+	// from the live table. Zero when it is not queued. This is the number a developer is
+	// actually staring at when they ask why nothing is happening.
+	CurrentlyWaitingMs int64 `json:"currently_waiting_ms"`
+}
+
+// FunnelForOwner is the funnel restricted to ONE developer's agents.
+//
+// # The owner is a parameter of the QUERY, never of the request
+//
+// Every caller must pass an owner it has already authenticated. There is deliberately no
+// variant that takes a filter from user input and no way to ask for "all owners" through this
+// function: a developer's queue history names their agents, how long they waited, and when
+// they went unreachable, which is competitive information about how their agent behaves.
+// Serving one developer another's history would be a data leak dressed as a dashboard.
+//
+// An empty ownerPublicID returns an empty funnel rather than everything. That direction
+// matters: the failure mode of a missing owner must be "you see nothing", never "you see
+// everyone".
+func (r *QueueEventsRepo) FunnelForOwner(ctx context.Context, ownerPublicID string, since time.Duration) (QueueFunnel, error) {
+	var f QueueFunnel
+	if ownerPublicID == "" {
+		return f, nil // no owner ⇒ no rows, never all rows
+	}
+	cutoff := time.Now().Add(-since)
+
+	if err := r.db.QueryRow(ctx,
+		`WITH mine AS (
+		     SELECT e.* FROM queue_events e
+		       JOIN users u ON u.id = e.owner_user_id
+		      WHERE u.public_id = $1 AND e.created_at >= $2
+		 )
+		 SELECT
+		    count(*) FILTER (WHERE kind = 'enqueued'),
+		    count(*) FILTER (WHERE kind = 'ready_asked'),
+		    count(*) FILTER (WHERE kind = 'ready_ok'),
+		    count(*) FILTER (WHERE kind = 'matched'),
+		    count(*) FILTER (WHERE kind = 'dropped'),
+		    count(*) FILTER (WHERE kind = 'requeued'),
+		    count(*) FILTER (WHERE kind = 'left'),
+		    COALESCE(percentile_disc(0.5) WITHIN GROUP (
+		        ORDER BY waited_ms) FILTER (WHERE kind = 'matched' AND waited_ms IS NOT NULL), 0),
+		    COALESCE(percentile_disc(0.95) WITHIN GROUP (
+		        ORDER BY waited_ms) FILTER (WHERE kind = 'matched' AND waited_ms IS NOT NULL), 0)
+		 FROM mine`, ownerPublicID, cutoff).
+		Scan(&f.Enqueued, &f.ReadyAsked, &f.ReadyOK, &f.Matched,
+			&f.Dropped, &f.Requeued, &f.Left, &f.WaitP50Ms, &f.WaitP95Ms); err != nil {
+		return QueueFunnel{}, err
+	}
+
+	// Never matched, same last-enqueue rule as the platform funnel, scoped to this owner.
+	if err := r.db.QueryRow(ctx,
+		`WITH last_enqueue AS (
+		     SELECT e.agent_id, max(e.created_at) AS at
+		       FROM queue_events e
+		       JOIN users u ON u.id = e.owner_user_id
+		      WHERE u.public_id = $1 AND e.kind = 'enqueued' AND e.created_at >= $2
+		      GROUP BY e.agent_id
+		 )
+		 SELECT count(*) FROM last_enqueue le
+		  WHERE NOT EXISTS (
+		     SELECT 1 FROM queue_events m
+		      WHERE m.agent_id = le.agent_id AND m.kind = 'matched' AND m.created_at >= le.at)`,
+		ownerPublicID, cutoff).Scan(&f.NeverMatched); err != nil {
+		return QueueFunnel{}, err
+	}
+
+	// This owner's longest CURRENT wait, from the live queues — scoped by owner, not global.
+	var longest *int64
+	if err := r.db.QueryRow(ctx,
+		`SELECT GREATEST(
+		     COALESCE((SELECT max(EXTRACT(EPOCH FROM (now() - q.enqueued_at)) * 1000)::bigint
+		                 FROM matchmaking_queue q JOIN users u ON u.id = q.owner_user_id
+		                WHERE u.public_id = $1 AND q.status = 'waiting'), 0),
+		     COALESCE((SELECT max(EXTRACT(EPOCH FROM (now() - g.enqueued_at)) * 1000)::bigint
+		                 FROM group_queue g JOIN users u ON u.id = g.owner_user_id
+		                WHERE u.public_id = $1 AND g.status = 'waiting'), 0))`,
+		ownerPublicID).Scan(&longest); err == nil && longest != nil {
+		f.LongestWaitingMs = *longest
+	}
+	return f, nil
+}
+
+// AgentsForOwner is the per-agent breakdown for ONE developer — "which of MY agents is
+// stuck, and where". Same scoping rule as FunnelForOwner: the owner is authenticated by the
+// caller and an empty owner returns nothing.
+func (r *QueueEventsRepo) AgentsForOwner(ctx context.Context, ownerPublicID string, since time.Duration, limit int) ([]QueueAgentRow, error) {
+	if ownerPublicID == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	cutoff := time.Now().Add(-since)
+	rows, err := r.db.Query(ctx,
+		`WITH mine AS (
+		     SELECT e.* FROM queue_events e
+		       JOIN users u ON u.id = e.owner_user_id
+		      WHERE u.public_id = $1 AND e.created_at >= $2
+		 ), last_enqueue AS (
+		     SELECT agent_id, max(created_at) AS at FROM mine WHERE kind = 'enqueued' GROUP BY agent_id
+		 )
+		 SELECT a.public_id, COALESCE(a.name, ''), COALESCE(max(m.game), ''),
+		        count(*) FILTER (WHERE m.kind = 'enqueued'),
+		        count(*) FILTER (WHERE m.kind = 'matched'),
+		        count(*) FILTER (WHERE m.kind = 'dropped'),
+		        count(*) FILTER (WHERE m.kind = 'requeued'),
+		        COALESCE(bool_or(le.at IS NOT NULL AND NOT EXISTS (
+		            SELECT 1 FROM queue_events x
+		             WHERE x.agent_id = m.agent_id AND x.kind = 'matched' AND x.created_at >= le.at)), false),
+		        COALESCE(max(m.waited_ms), 0),
+		        COALESCE(to_char(max(m.created_at), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), ''),
+		        COALESCE((SELECT EXTRACT(EPOCH FROM (now() - q.enqueued_at)) * 1000
+		                    FROM matchmaking_queue q
+		                   WHERE q.agent_id = m.agent_id AND q.status = 'waiting'), 0)::bigint
+		   FROM mine m
+		   JOIN agents a ON a.id = m.agent_id
+		   LEFT JOIN last_enqueue le ON le.agent_id = m.agent_id
+		  GROUP BY a.public_id, a.name, m.agent_id
+		  ORDER BY count(*) FILTER (WHERE m.kind = 'dropped') DESC, max(m.created_at) DESC
+		  LIMIT $3`, ownerPublicID, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []QueueAgentRow
+	for rows.Next() {
+		var q QueueAgentRow
+		if err := rows.Scan(&q.AgentPublicID, &q.AgentName, &q.Game, &q.Enqueued, &q.Matched,
+			&q.Dropped, &q.Requeued, &q.NeverMatched, &q.WorstWaitMs, &q.LastEventAt,
+			&q.CurrentlyWaitingMs); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+// TimelineForOwner is the raw event log for one of this owner's agents — the "logs" view
+// behind the cards, so a developer can read exactly what happened in order rather than
+// inferring it from counters.
+//
+// agentPublicID is checked AGAINST the owner in the query rather than trusted from the
+// request. That is the whole guard: without the owner join, passing someone else's agent id
+// would dump their agent's queue history.
+func (r *QueueEventsRepo) TimelineForOwner(ctx context.Context, ownerPublicID, agentPublicID string, limit int) ([]QueueTimelineRow, error) {
+	if ownerPublicID == "" || agentPublicID == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT e.kind, COALESCE(e.reason, ''), COALESCE(e.match_public_id, ''),
+		        COALESCE(e.waited_ms, 0),
+		        to_char(e.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+		   FROM queue_events e
+		   JOIN agents a ON a.id = e.agent_id
+		   JOIN users u ON u.id = e.owner_user_id
+		  WHERE u.public_id = $1 AND a.public_id = $2
+		  ORDER BY e.created_at DESC
+		  LIMIT $3`, ownerPublicID, agentPublicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []QueueTimelineRow
+	for rows.Next() {
+		var t QueueTimelineRow
+		if err := rows.Scan(&t.Kind, &t.Reason, &t.MatchPublicID, &t.WaitedMs, &t.At); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// QueueTimelineRow is one line of the readable log.
+type QueueTimelineRow struct {
+	Kind          string `json:"kind"`
+	Reason        string `json:"reason"`
+	MatchPublicID string `json:"match_public_id"`
+	WaitedMs      int64  `json:"waited_ms"`
+	At            string `json:"at"`
+}
+
+// QueueSelfAdapter presents this repository as devplatform.QueueSelfReader.
+//
+// Same converting-adapter shape as QueueHealthAdapter, and for the same reason: the wire
+// types belong to the API package, so a change to a repository struct cannot silently reshape
+// a response a dashboard is parsing.
+type QueueSelfAdapter struct{ Repo *QueueEventsRepo }
+
+func (a QueueSelfAdapter) FunnelForOwner(ctx context.Context, owner string, since time.Duration) (devplatform.QueueFunnel, error) {
+	f, err := a.Repo.FunnelForOwner(ctx, owner, since)
+	if err != nil {
+		return devplatform.QueueFunnel{}, err
+	}
+	return devplatform.QueueFunnel{
+		Enqueued: f.Enqueued, ReadyAsked: f.ReadyAsked, ReadyOK: f.ReadyOK,
+		Matched: f.Matched, Dropped: f.Dropped, Requeued: f.Requeued, Left: f.Left,
+		NeverMatched: f.NeverMatched, WaitP50Ms: f.WaitP50Ms, WaitP95Ms: f.WaitP95Ms,
+		LongestWaitingMs: f.LongestWaitingMs,
+	}, nil
+}
+
+func (a QueueSelfAdapter) AgentsForOwner(ctx context.Context, owner string, since time.Duration, limit int) ([]devplatform.QueueAgentRow, error) {
+	rows, err := a.Repo.AgentsForOwner(ctx, owner, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]devplatform.QueueAgentRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, devplatform.QueueAgentRow{
+			AgentPublicID: r.AgentPublicID, AgentName: r.AgentName, Game: r.Game,
+			Enqueued: r.Enqueued, Matched: r.Matched, Dropped: r.Dropped, Requeued: r.Requeued,
+			NeverMatched: r.NeverMatched, WorstWaitMs: r.WorstWaitMs,
+			LastEventAt: r.LastEventAt, CurrentlyWaitingMs: r.CurrentlyWaitingMs,
+		})
+	}
+	return out, nil
+}
+
+func (a QueueSelfAdapter) TimelineForOwner(ctx context.Context, owner, agent string, limit int) ([]devplatform.QueueTimelineRow, error) {
+	rows, err := a.Repo.TimelineForOwner(ctx, owner, agent, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]devplatform.QueueTimelineRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, devplatform.QueueTimelineRow{
+			Kind: r.Kind, Reason: r.Reason, MatchPublicID: r.MatchPublicID,
+			WaitedMs: r.WaitedMs, At: r.At,
 		})
 	}
 	return out, nil

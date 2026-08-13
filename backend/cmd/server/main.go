@@ -1861,6 +1861,17 @@ func run() error {
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
 	}
+	{
+		// The developer-facing view of the queue history: "which of MY agents is stuck".
+		//
+		// A Mount closure because this file builds the router from `mounts` at the end; there is
+		// no router variable in scope where the repo is constructed. Guarded to USER scope
+		// inside RegisterQueueSelf — an agent key resolves to its owner, so a router without
+		// that guard would let a leaked CI key read its owner's whole queue history.
+		// A registrar VALUE, like depositHandler.Register above: main.go does not import chi,
+		// so the closure is built in devplatform where the router type already is.
+		mounts = append(mounts, devplatform.QueueSelfMount(store.QueueSelfAdapter{Repo: queueEvents}))
+	}
 	// internal/llmgateway (mounted at /gw/*) is RETIRED. internal/llmgw at
 	// /v1/gw/{provider}/* replaced it and is wired above with everything the old one did —
 	// turn-proof binding, per-match verified cost, the Lens span, the "Verified" badge — plus
