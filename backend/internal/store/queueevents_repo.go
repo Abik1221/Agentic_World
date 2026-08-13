@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/agent-arena/arena/internal/adminapi"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -304,4 +305,43 @@ func (a QueueEventAdapter) record(ctx context.Context, agent, match, kind, reaso
 		// Game and queue are left at their defaults: a ready check only runs on a paired
 		// table, and Record fills them rather than letting a NOT NULL violation drop the row.
 	})
+}
+
+// ── admin API adapter ────────────────────────────────────────────────────────
+
+// QueueHealthAdapter presents this repository as adminapi.QueueHealthReader.
+//
+// The conversion exists because internal/store already imports internal/adminapi
+// (admin_repo.go), so adminapi cannot import store back — that is a cycle. The wire shapes
+// therefore live on the API side and this translates into them, which also stops the
+// dashboard's contract from being "whatever the repository struct happens to look like".
+type QueueHealthAdapter struct{ Repo *QueueEventsRepo }
+
+func (a QueueHealthAdapter) Funnel(ctx context.Context, since time.Duration) (adminapi.QueueFunnel, error) {
+	f, err := a.Repo.Funnel(ctx, since)
+	if err != nil {
+		return adminapi.QueueFunnel{}, err
+	}
+	return adminapi.QueueFunnel{
+		Enqueued: f.Enqueued, ReadyAsked: f.ReadyAsked, ReadyOK: f.ReadyOK,
+		Matched: f.Matched, Dropped: f.Dropped, Requeued: f.Requeued, Left: f.Left,
+		NeverMatched: f.NeverMatched, WaitP50Ms: f.WaitP50Ms, WaitP95Ms: f.WaitP95Ms,
+		LongestWaitingMs: f.LongestWaitingMs,
+	}, nil
+}
+
+func (a QueueHealthAdapter) ByOwner(ctx context.Context, since time.Duration, limit int) ([]adminapi.QueueOwnerRow, error) {
+	rows, err := a.Repo.ByOwner(ctx, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]adminapi.QueueOwnerRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, adminapi.QueueOwnerRow{
+			OwnerPublicID: r.OwnerPublicID, OwnerName: r.OwnerName,
+			Enqueued: r.Enqueued, Matched: r.Matched, Dropped: r.Dropped,
+			NeverMatched: r.NeverMatched, WorstWaitMs: r.WorstWaitMs,
+		})
+	}
+	return out, nil
 }

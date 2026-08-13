@@ -225,6 +225,10 @@ type Handler struct {
 	// agentsRepo serves the per-user AGENT view: each agent's guardrails and how close it
 	// is to hitting them. Nil ⇒ that route answers 503 for the same reason.
 	agentsRepo AgentsRepo
+	// queueHealth answers "where do agents get stuck in matchmaking". Nil ⇒ those routes
+	// answer 503, for the same reason as the two above: an empty funnel would be read as a
+	// healthy queue, which is the opposite of what an unwired recorder means.
+	queueHealth QueueHealthReader
 }
 
 // TreasuryReader exposes the solvency monitor's most recent reconciliation.
@@ -296,6 +300,8 @@ func (h *Handler) Register(r chi.Router) {
 		// left the group in a state where reordering these lines WOULD hit the real panic
 		// at boot.
 		r.Use(h.authn.Middleware)
+		r.With(guard).Get("/v1/admin/queue-health", h.queueFunnel)
+		r.With(guard).Get("/v1/admin/queue-health/owners", h.queueHealthByOwner)
 		r.With(guard).Get("/v1/admin/users", h.users)
 		r.With(guard).Get("/v1/admin/users/{id}", h.userDetail)
 		r.With(guard).Get("/v1/admin/agents", h.agents)

@@ -1159,6 +1159,11 @@ func run() error {
 	// seeing a developer's risk settings is support, changing them is deciding how much of
 	// someone else's money to stake.
 	adminReadHandler.SetAgentsRepo(store.NewAdminAgentsRepo(st.DB))
+	// Queue funnel reporting. ONE repo instance, used by both the writers (matchmaking and
+	// the ready check) and the admin reader, so the dashboard cannot end up reading a
+	// different table than the one being written.
+	queueEvents := store.NewQueueEventsRepo(st.DB, log)
+	adminReadHandler.SetQueueHealth(store.QueueHealthAdapter{Repo: queueEvents})
 	if solvencyMonitor != nil {
 		adminReadHandler.SetTreasury(solvencyMonitor)
 	}
@@ -1442,6 +1447,9 @@ func run() error {
 	// making ratings load-bearing and removing the deterministic-rendezvous collusion
 	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
 	matchmakingRepo := store.NewMatchmakingRepo(st.DB)
+	// Best-effort history on enqueue and pairing. Nil-checked inside, so an unwired build
+	// behaves exactly as before rather than failing a pairing over telemetry.
+	matchmakingRepo.SetQueueEvents(queueEvents)
 	matchmakingSvc := matchmaking.New(
 		matchmakingRepo,
 		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
@@ -1504,6 +1512,10 @@ func run() error {
 			Log:      log,
 		}
 		matchSvc.SetReadyCheck(matchRepo, asker, readyRequeue{matchmakingSvc})
+		// The "unreachable after the developer started it" number comes from here: a seat
+		// dropped for never answering. Nil-checked at every call inside the ready check, which
+		// decides whether real coins are escrowed — telemetry must not be able to fail it.
+		matchSvc.SetQueueEvents(store.QueueEventAdapter{Repo: queueEvents})
 		launch("ready-check-sweeper", match.NewReadySweeper(matchSvc, matchRepo, log, time.Second).Run)
 		log.Warn("ready check ENABLED — paired tables wait for every seat to acknowledge before any stake is escrowed; agents that do not call /ready will be dropped and requeued")
 	}
