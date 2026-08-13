@@ -3,6 +3,7 @@ package match
 import (
 	"time"
 
+	"github.com/agent-arena/arena/internal/deadline"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 )
 
@@ -34,6 +35,22 @@ type AgentView struct {
 	// instant correctly, rather than trusting a device clock that may be minutes out. It costs
 	// one field and removes a whole class of "the timer was wrong on my machine".
 	ServerNow time.Time `json:"server_now"`
+	// WarnAt is when "your time is nearly up" should fire, as an ABSOLUTE instant, or absent
+	// when this turn is too short to warn about (see deadline.WarnLead).
+	//
+	// A FRACTION of the window, not a fixed lead: windows here are adaptive and run from a
+	// 10s floor to a 3m ceiling, so ten seconds would be the whole budget on a short turn and
+	// a rounding error on a long one.
+	//
+	// DERIVED from the window actually in force — deadline minus the recorded round start —
+	// rather than recomputed from the policy. Recomputing would consult the agent's latency
+	// samples again, which have moved on since the round opened, and could yield a warning
+	// that disagrees with the deadline being enforced. Absent when either end is unknown:
+	// guessing the window would be worse than not warning.
+	WarnAt *time.Time `json:"warn_at,omitempty"`
+	// WarnInMs is the same instant as ms remaining, for a caller that would otherwise do the
+	// subtraction itself. 0 once elapsed, or when there is no warning.
+	WarnInMs int64 `json:"warn_in_ms,omitempty"`
 	You              sideView    `json:"you"`
 	Opponent         oppView     `json:"opponent"`
 	LegalActions     legalView   `json:"legal_actions"`
@@ -159,6 +176,27 @@ func (s *Service) view(m Match, viewerAgentPublicID string) AgentView {
 		if m.RoundDeadline != nil {
 			if rem := m.RoundDeadline.Sub(s.clock.Now()).Milliseconds(); rem > 0 {
 				v.DeadlineMs = rem
+			}
+			// The warning, from the window ACTUALLY IN FORCE for this round.
+			//
+			// window = deadline - round start, both stored. Not deadline.For(policy, samples)
+			// recomputed here: the agent's latency samples have moved on since the round
+			// opened, so a fresh computation can disagree with the deadline being enforced,
+			// and a warning that disagrees with its own deadline is worse than none.
+			//
+			// Skipped entirely when the round start is unknown (a round already in flight when
+			// migration 0089 shipped). Reconstructing it would mean subtracting a window we do
+			// not know, which is exactly the class of guess that produced a fraud control fed
+			// on wrong numbers.
+			if m.RoundStartedAt != nil {
+				if window := m.RoundDeadline.Sub(*m.RoundStartedAt); window > 0 {
+					if at, ok := deadline.WarnAt(*m.RoundStartedAt, window); ok {
+						v.WarnAt = &at
+						if left := at.Sub(s.clock.Now()).Milliseconds(); left > 0 {
+							v.WarnInMs = left
+						}
+					}
+				}
 			}
 		}
 	}

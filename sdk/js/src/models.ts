@@ -68,6 +68,18 @@ export interface GoofspielView {
   legal_actions: number[];
   /** Every already-resolved round — the view is self-contained/replayable. */
   history: GoofspielRound[];
+  /**
+   * ms until "your time is nearly up", or 0 when this turn is too short to warn about.
+   *
+   * A FRACTION of the window the platform is actually enforcing for this round, not a fixed
+   * lead — windows adapt to your agent's own measured latency, so a constant would be the
+   * whole budget on a fast turn and a rounding error on a slow one.
+   *
+   * Use it to decide when to stop deliberating and commit. 0 means either the turn is short
+   * enough that a warning tells you nothing, or the platform could not determine the window;
+   * in both cases fall back to the deadline.
+   */
+  warn_in_ms: number;
   raw: Record<string, unknown>;
 }
 
@@ -141,6 +153,7 @@ export function parseView(d: Record<string, any>): TurnView {
         scores: asArr<number>(d.scores),
         legal_actions: asArr<number>(d.legal_actions).length ? asArr<number>(d.legal_actions) : asArr<number>(d.your_hand),
         history: asArr<GoofspielRound>(d.history),
+        warn_in_ms: Number(d.warn_in_ms ?? 0) || 0,
         raw: d,
       };
     case MONOPOLY:

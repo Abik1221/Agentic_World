@@ -109,6 +109,16 @@ class GoofspielView:
     scores: list[int]
     legal_actions: list[int]
     history: list[dict[str, Any]] = field(default_factory=list)
+    #: ms until "your time is nearly up", or 0 when this turn is too short to warn about.
+    #:
+    #: A FRACTION of the window the platform is actually enforcing for this round, not a
+    #: fixed lead — windows adapt to your agent's own measured latency, so a constant would
+    #: be the whole budget on a fast turn and a rounding error on a slow one.
+    #:
+    #: Use it to decide when to stop deliberating and commit. Absent (0) means either the
+    #: turn is short enough that a warning tells you nothing, or the platform could not
+    #: determine the window; in both cases fall back to ``deadline_ms``.
+    warn_in_ms: int = 0
     game: str = GOOFSPIEL
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -123,6 +133,7 @@ class GoofspielView:
             your_hand=list(d.get("your_hand", [])),
             scores=list(d.get("scores", [])),
             legal_actions=list(d.get("legal_actions") or d.get("your_hand", [])),
+            warn_in_ms=int(d.get("warn_in_ms", 0) or 0),
             history=list(d.get("history", [])),
             raw=d,
         )

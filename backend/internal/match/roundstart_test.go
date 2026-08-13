@@ -7,6 +7,8 @@ import (
 	"go/token"
 	"testing"
 	"time"
+
+	"github.com/agent-arena/arena/internal/platform"
 )
 
 // These pin the two defects behind migration 0089: a round after the first ran on the
@@ -183,5 +185,82 @@ func TestNoDeadlineAndNoRecordReportsUnknownRatherThanZero(t *testing.T) {
 	}
 	if !got.IsZero() {
 		t.Errorf("expected the zero Time alongside ok=false, got %v", got)
+	}
+}
+
+// ── the phase warning in the view ─────────────────────────────────────────────
+
+// The warning must be derived from the window ACTUALLY IN FORCE, which is the deadline
+// minus the recorded round start. Recomputing it from the policy would consult the agent's
+// latency samples again — they have moved on since the round opened — and could produce a
+// warning that disagrees with the deadline being enforced.
+func TestViewWarningSitsInsideTheWindowActuallyInForce(t *testing.T) {
+	s := svcWithWindow(20*time.Second, nil)
+	s.clock = platform.FixedClock{T: time.Date(2026, 8, 13, 12, 0, 5, 0, time.UTC)}
+
+	start := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	// 90s in force — deliberately NOT the 20s configured window, so a view that recomputed
+	// from config instead of reading the stored pair would produce a different answer.
+	dl := start.Add(90 * time.Second)
+
+	v := s.view(Match{
+		PublicID: "m_warn", Game: "goofspiel", Status: StatusActive,
+		RoundDeadline: &dl, RoundStartedAt: &start,
+		Players: []Player{{AgentPublicID: "ag_a", Seat: 0}, {AgentPublicID: "ag_b", Seat: 1}},
+	}, "ag_a")
+
+	if v.WarnAt == nil {
+		t.Fatal("no warning on a 90s window")
+	}
+	if !v.WarnAt.After(start) {
+		t.Errorf("warning at %v is not after the round start %v", v.WarnAt, start)
+	}
+	if !v.WarnAt.Before(dl) {
+		t.Errorf("warning at %v is not before the deadline %v", v.WarnAt, dl)
+	}
+	// 20% of 90s is 18s, so the warning lands 18s before the deadline. If the view had used
+	// the 20s CONFIG window it would be 4s, which this catches.
+	if got, want := dl.Sub(*v.WarnAt), 18*time.Second; got != want {
+		t.Errorf("lead = %v, want %v (20%% of the 90s window in force, not of the config)", got, want)
+	}
+}
+
+// A round already in flight when migration 0089 shipped has no recorded start. The warning
+// must be ABSENT rather than reconstructed: inferring the start means subtracting a window
+// we do not know, which is the guess that corrupted think-time in the first place.
+func TestViewOmitsTheWarningWhenTheRoundStartIsUnknown(t *testing.T) {
+	s := svcWithWindow(20*time.Second, nil)
+	s.clock = platform.FixedClock{T: time.Date(2026, 8, 13, 12, 0, 5, 0, time.UTC)}
+	dl := time.Date(2026, 8, 13, 12, 1, 30, 0, time.UTC)
+
+	v := s.view(Match{
+		PublicID: "m_warn_nil", Game: "goofspiel", Status: StatusActive,
+		RoundDeadline: &dl, // no RoundStartedAt
+		Players:       []Player{{AgentPublicID: "ag_a", Seat: 0}, {AgentPublicID: "ag_b", Seat: 1}},
+	}, "ag_a")
+
+	if v.WarnAt != nil {
+		t.Errorf("warning %v invented for a round with no recorded start", v.WarnAt)
+	}
+	if v.WarnInMs != 0 {
+		t.Errorf("warn_in_ms = %d with no warning; a caller reading it would fire immediately", v.WarnInMs)
+	}
+}
+
+// A turn too short to warn about must produce nothing at all — not a warning at the epoch.
+func TestViewOmitsTheWarningOnATurnTooShortToUseOne(t *testing.T) {
+	s := svcWithWindow(20*time.Second, nil)
+	s.clock = platform.FixedClock{T: time.Date(2026, 8, 13, 12, 0, 1, 0, time.UTC)}
+	start := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	dl := start.Add(4 * time.Second) // under 2×MinWarnLead
+
+	v := s.view(Match{
+		PublicID: "m_warn_short", Game: "goofspiel", Status: StatusActive,
+		RoundDeadline: &dl, RoundStartedAt: &start,
+		Players: []Player{{AgentPublicID: "ag_a", Seat: 0}, {AgentPublicID: "ag_b", Seat: 1}},
+	}, "ag_a")
+
+	if v.WarnAt != nil {
+		t.Errorf("warning %v on a 4s window — the notice and the deadline are indistinguishable there", v.WarnAt)
 	}
 }
