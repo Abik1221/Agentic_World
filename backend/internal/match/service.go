@@ -352,6 +352,39 @@ func (s *Service) moveWindow(ctx context.Context, agents ...string) time.Duratio
 	return longest
 }
 
+// agentIDs is every seated agent's public id, for a decision that concerns the whole table.
+//
+// A round deadline is SHARED, so it is computed from all seats and runs on the slowest —
+// taking one seat's window would cut the other off through no fault of its own.
+func (m Match) agentIDs() []string {
+	ids := make([]string, 0, len(m.Players))
+	for _, p := range m.Players {
+		if p.AgentPublicID != "" {
+			ids = append(ids, p.AgentPublicID)
+		}
+	}
+	return ids
+}
+
+// roundStart is when the current round began, and whether that is known.
+//
+// Prefers the RECORDED start. Falls back to the old reconstruction only for a round that
+// was already in flight when the column shipped, because a row written before then has no
+// start to read and the previous behaviour is better than none.
+//
+// Returns false rather than a zero Time when there is nothing to anchor to: a zero Time
+// would be silently converted into a think-time of decades and poured into the sample set
+// that decides whether an agent is a human.
+func (s *Service) roundStart(m Match) (time.Time, bool) {
+	if m.RoundStartedAt != nil {
+		return *m.RoundStartedAt, true
+	}
+	if m.RoundDeadline == nil {
+		return time.Time{}, false
+	}
+	return m.RoundDeadline.Add(-s.cfg.MoveWindow), true
+}
+
 // LivenessProber reports whether an agent's endpoint is answering right now.
 //
 // Satisfied by a small adapter over agentwire.ConfirmReachability. Optional: unset, a
@@ -1095,8 +1128,20 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	}
 
 	// Record think-time for verification (best-effort).
-	if m.RoundDeadline != nil {
-		started := m.RoundDeadline.Add(-s.cfg.MoveWindow)
+	//
+	// From the RECORDED round start, not a reconstruction. This number feeds
+	// verification.Record, which builds the timing profile used to decide whether a human
+	// is playing by hand — so a derived value that can be wrong in either direction is not
+	// good enough for it.
+	//
+	// The old reconstruction, RoundDeadline minus the configured window, was wrong twice
+	// over. RoundDeadline MOVES when an extension is granted, so after a grant the inferred
+	// start slid later and the response time came out smaller — a genuinely slow agent
+	// recorded as a fast one, masking exactly what the detector looks for. And the
+	// configured constant is not the window in force once deadlines are adaptive, so for
+	// any agent that had earned a longer window the start was placed too early and its
+	// response times were inflated, pushing an honest slow agent toward being flagged.
+	if started, ok := s.roundStart(m); ok {
 		s.ver.Record(ctx, agentPublicID, &matchPublicID, int(s.clock.Now().Sub(started).Milliseconds()))
 	}
 
@@ -1260,7 +1305,21 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 		return m, nil
 	}
 
-	next := s.clock.Now().Add(s.cfg.MoveWindow)
+	// The ADAPTIVE window, not the configured constant.
+	//
+	// Every other path that opens a round already used it — the first deal (startPaired,
+	// startSandbox, startHuman) and the ready-check activation all call s.moveWindow. This
+	// one did not, so an agent that had earned a longer window got it for round 1 and then
+	// silently dropped back to the 20s default for rounds 2..13. That is precisely the
+	// failure the adaptive window exists to prevent: internal/deadline says the adaptive
+	// term is there "to give a SLOW agent room", and a slow agent was getting that room
+	// exactly once per match.
+	//
+	// It also fed a wrong number back into tryExtend, which reconstructs the round origin
+	// as base.Add(-s.moveWindow(...)) — computed with the adaptive window against a
+	// deadline set with the static one, so elapsed came out too large and extensions were
+	// refused earlier than the policy allows.
+	next := s.clock.Now().Add(s.moveWindow(ctx, m.agentIDs()...))
 	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, all); err != nil {
 		return Match{}, err
 	}

@@ -106,6 +106,19 @@ type Match struct {
 	// time-on-round can be measured. Nil on a row that predates the column, in which case
 	// readers fall back to RoundDeadline and behave exactly as before.
 	RoundDeadlineBase *time.Time
+	// RoundStartedAt is when the current round actually began, written at the moment the
+	// round opens rather than inferred from anything.
+	//
+	// Think-time used to be reconstructed as RoundDeadline minus the configured window, and
+	// both halves of that were wrong: RoundDeadline moves when an extension is granted, and
+	// the configured constant is not the window in force once deadlines are adaptive. The
+	// resulting number feeds verification.Record, which decides whether a HUMAN is playing
+	// by hand — so it was a fraud control reading a derived value that could be wrong in
+	// either direction.
+	//
+	// Nil on a round that was already in flight when the column shipped; readers fall back
+	// to the old reconstruction, which is worse but is exactly the previous behaviour.
+	RoundStartedAt *time.Time
 	// StartsAt is the ABSOLUTE instant the first turn begins, set when a ready check
 	// activates the table. Nil on a match that never went through one.
 	//

@@ -86,18 +86,18 @@ func (r *MatchRepo) ListWaiting(ctx context.Context, game string, bid int64, exc
 func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match, error) {
 	var m match.Match
 	var stateBytes []byte
-	var deadline, base, startsAt *time.Time
+	var deadline, base, roundStarted, startsAt *time.Time
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
-		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base, m.starts_at,
+		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base, m.round_started_at, m.starts_at,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
 		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
-			&stateBytes, &deadline, &base, &startsAt, &m.WinnerAgent, &m.ReplayHash)
+			&stateBytes, &deadline, &base, &roundStarted, &startsAt, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
 		return match.Match{}, err
 	}
@@ -115,6 +115,10 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 	if m.RoundDeadlineBase == nil {
 		m.RoundDeadlineBase = deadline
 	}
+	// Left nil on a round already in flight when the column shipped. Readers fall back to
+	// the old reconstruction rather than treating a zero Time as a start, which would
+	// record a think-time of decades into a fraud control's sample set.
+	m.RoundStartedAt = roundStarted
 
 	players, err := r.loadPlayers(ctx, matchPublicID)
 	if err != nil {
@@ -155,7 +159,8 @@ func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner m
 		var game string
 		var bid int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3,
+			     round_started_at=now(), started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' RETURNING id, game, bid`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID, &game, &bid)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -180,8 +185,8 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 		err := tx.QueryRow(ctx,
 			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
-			     state, round_deadline, round_deadline_base, started_at, creator_owner_user_id)
-			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),
+			     state, round_deadline, round_deadline_base, round_started_at, started_at, creator_owner_user_id)
+			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),now(),
 			     (SELECT id FROM users WHERE public_id=$12))
 			 RETURNING id`,
 			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
@@ -207,7 +212,8 @@ func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, updated_at=now()
+			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3,
+			     round_started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='active' RETURNING id`,
 			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -650,7 +656,7 @@ func (r *MatchRepo) ActivateAfterReady(ctx context.Context, matchPublicID string
 	tag, err := r.db.Exec(ctx,
 		`UPDATE matches
 		    SET status = 'active', started_at = now(), starts_at = $2,
-		        round_deadline = $3, round_deadline_base = $3
+		        round_deadline = $3, round_deadline_base = $3, round_started_at = now()
 		  WHERE public_id = $1 AND status = 'ready_check'`,
 		matchPublicID, startsAt, deadline)
 	if err != nil {
