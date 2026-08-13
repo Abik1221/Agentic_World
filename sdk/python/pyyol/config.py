@@ -165,7 +165,7 @@ def save(cfg: Config, directory: str = "") -> str:
     d = os.path.abspath(directory or os.getcwd())
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, CONFIG_NAME)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(dumps(cfg))
     return path
 
