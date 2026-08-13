@@ -1262,7 +1262,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 
 	if state.Sealed[gs.SeatA] == nil || state.Sealed[gs.SeatB] == nil {
 		// Still waiting on the opponent; same round, deadline unchanged.
-		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
+		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, nil, events); err != nil {
 			return Match{}, err
 		}
 		s.publish(m.PublicID, state, events)
@@ -1290,7 +1290,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 		// outcome. Money was always protected by settle idempotency; this protects
 		// recorded-result integrity. The seal events are now persisted by this Advance,
 		// so finalize appends only the resolve events (no double-append).
-		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
+		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, nil, events); err != nil {
 			return Match{}, err
 		}
 		players, err := s.finalize(ctx, m, resolved, resolveEvents)
@@ -1319,8 +1319,13 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 	// as base.Add(-s.moveWindow(...)) — computed with the adaptive window against a
 	// deadline set with the static one, so elapsed came out too large and extensions were
 	// refused earlier than the policy allows.
-	next := s.clock.Now().Add(s.moveWindow(ctx, m.agentIDs()...))
-	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, all); err != nil {
+	// One clock reading for both, so the start and the deadline cannot disagree about when
+	// this round opened — the deadline IS the start plus the window, by construction.
+	opened := s.clock.Now()
+	next := opened.Add(s.moveWindow(ctx, m.agentIDs()...))
+	// The only Advance in this function that opens a new round, so the only one that
+	// stamps a round start. The two above pass nil deliberately.
+	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, &opened, all); err != nil {
 		return Match{}, err
 	}
 	s.publish(m.PublicID, resolved, all)

@@ -208,14 +208,17 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 	})
 }
 
-func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error {
+func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error {
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
+			// COALESCE, not now(): a nil roundStarted means this write is NOT opening a
+			// new round (one seat sealed, or an agent spoke — trySay commits too), and
+			// stamping a fresh start there resets the origin think-time is measured from.
 			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3,
-			     round_started_at=now(), updated_at=now()
+			     round_started_at=COALESCE($4, round_started_at), updated_at=now()
 			 WHERE public_id=$1 AND status='active' RETURNING id`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
+			matchPublicID, mustJSON(state), deadline, roundStarted).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return match.ErrNotActive
 		}

@@ -75,6 +75,7 @@ type fakeRepo struct {
 	finishedEvent []byte // last match.finished payload passed to Finish (nil = none)
 	finishCalls   int
 	signingKeys   map[string]string // agentPublicID → registered Ed25519 pubkey ("" = none)
+	advances      []advanceCall     // every Advance, in order — see the round-start guard
 }
 
 func newFakeRepo() *fakeRepo {
@@ -148,15 +149,26 @@ func (r *fakeRepo) CreatePairedActive(_ context.Context, in match.CreatePairedIn
 	return nil
 }
 
-func (r *fakeRepo) Advance(_ context.Context, id string, state gs.State, deadline *time.Time, events []gs.Event) error {
+// advanceCall records one Advance for the round-start guard below. roundStarted is the
+// field that matters: it must be nil on every write that does not open a new round.
+type advanceCall struct {
+	deadline     *time.Time
+	roundStarted *time.Time
+}
+
+func (r *fakeRepo) Advance(_ context.Context, id string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.advances = append(r.advances, advanceCall{deadline: deadline, roundStarted: roundStarted})
 	m := r.matches[id]
 	if m.Status != match.StatusActive {
 		return match.ErrNotActive
 	}
 	m.State = state
 	m.RoundDeadline = deadline
+	if roundStarted != nil {
+		m.RoundStartedAt = roundStarted
+	}
 	r.matches[id] = m
 	r.events[id] = append(r.events[id], events...)
 	return nil
@@ -511,4 +523,94 @@ func (f *fakeRepo) ExtendDeadline(_ context.Context, matchPublicID string, deadl
 		f.matches[matchPublicID] = m
 	}
 	return nil
+}
+
+// TestRoundStartIsStampedOnlyWhenARoundOpens is the guard for a bug the database caught
+// after the unit tests and a mutation check had both passed.
+//
+// commit() calls Advance THREE times for different reasons: one seat sealed (same round),
+// the round finished (same round), and the next round opened. The round-start column was
+// stamped with now() unconditionally inside the Advance SQL, so the first seat's seal — and
+// every chat message, because trySay commits too — reset the origin that think-time is
+// measured from. Observed live: round_started_at moved three times inside one round while
+// the round number and deadline stayed fixed, and recorded think-times collapsed from the
+// real 6-10s to 19-915ms.
+//
+// That number feeds verification.Record, which decides whether a HUMAN is playing by hand.
+// Near-zero response times are the strongest possible "not a human" signal, so the
+// corruption ran straight into a fraud control.
+//
+// Asserted on the CALLS rather than on the stored value: what went wrong was which writes
+// carried a timestamp, and only the call log shows that.
+func TestRoundStartIsStampedOnlyWhenARoundOpens(t *testing.T) {
+	svc, repo := newSvcWithRepo()
+	ctx := context.Background()
+
+	id, err := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if err != nil {
+		t.Fatalf("CreateOpen: %v", err)
+	}
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+
+	// Seal ONE seat, then speak. Neither opens a round, so neither may carry a start.
+	first, _ := svc.State(ctx, id, "ag_a", false, 0)
+	if len(first.You.Hand) == 0 {
+		t.Fatal("no hand dealt")
+	}
+	repo.mu.Lock()
+	repo.advances = nil
+	repo.mu.Unlock()
+
+	if _, err := svc.Act(ctx, "ag_a", id, first.Round, first.You.Hand[0], ""); err != nil {
+		t.Fatalf("Act(seat a): %v", err)
+	}
+	// Speaking is the case that made this obvious in production: an agent that talks
+	// during a round must not move the round's origin.
+	_, _ = svc.Say(ctx, "ag_a", id, "thinking out loud", "table")
+
+	repo.mu.Lock()
+	sameRound := append([]advanceCall(nil), repo.advances...)
+	repo.mu.Unlock()
+
+	if len(sameRound) == 0 {
+		t.Fatal("no Advance recorded for a seal — the guard is testing nothing")
+	}
+	for i, c := range sameRound {
+		if c.roundStarted != nil {
+			t.Errorf("same-round Advance #%d stamped a round start (%v) — the origin moves mid-round",
+				i, c.roundStarted)
+		}
+	}
+
+	// Now complete the round. Exactly one Advance may carry a start, and it must equal the
+	// moment the round opened — not the deadline, which is that moment plus the window.
+	repo.mu.Lock()
+	repo.advances = nil
+	repo.mu.Unlock()
+
+	second, _ := svc.State(ctx, id, "ag_b", false, 0)
+	if _, err := svc.Act(ctx, "ag_b", id, second.Round, second.You.Hand[0], ""); err != nil {
+		t.Fatalf("Act(seat b): %v", err)
+	}
+
+	repo.mu.Lock()
+	opened := append([]advanceCall(nil), repo.advances...)
+	repo.mu.Unlock()
+
+	stamped := 0
+	for _, c := range opened {
+		if c.roundStarted == nil {
+			continue
+		}
+		stamped++
+		if c.deadline != nil && !c.roundStarted.Before(*c.deadline) {
+			t.Errorf("round start %v is not before the deadline %v — the start was set to the "+
+				"deadline instead of the moment the round opened", c.roundStarted, c.deadline)
+		}
+	}
+	if stamped != 1 {
+		t.Errorf("%d Advance calls stamped a round start when the round resolved; want exactly 1", stamped)
+	}
 }

@@ -35,7 +35,14 @@ type Repo interface {
 
 	// Advance appends events and updates the snapshot + next deadline for an
 	// in-progress match (one transaction).
-	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error
+	// Advance persists state for a match that is STAYING active.
+	//
+	// roundStarted is non-nil ONLY when this write opens a new round. Advance is called
+	// three times per round for different reasons — one seat sealed, the round finished,
+	// the next round opened — and only the last of those is a new round. Stamping a round
+	// start on the others resets the origin that think-time is measured from, which
+	// collapses every measurement to "time since the last write". nil means leave it alone.
+	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error
 	// ExtendDeadline pushes the current round's deadline out WITHOUT touching state or
 	// the event log. Separate from Advance because an extension is not a game event: the
 	// board has not changed, an agent is simply still thinking, and writing a state
