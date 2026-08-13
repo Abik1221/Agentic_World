@@ -104,6 +104,32 @@ huge WAL and a VACUUM FULL afterwards. The cascade set was established by rehear
 fitted over the matches being deleted. A leaderboard whose numbers no surviving match can
 explain is worse than an empty one; the workers recompute from what remains.
 
+### Ready for the real-model batch — everything except the key
+
+All three games are now completion-bindable end to end, verified through the lab stand-in:
+
+| game | evidence |
+|---|---|
+| Goofspiel | bound every round; substituted move REJECTED (`agent_move_rejections`, `reason=completion_binding`) |
+| Mafia | **93 bound, 0 failed** — the bind path's first execution ever (it previously "built and vetted, never executed") |
+| Monopoly | **82 decisions, 20/14/9 bound** across three matches — the first Monopoly rows ever in `agent_match_bound_decisions` |
+
+Groq is reachable from the backend container (`api.groq.com` returns 401 for a missing key, so
+the network path and the upstream mapping both work). The gateway already has
+`groq=https://api.groq.com/openai` in `LLM_GATEWAY_UPSTREAMS`.
+
+The batch is one command per game once a key exists:
+
+```bash
+docker exec -e PYYOL_PROVIDER_KEY=gsk_… -e API_BASE=http://localhost:8080 -e AGENT_HOST=127.0.0.1 \
+  pyyol-backend /src/.lab-gamelab -game goofspiel -tier low -bind \
+  -bind-provider groq -bind-model llama-3.1-8b-instant
+```
+
+Pacing matters: Groq's free tier is 30 RPM / 6k TPM / 14.4k RPD. A Goofspiel match is ~26
+calls, so a dozen matches per game is comfortably inside a day's budget; Monopoly is the one to
+watch, since a match can run to the 1000-turn cap.
+
 ### The finding that blocks publishing benchmarks
 
 | | calls | matches |
