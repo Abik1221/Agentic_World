@@ -266,7 +266,7 @@ Last solvent player standing wins: everyone else goes **bankrupt**. If the turn 
 | `roll` | `roll` | Roll the dice and move. |
 | `buy` | `acquire` | Buy the property you landed on at list price. |
 | `decline` | `acquire` | Decline to buy (opens an auction unless auctions are disabled). |
-| `bid` | `auction` | Raise the current high bid by `amount`. |
+| `bid` | `auction` | Raise the current high bid by `amount`. Capped at the cash you hold — but you may raise cash first, see below. |
 | `pass` | `auction` | Drop out of the auction. |
 | `build` | `manage` | Build a house/hotel on `property` (even-build rules apply). |
 | `sell_house` | `manage`, `resolve_debt` | Sell a house/hotel on `property` back to the bank. |
@@ -311,6 +311,17 @@ must say `-1`.
 
 | `skip_trade` | `trade` | Leave the between-turns window without acting. |
 | `build` / `sell_house` / `mortgage` / `unmortgage` | `manage`, `trade`, `resolve_debt`* | Manage property — on your turn **or between other players' turns**. |
+
+#### You may raise cash during an auction
+
+A bid is capped at the cash in your hand, and officially a bidder may **sell houses and
+mortgage** to fund one. Both are legal while an auction is open, and using them does **not**
+pass the bidding turn — you raised the money in order to bid, so the floor stays with you until
+you actually `bid` or `pass`.
+
+Only the cash-raising verbs are offered there. `build` and `unmortgage` spend money, so they
+cannot fund a bid. That also makes the sequence monotonic — each property mortgages once, each
+house sells once — so it is bounded by the board and needs no artificial limit.
 
 #### You may manage property between other players' turns
 

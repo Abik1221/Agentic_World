@@ -282,7 +282,24 @@ func (e *Engine) LegalActions(s State, seat int) []string {
 		acts = append(acts, ActDecline)
 		return acts
 	case PhaseAuction:
-		return []string{ActBid, ActPass}
+		// RAISING CASH MID-AUCTION. Officially a bidder may sell houses and mortgage to
+		// fund a bid; a bid is still capped at cash in hand, so without this an asset-rich,
+		// cash-poor seat was simply locked out of auctions it should win — including the
+		// auction of its own estate's neighbours.
+		//
+		// Only the CASH-RAISING verbs are offered. build and unmortgage SPEND money, so
+		// they cannot help fund a bid, and offering them would let a seat alternate
+		// build/sell forever without ever bidding or passing. Restricting to mortgage and
+		// sell_house makes the sequence monotonic — each property mortgages once, each
+		// house sells once — so it is bounded by the board itself and needs no allowance.
+		acts := []string{ActBid, ActPass}
+		if anySellable(&s, seat) {
+			acts = append(acts, ActSellHouse)
+		}
+		if anyMortgageable(&s, seat) {
+			acts = append(acts, ActMortgage)
+		}
+		return acts
 	case PhaseResolveDebt:
 		// A player who cannot pay may SELL HOUSES, MORTGAGE, **OR TRADE** to raise the
 		// money, and only declares bankruptcy once none of that is enough (official rule).
@@ -611,6 +628,13 @@ func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
 		evs := []Event{e.emit(ns, EvBidPlaced, BidPayload{Seat: seat, Property: au.Property, Amount: a.Amount})}
 		e.advanceAuction(ns, &evs)
 		return evs, nil
+	case ActSellHouse, ActMortgage:
+		// Does NOT advance the auction: the seat is raising money in order to bid, so the
+		// floor stays with it until it actually bids or passes.
+		if a.Kind == ActSellHouse {
+			return e.doSellHouse(ns, seat, a.Property)
+		}
+		return e.doMortgage(ns, seat, a.Property)
 	case ActPass:
 		au.InAuction[seat] = false
 		evs := []Event{e.emit(ns, EvAuctionPassed, AuctionPassedPayload{Seat: seat, Property: au.Property})}

@@ -13,7 +13,7 @@ package monopoly
 // Version identifies the rule set. It is embedded in the match_created event and
 // stored on every match so a replay is reproduced with the exact same rules.
 // Bump on ANY behavioral change to the engine.
-const Version = "monopoly-1.3.0"
+const Version = "monopoly-1.4.0"
 
 // Bank is the sentinel "owner" for unowned property and the sentinel creditor for
 // payments that go to / come from the bank. Tie is the sentinel winner for a draw.

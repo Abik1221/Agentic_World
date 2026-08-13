@@ -1019,3 +1019,47 @@ func containsAction(acts []string, want string) bool {
 	}
 	return false
 }
+
+// TestABidderMayRaiseCashDuringAnAuction pins the last of the timing rights: officially a
+// bidder may sell houses and mortgage to fund a bid. A bid is capped at cash in hand, so
+// without this an asset-rich, cash-poor seat was locked out of auctions it should win.
+func TestABidderMayRaiseCashDuringAnAuction(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[6] = Holding{Owner: 0} // Oriental — mortgageable, worth $50 mortgaged
+	s.Players[0].Cash = 20            // cash-poor, asset-rich
+	s.Current = 0
+	s.Phase = PhaseAuction
+	s.Auction = &AuctionState{Property: 1, HighBid: 0, HighBidder: Bank,
+		InAuction: []bool{true, true}, Current: 0}
+
+	legal := e.LegalActions(s, 0)
+	if !containsAction(legal, ActMortgage) {
+		t.Fatalf("auction actions = %v; a bidder must be able to mortgage to fund a bid", legal)
+	}
+	// build and unmortgage SPEND money — offering them could not fund a bid and would let a
+	// seat alternate build/sell forever without bidding or passing.
+	if containsAction(legal, ActBuild) || containsAction(legal, ActUnmortgage) {
+		t.Errorf("auction actions = %v; the cash-SPENDING verbs must not be offered", legal)
+	}
+
+	ns, _, err := e.Step(s, 0, Action{Kind: ActMortgage, Property: 6}, testSeed)
+	if err != nil {
+		t.Fatalf("mortgaging during an auction was refused: %v", err)
+	}
+	if ns.Players[0].Cash <= 20 {
+		t.Fatalf("cash = %d, want the mortgage proceeds", ns.Players[0].Cash)
+	}
+	// The floor stays with the seat: it raised the money in order to bid.
+	if ns.Auction == nil || ns.Auction.Current != 0 {
+		t.Fatal("raising cash must not pass the bidding turn to the next seat")
+	}
+	// And it can now actually bid what it raised.
+	ns2, _, err := e.Step(ns, 0, Action{Kind: ActBid, Amount: 60}, testSeed)
+	if err != nil {
+		t.Fatalf("bidding with the raised cash failed: %v", err)
+	}
+	if ns2.Auction.HighBid != 60 || ns2.Auction.HighBidder != 0 {
+		t.Fatalf("high bid = %d by %d, want 60 by seat 0", ns2.Auction.HighBid, ns2.Auction.HighBidder)
+	}
+}
