@@ -60,6 +60,8 @@ func main() {
 	bindFailPct := flag.Int("bind-fail-pct", 0, "with -bind, this %% of turns have their model call FAIL; the agent falls back to its strategy and plays on, unbound (honest, not cheating)")
 	bindProvider := flag.String("bind-provider", "", "gateway upstream to route through (e.g. groq); default is the local stand-in on the anthropic path")
 	bindModel := flag.String("bind-model", "llama-3.1-8b-instant", "model id to ask that provider for")
+	matches := flag.Int("matches", 0, "play this many matches one after another in THIS process, then exit (0 = play one and keep serving). Batching in one process avoids re-onboarding and the port races that killing the process between runs causes")
+	perMatch := flag.Duration("per-match-timeout", 8*time.Minute, "with -matches, give up waiting on a single match after this long and move to the next")
 	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
 	flag.Parse()
 
@@ -211,14 +213,28 @@ func main() {
 	// A verification tool that silently tests the wrong thing is worse than one that refuses.
 	// MAFIA AND MONOPOLY ARE NOW BINDABLE (see bindgames.go). All three games can be
 	// completion-bound, so there is no game left for -bind to silently substitute.
-	if *tier != "" {
-		if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {
-			lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
-			startFreePushPlay(a, lg, agents, *game)
+	// One function that starts ONE match, used by both the single run and the batch, so a
+	// batch cannot drift from the path a normal run takes.
+	startOne := func() error {
+		if *tier != "" {
+			if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {
+				lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
+				startFreePushPlay(a, lg, agents, *game)
+			}
+			return nil
 		}
-	} else {
 		startFreePushPlay(a, lg, agents, *game)
+		return nil
 	}
+
+	if *matches > 0 {
+		runBatch(lg, *matches, *perMatch, startOne)
+		// EXIT rather than falling through to select{}. Exiting is the whole point: a batch
+		// that hung would have to be killed, and a killed process is what races the next one
+		// for its ports.
+		return
+	}
+	_ = startOne()
 	lg.Printf("")
 
 	// Keep serving: the platform pushes turns to these endpoints for as long as the lab

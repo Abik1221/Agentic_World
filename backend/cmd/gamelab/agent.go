@@ -232,6 +232,11 @@ func (a *labAgent) serve() error {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if p == "/game-end" {
 				a.log.Printf("GAME END received: %s", compactJSON(body))
+				// The ONLY signal the lab gets that a match is over. -matches counts
+				// distinct match ids here rather than game-end calls, because every
+				// seat receives one: a 4-seat table would otherwise count as four
+				// matches and a batch of 10 would stop after three.
+				noteMatchFinished(stringField(body, "match_id"))
 			}
 			// /initialize answers {"ready": true}, because that is what a REAL agent answers.
 			// Both SDKs return it — the Python server sends {"ready": true, "display_name": …}

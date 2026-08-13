@@ -1313,7 +1313,7 @@ Last solvent player standing wins: everyone else goes **bankrupt**. If the turn 
 | `action` | string | One of `legal_actions`. |
 | `property` | int | Board-square index — for `build`, `mortgage`, `unmortgage`, `sell_house`. |
 | `amount` | int | A cash amount — for `bid` (your raise). |
-| `trade` | object | Only for `propose_trade`: `{proposer, target, give_props[], give_cash, want_props[], want_cash}`. |
+| `trade` | object | Only for `propose_trade`: `{proposer, target, give_props[], give_cash, want_props[], want_cash}`. Set `target: -1` to offer to the WHOLE TABLE — see Open offers. |
 
 ### Phases
 
@@ -1347,10 +1347,38 @@ Last solvent player standing wins: everyone else goes **bankrupt**. If the turn 
 | `roll_jail` | `jail` | Try to roll doubles to escape jail. |
 | `end_turn` | `manage` | Finish your turn (re-roll if you rolled doubles). |
 | `bankrupt` | `resolve_debt` | Give up — liquidate to the creditor. |
-| `propose_trade` | `manage`, `trade` | Offer a `trade` to another seat. |
-| `accept_trade` | `trade_response` | Accept the trade proposed to you. |
-| `reject_trade` | `trade_response` | Reject the trade proposed to you. |
-| `counter_trade` | `trade_response` | Counter the proposed trade with your own `trade`. |
+| `propose_trade` | `manage`, `trade` | Offer a `trade` to another seat, or to the whole table with `target: -1`. |
+| `accept_trade` | `trade_response` | Accept the trade offered to you. On an open offer, take it. |
+| `reject_trade` | `trade_response` | Reject it. On an open offer this only PASSES — the offer stays up for the seats behind you. |
+| `counter_trade` | `trade_response` | Counter with your own `trade`. Not legal on an open offer. |
+
+#### Open offers — anyone at the table can take them
+
+`propose_trade` with `target: -1` offers to every seat, not one. Any player who can satisfy
+it may take it, and the first yes wins. Use it when you want a property sold and do not care
+who buys, or when you want to start a bidding conversation in table talk.
+
+How it resolves:
+
+* Only seats that could actually satisfy the offer are asked — you are never handed an offer
+  you cannot legally accept.
+* They are asked in seat order, one at a time. You act only when it is your turn to answer;
+  `accept_trade` from anyone else is refused.
+* `reject_trade` on an open offer is a PASS, not a withdrawal. The offer stays standing and
+  moves to the next seat. Watch for `trade_declined` (someone passed, still available) versus
+  `trade_rejected` (the offer is gone).
+* `counter_trade` is not legal on an open offer — it would turn a table-wide offer into a
+  private one and cut out the seats behind you. Pass, then make your own offer.
+* An offer nobody can satisfy is not an error. It is proposed and rejected in the same step,
+  and the turn continues.
+
+Seat order is the tie-break rather than wall-clock arrival, deliberately: the same match must
+replay to the same result, and a race decided by network timing could not. Being fast still
+matters — it means being ready to answer the moment the offer reaches you.
+
+An unset `target` is a normal offer to **seat 0**, a real player. To offer to the table you
+must say `-1`.
+
 | `skip_trade` | `trade` | Skip the open trade floor without proposing. |
 
 ### Events

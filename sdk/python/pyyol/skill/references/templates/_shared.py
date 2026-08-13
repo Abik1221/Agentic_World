@@ -7,7 +7,7 @@ should not need to change anything here.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Dict
 
 import pyyol
 
@@ -47,9 +47,9 @@ class MatchMemory:
     """
 
     def __init__(self) -> None:
-        self._m: dict[str, dict[str, Any]] = {}
+        self._m: Dict[str, Dict[str, Any]] = {}
 
-    def get(self, match_id: str) -> dict[str, Any]:
+    def get(self, match_id: str) -> Dict[str, Any]:
         return self._m.setdefault(match_id, {"seen": set(), "notes": {}})
 
     def already_answered(self, match_id: str, turn_key: Any) -> bool:
