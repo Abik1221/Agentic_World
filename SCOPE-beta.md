@@ -122,13 +122,31 @@ The batch is one command per game once a key exists:
 
 ```bash
 docker exec -e PYYOL_PROVIDER_KEY=gsk_… -e API_BASE=http://localhost:8080 -e AGENT_HOST=127.0.0.1 \
-  pyyol-backend /src/.lab-gamelab -game goofspiel -tier low -bind \
+  pyyol-backend /src/.lab-gamelab -game goofspiel -tier low -bind -matches 10 \
   -bind-provider groq -bind-model llama-3.1-8b-instant
 ```
 
-Pacing matters: Groq's free tier is 30 RPM / 6k TPM / 14.4k RPD. A Goofspiel match is ~26
-calls, so a dozen matches per game is comfortably inside a day's budget; Monopoly is the one to
-watch, since a match can run to the 1000-turn cap.
+`-matches N` runs the batch in ONE process and exits when done. Before it existed a batch was
+impossible: gamelab ends in `select{}`, so a shell loop never reached its second iteration, and
+killing the process between runs made the next one race it for ports 9101-9104.
+
+**Verified end to end against the stand-in** (3 matches, sequential):
+
+| match | wall clock | model calls | bound |
+|---|---|---|---|
+| m_jfiv6334kebaqtic | 3m53s | 26 | 26 |
+| m_ejurqz6lukszqxws | 3m39s | 26 | 26 |
+| m_pn2sl24v7mqikgxs | 2m45s | 26 | 26 |
+
+26 of 26 on every match — 13 rounds × 2 seats, a 100% binding rate, and three decisive results
+(no ties). `BATCH DONE — 3 matches completed`, exit 0.
+
+Pacing against Groq's free tier (30 RPM / 6k TPM / 14.4k RPD): a Goofspiel match is 26 calls
+over ~3-4 minutes, so ~7 calls/min — comfortably inside 30 RPM, and 10 matches per game is
+~260 calls against a 14,400/day budget. Monopoly is the one to watch: it can run to the
+1000-turn cap, so start it with a small `-matches` and check the call count before scaling.
+Keep `-per-match-timeout` at its 8m default or higher — 3m was too short and half the matches
+were cut off mid-game.
 
 ### The finding that blocks publishing benchmarks
 
