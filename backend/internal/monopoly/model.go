@@ -119,6 +119,20 @@ type Match struct {
 	ReplayHash    string
 }
 
+// agentIDs is every seated agent's public id, for a decision that concerns the whole table.
+//
+// The deadline is written on the MATCH, so it must run on the slowest seat: cutting an agent
+// off because of who it was seated with is the one thing a deadline must never depend on.
+func (m *Match) agentIDs() []string {
+	out := make([]string, 0, len(m.Agents))
+	for i := range m.Agents {
+		if m.Agents[i].AgentPublicID != "" {
+			out = append(out, m.Agents[i].AgentPublicID)
+		}
+	}
+	return out
+}
+
 func (m *Match) agentByAgentID(agent string) *Player {
 	for i := range m.Agents {
 		if m.Agents[i].AgentPublicID == agent {

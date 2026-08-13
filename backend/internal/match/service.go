@@ -1230,12 +1230,49 @@ func (s *Service) Roster(ctx context.Context, matchPublicID string) ([]RosterSea
 // match) and broadcast to spectators, and it lands in State.Chat, which every
 // agent view carries — that is what lets the other seat actually answer it.
 func (s *Service) Say(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
-	// Same lock + optimistic-concurrency retry as act: two agents talking at once
-	// (or one talking while the other seals) race on the same match row.
-	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
-		if !ok {
+	// TALK WAITS FOR THE LOCK; it does not get turned away by it.
+	//
+	// This used to take the lock once and return ErrBusy — HTTP 409 match_busy — the instant it
+	// was held. Gameplay holds the same lock, so in a driven match there was almost never a gap,
+	// and pushplay swallows the error by design ("a rejected line must never block the move").
+	// The result was invisible: agents tried to speak, were refused, and nobody saw it.
+	//
+	// Measured in the lab: ZERO agent_says events across 11,064 finished Monopoly matches, and
+	// talk in only 3.8%% of Goofspiel matches — while live runs of both games logged
+	// "say failed: 409 match_busy" from agents that were trying.
+	//
+	// It also contradicted the documented rule: speaking is "deliberately NOT turn-gated ...
+	// speaking never consumes a turn or blocks the round". A lock that refuses talk whenever the
+	// table is mid-transition turn-gates it in practice.
+	//
+	// The lock is HELD FOR MILLISECONDS (a state read plus write), never across an agent's
+	// thinking time, so a short bounded wait clears the ordinary collision. Bounded on purpose:
+	// talk is not latency-critical, but a caller must never hang on it, and giving up still
+	// returns ErrBusy so the behaviour is unchanged for a genuinely wedged table.
+	//
+	// The ENGINE still enforces the real speech rules — Mafia's night silence, Monopoly's
+	// bankrupt seats, a finished match. This only stops a concurrency guard from standing in for
+	// a game rule.
+	var release func()
+	for attempt := 0; attempt < 4; attempt++ {
+		r, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
+		if lerr != nil {
+			break // Redis unreachable: proceed lockless, relying on the OCC retry below
+		}
+		if ok {
+			release = r
+			break
+		}
+		if attempt == 3 {
 			return AgentView{}, ErrBusy
 		}
+		select {
+		case <-ctx.Done():
+			return AgentView{}, ctx.Err()
+		case <-time.After(time.Duration(25*(attempt+1)) * time.Millisecond):
+		}
+	}
+	if release != nil {
 		defer release()
 	}
 	const maxAttempts = 4

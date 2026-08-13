@@ -202,13 +202,26 @@ func main() {
 		lg.Printf("churn passed")
 		return
 	}
+	// -bind IS GOOFSPIEL-ONLY, and it must SAY SO rather than fall back.
+	//
+	// The completion-binding path asks the model for a single-object `play_card` tool call —
+	// Goofspiel's move shape. Combined with -game mafia or -game monopoly it used to run a
+	// goofspiel match anyway, so the harness verified a game nobody asked about while logging
+	// the game they did. A verification tool that silently tests the wrong thing is worse than
+	// one that refuses: two "Mafia" runs in this session were actually Goofspiel, and it only
+	// surfaced by reading the round/prize/hand fields instead of trusting the header.
+	if *bindGw && isGroupGame(*game) {
+		lg.Fatalf("-bind is Goofspiel-only (it binds a play_card tool call) but -game=%s was "+
+			"requested. Run %s without -bind, or run goofspiel with -bind — this refuses rather "+
+			"than silently verifying a different game.", *game, *game)
+	}
 	if *tier != "" {
-		if err := runStakedTable(a, lg, agents, *tier); err != nil {
+		if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {
 			lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
-			startFreePushPlay(a, lg, agents)
+			startFreePushPlay(a, lg, agents, *game)
 		}
 	} else {
-		startFreePushPlay(a, lg, agents)
+		startFreePushPlay(a, lg, agents, *game)
 	}
 	lg.Printf("")
 
@@ -337,14 +350,14 @@ func readAllLimited(r *http.Request) ([]byte, error) {
 func webBase() string { return envOr("WEB_BASE", "http://localhost:3100") }
 
 // startFreePushPlay opens one free practice match per agent — the original lab behaviour.
-func startFreePushPlay(a *api, lg *log.Logger, agents []*labAgent) {
+func startFreePushPlay(a *api, lg *log.Logger, agents []*labAgent, game string) {
 	for _, ag := range agents {
-		matchID, err := a.startSandboxPushPlay(ag.AgentKey, "medium")
+		matchID, err := a.startSandboxPushPlay(ag.AgentKey, game, "medium")
 		if err != nil {
 			lg.Printf("WARN: %s could not start a match: %v", ag.Persona.Name, err)
 			continue
 		}
-		lg.Printf("MATCH STARTED  %-14s  %s  (free practice)", ag.Persona.Name, matchID)
+		lg.Printf("MATCH STARTED  %-14s  %s  (free practice, %s)", ag.Persona.Name, matchID, game)
 		lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
 	}
 }
@@ -357,9 +370,10 @@ func startFreePushPlay(a *api, lg *log.Logger, agents []*labAgent) {
 // stake gate, settlement and the absence forfeit exactly as a real table would.
 //
 // Needs at least two agents: a stake is a contest, and a table with one seat never starts.
-func runStakedTable(a *api, lg *log.Logger, agents []*labAgent, tier string) error {
-	if len(agents) < 2 {
-		return fmt.Errorf("need 2 agents for a staked table, have %d", len(agents))
+func runStakedTable(a *api, lg *log.Logger, agents []*labAgent, game, tier string) error {
+	need := seatsFor(game)
+	if len(agents) < need {
+		return fmt.Errorf("need %d agents for a staked %s table, have %d", need, game, len(agents))
 	}
 	host, guest := agents[0], agents[1]
 
@@ -367,7 +381,13 @@ func runStakedTable(a *api, lg *log.Logger, agents []*labAgent, tier string) err
 	// mid-way and look like a platform failure. The tier decides the real stake; this is
 	// simply enough to cover it many times over.
 	const funding = int64(20000)
-	for _, ag := range []*labAgent{host, guest} {
+	// FUND EVERY SEAT, not just the first two.
+	//
+	// This funded only host+guest, which was right when a staked table was Goofspiel 1v1. Group
+	// games enqueue ALL agents, so seats 3+ arrived at the queue with Balance 0 and were refused
+	// with HTTP 402 — the staked table then failed and the harness fell back to free push-play,
+	// quietly running Goofspiel instead of the game that was asked for.
+	for _, ag := range agents {
 		// Two steps, because there are two wallets: checkout credits the owner's
 		// treasury, allocate moves it into the agent's playing wallet. Skipping the
 		// second leaves a rich owner with an agent that cannot stake a single coin.
@@ -383,6 +403,28 @@ func runStakedTable(a *api, lg *log.Logger, agents []*labAgent, tier string) err
 			continue
 		}
 		lg.Printf("FUNDED  %-14s  %d coins", ag.Persona.Name, bal)
+	}
+
+	// N-PLAYER GAMES DO NOT USE THE 1v1 LOBBY.
+	//
+	// createStakedTable/joinStakedTable are the two-seat goofspiel path. Mafia and Monopoly
+	// matchmake through the group queue, where every agent enqueues and the matcher seats them.
+	// Using the lobby for them is what made `-game mafia -tier low` produce a GOOFSPIEL match:
+	// the harness logged "game=mafia", sized seats for mafia, then created a goofspiel table.
+	if isGroupGame(game) {
+		for _, ag := range agents {
+			code, body, err := a.enqueueRanked(ag.AgentKey, game, tier)
+			if err != nil {
+				return fmt.Errorf("enqueue %s: %w", ag.Persona.Name, err)
+			}
+			if code != http.StatusOK && code != http.StatusCreated && code != http.StatusAccepted {
+				return fmt.Errorf("enqueue %s: HTTP %d — %s", ag.Persona.Name, code, body)
+			}
+		}
+		lg.Printf("ENQUEUED %d agents into the %s group queue at tier=%s — the matcher seats them",
+			len(agents), game, tier)
+		lg.Printf("   watch: %s   ·   agents play from their own endpoints", webBase())
+		return nil
 	}
 
 	matchID, err := a.createStakedTable(host.AgentKey, tier)

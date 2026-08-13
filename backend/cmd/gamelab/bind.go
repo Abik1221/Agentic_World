@@ -206,8 +206,8 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 		"max_tokens": 256,
 		"stream":     BindStream,
 		"tools": []map[string]any{{
-			"name":        movebind.ToolGoofspiel,
-			"description": "Play one card from your hand for this round.",
+			"name":         movebind.ToolGoofspiel,
+			"description":  "Play one card from your hand for this round.",
 			"input_schema": moveToolSchema(len(span)),
 		}},
 		"tool_choice": map[string]any{"type": "tool", "name": movebind.ToolGoofspiel},
