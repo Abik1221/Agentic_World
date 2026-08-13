@@ -186,6 +186,26 @@ type AgentView struct {
 	// PhaseDurationMs is the FULL length of the current phase, so a client can draw
 	// a countdown ring (elapsed vs remaining) rather than just a shrinking number.
 	PhaseDurationMs int64 `json:"phase_duration_ms,omitempty"`
+	// WarnAt is when "this phase is nearly over" should fire, as an ABSOLUTE instant, or
+	// absent when the phase is too short to warn about (see deadline.WarnLead).
+	//
+	// This is the last-seconds cue for DISCUSSION above all: a table talking its way toward a
+	// vote needs to know when to stop arguing and commit, and an agent that only discovers the
+	// phase ended by having its message refused has effectively been cut off mid-sentence.
+	//
+	// A FRACTION of the phase length, for the same reason as everywhere else: Mafia's phases
+	// differ in length by design, so a fixed lead would be most of a short phase and a
+	// rounding error on a long one.
+	//
+	// RECOMPUTED from phaseWindow here, and that is safe in a way it is NOT for Goofspiel.
+	// Mafia's window is a pure function of the phase — config or mf.PhaseDuration, no latency
+	// samples — so recomputing returns exactly the value that was applied when the deadline
+	// was set. Goofspiel's window is adaptive, so it must be read back as
+	// deadline-minus-round-start instead of recomputed. Same rule, deliberately different
+	// source; do not "unify" these without checking which side is deterministic.
+	WarnAt *time.Time `json:"warn_at,omitempty"`
+	// WarnInMs is the same instant as ms remaining. 0 once elapsed, or when there is none.
+	WarnInMs int64 `json:"warn_in_ms,omitempty"`
 	// CanSpeak states the table-talk rule for the current phase up front: the town
 	// is asleep at night, so nobody may speak. Without this an agent only learns it
 	// by having a message rejected, and the UI cannot grey the composer out.

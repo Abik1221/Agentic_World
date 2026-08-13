@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/benchmark"
+	"github.com/agent-arena/arena/internal/deadline"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
@@ -1339,11 +1340,33 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 		// Full phase length + whether talking is allowed right now. Together with
 		// DeadlineMs this is everything a client needs to render "NIGHT · 0:23" and
 		// disable the composer, without hardcoding the rules on the client.
-		v.PhaseDurationMs = s.phaseWindow(m.State.Phase).Milliseconds()
+		window := s.phaseWindow(m.State.Phase)
+		v.PhaseDurationMs = window.Milliseconds()
 		v.CanSpeak = mf.CanSpeak(m.State.Phase)
 		if m.RoundDeadline != nil {
 			if rem := m.RoundDeadline.Sub(s.clock.Now()).Milliseconds(); rem > 0 {
 				v.DeadlineMs = rem
+			}
+			// The last-seconds cue, counted back from the deadline rather than forward from a
+			// phase start we do not store. Same instant either way — the deadline IS the start
+			// plus this window, set together in persist() — and counting back needs one stored
+			// value instead of two.
+			//
+			// Only on a phase where someone still owes an action, which is DERIVED from
+			// PendingActors rather than a hardcoded phase list. Morning and result are
+			// announcement beats — PendingActors has no case for them and returns nil — and
+			// they are 8s long, so a "nearly over" notice there is pure noise on the wire.
+			// Deriving it also means a rules change cannot leave this behind: a new decision
+			// phase gets a warning automatically, and a phase that stops demanding an action
+			// stops warning.
+			if len(v.Pending) > 0 {
+				if lead := deadline.WarnLead(window); lead > 0 {
+					at := m.RoundDeadline.Add(-lead)
+					v.WarnAt = &at
+					if left := at.Sub(s.clock.Now()).Milliseconds(); left > 0 {
+						v.WarnInMs = left
+					}
+				}
 			}
 		}
 		// The engine clears Votes when voting opens, so this is exactly the
