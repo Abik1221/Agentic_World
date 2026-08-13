@@ -61,6 +61,27 @@ type ReadyStarter interface {
 	EnqueueEvent(ctx context.Context, agentPublicID, game, matchID string, seq int, eventType string, payload []byte) error
 }
 
+// QueueEventRecorder records what happened to a seat during a ready check, for reporting.
+//
+// OPTIONAL — every call is nil-checked. A ready check must behave identically with no
+// observability attached: this decides whether real coins are escrowed, and a reporting hook
+// that could fail it would be a fraud-adjacent outage caused by a chart.
+//
+// Declared here rather than importing the store so the dependency points the usual way. The
+// adapter lives with the repository.
+type QueueEventRecorder interface {
+	// ReadyAsked: this seat was asked to confirm it is there.
+	ReadyAsked(ctx context.Context, agentPublicID, matchPublicID string)
+	// ReadyOK: it confirmed.
+	ReadyOK(ctx context.Context, agentPublicID, matchPublicID string)
+	// Dropped: it never answered and lost its place (never its stake — nothing was escrowed).
+	// This is the "unreachable after the developer started it" number.
+	Dropped(ctx context.Context, agentPublicID, matchPublicID, reason string)
+}
+
+// SetQueueEvents attaches the reporting recorder. Nil keeps the ready check silent.
+func (s *Service) SetQueueEvents(r QueueEventRecorder) { s.queueEvents = r }
+
 // ReadyRequeuer puts a dropped seat's agent back into matchmaking.
 //
 // A seat that missed its window loses its place, not its money. Requeueing is what makes that
@@ -129,6 +150,11 @@ func (s *Service) Ready(ctx context.Context, agentPublicID, matchPublicID string
 	if m.playerByAgent(agentPublicID) == nil {
 		return ErrNotPlayer
 	}
+	// Recorded on the way in, not after MarkReady: the seat HAS answered by this point, and
+	// the funnel is about who answered, not about whether the write succeeded.
+	if s.queueEvents != nil {
+		s.queueEvents.ReadyOK(ctx, agentPublicID, matchPublicID)
+	}
 	if _, err := s.readyRepo.MarkReady(ctx, matchPublicID, agentPublicID, s.clock.Now()); err != nil {
 		return err
 	}
@@ -176,6 +202,11 @@ func (s *Service) ReadyTick(ctx context.Context, matchPublicID string) (done boo
 			if err := s.readyRepo.RecordAsk(ctx, matchPublicID, agent, now); err != nil {
 				return false, err
 			}
+			// Recorded alongside the durable ask, for the same reason and in the same order:
+			// the funnel should agree with what the ready check itself believes happened.
+			if s.queueEvents != nil {
+				s.queueEvents.ReadyAsked(ctx, agent, matchPublicID)
+			}
 			if s.readyAsker != nil {
 				err := s.readyAsker.AskReady(ctx, agent, matchPublicID, now.Add(pol.Window))
 				if err == nil {
@@ -215,6 +246,11 @@ func (s *Service) ReadyTick(ctx context.Context, matchPublicID string) (done boo
 			owner := ownerOf(seats, agent)
 			slog.Info("ready check: dropping a seat that never answered — no stake was taken, requeueing it",
 				"match", matchPublicID, "agent", agent, "asks", pol.MaxAsks)
+			// The funnel's "unreachable after start" count. Recorded before the requeue so a
+			// requeue failure cannot also lose the record of why the seat went.
+			if s.queueEvents != nil {
+				s.queueEvents.Dropped(ctx, agent, matchPublicID, "no_answer")
+			}
 			if s.readyRequeue != nil && owner != "" {
 				if err := s.readyRequeue.Requeue(ctx, agent, owner, m.Bid); err != nil {
 					slog.Debug("ready check: requeue failed", "agent", agent, "error", err)

@@ -103,6 +103,8 @@ type Service struct {
 	readyRepo    ReadyRepo
 	readyAsker   ReadyAsker
 	readyRequeue ReadyRequeuer
+	// queueEvents records queue/ready-check facts for reporting. Optional; nil-checked.
+	queueEvents  QueueEventRecorder
 	readyStarter ReadyStarter
 }
 
