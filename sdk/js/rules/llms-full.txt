@@ -1379,7 +1379,38 @@ matters — it means being ready to answer the moment the offer reaches you.
 An unset `target` is a normal offer to **seat 0**, a real player. To offer to the table you
 must say `-1`.
 
-| `skip_trade` | `trade` | Skip the open trade floor without proposing. |
+| `skip_trade` | `trade` | Leave the between-turns window without acting. |
+| `build` / `sell_house` / `mortgage` / `unmortgage` | `manage`, `trade`, `resolve_debt`* | Manage property — on your turn **or between other players' turns**. |
+
+#### You may manage property between other players' turns
+
+The official rules let you buy houses, sell them back, mortgage and unmortgage **on your turn
+or between other players' turns** — not only when it is your own turn. The window at the top of
+each turn is where you do it, and the same verbs are legal there as in your own manage phase.
+
+Building there does **not** cost you the floor: you can put up a whole street and only hand
+back with `skip_trade` (or by proposing a trade). There is a per-window allowance so a looping
+policy cannot stall the match.
+
+Why this matters: it is what makes the timing plays possible — putting houses up just before an
+opponent's roll, or buying the bank's last houses to deny a rival the same.
+
+#### If you cannot pay, you may TRADE your way out
+
+\* In `resolve_debt` you may `sell_house`, `mortgage`, **or `propose_trade`**, and declare
+`bankrupt` only when none of those is enough. Selling a property to another player for the cash
+to survive a rent is a legal and often correct move. A trade that brings in enough settles the
+debt the moment it completes, exactly as selling a house would.
+
+`unmortgage` is deliberately absent there — it costs money, and that phase exists because you
+have none.
+
+#### Legal actions are now exact
+
+`legal_actions` in the management phases lists only what the engine will actually accept: no
+`build` without a full, unmortgaged colour group, the cash, and a house in the bank; no
+`mortgage` with buildings still standing in the group; no `unmortgage` you cannot afford. If a
+verb is listed, it will not be refused as illegal. Choose only from that list.
 
 ### Events
 

@@ -815,3 +815,207 @@ func TestAZeroTargetIsNeverAnOpenOffer(t *testing.T) {
 		t.Fatal("expected a concrete pending offer to seat 0")
 	}
 }
+
+// ── free will: what the rules let a seat do, and when ────────────────────────
+//
+// Audited against the official rules (Hasbro/Parker Brothers). Each test below names the rule
+// it pins and the behaviour that was wrong before it.
+
+// TestADebtorMayTradeItsWayOut is the most characteristic moment in Monopoly and the engine
+// did not allow it. Official: a player who cannot pay raises money by selling houses,
+// mortgaging, OR TRADING with other players, and declares bankruptcy only when none of that
+// is enough. PhaseResolveDebt offered [mortgage, sell_house, bankrupt] — so every squeezed
+// agent had to liquidate or die, and could never offer a property for the cash to survive.
+func TestADebtorMayTradeItsWayOut(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0}  // seat 0 owns Mediterranean
+	s.Players[0].Cash = 10             // and is broke
+	s.Players[1].Cash = 1000
+	s.Current = 0
+	s.Phase = PhaseResolveDebt
+	s.Debt = &Debt{Debtor: 0, Creditor: 1, Amount: 300, Property: 3, Reason: "rent"}
+
+	legal := e.LegalActions(s, 0)
+	var canTrade bool
+	for _, a := range legal {
+		if a == ActProposeTrade {
+			canTrade = true
+		}
+	}
+	if !canTrade {
+		t.Fatalf("legal actions in debt = %v; a player who cannot pay must be able to TRADE "+
+			"for the money, not only liquidate or go bankrupt", legal)
+	}
+
+	// Sell Mediterranean to seat 1 for $400 — enough to clear the $300 debt.
+	offer := &Trade{Target: 1, GiveProps: []int{1}, WantCash: 400}
+	ns, _, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: offer}, testSeed)
+	if err != nil {
+		t.Fatalf("a debtor's trade was refused: %v", err)
+	}
+	if ns.Phase != PhaseTradeResponse {
+		t.Fatalf("phase = %s, want the counterparty to be asked", ns.Phase)
+	}
+	ns2, _, err := e.Step(ns, 1, Action{Kind: ActAcceptTrade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The cash arrived and the debt is gone: afterRaise settles it the moment it is payable.
+	if ns2.Debt != nil {
+		t.Fatalf("debt still open with $%d in hand — a trade that covers the debt must settle "+
+			"it exactly as selling a house would", ns2.Players[0].Cash)
+	}
+	if ns2.Players[0].Bankrupt {
+		t.Fatal("the seat went bankrupt despite raising the money by trading")
+	}
+	if ns2.Holdings[1].Owner != 1 {
+		t.Fatal("the traded property did not change hands")
+	}
+}
+
+// TestADebtorWithNothingCanStillGoBankrupt: filtering the debt phase must never leave a seat
+// with no legal move. Bankruptcy has to survive every filter.
+func TestADebtorWithNothingCanStillGoBankrupt(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Players[0].Cash = 0
+	s.Players[1].Bankrupt = true // nobody left to trade with either
+	s.Current = 0
+	s.Phase = PhaseResolveDebt
+	s.Debt = &Debt{Debtor: 0, Creditor: Bank, Amount: 200, Property: -1, Reason: "tax"}
+	legal := e.LegalActions(s, 0)
+	if len(legal) != 1 || legal[0] != ActBankrupt {
+		t.Fatalf("legal = %v, want exactly [bankrupt] — a seat with no assets and no partner "+
+			"must still have one legal move", legal)
+	}
+}
+
+// TestASeatMayBuildBetweenOtherPlayersTurns pins the official timing rule: you may buy houses
+// on your turn OR between other players' turns. Management used to be reachable only in the
+// owner's own manage phase, which deleted the timing plays the real game turns on — putting
+// houses up just before an opponent's roll.
+func TestASeatMayBuildBetweenOtherPlayersTurns(t *testing.T) {
+	e := New(Config{Players: 3, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	// Seat 1 owns the whole brown group; it is seat 0's turn.
+	s.Holdings[1] = Holding{Owner: 1}
+	s.Holdings[3] = Holding{Owner: 1}
+	s.Current = 0
+	s.Phase = PhaseTrade
+	s.TradeQueue = []int{1, 2}
+
+	legal := e.LegalActions(s, 1)
+	var canBuild bool
+	for _, a := range legal {
+		if a == ActBuild {
+			canBuild = true
+		}
+	}
+	if !canBuild {
+		t.Fatalf("window actions for seat 1 = %v; the official rules let a player build "+
+			"between other players' turns", legal)
+	}
+
+	ns, _, err := e.Step(s, 1, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatalf("building between turns was refused: %v", err)
+	}
+	if ns.Holdings[1].Houses != 1 {
+		t.Fatalf("houses on Mediterranean = %d, want 1", ns.Holdings[1].Houses)
+	}
+	// Building must NOT cost the seat its place in the window — a player putting up a street
+	// takes several actions, exactly as building does not end their own turn.
+	if len(ns.TradeQueue) == 0 || ns.TradeQueue[0] != 1 {
+		t.Fatalf("trade queue = %v, want seat 1 to keep the floor after building", ns.TradeQueue)
+	}
+}
+
+// TestTheWindowAllowanceStopsASeatHoldingTheFloorForever: build and sell_house are both legal
+// and both affordable, and neither pops the queue — so a policy that alternates them would
+// stall the match. The allowance bounds that without bounding honest play.
+func TestTheWindowAllowanceStopsASeatHoldingTheFloorForever(t *testing.T) {
+	e := New(Config{Players: 3, StartingCash: 5000, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 1}
+	s.Holdings[3] = Holding{Owner: 1}
+	s.Current = 0
+	s.Phase = PhaseTrade
+	s.TradeQueue = []int{1, 2}
+
+	ns := s
+	var err error
+	for i := 0; i < maxWindowActions; i++ {
+		// Alternate build/sell on the same square: always legal, always affordable.
+		act := ActBuild
+		if i%2 == 1 {
+			act = ActSellHouse
+		}
+		ns, _, err = e.Step(ns, 1, Action{Kind: act, Property: 1}, testSeed)
+		if err != nil {
+			t.Fatalf("action %d (%s) refused early: %v", i, act, err)
+		}
+	}
+	if _, _, err = e.Step(ns, 1, Action{Kind: ActBuild, Property: 1}, testSeed); err == nil {
+		t.Fatalf("a seat took more than %d management actions in one window; a looping policy "+
+			"would hold the floor forever and the match would never advance", maxWindowActions)
+	}
+}
+
+// TestLegalActionsNeverOffersAMoveTheEngineWouldRefuse is the general form of the bug: the
+// manage phase answered with a fixed list — [end_turn build sell_house mortgage unmortgage
+// propose_trade] — on any board at all. An agent on an empty board was told `build` was legal,
+// chose it, and got ErrIllegalAction. For an LLM agent that is a wasted decision AND a wasted
+// model call.
+func TestLegalActionsNeverOffersAMoveTheEngineWouldRefuse(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Current = 0
+	s.Phase = PhaseManage // owns nothing, has built nothing, has mortgaged nothing
+
+	for _, act := range e.LegalActions(s, 0) {
+		if act == ActEndTurn || act == ActProposeTrade {
+			continue // no property argument; always available
+		}
+		if _, _, err := e.Step(s, 0, Action{Kind: act}, testSeed); err == ErrIllegalAction {
+			t.Errorf("%q was offered as legal on a board where the seat owns nothing, and the "+
+				"engine then refused it", act)
+		}
+	}
+	// Concretely: with nothing owned, none of the property verbs may be offered.
+	for _, act := range e.LegalActions(s, 0) {
+		switch act {
+		case ActBuild, ActSellHouse, ActMortgage, ActUnmortgage:
+			t.Errorf("%q offered to a seat that owns no property", act)
+		}
+	}
+}
+
+// TestBuildIsOfferedOnlyWhenTheBankHasThePiece: during a housing shortage `build` must stop
+// being advertised. The bank's supply is a real constraint and an agent that keeps being
+// offered a house the bank does not have burns a decision every turn.
+func TestBuildIsOfferedOnlyWhenTheBankHasThePiece(t *testing.T) {
+	e := New(Config{Players: 2, StartingCash: 5000, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0}
+	s.Holdings[3] = Holding{Owner: 0}
+	s.Current = 0
+	s.Phase = PhaseManage
+
+	if !containsAction(e.LegalActions(s, 0), ActBuild) {
+		t.Fatal("build should be offered with a full group, cash, and houses in the bank")
+	}
+	s.HousesRemaining = 0
+	if containsAction(e.LegalActions(s, 0), ActBuild) {
+		t.Error("build offered while the bank has no houses left")
+	}
+}
+
+func containsAction(acts []string, want string) bool {
+	for _, a := range acts {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}

@@ -13,7 +13,7 @@ package monopoly
 // Version identifies the rule set. It is embedded in the match_created event and
 // stored on every match so a replay is reproduced with the exact same rules.
 // Bump on ANY behavioral change to the engine.
-const Version = "monopoly-1.2.0"
+const Version = "monopoly-1.3.0"
 
 // Bank is the sentinel "owner" for unowned property and the sentinel creditor for
 // payments that go to / come from the bank. Tie is the sentinel winner for a draw.
@@ -149,6 +149,15 @@ type State struct {
 	// engine's whole basis for proving a result. Seat order IS the race here: the
 	// fast agent wins by being ready when its turn to answer comes.
 	OpenResponders []int `json:"open_responders,omitempty"`
+	// WindowActions counts the management actions the seat at the head of TradeQueue has
+	// taken in the CURRENT between-turns window.
+	//
+	// Building between turns must not pop the queue — a player putting up a street takes
+	// several actions and the real game lets them. But then nothing forces the seat to hand
+	// the floor back: a policy that alternates build and sell_house can hold it forever,
+	// since both stay legal and affordable. This bounds that without bounding honest play,
+	// the same shape as the counter-offer cap on trades.
+	WindowActions int `json:"window_actions,omitempty"`
 
 	FreeParkingPot int `json:"free_parking_pot,omitempty"` // only used when the house rule is on
 
