@@ -233,3 +233,47 @@ export type EventRow = {
   prompt_tokens?: number;
   completion_tokens?: number;
 };
+
+// ── the arena's own admin API ─────────────────────────────────────────────────
+
+/**
+ * fetchArena calls the ARENA backend directly (not the Lens query/control APIs).
+ *
+ * Every other section here reads Lens's own ClickHouse. The queue funnel lives in the arena's
+ * Postgres, and deliberately stays there: copying it into Lens would give two stores that can
+ * disagree about "how many agents never matched", and a metric with two answers is worse than
+ * a metric fetched over HTTP.
+ *
+ * Auth is FORWARDED, never minted here. The arena enforces RequirePlatformOrAdmin on these
+ * routes, so this passes the caller's cookie/Authorization through and lets the arena decide.
+ * Lens holding an admin credential of its own would turn a telemetry UI into a second place
+ * platform authority can leak from.
+ *
+ * Returns a discriminated result rather than null: "not configured", "not authorised" and
+ * "no data" have to render differently. An empty funnel shown for an auth failure reads as
+ * "the queue is healthy", which is the one wrong conclusion this page must never invite.
+ */
+export type ArenaResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: "unconfigured" | "unauthorized" | "unreachable" };
+
+export async function fetchArena<T>(path: string): Promise<ArenaResult<T>> {
+  if (!(await isAuthorized())) return { ok: false, reason: "unauthorized" };
+  const base = process.env.PYYOL_API_URL;
+  // No explicit base ⇒ unconfigured, NOT a localhost guess. Silently probing localhost in a
+  // deployed environment is how a dashboard ends up showing a developer laptop's numbers.
+  if (!base) return { ok: false, reason: "unconfigured" };
+
+  const forwarded = await buildForwardHeaders();
+  try {
+    const res = await fetch(`${base.replace(/\/$/, "")}${path}`, {
+      cache: "no-store",
+      headers: forwarded,
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: "unauthorized" };
+    if (!res.ok) return { ok: false, reason: "unreachable" };
+    return { ok: true, data: (await res.json()) as T };
+  } catch {
+    return { ok: false, reason: "unreachable" };
+  }
+}

@@ -2414,3 +2414,53 @@ tbody tr:hover td {
   /* Both labels share cell 2; the first is start-aligned, this one end-aligned. */
   grid-row: 1;
 }
+
+/* ── Queue health (src/app/queue) ──────────────────────────────────────────── */
+
+/* A card that is also a button. Reset the browser's button chrome rather than restyling it,
+   so these sit flush with the non-interactive .card blocks elsewhere — a drill-down that
+   looks like a different component reads as a different kind of thing. */
+.queue-card {
+  appearance: none;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--panel, #141414);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.queue-card:hover { border-color: var(--accent, #4a9eff); }
+/* Keyboard focus must be visible: these are the primary controls on the page and a
+   keyboard user has no hover to fall back on. */
+.queue-card:focus-visible { outline: 2px solid var(--accent, #4a9eff); outline-offset: 2px; }
+.queue-card-open {
+  border-color: var(--accent, #4a9eff);
+  /* Nudged, not scaled: scaling a card in a grid shifts its neighbours. */
+  transform: translateY(-1px);
+}
+.queue-hint { color: var(--muted, #888); font-size: 0.85rem; margin: 0.75rem 0; }
+
+.queue-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.queue-table th, .queue-table td {
+  text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.queue-table th { color: var(--muted, #888); font-weight: 500; }
+/* Numbers right-aligned and tabular so columns compare at a glance — the whole point of
+   putting them in a table. */
+.queue-table td:not(:first-child), .queue-table th:not(:first-child) {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+
+.queue-flow { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.75rem 0; }
+.queue-flow-row { display: grid; grid-template-columns: 6rem 1fr 4rem; align-items: center; gap: 0.6rem; }
+.queue-flow-label { color: var(--muted, #888); font-size: 0.8rem; }
+.queue-flow-track { height: 0.5rem; background: var(--border, #2a2a2a); border-radius: 999px; overflow: hidden; }
+.queue-flow-fill { display: block; height: 100%; background: var(--accent, #4a9eff); }
+.queue-flow-value { text-align: right; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
+
+/* The log view. Scrolls on its own so a long list cannot make the PAGE scroll sideways. */
+.queue-log {
+  margin-top: 0.75rem; padding: 0.6rem 0.8rem;
+  background: var(--code-bg, #0d0d0d); border: 1px solid var(--border, #2a2a2a); border-radius: 6px;
+  font-size: 0.75rem; line-height: 1.5; overflow-x: auto; white-space: pre;
+  color: var(--fg-dim, #bbb);
+}
