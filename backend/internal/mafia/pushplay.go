@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"strconv"
 	"time"
 
@@ -214,15 +215,43 @@ func (s *Service) StartPushPlay(ctx context.Context, userAgent, userOwner string
 		seatIDs = append(seatIDs, b.PublicID)
 	}
 
-	go s.pusher.drive(s, matchID, userAgent, target, seatIDs)
+	// A single-entry map: free practice is one developer and eleven bots. Same driver as a
+	// group-matched table, so the two paths cannot drift.
+	go s.pusher.drive(s, matchID, map[string]agentclient.Target{userAgent: target}, seatIDs)
 	return matchID, nil
 }
 
 // drive advances the match: each pass, every alive seat with a pending action
-// acts — seat 1 (userAgent) via the endpoint, the rest via a rule-based bot. The
+// acts — each REAL seat via its own endpoint/socket, the rest via a rule-based bot. The
 // engine validates each move, so a stale action (phase already advanced) is
 // harmlessly rejected and retried next pass.
-func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentclient.Target, seatIDs []string) {
+// drive advances the match: each pass, every alive seat with a pending action acts — a REAL
+// agent through its own transport, the rest via a rule-based bot.
+//
+// remotes maps every real agent's public id to its transport target. It used to be a single
+// (userAgent, target) pair, which was right when the only way to reach this was free practice:
+// one developer, eleven bots. A GROUP-MATCHED table has several real agents, and calling this
+// once per agent would have each call bot-playing the others' seats.
+//
+// That gap is why a ranked Mafia seat never received a turn at all: mafiaTableCreator started
+// the table via CreateTable+Join and nothing here was ever spawned. Verified by watching four
+// funded, matched agents get zero pushes.
+func (p *pushPlayer) drive(s *Service, matchID string, remotes map[string]agentclient.Target, seatIDs []string) {
+	if len(remotes) == 0 {
+		// Nothing to drive. Returning rather than bot-playing every seat: a table with no real
+		// agent is not this loop's job, and silently playing it out would manufacture a
+		// finished match nobody participated in.
+		return
+	}
+	// The seat whose view is used for match STATUS and for the benchmark's agent meta. Sorted
+	// so two runs of the same match read it the same way.
+	realIDs := make([]string, 0, len(remotes))
+	for id := range remotes {
+		realIDs = append(realIDs, id)
+	}
+	sort.Strings(realIDs)
+	primary := realIDs[0]
+
 	ctx, cancel := context.WithTimeout(context.Background(), p.maxMatch)
 	defer cancel()
 
@@ -231,7 +260,7 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 	rec := benchmark.NewRecorder("mafia", matchID)
 	var agentMeta benchmark.AgentMeta
 	if p.meta != nil {
-		agentMeta = p.meta(ctx, userAgent)
+		agentMeta = p.meta(ctx, primary)
 	}
 	defer func() {
 		if err := benchmark.Flush(rec, p.persist, p.em, "practice"); err != nil {
@@ -239,8 +268,12 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 		}
 	}()
 
-	initialized := false
-	deliveredSeq := 0 // highest public-event Seq already pushed to /event
+	// PER AGENT, not per match. Each real seat has its own initialize handshake and its own
+	// delivered-seq cursor: sharing one cursor across agents would mark an event delivered for
+	// everybody the moment it reached the first of them, so the rest would silently never
+	// receive it — the exact guarantee the push path exists to provide.
+	initialized := make(map[string]bool, len(remotes))
+	deliveredSeq := make(map[string]int, len(remotes))
 	// Per-seat role-aware house bots (mafia avoid allies; detective votes/investigates
 	// on its proven private results). Cached per seat so each keeps its deterministic
 	// rng across the match. Pure engine — no AI/network.
@@ -250,31 +283,43 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 			p.log.Warn("mafia pushplay: deadline exceeded", "match", matchID)
 			return
 		}
-		base, err := s.State(ctx, matchID, userAgent, false, 0)
+		// Status is read through ONE real seat, chosen deterministically so a replay of this
+		// loop reads the same way twice. Any seat's view carries the same match status.
+		base, err := s.State(ctx, matchID, primary, false, 0)
 		if err != nil {
 			p.log.Warn("mafia pushplay: state read failed", "match", matchID, "err", err)
 			return
 		}
-		// Pick the transport fresh each pass (socket if connected, else endpoint).
-		tr := p.transport(userAgent, target)
+		// Transport is chosen PER REAL AGENT inside the loop below, since each has its own
+		// socket-or-endpoint answer. Kept here only for the primary seat's lifecycle calls.
+		tr := p.transport(primary, remotes[primary])
 		// Lifecycle: initialize once, lazily on the first state read (best-effort).
 		// Role is included so the agent knows its allegiance up front.
-		if !initialized {
-			initialized = true
-			if err := tr.Initialize(ctx, agentclient.InitializeRequest{
-				MatchID: matchID, Game: "mafia", Seat: base.YourSeat, Role: base.YourRole, Players: s.cfg.RosterSize,
-			}); err != nil {
-				p.log.Warn("mafia pushplay: initialize failed (continuing)", "match", matchID, "err", err)
+		// Initialize + event delivery for EVERY real agent, each with its own transport and
+		// cursor. Doing this only for one seat is what left the other three silent.
+		for _, id := range realIDs {
+			itr := p.transport(id, remotes[id])
+			iv, ierr := s.State(ctx, matchID, id, false, 0)
+			if ierr != nil {
+				continue
 			}
+			if !initialized[id] {
+				initialized[id] = true
+				if err := itr.Initialize(ctx, agentclient.InitializeRequest{
+					MatchID: matchID, Game: "mafia", Seat: iv.YourSeat, Role: iv.YourRole,
+					Players: s.cfg.RosterSize,
+				}); err != nil {
+					p.log.Warn("mafia pushplay: initialize failed (continuing)",
+						"match", matchID, "agent", id, "err", err)
+				}
+			}
+			deliveredSeq[id] = p.dispatchPublicEvents(ctx, itr, matchID, iv.Public, deliveredSeq[id])
 		}
-		// Async event for each public transcript entry that appeared since the last
-		// read. Public events carry a monotonic Seq, used directly for ordering.
-		deliveredSeq = p.dispatchPublicEvents(ctx, tr, matchID, base.Public, deliveredSeq)
 		if base.Status != StatusActive {
 			// Record the developer seat's meta + outcome (role-agnostic: the reward
 			// row flags whether this seat was on the winning team).
-			rec.SetAgentMeta(base.YourSeat, userAgent, agentMeta)
-			rec.SetResult(base.YourSeat, userAgent, mafiaResult(base.Result, base.YourSeat))
+			rec.SetAgentMeta(base.YourSeat, primary, agentMeta)
+			rec.SetResult(base.YourSeat, primary, mafiaResult(base.Result, base.YourSeat))
 			p.log.Info("mafia pushplay: match finished", "match", matchID, "status", base.Status, "socket", tr.Socket())
 			// Lifecycle: game-end with a FAT, replayable payload — the settled result
 			// PLUS the full public transcript (chat + votes + eliminations), so the
@@ -296,12 +341,18 @@ func (p *pushPlayer) drive(s *Service, matchID, userAgent string, target agentcl
 				continue
 			}
 			var act mf.Action
-			if id == userAgent {
+			// A REAL seat decides through its own transport; everyone else is bot-played.
+			// This used to be `id == userAgent`, which is why only one seat per table was ever
+			// asked — the whole reason a ranked Mafia seat sat idle. Per-seat transport, not
+			// the primary's: two agents can be on different transports (one socket, one
+			// hosted endpoint), and pushing to the wrong one silently reaches nobody.
+			if seatTarget, isReal := remotes[id]; isReal {
+				str := p.transport(id, seatTarget)
 				var outcome benchmark.Outcome
 				var latencyMS int64
 				var rationale string
 				var usage *benchmark.TokenUsage
-				act, outcome, latencyMS, rationale, usage = p.decideRemote(ctx, tr, matchID, id, v)
+				act, outcome, latencyMS, rationale, usage = p.decideRemote(ctx, str, matchID, id, v)
 				rec.Record(benchmark.Decision{
 					Seat: v.YourSeat, AgentID: id, Outcome: outcome, LatencyMS: latencyMS,
 					Round: v.Day, Action: describeAction(act), Rationale: rationale, Usage: usage,
@@ -514,4 +565,54 @@ func describeAction(a mf.Action) string {
 		// message, abstain and anything else carry no target worth recording.
 		return a.Kind
 	}
+}
+
+// DriveMatchedSeats pushes turns to the REAL agents on a table the group matcher started.
+//
+// # Why a ranked Mafia seat needed this
+//
+// mafiaTableCreator.CreateStartedTable builds a group-matched table with CreateTable + Join and
+// then calls DriveHouseSeats, which drives ONLY the bot fillers. Its comment says real agents
+// "act for themselves over the API" — true of a polling client, and not true of either
+// transport the SDK actually offers:
+//
+//	pyyol run        waits for turn frames over its socket
+//	hosted endpoint  waits to be POSTed to
+//
+// Both are PUSH. Nothing pushed. So a developer who queued for ranked Mafia was seated and then
+// sat idle until every phase timed out — measured: four funded, matched agents, zero pushes,
+// and all 27 historical LLM-backed Mafia matches came from the free-practice path instead.
+//
+// Goofspiel already has the equivalent (match.maybeDrive spawns its driver on a freshly paired
+// match). This is that, for Mafia.
+//
+// Best-effort and non-blocking: it resolves each agent's transport and hands the whole set to
+// the same drive loop free practice uses, so the two paths cannot drift. An agent with no
+// reachable transport is skipped rather than failing the table — it forfeits by silence exactly
+// as it does today, which is the pre-existing behaviour and not a new penalty.
+func (s *Service) DriveMatchedSeats(ctx context.Context, matchPublicID string, realAgentIDs, allSeatIDs []string) {
+	if s.pusher == nil || len(realAgentIDs) == 0 {
+		return
+	}
+	remotes := make(map[string]agentclient.Target, len(realAgentIDs))
+	for _, id := range realAgentIDs {
+		target, found, err := s.pusher.remote.PlayTarget(ctx, id)
+		connected := s.pusher.gw != nil && s.pusher.gw.Connected(id)
+		switch {
+		case err != nil && !connected:
+			s.pusher.log.Debug("mafia matched-drive: no transport for seat",
+				"match", matchPublicID, "agent", id, "err", err)
+			continue
+		case !connected && (!found || target.EndpointURL == ""):
+			// No socket and no verified endpoint: nothing to push to. Skipped, not fatal.
+			continue
+		}
+		remotes[id] = target
+	}
+	if len(remotes) == 0 {
+		return
+	}
+	// context.WithoutCancel: the caller's context ends with the HTTP request that matched the
+	// table, and the match outlives it by minutes. drive() applies its own maxMatch timeout.
+	go s.pusher.drive(s, matchPublicID, remotes, allSeatIDs)
 }

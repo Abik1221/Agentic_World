@@ -2214,10 +2214,24 @@ func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []group
 		}
 		filled = append(filled, b.PublicID)
 	}
-	// Real agents act for themselves over the API, but nothing else would ever act for
-	// the fillers — push-play's drive loop only runs for a push-play table. Without this
-	// the bot seats would stay silent until every phase timed out.
+	// Nothing else would ever act for the fillers — push-play's drive loop only runs for a
+	// push-play table. Without this the bot seats would stay silent until every phase timed out.
 	c.svc.DriveHouseSeats(id, filled)
+	// AND push turns to the REAL agents.
+	//
+	// The line above used to be the whole story, on the premise that "real agents act for
+	// themselves over the API". That is true of a polling client and false of both transports
+	// the SDK offers: `pyyol run` waits for socket turn frames and a hosted endpoint waits to be
+	// POSTed to. Neither polls, so nothing drove them and a ranked Mafia seat sat idle until its
+	// phases timed out. Goofspiel has had the equivalent all along (match.maybeDrive).
+	real := make([]string, 0, len(seats))
+	all := make([]string, 0, len(seats)+len(filled))
+	for _, st := range seats {
+		real = append(real, st.AgentPublicID)
+		all = append(all, st.AgentPublicID)
+	}
+	all = append(all, filled...)
+	c.svc.DriveMatchedSeats(ctx, id, real, all)
 	return id, nil
 }
 
@@ -2242,6 +2256,14 @@ func (c monopolyTableCreator) CreateStartedTable(ctx context.Context, seats []gr
 			return "", err
 		}
 	}
+	// Push turns to the real agents. Without this the table started and nobody was ever asked
+	// to move: Monopoly sizes to the group, so every seat is a real agent, and both SDK
+	// transports are push-based. See monopoly.DriveMatchedSeats.
+	real := make([]string, 0, len(seats))
+	for _, st := range seats {
+		real = append(real, st.AgentPublicID)
+	}
+	c.svc.DriveMatchedSeats(ctx, id, real)
 	return id, nil
 }
 

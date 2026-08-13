@@ -429,3 +429,42 @@ func containsStr(xs []string, v string) bool {
 	}
 	return false
 }
+
+// DriveMatchedSeats pushes turns to the real agents on a table the group matcher started.
+//
+// # Why a ranked Monopoly seat needed this
+//
+// monopolyTableCreator.CreateStartedTable created the table, joined every seat, and returned —
+// with NO driver of any kind. Mafia at least drove its bot fillers; Monopoly sizes the table to
+// the group it is handed, so every seat is a real agent and nothing drove any of them.
+//
+// Both SDK transports are PUSH: `pyyol run` waits for socket turn frames, a hosted endpoint
+// waits to be POSTed to. Neither polls. So a developer who queued for ranked Monopoly was
+// seated and then sat idle until every turn timed out — consistent with the measurement that
+// exactly ONE of 11,076 finished Monopoly matches has ever carried an LLM call, and that
+// agent_says is zero across all of them.
+//
+// ONE DRIVER PER AGENT is correct here, unlike Mafia. Monopoly's drive loop acts only for its
+// own seat (s.Act(ctx, agentID, ...)) and never plays anybody else's, so N drivers cooperate
+// rather than fight. Mafia's loop walks every seat and bot-plays the rest, which is why it
+// needed a single driver taking all the real agents at once.
+//
+// Best-effort: an agent with no reachable transport is skipped, not fatal. It forfeits by
+// silence exactly as it does today.
+func (s *Service) DriveMatchedSeats(ctx context.Context, matchPublicID string, realAgentIDs []string) {
+	if s.pusher == nil {
+		return
+	}
+	for _, id := range realAgentIDs {
+		target, found, err := s.pusher.remote.PlayTarget(ctx, id)
+		connected := s.pusher.gw != nil && s.pusher.gw.Connected(id)
+		if !connected && (err != nil || !found || target.EndpointURL == "") {
+			s.pusher.log.Debug("monopoly matched-drive: no transport for seat",
+				"match", matchPublicID, "agent", id)
+			continue
+		}
+		// One goroutine per seat. drive() applies its own maxMatch timeout, and the caller's
+		// context ends with the HTTP request that matched the table — the match outlives it.
+		go s.pusher.drive(s, matchPublicID, id, target)
+	}
+}
