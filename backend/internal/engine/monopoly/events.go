@@ -28,6 +28,10 @@ const (
 	EvTradeProposed     EventType = "trade_proposed"
 	EvTradeExecuted     EventType = "trade_executed"
 	EvTradeRejected     EventType = "trade_rejected"
+	// EvTradeDeclined: one seat passed on an OPEN offer that is still standing for the
+	// seats behind it. Distinct from trade_rejected, which ends the offer — a watching
+	// agent that treated a pass as the end would stop tracking an offer it can still take.
+	EvTradeDeclined EventType = "trade_declined"
 	EvTurnEnded         EventType = "turn_ended"
 	EvMatchFinished     EventType = "match_finished"
 	// EvAgentSays is public table talk. Monopoly is a negotiation game — the deals

@@ -615,3 +615,203 @@ func TestTradeValidation(t *testing.T) {
 		t.Fatal("an empty trade should fail")
 	}
 }
+
+// ── open offers: any seat may take them ──────────────────────────────────────
+//
+// The rule these pin: an offer made to the TABLE is answered by whoever can satisfy it,
+// in seat order, and the first yes wins. Before this existed a trade could only ever be
+// accepted by the one seat it named, so an agent watching a good deal go by had no way
+// to take it.
+
+// openBoard: four seats, one property each in the brown/light-blue range, everyone solvent.
+func openBoard(t *testing.T) (*Engine, State) {
+	t.Helper()
+	e := New(Config{Players: 4, StartingCash: 1500, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0} // Mediterranean — the seat 0 offers
+	s.Holdings[3] = Holding{Owner: 1} // Baltic
+	s.Holdings[6] = Holding{Owner: 2} // Oriental
+	s.Holdings[8] = Holding{Owner: 3} // Vermont
+	s.Current = 0
+	s.Phase = PhaseManage
+	return e, s
+}
+
+func TestOpenOfferIsAnsweredBySomeoneOtherThanTheTarget(t *testing.T) {
+	e, s := openBoard(t)
+
+	// Mediterranean for $200, offered to the whole table — no target named.
+	trade := &Trade{Target: OpenToTable, GiveProps: []int{1}, WantCash: 200}
+	ns, evs, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatalf("open offer refused: %v", err)
+	}
+	if evs[0].Type != EvTradeProposed {
+		t.Fatalf("expected trade_proposed, got %s", evs[0].Type)
+	}
+	if ns.Phase != PhaseTradeResponse {
+		t.Fatalf("phase = %s, want a response phase", ns.Phase)
+	}
+	// Every other solvent seat is eligible, in seat order. The proposer never is.
+	if got := ns.OpenResponders; len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Fatalf("responders = %v, want [1 2 3]", got)
+	}
+	if e.pendingActor(ns) != 1 {
+		t.Fatalf("pending actor = %d, want the head of the queue", e.pendingActor(ns))
+	}
+
+	// Seat 1 passes. The offer MUST survive — this is the whole feature.
+	ns, evs, err = e.Step(ns, 1, Action{Kind: ActRejectTrade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evs[0].Type != EvTradeDeclined {
+		t.Fatalf("a pass on a standing offer must be trade_declined, got %s — trade_rejected "+
+			"tells a watching agent the offer is gone when it can still be taken", evs[0].Type)
+	}
+	if ns.PendingTrade == nil {
+		t.Fatal("the offer was withdrawn when seat 1 passed; seats 2 and 3 never got their chance")
+	}
+	if e.pendingActor(ns) != 2 {
+		t.Fatalf("pending actor = %d, want seat 2 after seat 1 passed", e.pendingActor(ns))
+	}
+
+	// Seat 2 takes it — a seat the proposer never named.
+	ns2, evs2, err := e.Step(ns, 2, Action{Kind: ActAcceptTrade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns2.Holdings[1].Owner != 2 {
+		t.Fatalf("Mediterranean owner = %d, want seat 2 (the seat that accepted)", ns2.Holdings[1].Owner)
+	}
+	if ns2.Players[2].Cash != 1300 || ns2.Players[0].Cash != 1700 {
+		t.Fatalf("cash wrong: proposer %d, acceptor %d", ns2.Players[0].Cash, ns2.Players[2].Cash)
+	}
+	if ns2.PendingTrade != nil || len(ns2.OpenResponders) != 0 {
+		t.Fatal("the offer must be closed once taken")
+	}
+	if evs2[len(evs2)-1].Type != EvTradeExecuted {
+		t.Fatalf("expected trade_executed, got %s", evs2[len(evs2)-1].Type)
+	}
+}
+
+func TestOnlyTheHeadOfTheQueueMayAnswerAnOpenOffer(t *testing.T) {
+	e, s := openBoard(t)
+	trade := &Trade{Target: OpenToTable, GiveProps: []int{1}, WantCash: 200}
+	ns, _, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seat 3 is eligible but LAST. Letting it jump the queue would make the outcome
+	// depend on which agent's HTTP response landed first, and the same match would
+	// replay differently — the engine could no longer prove its own result.
+	if _, _, err := e.Step(ns, 3, Action{Kind: ActAcceptTrade}, testSeed); err != ErrNotYourTurn {
+		t.Fatalf("seat 3 jumping the queue = %v, want ErrNotYourTurn", err)
+	}
+	// The proposer cannot take its own offer either.
+	if _, _, err := e.Step(ns, 0, Action{Kind: ActAcceptTrade}, testSeed); err != ErrNotYourTurn {
+		t.Fatalf("proposer accepting its own open offer = %v, want ErrNotYourTurn", err)
+	}
+}
+
+func TestOnlySeatsThatCanSatisfyAnOpenOfferAreAsked(t *testing.T) {
+	e, s := openBoard(t)
+	s.Players[1].Cash = 10 // cannot pay
+	s.Players[2].Cash = 10 // cannot pay
+	trade := &Trade{Target: OpenToTable, GiveProps: []int{1}, WantCash: 200}
+	ns, _, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ns.OpenResponders; len(got) != 1 || got[0] != 3 {
+		t.Fatalf("responders = %v, want only seat 3 — a seat that cannot pay must not be "+
+			"handed a decision it has no legal answer to", got)
+	}
+}
+
+func TestAnOpenOfferNobodyCanTakeResolvesInsteadOfHanging(t *testing.T) {
+	e, s := openBoard(t)
+	for i := 1; i < 4; i++ {
+		s.Players[i].Cash = 10
+	}
+	trade := &Trade{Target: OpenToTable, GiveProps: []int{1}, WantCash: 200}
+	ns, evs, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.PendingTrade != nil {
+		t.Fatal("an offer with no eligible taker must not pend — nobody exists to answer it")
+	}
+	if ns.Phase != PhaseManage {
+		t.Fatalf("phase = %s, want the turn to continue at manage", ns.Phase)
+	}
+	if len(evs) != 2 || evs[1].Type != EvTradeRejected {
+		t.Fatalf("events = %v, want proposed then rejected", evs)
+	}
+}
+
+// TestAnUnsatisfiableOpenOfferInTheWindowDoesNotLoop pins the bug this nearly shipped
+// with: from the trade WINDOW, the proposer is only popped off TradeQueue when a
+// negotiation resolves. An offer that found no taker originally returned without
+// resolving, leaving the same seat at the head of the queue — so a policy that kept
+// making the same unsatisfiable offer would never let the turn advance.
+func TestAnUnsatisfiableOpenOfferInTheWindowDoesNotLoop(t *testing.T) {
+	e, s := openBoard(t)
+	s.Phase = PhaseTrade
+	s.TradeQueue = []int{1, 2, 3}
+	s.TradeReturn = ""
+	for i := range s.Players {
+		if i != 1 {
+			s.Players[i].Cash = 10
+		}
+	}
+	// Seat 1 offers Baltic for $900 — nobody can pay.
+	trade := &Trade{Target: OpenToTable, GiveProps: []int{3}, WantCash: 900}
+	ns, _, err := e.Step(s, 1, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ns.TradeQueue) != 2 || ns.TradeQueue[0] != 2 {
+		t.Fatalf("trade queue = %v, want seat 1 popped and seat 2 next; an unresolved "+
+			"offer would ask seat 1 again forever", ns.TradeQueue)
+	}
+}
+
+func TestAnOpenOfferCannotBeCountered(t *testing.T) {
+	e, s := openBoard(t)
+	trade := &Trade{Target: OpenToTable, GiveProps: []int{1}, WantCash: 200}
+	ns, _, err := e.Step(s, 0, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, act := range e.LegalActions(ns, 1) {
+		if act == ActCounterTrade {
+			t.Fatal("counter must not be legal on an open offer: it would turn a standing " +
+				"table-wide offer into a private negotiation and cut out the seats behind")
+		}
+	}
+	counter := &Trade{GiveProps: []int{3}, WantProps: []int{1}}
+	if _, _, err := e.Step(ns, 1, Action{Kind: ActCounterTrade, Trade: counter}, testSeed); err == nil {
+		t.Fatal("countering an open offer was accepted; the guard in stepTradeResponse is not holding")
+	}
+}
+
+// TestAZeroTargetIsNeverAnOpenOffer is the seat-0 trap, in the one place it would be
+// most expensive: an offer whose Target field was left unset must be a concrete offer
+// to seat 0 — a real player — and never silently become an offer to the whole table.
+func TestAZeroTargetIsNeverAnOpenOffer(t *testing.T) {
+	e, s := openBoard(t)
+	s.Current = 1 // so seat 0 is a plausible counterparty, not the proposer
+	trade := &Trade{GiveProps: []int{3}, WantCash: 100}
+	ns, _, err := e.Step(s, 1, Action{Kind: ActProposeTrade, Trade: trade}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ns.OpenResponders) != 0 {
+		t.Fatalf("an unset target opened a table-wide offer (responders %v); it must be a "+
+			"targeted offer to seat 0", ns.OpenResponders)
+	}
+	if ns.PendingTrade == nil || ns.PendingTrade.Target != 0 {
+		t.Fatal("expected a concrete pending offer to seat 0")
+	}
+}

@@ -5,10 +5,13 @@ measurement quoted inline or explicitly marked unverified.
 
 ---
 
-## BLOCKER 1 — a ranked Mafia seat never receives a turn
+## BLOCKER 1 — a ranked Mafia seat never receives a turn — **FIXED AND VERIFIED (856d99b)**
 
-**Severity: beta-blocking. A developer who queues for ranked Mafia is seated and then waits
-forever.**
+Ranked Mafia: 6 seat decisions arrived, `staked_mafia_last30min=1`, and the free-practice
+regression still passes (4 `mf_` tables, 8 decisions).
+
+**Severity when open: beta-blocking. A developer who queued for ranked Mafia was seated and then
+waited forever.**
 
 `StartPushPlay` (internal/mafia/pushplay.go:182) is the ONLY code path that drives a real
 agent's Mafia seat by POSTing turns to its endpoint. A group-matched table is created by
@@ -29,12 +32,28 @@ still finishes, because the engine force-plays a seat that never acts. A forfeit
 look identical on the wire. Verify by asserting turns ARRIVED (agent-side log, or
 agent_model_calls rows for that match).
 
-## BLOCKER 2 — Monopoly has the same shape, unconfirmed
+## BLOCKER 2 — Monopoly had the same shape — **FIXED AND VERIFIED (856d99b)**
 
-Monopoly's `StartPushPlay` is at internal/monopoly/pushplay.go and its table creator is beside
-Mafia's in main.go. The same question applies and was never tested: does a group-matched
-Monopoly table drive its real seats? `agent_says` is 0 across 11,076 finished Monopoly matches
-and LLM-backed Monopoly matches ever = 1, which is consistent with the same defect.
+Same commit, and now confirmed in the DATABASE rather than the run log. Two group-matched
+tables, all four gamelab agents driven:
+
+| match | agent | decisions | rounds | ok |
+|---|---|---|---|---|
+| mp_3uues4cllrfutvug | ag_4sj7r6wpon7nkagd | 2,294 | 0→999 | 2,038 |
+| mp_3uues4cllrfutvug | ag_q7sir6xhx7vfo2it | 2,321 | 1→1000 | 2,065 |
+| mp_tnuyunkhjpoanzth | ag_3i3xlexwuivjtm4d | 2,301 | 1→1000 | 2,045 |
+| mp_tnuyunkhjpoanzth | ag_lakjltjiey43j64n | 2,246 | 0→999 | 1,990 |
+
+The run log alone was NOT sufficient evidence and nearly misled me: the agents were serving
+Mafia matches concurrently, and the only monopoly lines were `/initialize` acks. What made
+those acks conclusive was their SHAPE — `ready_asker.go` sent `game:"goofspiel"` plus a
+`deadline_ms`, and these carried `game:"monopoly"` with no deadline, so they could only have
+come from the driver at `monopoly/pushplay.go:237`. The DB query is what actually settled it.
+
+**Left open, not beta-blocking:** a ranked Monopoly match runs to the 1000-turn cap and writes
+~4,600 decision rows. With instant lab agents that takes 16 seconds; with real agents thinking
+3s it is ~100 minutes of wall clock. Worth a product decision on the turn cap before real
+tables run long.
 
 ---
 

@@ -38,9 +38,20 @@ const (
 
 // Trade is a proposed player-to-player exchange of properties and cash. The
 // proposer gives GiveProps + GiveCash and receives WantProps + WantCash.
+// OpenToTable is the Target of an offer made to the WHOLE table rather than to one
+// seat: any player who can satisfy it may take it, first come first served.
+//
+// -1 rather than a separate bool, and never 0, for the reason seat numbering forces
+// everywhere in this codebase: seat 0 is a real player, so a zero value must never be
+// readable as "everyone". An offer whose Target was accidentally left unset is then a
+// concrete offer to seat 0, which the strict validator rejects on its own terms — it
+// can never silently become an offer to the table.
+const OpenToTable = -1
+
 type Trade struct {
-	Proposer  int   `json:"proposer"`
-	Target    int   `json:"target"`
+	Proposer int `json:"proposer"`
+	// Target is the seat being offered to, or OpenToTable for an open offer.
+	Target int `json:"target"`
 	GiveProps []int `json:"give_props"`           // proposer -> target
 	GiveCash  int   `json:"give_cash"`            // proposer -> target
 	GiveCards int   `json:"give_cards,omitempty"` // get-out-of-jail cards proposer -> target
@@ -126,6 +137,18 @@ type State struct {
 	// negotiation should resume once it resolves ("trade" window or "manage").
 	TradeQueue  []int  `json:"trade_queue,omitempty"`
 	TradeReturn string `json:"trade_return,omitempty"`
+	// OpenResponders holds the seats still owed a chance at an OPEN offer
+	// (PendingTrade.Target == OpenToTable), in seat order, head first. Only the head
+	// may act. The queue is built once when the offer opens and contains ONLY seats
+	// that could actually satisfy it, so nobody is asked to answer an offer they
+	// cannot take.
+	//
+	// This is what makes "first come first served" deterministic. Resolving an open
+	// offer by wall-clock arrival would make the same match replay differently
+	// depending on network timing, which would break replay verification — the
+	// engine's whole basis for proving a result. Seat order IS the race here: the
+	// fast agent wins by being ready when its turn to answer comes.
+	OpenResponders []int `json:"open_responders,omitempty"`
 
 	FreeParkingPot int `json:"free_parking_pot,omitempty"` // only used when the house rule is on
 
@@ -229,6 +252,7 @@ func (s State) clone() State {
 		cp.PendingTrade = &tr
 	}
 	cp.TradeQueue = append([]int(nil), s.TradeQueue...)
+	cp.OpenResponders = append([]int(nil), s.OpenResponders...)
 	cp.EstateQueue = append([]int(nil), s.EstateQueue...)
 	return cp
 }

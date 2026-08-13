@@ -187,6 +187,19 @@ func (e *Engine) pendingActor(s State) int {
 		}
 	case PhaseTradeResponse:
 		if s.PendingTrade != nil {
+			// An OPEN offer is answered by the head of the responder queue, not by
+			// Target — which is OpenToTable and is not a seat.
+			if s.PendingTrade.Target == OpenToTable {
+				if len(s.OpenResponders) > 0 {
+					return s.OpenResponders[0]
+				}
+				// An open offer with nobody left to answer is not a state the engine
+				// creates: the offer is closed the moment the queue drains. Falling
+				// through to s.Current rather than returning OpenToTable matters —
+				// handing back -1 would make the match service authorize "seat -1"
+				// and index a slice with it.
+				break
+			}
 			return s.PendingTrade.Target
 		}
 	case PhaseTrade:
@@ -270,6 +283,14 @@ func (e *Engine) LegalActions(s State, seat int) []string {
 	case PhaseManage:
 		return []string{ActEndTurn, ActBuild, ActSellHouse, ActMortgage, ActUnmortgage, ActProposeTrade}
 	case PhaseTradeResponse:
+		// No counter-offer on an OPEN offer. A counter is a bilateral negotiation, and
+		// there is no single counterparty here — countering would silently convert a
+		// standing table-wide offer into a private one and deny the seats behind this
+		// one in the queue the chance they were owed. A responder who wants different
+		// terms rejects and makes its own offer in the trade window.
+		if s.PendingTrade != nil && s.PendingTrade.Target == OpenToTable {
+			return []string{ActAcceptTrade, ActRejectTrade}
+		}
 		if s.TradeCounters < maxTradeCounters {
 			return []string{ActAcceptTrade, ActRejectTrade, ActCounterTrade}
 		}
@@ -665,6 +686,9 @@ func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
 	}
 	t := *tr // copy; normalize proposer to the current player
 	t.Proposer = ns.Current
+	if t.Target == OpenToTable {
+		return e.proposeOpenTrade(ns, t, tr, PhaseManage)
+	}
 	if err := e.validateTrade(ns, t); err != nil {
 		return nil, err
 	}
@@ -675,6 +699,84 @@ func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
 	ns.TradeCounters = 0         // fresh negotiation
 	ns.TradeReturn = PhaseManage // proposed from the owner's manage phase
 	return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
+}
+
+// proposeOpenTrade opens an offer to the whole table: any seat that can satisfy it may
+// take it, and the first one to say yes gets it.
+//
+// The eligible seats are found by running each candidate through validateTrade — the
+// SAME strict validator that guards a targeted trade — with that seat substituted as
+// the target. Nothing here re-implements the trade rules, so an open offer can never
+// be executable on terms a targeted offer would refuse. It also means a seat is only
+// asked when it could actually accept, rather than being handed a decision it has no
+// legal answer to.
+//
+// An offer nobody can satisfy is NOT an error. The proposer is not told who holds what
+// cash, so "no taker" is an ordinary outcome of bidding for something nobody can sell;
+// it is emitted as proposed-then-rejected so the log reads as what happened.
+func (e *Engine) proposeOpenTrade(ns *State, t Trade, src *Trade, ret string) ([]Event, error) {
+	if err := e.validateOpenOffer(ns, t); err != nil {
+		return nil, err
+	}
+	t.GiveProps = append([]int(nil), src.GiveProps...)
+	t.WantProps = append([]int(nil), src.WantProps...)
+
+	var eligible []int
+	for _, seat := range otherActiveSeats(ns, t.Proposer) {
+		probe := t
+		probe.Target = seat
+		if e.validateTrade(ns, probe) == nil {
+			eligible = append(eligible, seat)
+		}
+	}
+	proposed := e.emit(ns, EvTradeProposed, tradePayload(t))
+	if len(eligible) == 0 {
+		// Nothing pends: the offer is born and dies in the same step. Setting
+		// PhaseTradeResponse with an empty responder queue would leave the match
+		// waiting on a seat that does not exist.
+		//
+		// It still has to RESOLVE, not merely return. From the trade window the
+		// proposer is only popped off TradeQueue when a negotiation ends — so
+		// returning here without resolving would leave the same seat at the head of
+		// the queue and ask it to propose again, and a policy that keeps offering the
+		// same unsatisfiable trade would never advance the turn.
+		ns.TradeReturn = ret
+		e.resumeAfterTrade(ns)
+		return []Event{proposed, e.emit(ns, EvTradeRejected, tradePayload(t))}, nil
+	}
+	ns.PendingTrade = &t
+	ns.OpenResponders = eligible
+	ns.Phase = PhaseTradeResponse
+	ns.TradeCounters = 0
+	ns.TradeReturn = ret
+	return []Event{proposed}, nil
+}
+
+// validateOpenOffer checks the half of an open offer that can be checked when the
+// counterparty is not yet known: the proposer's own side.
+//
+// The want side is deliberately NOT validated here — no single seat has to satisfy it
+// yet. It is validated per candidate through validateTrade, and again at acceptance
+// against the concrete accepting seat. That keeps every ownership and solvency rule in
+// exactly one place; this function only rejects what is wrong regardless of who takes it.
+func (e *Engine) validateOpenOffer(ns *State, t Trade) error {
+	if t.Proposer < 0 || t.Proposer >= len(ns.Players) || ns.Players[t.Proposer].Bankrupt {
+		return ErrIllegalAction
+	}
+	if len(t.GiveProps) == 0 && len(t.WantProps) == 0 && t.GiveCash == 0 && t.WantCash == 0 &&
+		t.GiveCards == 0 && t.WantCards == 0 {
+		return ErrIllegalAction // empty trade
+	}
+	if t.GiveCash < 0 || t.WantCash < 0 || t.GiveCards < 0 || t.WantCards < 0 {
+		return ErrIllegalAction
+	}
+	if err := e.checkTradeSide(ns, t.GiveProps, t.Proposer); err != nil {
+		return err
+	}
+	if ns.Players[t.Proposer].Cash < t.GiveCash || ns.Players[t.Proposer].JailCards < t.GiveCards {
+		return ErrIllegalAction
+	}
+	return nil
 }
 
 // validateTrade enforces the trade rules: distinct solvent parties, real ownership
@@ -739,23 +841,51 @@ func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
 	switch a.Kind {
 	case ActRejectTrade:
 		rejected := tradePayload(*t)
+		// On an OPEN offer a rejection only passes: the seat declines its own chance
+		// and the offer moves to the next eligible seat. It stays standing until
+		// somebody takes it or everyone has passed — that is what "other agents can
+		// take the offer" means in practice.
+		if t.Target == OpenToTable && len(ns.OpenResponders) > 1 {
+			ns.OpenResponders = ns.OpenResponders[1:]
+			return []Event{e.emit(ns, EvTradeDeclined, rejected)}, nil
+		}
+		ns.OpenResponders = nil
 		ns.PendingTrade = nil
 		e.resumeAfterTrade(ns)
 		return []Event{e.emit(ns, EvTradeRejected, rejected)}, nil
 	case ActAcceptTrade:
+		agreed := *t
+		if agreed.Target == OpenToTable {
+			// The seat at the head of the queue is the one acting — bind the offer to
+			// it before anything is validated or moved, so every rule below runs
+			// against a concrete counterparty and never against OpenToTable.
+			if len(ns.OpenResponders) == 0 {
+				return nil, ErrIllegalAction
+			}
+			agreed.Target = ns.OpenResponders[0]
+		}
 		// Re-validate at execution time (state may have shifted is impossible here,
-		// but this keeps acceptance self-contained and safe).
-		if err := e.validateTrade(ns, *t); err != nil {
+		// but this keeps acceptance self-contained and safe). For an open offer this
+		// is the check that the accepting seat can actually pay what it just agreed to.
+		if err := e.validateTrade(ns, agreed); err != nil {
+			ns.OpenResponders = nil
 			ns.PendingTrade = nil
 			e.resumeAfterTrade(ns)
 			return nil, err
 		}
-		interest := e.executeTrade(ns, *t) // may bill mortgage-transfer interest (lower seq)
-		executed := tradePayload(*t)
+		interest := e.executeTrade(ns, agreed) // may bill mortgage-transfer interest (lower seq)
+		executed := tradePayload(agreed)
+		ns.OpenResponders = nil
 		ns.PendingTrade = nil
 		e.resumeAfterTrade(ns) // control returns to the window or the turn owner
 		return append(interest, e.emit(ns, EvTradeExecuted, executed)), nil
 	case ActCounterTrade:
+		// Refused on an open offer — see legalActions for why. Guarded here as well
+		// because legality and execution are reachable independently: a submitted
+		// action is checked against this switch, not only against the legal list.
+		if t.Target == OpenToTable {
+			return nil, ErrIllegalAction
+		}
 		// The responder (current PendingTrade.Target) makes a return offer to the
 		// original proposer. Roles swap: the counter becomes the new pending offer
 		// and the ORIGINAL proposer must now respond. Current (the turn owner) is
@@ -850,6 +980,13 @@ func (e *Engine) stepTradeWindow(ns *State, a Action) ([]Event, error) {
 		}
 		t := *a.Trade
 		t.Proposer = proposer
+		// An open offer is just as available from the trade window as from the owner's
+		// manage phase. Omitting it here would have made "offer to the table" a
+		// privilege of the seat whose turn it is, which is the opposite of the point:
+		// the window exists so a player can deal on a turn that is not their own.
+		if t.Target == OpenToTable {
+			return e.proposeOpenTrade(ns, t, a.Trade, PhaseTrade)
+		}
 		if err := e.validateTrade(ns, t); err != nil {
 			return nil, err
 		}
