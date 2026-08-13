@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -27,13 +28,35 @@ import (
 // The prices, groups and rents come from mono.Board() rather than a table copied into the lab.
 // A private copy is wrong the first time the engine rebalances anything, and it would be wrong
 // silently — the agent would keep bidding confident numbers against a board that had moved.
+// monopolyView MUST mirror internal/monopoly.MonopolyPushView field for field.
+//
+// It did not, and the cost was total: this struct read `your_seat` and `legal` while the
+// platform sends `seat` and `legal_actions`. Every field silently decoded to its zero value,
+// so `len(v.Legal) == 0` was true on every turn, the handler returned `{}` before it ever
+// logged, and the platform's safeFallback played BOTH seats of every lab Monopoly match. A
+// full match ran to GAME END with zero decision lines in the agent log.
+//
+// That is precisely the failure this file's header describes and claims to have fixed — it
+// was fixed against the OLD wire shape, and the push protocol renamed the fields. The seat
+// number is the worst of them: v.YourSeat indexes st.Players, so seat 1 would have evaluated
+// the board as if it were seat 0 even had the rest decoded.
+//
+// monopolyWireTest pins this struct against the platform's own type. Do not rename a field
+// here without renaming it there.
 type monopolyView struct {
-	MatchID  string      `json:"match_id"`
-	YourSeat int         `json:"your_seat"`
-	YourTurn bool        `json:"your_turn"`
-	Phase    string      `json:"phase"`
-	Legal    []string    `json:"legal"`
-	State    *mono.State `json:"state"`
+	MatchID string `json:"match_id"`
+	// Seat, not your_seat. Indexes State.Players — a wrong value reads someone else's board.
+	YourSeat int    `json:"seat"`
+	Phase    string `json:"phase"`
+	// legal_actions, not legal. An empty list means "no decision to make", so a name that
+	// never matches is indistinguishable from a seat that has nothing to do.
+	Legal []string    `json:"legal_actions"`
+	State *mono.State `json:"state"`
+	// Round is the engine's TurnCount, published by the platform so both sides agree on the
+	// number the turn proof was minted for. Without it a bound call cannot verify.
+	Round int `json:"round"`
+	// TurnProof binds a gateway model call to THIS decision.
+	TurnProof string `json:"turn_proof"`
 }
 
 func (a *labAgent) playMonopoly(w http.ResponseWriter, r *http.Request, raw []byte) {
@@ -62,13 +85,64 @@ func (a *labAgent) playMonopoly(w http.ResponseWriter, r *http.Request, raw []by
 	think := a.Persona.thinkTime(v.MatchID, v.State.RollSeq, v.YourSeat)
 	time.Sleep(think)
 
-	act, why := monopolyAction(a.Persona, v)
+	// BOUND PATH: ask the model through the gateway so the decision is completion-bound,
+	// making this a real LLM agent rather than a scripted persona. Same contract as Mafia:
+	// ANY failure falls back to the rule policy and SAYS SO, because a run that silently
+	// played a scripted move while reporting a bound one measures nothing and claims success.
+	var act map[string]any
+	var why string
+	if BindGatewayBase != "" {
+		me := v.State.Players[v.YourSeat]
+		prompt := fmt.Sprintf(
+			"You are seat %d in Monopoly, phase %s, turn %d. You hold $%d.",
+			v.YourSeat, v.Phase, v.Round, me.Cash)
+		b, err := a.decideGameThroughGateway("monopoly", v.MatchID, v.Round, v.YourSeat,
+			v.TurnProof, v.Legal, prompt)
+		if err != nil {
+			a.log.Printf("monopoly: seat %d BIND FAILED (%v) — falling back to the rule policy, "+
+				"so THIS turn is not model-backed", v.YourSeat, err)
+		} else {
+			act = map[string]any{"kind": b.Kind}
+			if b.Property != 0 {
+				act["property"] = b.Property
+			}
+			if b.Amount != 0 {
+				act["amount"] = b.Amount
+			}
+			why = "bound to the model's own " + b.Canon
+		}
+	}
+	if act == nil {
+		act, why = monopolyAction(a.Persona, v)
+	}
 	a.log.Printf("monopoly: seat %d  phase %-8s legal %v  → %s (%s)",
 		v.YourSeat, v.Phase, v.Legal, act["kind"], why)
 
 	act["rationale"] = why
 	act["usage"] = a.Persona.tokens(len(raw), think)
-	writeJSON(w, act)
+	writeJSON(w, monopolyWireMove(act))
+}
+
+// monopolyWireMove renames the engine-shaped action to what MonopolyPushMove reads.
+//
+// The lab builds actions with the engine's own vocabulary — `kind`, matching mono.Action —
+// but the push protocol's move field is `action`. Sending `kind` meant Action decoded empty,
+// the platform found it not in the legal list, and substituted a safe fallback: the second
+// half of the same silent-fallback bug as the view above, and equally invisible because an
+// illegal move and a considered one are both just a move on the wire.
+//
+// Translating here rather than renaming the key throughout keeps monopolyAction and its tests
+// speaking the engine's language, which is what they are actually about.
+func monopolyWireMove(act map[string]any) map[string]any {
+	out := make(map[string]any, len(act))
+	for k, v := range act {
+		if k == "kind" {
+			out["action"] = v
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // monopolyAction picks a move. Returns the action object and the rationale the decision

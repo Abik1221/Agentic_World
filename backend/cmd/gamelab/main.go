@@ -202,21 +202,15 @@ func main() {
 		lg.Printf("churn passed")
 		return
 	}
-	// -bind IS GOOFSPIEL-ONLY, and it must SAY SO rather than fall back.
+	// -bind ONCE REFUSED ANYTHING BUT GOOFSPIEL, and refusing was right at the time.
 	//
-	// The completion-binding path asks the model for a single-object `play_card` tool call —
-	// Goofspiel's move shape. Combined with -game mafia or -game monopoly it used to run a
-	// goofspiel match anyway, so the harness verified a game nobody asked about while logging
-	// the game they did. A verification tool that silently tests the wrong thing is worse than
-	// one that refuses: two "Mafia" runs in this session were actually Goofspiel, and it only
-	// surfaced by reading the round/prize/hand fields instead of trusting the header.
-	// MAFIA IS NOW BINDABLE (see bindgames.go); Monopoly's bound path is not wired yet, so it
-	// still refuses rather than silently running Goofspiel.
-	if *bindGw && strings.EqualFold(*game, "monopoly") {
-		lg.Fatalf("-bind is not wired for %s yet (Goofspiel and Mafia are). Run it without "+
-			"-bind, or bind goofspiel/mafia — this refuses rather than silently verifying a "+
-			"different game.", *game)
-	}
+	// The binding path asks for a single-object tool call, and it used to be shaped only for
+	// Goofspiel's move. Combined with -game mafia or -game monopoly the harness ran a
+	// Goofspiel match anyway — verifying a game nobody asked about while logging the game
+	// they did. It only surfaced by reading round/prize/hand instead of trusting the header.
+	// A verification tool that silently tests the wrong thing is worse than one that refuses.
+	// MAFIA AND MONOPOLY ARE NOW BINDABLE (see bindgames.go). All three games can be
+	// completion-bound, so there is no game left for -bind to silently substitute.
 	if *tier != "" {
 		if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {
 			lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
