@@ -103,6 +103,9 @@ type Service struct {
 	readyRepo    ReadyRepo
 	readyAsker   ReadyAsker
 	readyRequeue ReadyRequeuer
+	// rateLimits reports 429s the gateway watched, so a throttled turn earns the same bounded
+	// grace as a slow one instead of forfeiting a stake. Optional; nil-checked.
+	rateLimits RateLimitObserver
 	// queueEvents records queue/ready-check facts for reporting. Optional; nil-checked.
 	queueEvents  QueueEventRecorder
 	readyStarter ReadyStarter
@@ -387,6 +390,30 @@ func (s *Service) roundStart(m Match) (time.Time, bool) {
 	return m.RoundDeadline.Add(-s.cfg.MoveWindow), true
 }
 
+// RateLimitObserver reports whether the platform WATCHED this seat get rate-limited on this
+// turn.
+//
+// Stronger evidence than any health probe. A liveness probe says "something is listening";
+// a 429 recorded by the gateway says "this agent made a real model call for THIS decision and
+// its provider refused it". The platform saw the attempt happen.
+//
+// This exists because the alternative is indefensible: a developer on a free tier loses a
+// STAKED match — real coins — because their provider throttled them mid-turn. They did not
+// play badly and they did not go dark. Free tiers are tight enough for this to be routine:
+// OpenRouter allows 50 requests a day, Groq 6,000 tokens a minute.
+//
+// OPTIONAL. Nil means deadlines behave exactly as they did.
+type RateLimitObserver interface {
+	// RateLimited answers "did a 429 land for this (agent, match, round) inside `within`".
+	// Scoped to the round on purpose: a 429 from an earlier turn says nothing about whether
+	// this one is being attempted, and treating it as evidence would hand an idle agent an
+	// extension it did not earn.
+	RateLimited(ctx context.Context, agentPublicID, matchPublicID string, round int, within time.Duration) bool
+}
+
+// SetRateLimitObserver enables 429-aware deadline extensions. Nil leaves them off.
+func (s *Service) SetRateLimitObserver(o RateLimitObserver) { s.rateLimits = o }
+
 // LivenessProber reports whether an agent's endpoint is answering right now.
 //
 // Satisfied by a small adapter over agentwire.ConfirmReachability. Optional: unset, a
@@ -481,7 +508,19 @@ func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) boo
 	// Only extend for a seat that is actually THERE. One dead seat must not buy the
 	// table more time, or a crashed agent stalls every round to the ceiling.
 	for _, agent := range unsealed {
-		if !s.livecheck.Alive(ctx, agent) {
+		// Alive OR provably throttled. A 429 the gateway recorded for THIS round is proof the
+		// agent is present and trying — it made the call and the provider refused it — so it
+		// earns the same grace a slow-but-answering agent gets.
+		//
+		// The bound is untouched: this only decides WHETHER a seat qualifies. How much time it
+		// gets still comes from deadline.Extend above, with MaxExtensions and Ceiling
+		// unchanged, so a throttled agent cannot hold a table open any longer than a slow one.
+		// The opponent staked coins too.
+		//
+		// Window is the round's own window: evidence from an earlier turn does not show this
+		// turn is being attempted.
+		if !s.livecheck.Alive(ctx, agent) &&
+			!(s.rateLimits != nil && s.rateLimits.RateLimited(ctx, agent, m.PublicID, m.State.Round, window)) {
 			return false
 		}
 	}

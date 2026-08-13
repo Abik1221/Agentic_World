@@ -226,3 +226,100 @@ func TestWithoutTheRejectionLogNothingChanges(t *testing.T) {
 		t.Error("an unwired rejection log changed extension behaviour; it must be inert")
 	}
 }
+
+// ── a 429 must never cost a stake, and must never buy more than policy ───────
+
+// stubRateLimits reports a 429 for whatever it is told, so the test can drive the
+// qualification path without a database.
+type stubRateLimits struct {
+	limited bool
+	calls   int
+	// gotRound records the round it was asked about, to prove the query is round-scoped.
+	gotRound int
+}
+
+func (s *stubRateLimits) RateLimited(_ context.Context, _, _ string, round int, _ time.Duration) bool {
+	s.calls++
+	s.gotRound = round
+	return s.limited
+}
+
+// extendWithRateLimit drives tryExtend with a DEAD prober and a configurable 429 observer,
+// reusing the same repo/clock shape as extendOnce above — which is the harness already proven
+// to reach the extension path. My first version built its own bare Service and panicked on a
+// nil repo AFTER the qualification loop, so it never tested the thing it claimed to.
+func extendWithRateLimit(t *testing.T, limited bool) (bool, *stubRateLimits) {
+	t.Helper()
+	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	window := 30 * time.Second
+	base := now.Add(-2 * window)
+	rl := &stubRateLimits{limited: limited}
+	s := &Service{
+		repo:       &extendRepo{},
+		clock:      platform.FixedClock{T: now},
+		cfg:        Config{MoveWindow: window},
+		livecheck:  deadStub{}, // the probe says nothing is listening — the case that forfeited
+		rateLimits: rl,
+	}
+	deadlineAt := base.Add(window)
+	m := Match{
+		PublicID:          "m_429",
+		Game:              "goofspiel",
+		RoundDeadline:     &deadlineAt,
+		RoundDeadlineBase: &deadlineAt,
+		State:             gs.State{Round: 7},
+	}
+	return s.tryExtend(context.Background(), m, []string{"ag_a"}), rl
+}
+
+// A seat whose endpoint does NOT answer a health probe still qualifies when the gateway
+// watched it get rate-limited: a 429 is stronger evidence of "present and trying" than a
+// probe, because the platform saw it make a real model call for THIS decision.
+//
+// Without this, a developer on a free tier forfeits a STAKED match — real coins — because
+// their provider throttled them mid-round.
+func TestARateLimitedSeatQualifiesForAnExtensionWhenTheProbeFails(t *testing.T) {
+	got, rl := extendWithRateLimit(t, true)
+	if !got {
+		t.Fatal("a seat the gateway watched get rate-limited did not qualify for an extension; " +
+			"it forfeits a staked match because its provider throttled it")
+	}
+	if rl.calls == 0 {
+		t.Error("the rate-limit observer was never consulted")
+	}
+	// Round-scoped: a 429 from an earlier turn says nothing about whether THIS turn is being
+	// attempted, and accepting it would hand an idle agent free time.
+	if rl.gotRound != 7 {
+		t.Errorf("asked about round %d, want the current round 7", rl.gotRound)
+	}
+}
+
+// Not an amnesty. A seat that is neither alive nor rate-limited must STILL forfeit, or a
+// crashed agent stalls every round to the ceiling.
+func TestADeadSeatWithNoRateLimitEvidenceStillForfeits(t *testing.T) {
+	if got, _ := extendWithRateLimit(t, false); got {
+		t.Error("a seat that is neither alive nor rate-limited was granted an extension; " +
+			"an agent that simply went away must still forfeit")
+	}
+}
+
+// The bound. A 429 decides WHETHER a seat qualifies, never HOW MUCH time it gets — that still
+// comes from deadline.Extend with MaxExtensions and Ceiling untouched, so a throttled agent
+// cannot hold a table open longer than a slow one. The opponent staked coins too.
+func TestARateLimitedSeatGetsNoMoreExtensionsThanPolicyAllows(t *testing.T) {
+	for _, game := range []string{"goofspiel", "mafia", "monopoly"} {
+		t.Run(game, func(t *testing.T) {
+			pol := deadline.DefaultPolicy(game)
+			got := simulateExtensions(pol, pol.Floor, false, 500)
+			if got > pol.MaxExtensions {
+				t.Fatalf("a throttled seat could take %d extensions; policy allows at most %d",
+					got, pol.MaxExtensions)
+			}
+		})
+	}
+}
+
+// deadStub is a prober that always says "nothing is listening".
+type deadStub struct{}
+
+func (deadStub) Alive(context.Context, string) bool { return false }

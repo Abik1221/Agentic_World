@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/agent-arena/arena/internal/llmgw"
 	"github.com/jackc/pgx/v5"
@@ -234,4 +235,52 @@ func (r *LLMGatewayRepo) RecordVerifiedCost(ctx context.Context, c llmgw.Verifie
 		PromptTokens: int64(c.PromptTokens), CompletionTokens: int64(c.CompletionTokens),
 		TotalTokens: int64(c.TotalTokens),
 	})
+}
+
+// RateLimited answers "did a 429 land for this (agent, match, round) inside `within`".
+//
+// Satisfies match.RateLimitObserver. The gateway already records every proxied call with its
+// upstream status, match and round (see RecordCall), so this reads evidence that exists rather
+// than adding a new signal — 429s are present in real data today.
+//
+// # Why this is allowed to grant a deadline extension
+//
+// A liveness probe says "something is listening". A recorded 429 says "this agent made a real
+// model call FOR THIS DECISION and its provider refused it" — the platform watched the attempt.
+// Without it, a developer on a free tier forfeits a STAKED match because their provider
+// throttled them, having neither played badly nor gone dark.
+//
+// # Why it is scoped to the round, and fails CLOSED
+//
+// Round-scoped because a 429 from an earlier turn says nothing about whether this one is being
+// attempted; treating it as evidence would hand an idle agent free time.
+//
+// Any error returns FALSE. An extension is a favour granted on evidence, so the absence of
+// evidence — including a database that cannot answer — must mean "no extension", never "extend
+// anyway". The opposite direction would let a DB hiccup hold every table open to the ceiling.
+func (r *LLMGatewayRepo) RateLimited(ctx context.Context, agentPublicID, matchPublicID string, round int, within time.Duration) bool {
+	if agentPublicID == "" || matchPublicID == "" || within <= 0 {
+		return false
+	}
+	var found bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (
+		     SELECT 1
+		       FROM agent_model_calls c
+		       JOIN agents a ON a.id = c.agent_id
+		      WHERE a.public_id = $1
+		        AND c.match_id = $2
+		        AND c.round = $3
+		        AND c.status = 429
+		        AND c.created_at >= $4
+		 )`,
+		// The cutoff is computed in Go rather than as a Postgres interval: one fewer moving
+		// part than building an interval string, and no chance of a malformed unit silently
+		// widening the window.
+		agentPublicID, matchPublicID, round, time.Now().Add(-within),
+	).Scan(&found)
+	if err != nil {
+		return false // fail closed — see the note above
+	}
+	return found
 }

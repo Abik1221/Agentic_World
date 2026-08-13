@@ -1368,6 +1368,17 @@ func run() error {
 	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
 	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
 	llmGateway.SetCoverageReader(llmGatewayRepo)
+	// A 429 must never cost a stake.
+	//
+	// The gateway already records every proxied call with its upstream status, match and round,
+	// so a rate-limited turn is durable evidence that this agent made a real model call for
+	// THIS decision and its provider refused it. That qualifies the seat for the SAME bounded
+	// extension a slow-but-answering agent gets — MaxExtensions and Ceiling unchanged, so a
+	// throttled agent cannot hold a table open any longer than a slow one.
+	//
+	// Without this, a developer on a free tier forfeits a staked match because OpenRouter's 50
+	// requests a day ran out mid-round. They neither played badly nor went dark.
+	matchSvc.SetRateLimitObserver(llmGatewayRepo)
 	// Lens spans for server-observed calls, so a gateway round trip shows up in the same trace
 	// waterfall as the agent's own handler rather than leaving a hole where the slow part was.
 	llmGateway.SetEmitter(lens)
