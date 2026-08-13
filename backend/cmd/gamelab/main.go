@@ -210,10 +210,12 @@ func main() {
 	// the game they did. A verification tool that silently tests the wrong thing is worse than
 	// one that refuses: two "Mafia" runs in this session were actually Goofspiel, and it only
 	// surfaced by reading the round/prize/hand fields instead of trusting the header.
-	if *bindGw && isGroupGame(*game) {
-		lg.Fatalf("-bind is Goofspiel-only (it binds a play_card tool call) but -game=%s was "+
-			"requested. Run %s without -bind, or run goofspiel with -bind — this refuses rather "+
-			"than silently verifying a different game.", *game, *game)
+	// MAFIA IS NOW BINDABLE (see bindgames.go); Monopoly's bound path is not wired yet, so it
+	// still refuses rather than silently running Goofspiel.
+	if *bindGw && strings.EqualFold(*game, "monopoly") {
+		lg.Fatalf("-bind is not wired for %s yet (Goofspiel and Mafia are). Run it without "+
+			"-bind, or bind goofspiel/mafia — this refuses rather than silently verifying a "+
+			"different game.", *game)
 	}
 	if *tier != "" {
 		if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {

@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
+	"github.com/agent-arena/arena/internal/movebind"
 )
 
 // Mafia for the lab agent — the third game, and the last one the lab could not play.
@@ -34,6 +36,12 @@ type mafiaView struct {
 	Legal    []string     `json:"legal"`
 	Private  []mf.Event   `json:"private"`
 	VoteTaly map[int]int  `json:"vote_tally"`
+	// Round and TurnProof are what make a decision BINDABLE. The platform mints one proof per
+	// decision (turnproof.MafiaTurn folds the phase in, because several decisions happen inside
+	// one Mafia day), and the gateway needs both to attribute the call to this turn. Absent from
+	// this struct until now, which is why -bind could never work for Mafia.
+	Round     int    `json:"round"`
+	TurnProof string `json:"turn_proof"`
 }
 
 func (a *labAgent) playMafia(w http.ResponseWriter, r *http.Request, raw []byte) {
@@ -57,7 +65,36 @@ func (a *labAgent) playMafia(w http.ResponseWriter, r *http.Request, raw []byte)
 	think := a.Persona.thinkTime(v.MatchID, v.Day, v.YourSeat)
 	time.Sleep(think)
 
-	act, why := mafiaAction(a.Persona, v)
+	// BOUND PATH: ask the model through the gateway, so the decision is completion-bound and
+	// this is a real LLM agent rather than a scripted persona.
+	//
+	// Falls back to the rule-based policy on ANY failure, and SAYS SO — a run that silently
+	// played a scripted move while reporting a bound one would measure nothing and claim
+	// success, which is the mistake this whole session kept finding.
+	var act map[string]any
+	var why string
+	if BindGatewayBase != "" {
+		prompt := fmt.Sprintf("You are seat %d (%s) in Mafia, day %d, phase %s.",
+			v.YourSeat, v.YourRole, v.Day, v.Phase)
+		b, err := a.decideGameThroughGateway("mafia", v.MatchID, v.Round, v.YourSeat,
+			v.TurnProof, v.Legal, prompt)
+		if err != nil {
+			a.log.Printf("mafia: seat %d BIND FAILED (%v) — falling back to the rule policy, "+
+				"so THIS turn is not model-backed", v.YourSeat, err)
+		} else {
+			act = map[string]any{"action": b.Kind}
+			if b.Target != movebind.NoTarget {
+				act["target"] = b.Target
+			}
+			if b.Text != "" {
+				act["text"] = b.Text // public speech, riding with the action — one call, both
+			}
+			why = "bound to the model's own " + b.Canon
+		}
+	}
+	if act == nil {
+		act, why = mafiaAction(a.Persona, v)
+	}
 	a.log.Printf("mafia: seat %d (%s) day %d %-10s legal %v → %s (%s)",
 		v.YourSeat, v.YourRole, v.Day, v.Phase, v.Legal, act["action"], why)
 
