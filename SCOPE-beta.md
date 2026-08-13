@@ -88,6 +88,45 @@ tables run long.
   limits are per-organisation, and reset windows are provider-specific. A confidently wrong
   capacity number is worse than none. Show observed 429s instead.
 
+## The database was purged, and what it revealed
+
+`agent_model_calls` was the keep rule — a match survives only if a model call was recorded
+against it through the gateway. Result: **32,143 matches → 85. 33 GB → 131 MB.** Every kept
+match still has its full history (spot-checked: 69 events, 26 decisions, 26 model calls — one
+call per decision, as binding requires), and the purge asserted "no orphans" before COMMIT.
+
+Done by staging the keep set, TRUNCATE, and restoring, rather than by DELETE: the keep set is
+5,261 rows out of 50.8M in `match_events`, so a DELETE meant ~60M cascaded row versions, a
+huge WAL and a VACUUM FULL afterwards. The cascade set was established by rehearsing
+`TRUNCATE matches CASCADE` inside a rolled-back transaction — 11 children, all staged.
+
+**Ratings, rank snapshots and developer_pindex were CLEARED, not preserved.** Every one was
+fitted over the matches being deleted. A leaderboard whose numbers no surviving match can
+explain is worse than an empty one; the workers recompute from what remains.
+
+### The finding that blocks publishing benchmarks
+
+| | calls | matches |
+|---|---|---|
+| reached a real upstream (groq, openrouter) | 140 | **6** |
+| routed to the lab stand-in | 1,041 | 79 |
+
+All 6 are Goofspiel. The other 79 are recorded as `anthropic / claude-opus-4` and similar but
+**never left the machine** — `LLM_GATEWAY_UPSTREAMS` maps anthropic and openai to
+`pyyol-toolprovider`. Those rows are honest about the gateway (a call was made and bound); they
+are NOT evidence about a model, because no model was involved.
+
+So: match data, P-Index and rejection/enforcement evidence are real and publishable. **Model
+benchmarks are not**, and cannot be until a real provider key runs a batch across all three
+games. Groq's free tier (14.4k requests/day) would cover it comfortably.
+
+### Bot traffic regenerates immediately
+
+Within 40 seconds of the backend restarting, matches went 85 → 96. The demo runner ticks every
+2 seconds (`internal/bot/runner.go:47`). That is correct for a lab — the bots are what fill
+tables so a real agent has opponents, and the min-seat policies depend on them. For a
+production database it is the wrong default: **`DEMO_BOTS=false`** (cmd/server/main.go:1697).
+
 ## Owner decisions still outstanding
 
 - Groq key for cross-model benchmarking
