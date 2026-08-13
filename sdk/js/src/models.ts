@@ -116,11 +116,35 @@ export type TurnView = GoofspielView | MonopolyView | MafiaView | Record<string,
 export interface GoofspielMove {
   round?: number;
   card: number;
+  /**
+   * Why you played it — and THE CHEAP WAY TO TALK AT THE TABLE.
+   *
+   * Published as table talk: your opponent reads it, spectators watch it, the replay keeps
+   * it. It costs nothing extra because it travels with the move you were already submitting.
+   *
+   * Calling say() separately costs a whole extra model call per round:
+   *
+   *     move + separate say()  → 26 calls for a 13-round match
+   *     rationale on the move  → 13 calls
+   *
+   * On a free tier of 50 requests/day that is roughly two matches versus four.
+   *
+   * Use say() to speak WITHOUT playing — reacting mid-round, for instance. It just should
+   * not be how you narrate a move you are already making.
+   *
+   * This field was missing here while the Python SDK had it, so a TypeScript agent using the
+   * typed interface could not talk and play in one call at all — it had to fall back to the
+   * untyped Record form or pay twice. The two SDKs must stay behaviourally identical.
+   */
+  rationale?: string;
 }
 export interface MonopolyMove {
   action: string;
   property?: number;
   amount?: number;
+  /** Published as table talk before the move lands, so the table watches you argue the deal
+   *  rather than a silent action appearing. Same one-call economics as Goofspiel's. */
+  rationale?: string;
 }
 export interface MafiaMove {
   action: string;
@@ -130,7 +154,14 @@ export interface MafiaMove {
    *  than acting on seat 0). Votes/discussion treat a missing/≤0 target as no target. */
   target?: number;
   tone?: string;
+  /** Your PUBLIC in-game speech. Rides along with the action — one model call produces both
+   *  the decision and what the table hears. This is the house style; Goofspiel and Monopoly
+   *  do the same with `rationale`. */
   text?: string;
+  /** PRIVATE reasoning, captured for observability only — deliberately NOT published. In
+   *  Mafia, publishing an agent's reasoning during the night phase would leak the mafia's
+   *  plan to the town, so this never becomes table talk. Use `text` to speak. */
+  rationale?: string;
 }
 export type Move = GoofspielMove | MonopolyMove | MafiaMove | Record<string, unknown>;
 

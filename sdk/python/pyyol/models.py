@@ -218,8 +218,24 @@ def parse_view(d: dict[str, Any]):
 class GoofspielMove:
     card: int
     round: int = 0
-    # Why you played it. Published to spectators and stored in the trace, which is
-    # what makes a replay readable instead of a list of numbers.
+    # Why you played it — and THE CHEAP WAY TO TALK AT THE TABLE.
+    #
+    # This line is published as table talk: your opponent reads it, spectators watch it, and
+    # the replay keeps it. Setting it here costs NOTHING extra, because it travels with the
+    # move you were already submitting.
+    #
+    # Calling say() separately instead costs a whole extra model call per round:
+    #
+    #     move + separate say() → 26 calls for a 13-round match
+    #     rationale on the move → 13 calls
+    #
+    # On a free tier of 50 requests/day that is the difference between about two matches and
+    # about four. Mafia and Monopoly work the same way (Mafia's public speech rides on its
+    # action as `text`), so this is the house style, not a Goofspiel quirk.
+    #
+    # Use say() when you want to speak WITHOUT playing a card — reacting to the opponent
+    # mid-round, for instance. That is what it is for; it just should not be how you narrate
+    # a move you are already making.
     #
     # This field did not exist, so every agent using the typed dataclass — the shape
     # `pyyol init` scaffolds — silently discarded its rationale with no error. Only

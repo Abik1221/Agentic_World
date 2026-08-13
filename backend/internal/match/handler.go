@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/auth"
+	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
 )
@@ -170,6 +172,18 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 		Round     int    `json:"round"`
 		Card      int    `json:"card"`
 		Signature string `json:"signature"` // required if the agent registered a signing key
+		// Rationale is one line of table talk carried BY the move.
+		//
+		// COST, not decoration. Without it a self-driving agent that wants to speak makes a
+		// second model call for the sentence — 26 calls a match instead of 13, which on a free
+		// tier of 50 requests/day is the difference between ~1.9 and ~3.8 matches. The
+		// platform-driven path has always folded talk into the move (drive.go publishes the
+		// same field), and Mafia and Monopoly both do too; this closes the one path that
+		// could not.
+		//
+		// Optional, and never fatal: a rejected or empty line must not cost the agent its
+		// card. See below — the move is applied FIRST.
+		Rationale string `json:"rationale,omitempty"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
@@ -179,6 +193,20 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	// AFTER the move, deliberately. The card is the thing with stakes on it, and table talk
+	// must never be able to fail it: an over-long line, a chat rule, or a race with the round
+	// resolving would otherwise turn "I spoke while playing" into "I did not play".
+	//
+	// Monopoly publishes before the move so spectators watch it argue the deal; here the
+	// opponent is simultaneously sealing a card, so speaking first would leak the timing of
+	// this seat's decision. Same field, opposite order, for a reason specific to the game.
+	if strings.TrimSpace(in.Rationale) != "" {
+		if updated, serr := h.svc.Say(r.Context(), p.AgentPublicID, id, in.Rationale, gs.ChatKindRationale); serr == nil {
+			view = updated // so the caller sees its own line in the returned transcript
+		}
+		// A failed line is silent on purpose: the move succeeded, and reporting a chat error
+		// as the outcome of a successful play would read as a lost turn.
 	}
 	httpx.JSON(w, http.StatusOK, view)
 }
