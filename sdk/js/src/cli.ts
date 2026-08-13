@@ -18,6 +18,7 @@ import { maybeInstallPing } from "./install-ping.js";
 import { deriveConnectUrl, deviceLabel, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
+import { askWatch, watchUrl, WATCH_BROWSER, WATCH_TERMINAL, type WatchChoice } from "./watch.js";
 import {
   REQUEST_ID_HEADER,
   SIGNATURE_HEADER,
@@ -68,6 +69,16 @@ const REPLAY_PATH: Record<string, string> = {
 export interface Args {
   positionals: string[];
   flags: Record<string, string | boolean>;
+}
+
+/**
+ * The `--watch` value: where to follow a match. "ask" (default) shows the pop-up when
+ * both ends are a TTY; "browser" and "terminal" answer it up front, which is what makes
+ * a scripted run safe — a known answer means nothing reads stdin at all.
+ */
+function watchFlagOf(a: Args): string {
+  const v = String(a.flags.watch ?? "ask");
+  return v === WATCH_BROWSER || v === WATCH_TERMINAL || v === "never" ? v : "ask";
 }
 
 function parse(argv: string[]): Args {
@@ -438,33 +449,40 @@ export const agent = new ${cls}();
   return 0;
 }
 
-// Where a running match is watched in the browser, per game. Mirrors the Python SDK.
-// Verified against the client's routes: Goofspiel and Monopoly take ?match= at the
-// top level; Mafia's viewer lives under /arena. A wrong path is worse than no link —
-// it lands the developer on a DIFFERENT live match.
-const WATCH_ROUTE: Record<string, string> = {
-  goofspiel: "/goofspiel",
-  mafia: "/arena/mafia",
-  monopoly: "/monopoly",
-};
-
-function watchUrl(arena: string, matchId: string): string {
-  const route = WATCH_ROUTE[arena];
-  if (!route || !matchId) return "";
-  // encodeURIComponent (not encodeURI) so a slash is escaped too, and cannot alter
-  // the path instead of the query.
-  return `${DEFAULT_DASHBOARD}${route}?match=${encodeURIComponent(matchId)}`;
-}
-
 // Only the first match of a run opens a tab — sandbox iteration means dozens per
 // session, and a tab each is something you learn to dread. The link is always printed.
 let openedOnce = false;
 
-function announceMatch(arena: string, matchId: string, label: string): void {
+// Where the developer said they want to watch, asked ONCE per run and remembered.
+// Being asked before every match of a sandbox loop is the thing you learn to dread.
+let watchChoice: WatchChoice | null = null;
+
+async function resolveWatch(watchFlag: string, url: string, label: string): Promise<WatchChoice> {
+  // A flag means the answer is already known, so nothing reads stdin at all — which is
+  // what makes this safe to put in a script.
+  if (watchFlag === WATCH_BROWSER || watchFlag === WATCH_TERMINAL) return watchFlag;
+  if (watchChoice === null) watchChoice = await askWatch(label, url);
+  return watchChoice;
+}
+
+async function announceMatch(
+  arena: string,
+  matchId: string,
+  label: string,
+  watchFlag = "ask",
+): Promise<void> {
   console.log(`  ${OK} started ${arena} match ${matchId} ${label}`.trimEnd());
   const url = watchUrl(arena, matchId);
   if (!url) return;
+  if (watchFlag === "never") {
+    console.log(`  ${OK} watch it live: ${url}`);
+    return;
+  }
+  // Ask before taking over the screen. The link is printed either way, so a developer
+  // who picks the terminal still has the URL when they change their mind.
+  const choice = await resolveWatch(watchFlag, url, `${arena} · ${matchId}`);
   console.log(`  ${OK} watch it live: ${url}`);
+  if (choice !== WATCH_BROWSER) return;
   if (openedOnce || !process.stdout.isTTY) return;
   openedOnce = true;
   try {
@@ -477,13 +495,19 @@ function announceMatch(arena: string, matchId: string, label: string): void {
   }
 }
 
-async function startSandbox(base: string, token: string, arena: string, label: string): Promise<void> {
+async function startSandbox(
+  base: string,
+  token: string,
+  arena: string,
+  label: string,
+  watchFlag = "ask",
+): Promise<void> {
   const path = PLAY_PATH[arena] ?? PLAY_PATH.goofspiel;
   for (let i = 0; i < 6; i++) {
     const [st, resp] = await apiPost(`${base}${path}`, token, {});
     if (st === 200 || st === 201) {
       const mid = String(resp.match_id ?? resp.id ?? "");
-      announceMatch(arena, mid, label);
+      await announceMatch(arena, mid, label, watchFlag);
       return;
     }
     const code = String(resp.code ?? resp.error ?? "");
@@ -581,7 +605,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
       return;
     }
     for (let i = 0; i < matches; i++) {
-      await startSandbox(base, token, arena, `${i + 1}/${matches}`);
+      await startSandbox(base, token, arena, `${i + 1}/${matches}`, watchFlagOf(a));
       await new Promise((r) => setTimeout(r, 2000));
     }
   }, 1500);

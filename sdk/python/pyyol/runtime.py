@@ -26,6 +26,7 @@ from . import _urlguard
 
 import json
 import logging
+import os
 from datetime import datetime
 import threading
 import time
@@ -143,6 +144,10 @@ class RuntimeConnector:
         self._stop = threading.Event()
         self._turn_no = 0
         self._nudged = False  # print the "upgrade available" notice at most once
+        # The watch prompt is offered ONCE per connection, not once per match: being
+        # asked before every match of a long run is the thing you learn to dread, and a
+        # timed-out prompt has left a reader on stdin that would swallow the next one.
+        self._watch_offered = False
         # Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
         # Correlated to the match trace so the agent's model/tool calls render
         # alongside the platform's authoritative gateway spans.
@@ -154,6 +159,65 @@ class RuntimeConnector:
         # File/debug log (what `pyyol logs` tails) + the live terminal console.
         log.log(level, "%s %s", kind, msg)
         self.console.emit(kind, msg, **fields)
+
+    def _offer_watch(self, payload: dict[str, Any]) -> None:
+        """Offer "browser or terminal?" when a match is found, without blocking anything.
+
+        `pyyol run` is the path a developer is actually on when they type a command and a
+        staked match appears, and until now that match simply began — no choice, no way to
+        get to the live table except finding it yourself.
+
+        # Why this runs on its own thread
+
+        The prompt waits up to ten seconds for a keystroke. This method is called from the
+        frame-dispatch loop, so waiting HERE would stall every frame behind it: the
+        heartbeat that keeps the connection alive, and the first turn of the match. A
+        developer who stepped away to get coffee would come back to a forfeited stake.
+
+        So the wait happens on a daemon thread and the dispatch loop returns immediately.
+        The thread can outlive the answer being useful — that is fine, it only ever opens
+        a browser tab — and being a daemon it never delays interpreter exit.
+
+        Opt out with PYYOL_WATCH=terminal (or browser to skip straight to opening it).
+        Anything non-interactive is already handled inside ask_watch, which prints nothing
+        at all without a TTY on both ends.
+        """
+        if self._watch_offered:
+            return
+        self._watch_offered = True
+
+        choice = os.environ.get("PYYOL_WATCH", "").strip().lower()
+        if choice not in ("browser", "terminal"):
+            choice = ""
+
+        match_id = str(payload.get("match_id") or "")
+        game = str(payload.get("game") or "")
+        if not match_id or not game:
+            return
+
+        def offer() -> None:
+            try:
+                # console, not cli: this is library code, and reaching into the CLI for
+                # a URL would make every agent that starts a match import argparse and
+                # the whole command surface.
+                from .console import WATCH_BROWSER, ask_watch, watch_url
+
+                url = watch_url(game, match_id)
+                if not url:
+                    return
+                # The ask is bounded by the countdown: the platform starts play whether
+                # or not this was answered, so a longer wait would be asking about a
+                # decision that has already passed.
+                answer = choice or ask_watch(f"{game} · {match_id}", url)
+                if answer != WATCH_BROWSER:
+                    return
+                import webbrowser
+
+                webbrowser.open(url)
+            except Exception:  # noqa: BLE001 - watching is a courtesy, the match is not
+                pass
+
+        threading.Thread(target=offer, name="pyyol-watch", daemon=True).start()
 
     def _maybe_nudge(self, latest: Any) -> None:
         # The gateway echoes the newest published version on the registered frame.
@@ -375,6 +439,10 @@ class RuntimeConnector:
             )
             ack = self.agent.ack_initialize(payload)
             send({"t": RESPONSE, "id": frame.get("id", ""), "payload": ack})
+            # AFTER the ack, never before. On the socket path the platform treats a
+            # delivered initialize frame as the acknowledgement, so anything that runs
+            # first delays the answer that keeps this seat in the match.
+            self._offer_watch(payload)
         elif t == EVENT:
             kind = frame.get("kind", "event")
             if kind == "match_start":

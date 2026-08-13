@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import re
 import sys
+import threading
 import time
 from typing import Any, TextIO
 
@@ -118,6 +121,161 @@ class JsonConsole(Console):
         rec.update({k: v for k, v in fields.items() if v is not None})
         self.stream.write(json.dumps(rec) + "\n")
         self.stream.flush()
+
+
+#: What ``ask_watch`` returns. Deliberately two words rather than a bool — a caller
+#: reading ``if watch:`` would have to guess which way round it went.
+WATCH_BROWSER, WATCH_TERMINAL = "browser", "terminal"
+
+#: Default dashboard, read once. Mirrors cli.DEFAULT_DASHBOARD.
+DEFAULT_DASHBOARD = os.environ.get("PYYOL_DASHBOARD", "").rstrip("/") or "https://pyyol.com"
+
+# Where a running match is watched in the browser, per game. Verified against the client's
+# routes: Goofspiel and Monopoly take ?match= at the top level, Mafia's viewer lives under
+# /arena. A wrong path here is worse than no link — it drops the developer on a DIFFERENT
+# live match and everything they see is someone else's game.
+#
+# Lives here rather than in cli.py because the RUNTIME needs it too, and the runtime is
+# library code: reaching into the CLI for a URL would make every agent that starts a match
+# import argparse and the whole command surface. One copy, so the two paths cannot drift
+# into disagreeing about where a match is watched.
+_WATCH_ROUTE = {
+    "goofspiel": "/goofspiel",
+    "mafia": "/arena/mafia",
+    "monopoly": "/monopoly",
+}
+
+
+def watch_url(arena: str, match_id: str, dashboard: str | None = None) -> str:
+    """Browser URL for a specific live match, or "" when it cannot be named exactly.
+
+    A link to 'some match' would be a lie dressed as a convenience.
+
+    ``dashboard`` distinguishes NOT SPECIFIED from EXPLICITLY EMPTY, which are different
+    facts. None means the caller has no opinion, so the default applies. "" means the
+    caller looked and does not know where the dashboard is — and inventing a link to the
+    public one there would send a self-hosted developer to a match that is not theirs.
+    """
+    route = _WATCH_ROUTE.get(arena)
+    dashboard = (DEFAULT_DASHBOARD if dashboard is None else dashboard).rstrip("/")
+    if not (dashboard and route and match_id):
+        return ""
+    # safe="" so a slash is escaped too. quote() defaults to safe="/", which would let a
+    # match id containing one alter the PATH rather than the query — the link would then
+    # point somewhere else entirely.
+    import urllib.parse
+
+    return f"{dashboard}{route}?match={urllib.parse.quote(match_id, safe='')}"
+
+
+def ask_watch(
+    label: str,
+    url: str,
+    timeout: float = 10.0,
+    stream: TextIO | None = None,
+    color: bool | None = None,
+    stdin: TextIO | None = None,
+) -> str:
+    """Ask where the developer wants to watch this match. Returns a ``WATCH_*``.
+
+    A match used to open a browser tab on its own the moment it started. That is the
+    wrong default in both directions: on a remote box or in tmux the tab goes nowhere,
+    and a developer who ran a command in a terminal did not necessarily ask to have
+    their screen taken over. So we ask, once, and remember.
+
+    # Three rules that keep this from becoming a liability
+
+    **It never blocks a machine.** No TTY on stdin OR stdout means nobody is there to
+    answer — CI, a pipe, a systemd unit — so it returns the terminal default without
+    printing a prompt at all. A prompt that can hang a pipeline is worse than no prompt.
+
+    **It never outlives the countdown.** The read is bounded by ``timeout`` and defaults
+    on expiry. The match begins whether or not this question was answered; a prompt still
+    sitting on screen after play has started is asking about a decision that is gone.
+
+    **It never eats the agent's turn.** The read runs on a daemon thread and the caller
+    waits on a queue, so a developer who walks away costs their agent nothing. A bare
+    ``input()`` here would block the process — including the run loop — until Enter.
+
+    The thread is why a caller should ask ONCE per run: a timed-out reader is still
+    holding stdin, and a second prompt would find its answer swallowed by the first.
+    """
+    stream = stream or sys.stdout
+    stdin = stdin or sys.stdin
+
+    if not (_isatty(stream) and _isatty(stdin)):
+        return WATCH_TERMINAL
+
+    if color is None:
+        color = os.environ.get("NO_COLOR") is None
+
+    def c(text: str, code: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if color else text
+
+    rows = [
+        c(label, "36"),
+        "",
+        f"{c('[b]', '1')} watch the live table in your browser",
+        f"{c('[t]', '1')} follow the logs here          {c('· default', '90')}",
+    ]
+    # Sized to the content: a long match id must not blow the border out of alignment.
+    # Measured on the UNCOLORED text — escape codes take columns in a string and none
+    # on screen, so padding by len() of a colored row draws a visibly crooked box.
+    width = max(_visible_len(r) for r in rows) + 2
+    stream.write("\n" + c("╭─ match found " + "─" * max(0, width - 13) + "╮", "90") + "\n")
+    for r in rows:
+        stream.write(c("│", "90") + " " + r + " " * (width - _visible_len(r)) + c("│", "90") + "\n")
+    stream.write(c("╰" + "─" * (width + 1) + "╯", "90") + "\n")
+    if url:
+        stream.write("  " + c(url, "90") + "\n")
+    stream.write("  " + c("›", "36") + " ")
+    stream.flush()
+
+    answer = _read_line(stdin, timeout)
+    if answer is None:
+        # Say the default was taken rather than leaving a bare prompt on screen — an
+        # unexplained newline reads as a dropped keystroke.
+        stream.write("\n  " + c(f"no answer in {int(timeout)}s — following here", "90") + "\n")
+        stream.flush()
+        return WATCH_TERMINAL
+    return WATCH_BROWSER if answer.strip().lower().startswith("b") else WATCH_TERMINAL
+
+
+def _isatty(f: TextIO) -> bool:
+    """isatty() that tolerates a stream which does not have it (StringIO in tests)."""
+    try:
+        return bool(f.isatty())
+    except Exception:  # noqa: BLE001 - a stream that cannot answer is not a terminal
+        return False
+
+
+def _read_line(stdin: TextIO, timeout: float) -> str | None:
+    """One line from stdin, or None if ``timeout`` passes first.
+
+    A thread rather than ``select`` because select() on Windows accepts sockets only,
+    and this is the path a developer on Windows runs every day.
+    """
+    box: "queue.Queue[str]" = queue.Queue(maxsize=1)
+
+    def read() -> None:
+        try:
+            box.put(stdin.readline())
+        except Exception:  # noqa: BLE001 - a closed stdin is a non-answer, not a crash
+            pass
+
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        return box.get(timeout=timeout)
+    except queue.Empty:
+        return None
+
+
+def _visible_len(s: str) -> int:
+    """Width on screen: the length with ANSI escape sequences removed."""
+    return len(_ANSI_RE.sub("", s))
+
+
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 def build_console(mode: str = "pretty", quiet: bool = False, color: bool | None = None) -> Console:

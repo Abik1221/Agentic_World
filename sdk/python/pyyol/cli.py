@@ -1889,29 +1889,21 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     return 0
 
 
-# Where a running match is watched in the browser, per game.
-#
-# These are the real routes, verified against the client: Goofspiel and Monopoly take
-# ?match= at the top level, Mafia's viewer lives under /arena. A wrong path here is
-# worse than no link — it drops the developer on a DIFFERENT live match and everything
-# they see is someone else's game.
-_WATCH_ROUTE = {
-    "goofspiel": "/goofspiel",
-    "mafia": "/arena/mafia",
-    "monopoly": "/monopoly",
-}
+# The route table moved to console._WATCH_ROUTE — the runtime needs the same routes and
+# cannot import this module. Two copies would surface as the platform sending an honest
+# developer to somebody else's live match.
 
 
 def _watch_url(dashboard: str, arena: str, match_id: str) -> str:
-    """Browser URL for a specific live match. Empty when we cannot name it exactly —
-    a link to 'some match' would be a lie dressed as a convenience."""
-    route = _WATCH_ROUTE.get(arena)
-    if not (dashboard and route and match_id):
-        return ""
-    # safe="" so a slash is escaped too. quote() defaults to safe="/", which would let
-    # a match id containing one alter the PATH rather than the query — the link would
-    # then point somewhere else entirely.
-    return f"{dashboard.rstrip('/')}{route}?match={urllib.parse.quote(match_id, safe='')}"
+    """Browser URL for a specific live match, or "" when it cannot be named exactly.
+
+    Delegates to console.watch_url, which is the single copy — the runtime needs the same
+    routes and cannot import this module. Kept as a thin wrapper because the CLI passes
+    the dashboard positionally and first.
+    """
+    from .console import watch_url
+
+    return watch_url(arena, match_id, dashboard)
 
 
 # Only the FIRST match of a run opens a tab. Sandbox iteration means dozens of matches
@@ -1919,6 +1911,30 @@ def _watch_url(dashboard: str, arena: str, match_id: str) -> str:
 # learn to dread. After the first, the link is printed and the developer clicks when
 # they want it. `--open` forces every match; `--no-open` suppresses entirely.
 _opened_once = {"done": False}
+
+# Where the developer said they want to watch, asked ONCE per run and remembered.
+#
+# Once, for two reasons. The obvious one: being asked the same question before every
+# match of a sandbox loop is the thing you learn to dread. The load-bearing one: a
+# prompt that timed out has left a reader on stdin, so asking again would find its
+# answer swallowed by the previous question. See console.ask_watch.
+_watch_choice: dict[str, str] = {}
+
+
+def _resolve_watch(console, args, url: str, label: str) -> str:
+    """The developer's watch choice for this run — asked at most once.
+
+    `--watch` short-circuits the question entirely, which is what makes this safe in a
+    script: a flag means the answer is already known, so nothing reads stdin at all.
+    """
+    flag = getattr(args, "watch", "ask") or "ask"
+    if flag != "ask":
+        return flag
+    if "value" not in _watch_choice:
+        from .console import ask_watch  # lazy, like every other console import here
+
+        _watch_choice["value"] = ask_watch(label, url)
+    return _watch_choice["value"]
 
 
 def _announce_match(console, args, arena: str, match_id: str, label: str = "") -> None:
@@ -1936,11 +1952,19 @@ def _announce_match(console, args, arena: str, match_id: str, label: str = "") -
         return
 
     mode = getattr(args, "open_browser", "auto")
-    console.emit("match", f"watch it live: {url}")
-
     if mode == "never":
+        console.emit("match", f"watch it live: {url}")
         return
-    should_open = mode == "always" or (mode == "auto" and not _opened_once["done"])
+
+    # Ask before taking over the screen. The link is printed either way, so a developer
+    # who picks the terminal still has the URL when they change their mind — the choice
+    # is about what happens WITHOUT them clicking, not about what they are told.
+    choice = _resolve_watch(console, args, url, f"{arena} · {match_id}")
+    console.emit("match", f"watch it live: {url}")
+    if choice != "browser":
+        return
+
+    should_open = mode == "always" or not _opened_once["done"]
     if not should_open:
         return
     # Never in CI/headless: a browser that cannot open would print a stack trace over
@@ -2602,6 +2626,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="open the live match in your browser: auto (first only) | always | never",
     )
+    # Where to watch, asked once per run when both ends are a TTY.
+    #   ask (default) — the pop-up: browser or terminal, defaulting to terminal
+    #   browser       — always open, never ask
+    #   terminal      — never open, never ask (CI, tmux, remote boxes)
+    # A non-"ask" value means nothing reads stdin, which is what makes it script-safe.
+    pdev.add_argument(
+        "--watch",
+        choices=["ask", "browser", "terminal"],
+        default="ask",
+        help="where to watch a match: ask (default) | browser | terminal",
+    )
     _add_api(pdev)
     pdev.set_defaults(func=cmd_dev)
 
@@ -2645,6 +2680,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="open the live match in your browser: auto (first only) | always | never",
     )
     _add_api(pp)
+    # Where to watch, asked once per run when both ends are a TTY.
+    #   ask (default) — the pop-up: browser or terminal, defaulting to terminal
+    #   browser       — always open, never ask
+    #   terminal      — never open, never ask (CI, tmux, remote boxes)
+    # A non-"ask" value means nothing reads stdin, which is what makes it script-safe.
+    pp.add_argument(
+        "--watch",
+        choices=["ask", "browser", "terminal"],
+        default="ask",
+        help="where to watch a match: ask (default) | browser | terminal",
+    )
     pp.set_defaults(func=cmd_play)
 
     ppub = sub.add_parser(

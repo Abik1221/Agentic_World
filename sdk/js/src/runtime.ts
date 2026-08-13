@@ -14,9 +14,12 @@
  *     agent.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.max(...v.legal_actions) }));
  *     await agent.run({ url: "wss://pyyol.example/v1/agent/connect", agentId: "ag_…", token: "…" });
  */
+import { spawn } from "node:child_process";
+
 import type { Agent } from "./server.js";
 import { SDK_VERSION } from "./server.js";
 import { Tracer, runTurnUsage } from "./telemetry.js";
+import { askWatch, watchUrl, WATCH_BROWSER, WATCH_TERMINAL } from "./watch.js";
 
 // Frame types — byte-identical to the Go gateway (internal/agentgw/frame.go).
 const HELLO = "hello", REGISTERED = "registered", PONG = "pong";
@@ -156,6 +159,10 @@ export class RuntimeConnector {
   private registered = false; // true once this session's register succeeded
   private refreshAttempts = 0; // per-connection guard against a refresh loop
   private turnNo = 0; // monotonic per-connection turn counter (telemetry attribution fallback)
+  // The watch prompt is offered ONCE per connection, not once per match: being asked
+  // before every match of a long run is the thing you learn to dread, and a timed-out
+  // prompt has left a reader on stdin that would swallow the next one.
+  private watchOffered = false;
   // Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
   // Correlated to the match trace so the agent's model/tool calls render with
   // the platform's authoritative gateway spans.
@@ -211,6 +218,47 @@ export class RuntimeConnector {
   }
 
   /** Emit a live-feed line to the CLI/console, if a sink was provided. */
+  /**
+   * Offer "browser or terminal?" when a match is found, without blocking anything.
+   *
+   * `pyyol run` is the path a developer is actually on when they type a command and a
+   * staked match appears, and until now that match simply began — no choice, and no way
+   * to reach the live table except finding it yourself.
+   *
+   * Never awaited by the caller. The prompt waits up to ten seconds for a keystroke, and
+   * the dispatch loop cannot afford that: the heartbeat that keeps the connection alive
+   * and the first turn of the match are both queued behind it. A developer who stepped
+   * away for coffee would come back to a forfeited stake.
+   *
+   * Opt out with PYYOL_WATCH=terminal (or browser to skip straight to opening it).
+   * Anything non-interactive is already handled inside askWatch, which prints nothing at
+   * all without a TTY on both ends.
+   */
+  private async offerWatch(payload: Record<string, unknown>): Promise<void> {
+    if (this.watchOffered) return;
+    this.watchOffered = true;
+    try {
+      const matchId = String(payload.match_id ?? "");
+      const game = String(payload.game ?? "");
+      if (!matchId || !game) return;
+      const url = watchUrl(game, matchId);
+      if (!url) return; // no link rather than one onto someone else's match
+
+      const env = String(process.env.PYYOL_WATCH ?? "").trim().toLowerCase();
+      const preset = env === WATCH_BROWSER || env === WATCH_TERMINAL ? env : "";
+      // Bounded by the countdown: the platform starts play whether or not this was
+      // answered, so a longer wait asks about a decision that has already passed.
+      const choice = preset || (await askWatch(`${game} · ${matchId}`, url));
+      if (choice !== WATCH_BROWSER) return;
+
+      const cmd =
+        process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+      spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+    } catch {
+      // Watching is a courtesy; the match is not. Nothing here may reach the run loop.
+    }
+  }
+
   private feed(kind: string, detail: string): void {
     this.opts.onFeed?.(kind, detail);
   }
@@ -438,6 +486,12 @@ export class RuntimeConnector {
       case INITIALIZE: {
         const ack = await this.agent.ackInitialize(frame.payload ?? {});
         send({ t: RESPONSE, id: frame.id ?? "", payload: ack });
+        // AFTER the ack, and deliberately NOT awaited. On the socket path the platform
+        // treats a delivered initialize frame as the acknowledgement, so anything before
+        // the ack delays the answer that keeps this seat in the match — and awaiting the
+        // prompt here would stall every frame queued behind it, including the heartbeat
+        // holding the connection open and the first turn of the match.
+        void this.offerWatch(frame.payload ?? {});
         break;
       }
       case EVENT:
