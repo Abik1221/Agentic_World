@@ -140,7 +140,10 @@ type MafiaPushView struct {
 	Allies   []int        `json:"allies,omitempty"`
 	Legal    []string     `json:"legal"`
 	Public   []mf.Event   `json:"public,omitempty"`
-	Private  []mf.Event   `json:"private,omitempty"`
+	// Digest states in counts what happened before the window. Nil when the whole
+	// transcript fits. Never prose — a summary of what a player said is not what they said.
+	Digest  *mf.PublicDigest `json:"digest,omitempty"`
+	Private []mf.Event       `json:"private,omitempty"`
 	// Live voting state (voting phase only) + the shot clock, so the agent can
 	// reason about the current tally and pace its thinking.
 	Votes      map[int]int `json:"votes,omitempty"`       // voter seat -> target seat
@@ -405,10 +408,16 @@ func (p *pushPlayer) mintProof(agentID, matchID string, turn int) string {
 }
 
 func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, matchID, agentID string, v AgentView) (mf.Action, benchmark.Outcome, int64, string, *benchmark.TokenUsage) {
+	// The transcript is WINDOWED for the payload only. Every one of these events was already
+	// pushed to this agent in real time by dispatchPublicEvents, so re-sending the whole
+	// archive each turn buys nothing and, on a real 550-event match, costs tens of thousands
+	// of tokens against free tiers that allow 6,000 per minute. The push stream and the
+	// game-end record still carry everything — see the note in engine/mafia/view.go.
+	windowed, digest := mf.WindowPublic(v.Public)
 	req := MafiaPushView{
 		Game: "mafia", MatchID: matchID, YourSeat: v.YourSeat, YourRole: v.YourRole,
 		Day: v.Day, Phase: v.Phase, Alive: v.Alive, Allies: v.Allies, Legal: v.Legal,
-		Public: v.Public, Private: v.Private,
+		Public: windowed, Digest: digest, Private: v.Private,
 		Votes: v.Votes, VoteTally: v.VoteTally, DeadlineMs: v.DeadlineMs,
 		// One proof per DECISION, not per day: several decisions happen inside one Mafia
 		// day, so the turn number folds the phase in (see turnproof.MafiaTurn). The SAME
