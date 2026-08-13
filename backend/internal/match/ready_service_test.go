@@ -320,3 +320,70 @@ func readyMatch(id string) match.Match {
 		},
 	}
 }
+
+// ── what the ask TELLS the seat ───────────────────────────────────────────────
+
+// askSpy records the ask each seat actually receives, which is the thing under test here:
+// not whether an ask went out, but whether it described the right game.
+type askSpy struct{ asks []match.ReadyAsk }
+
+func (s *askSpy) AskReady(_ context.Context, a match.ReadyAsk) error {
+	s.asks = append(s.asks, a)
+	return nil
+}
+
+// TestTheAskDescribesTheActualGameAndTable pins the fix for a bug that no test could see,
+// because the only implementation hardcoded its answer: the ask sent Game:"goofspiel" and
+// Players:2 to EVERY seat. A developer whose agent was dealt into a seven-handed Mafia table
+// was told, in the one message that starts the match, that it had joined a two-player card
+// game. An SDK that dispatches on `game` would run the wrong handler and the developer's only
+// symptom would be an agent that plays nonsense.
+//
+// The assertion is deliberately on the ask's CONTENT rather than on its delivery — delivery
+// was never broken.
+func TestTheAskDescribesTheActualGameAndTable(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	repo := newFakeRepo()
+	rr := &fakeReadyRepo{}
+	spy := &askSpy{}
+	svc := match.New(repo, fakeLocker{}, match.NoopLimits{}, &readyWallet{},
+		match.NoopBroadcaster{}, match.AllowAllVerifier{}, match.NoopRater{}, match.NoopFinishHook{},
+		platform.FixedClock{T: now},
+		match.Config{MoveWindow: 20 * time.Second, RakePct: 5, Rounds: 13, LockTTL: 5 * time.Second})
+	svc.SetReadyCheck(rr, spy, &readyRequeueSpy{})
+
+	// Seven seats at a Mafia table: below the policy's twelve, above its minimum of four. The
+	// count matters — Players must be the seats actually present, not the policy maximum, or
+	// an agent sizes its roster for five players who are not there.
+	seats := make([]match.ReadySeat, 0, 7)
+	players := make([]match.Player, 0, 7)
+	for i, id := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		seats = append(seats, readySeat(id, false, 0, 0, now))
+		players = append(players, match.Player{AgentPublicID: id, OwnerPublicID: "u_" + id, Seat: i})
+	}
+	rr.seats = seats
+	repo.putReadyMatch(match.Match{
+		PublicID: "m_mafia", Game: "mafia", Status: match.StatusReadyCheck, Bid: 100, Players: players,
+	})
+
+	if _, err := svc.ReadyTick(context.Background(), "m_mafia"); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(spy.asks) == 0 {
+		t.Fatal("no seat was asked, so the test proves nothing")
+	}
+	for _, a := range spy.asks {
+		if a.Game != "mafia" {
+			t.Errorf("seat %s was told game=%q; a Mafia seat must be told mafia", a.AgentPublicID, a.Game)
+		}
+		if a.Players != 7 {
+			t.Errorf("seat %s was told players=%d, want the 7 seats actually at the table", a.AgentPublicID, a.Players)
+		}
+		if a.MatchPublicID != "m_mafia" {
+			t.Errorf("seat %s was told match=%q, want m_mafia", a.AgentPublicID, a.MatchPublicID)
+		}
+		if !a.Deadline.After(now) {
+			t.Errorf("seat %s got deadline %v, which is not in the future — it cannot decide whether it can be ready in time", a.AgentPublicID, a.Deadline)
+		}
+	}
+}

@@ -65,15 +65,19 @@ type SocketAsker interface {
 // non-event — it logs at debug and moves on — because an undeliverable ask and an unanswered
 // one are the same fact, and one unreachable seat must never abort a sweep that is holding
 // other people's tables.
-func (a InitializeAsker) AskReady(ctx context.Context, agentPublicID, matchPublicID string, deadline time.Time) error {
+func (a InitializeAsker) AskReady(ctx context.Context, ask ReadyAsk) error {
+	agentPublicID, matchPublicID := ask.AgentPublicID, ask.MatchPublicID
 	req := agentclient.InitializeRequest{
 		Protocol: agentclient.ProtocolVersion,
 		MatchID:  matchPublicID,
-		Game:     "goofspiel",
+		// From the match, never a default. This field used to be the constant "goofspiel"
+		// alongside Players:2, which told every Mafia and Monopoly seat it had been dealt
+		// into a two-player card game.
+		Game: ask.Game,
 		// The window, so an agent can decide whether it can be ready in time rather than
 		// guessing. Milliseconds to match every other deadline on this protocol.
-		DeadlineMs: time.Until(deadline).Milliseconds(),
-		Players:    2,
+		DeadlineMs: time.Until(ask.Deadline).Milliseconds(),
+		Players:    ask.Players,
 	}
 
 	// The socket first when the agent is connected: it is already open, so it is both faster

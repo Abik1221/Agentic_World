@@ -43,7 +43,29 @@ type ReadyRepo interface {
 // an error here must never abort the sweep, because one unreachable seat cannot be allowed to
 // freeze a table for everyone else.
 type ReadyAsker interface {
-	AskReady(ctx context.Context, agentPublicID, matchPublicID string, deadline time.Time) error
+	AskReady(ctx context.Context, ask ReadyAsk) error
+}
+
+// ReadyAsk is one seat's ask.
+//
+// A struct rather than positional arguments because the ask now carries THREE strings
+// (agent, match, game) and two of them would sit adjacent in a parameter list — a silent
+// swap that compiles. That is exactly the failure this type exists to prevent: the ask used
+// to hardcode Game:"goofspiel" and Players:2, so an agent seated at a 12-player Mafia table
+// was told it was joining a 2-player Goofspiel match. An SDK that branches on `game` to pick
+// a handler would have loaded the wrong one, and the developer's first evidence would be
+// their agent playing badly rather than an error.
+type ReadyAsk struct {
+	AgentPublicID string
+	MatchPublicID string
+	// Game as the match itself records it — never a default. The whole point of the type.
+	Game string
+	// Players is the number of seats actually at this table right now, not the policy's
+	// maximum: a Mafia table that filled 7 of 12 is a 7-player game to the agent being asked.
+	Players int
+	// Deadline is when the ask expires, so an agent can decide whether it can be ready in
+	// time rather than guessing.
+	Deadline time.Time
 }
 
 // ReadyStarter tells a seat its table is about to begin, and when.
@@ -208,7 +230,13 @@ func (s *Service) ReadyTick(ctx context.Context, matchPublicID string) (done boo
 				s.queueEvents.ReadyAsked(ctx, agent, matchPublicID)
 			}
 			if s.readyAsker != nil {
-				err := s.readyAsker.AskReady(ctx, agent, matchPublicID, now.Add(pol.Window))
+				err := s.readyAsker.AskReady(ctx, ReadyAsk{
+					AgentPublicID: agent,
+					MatchPublicID: matchPublicID,
+					Game:          m.Game,
+					Players:       len(seats),
+					Deadline:      now.Add(pol.Window),
+				})
 				if err == nil {
 					// THE ASK IS SYNCHRONOUS AND ITS ANSWER IS THE ACKNOWLEDGEMENT.
 					//
