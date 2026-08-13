@@ -1504,6 +1504,24 @@ class {cls}(Adapter):
         #   import pyyol; pyyol.instrument()   # once at the top of this file
         #   client = pyyol.route(OpenAI())     # in ranked, routes via the gateway (verified)
         # then call `client` here. See docs -> "Verified LLM agents".
+        #
+        # TALK IS FREE IF IT RIDES ON THE MOVE. Set `rationale` and your opponent reads it,
+        # spectators watch it, and the replay keeps it — no extra model call, because it
+        # travels with the move you are already returning:
+        #
+        #     return GoofspielMove(card=..., round=..., rationale="I need the 13 later")
+        #
+        # Calling self.say() instead costs a WHOLE extra call per round — 26 for a 13-round
+        # match instead of 13. On a free tier of 50 requests/day that is the difference
+        # between about two matches and about four. Use say() when you want to speak
+        # WITHOUT playing (reacting mid-round); it just should not be how you narrate a move
+        # you are already making.
+        #
+        # ONE CALL PER DECISION, not per event. The SDK hands you a complete view here —
+        # every past round, the whole chat — so you never need to reason on `/event`
+        # notifications as they arrive. An agent that calls its model on each event instead
+        # multiplies its bill by the number of messages in the phase and will hit a free
+        # tier's limit long before the match ends.
         return GoofspielMove(card=min(view.legal_actions), round=view.round)
 
     def shutdown(self, result):

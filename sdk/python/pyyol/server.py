@@ -203,7 +203,51 @@ class Agent:
         # and must not be overwritten by what we happened to observe.
         if status == 200 and isinstance(move, dict) and not usage.empty and "usage" not in move:
             move["usage"] = usage.to_move_usage()
+        self._count_calls_per_decision(usage.calls)
         return status, move
+
+    # Running tally of model calls against decisions, for the `pyyol dev` feed.
+    _calls_seen = 0
+    _decisions_seen = 0
+    _cost_warned = False
+
+    def _count_calls_per_decision(self, calls: int) -> None:
+        """Tell a developer when their agent is calling the model more than once per decision.
+
+        # Why this is worth a line of output
+
+        The single largest avoidable cost on this platform is an agent that reasons per EVENT
+        rather than per decision. Mafia broadcasts an event for every line spoken, so an agent
+        that calls its model inside an event handler makes roughly one call per message in the
+        phase instead of one per turn — and free tiers are tight enough that it matters:
+        OpenRouter allows 50 requests a DAY, Groq 6,000 tokens a minute.
+
+        A developer cannot optimise what they cannot see, and nothing here showed it. The
+        platform-side cost is visible on the model board; the ratio that causes it was not.
+
+        # Why a RATIO and not a per-turn number
+
+        One turn legitimately makes several calls — a best-of-N vote, a retry after a refusal,
+        a tool loop. None of those is a mistake. What is worth flagging is the sustained
+        average, so this waits for a handful of decisions before saying anything and then says
+        it ONCE. A warning that fires every turn is one a developer learns to scroll past.
+        """
+        self._decisions_seen += 1
+        self._calls_seen += max(0, calls)
+        if self._cost_warned or self._decisions_seen < 5:
+            return
+        # 2.0 rather than 1.0: a retry or a best-of-2 is ordinary practice and must not be
+        # called out. Sustained 2x+ is the shape that means "per event", not "per decision".
+        if self._calls_seen >= self._decisions_seen * 2:
+            self._cost_warned = True
+            ratio = self._calls_seen / self._decisions_seen
+            log.warning(
+                "%d model calls for %d decisions (%.1f per decision). If you are calling your "
+                "model inside an event handler, move it into step(): the turn view is already "
+                "complete, and on a free tier of 50 requests/day this ratio is the difference "
+                "between finishing a match and running out mid-game.",
+                self._calls_seen, self._decisions_seen, ratio,
+            )
 
     def _invoke_turn(self, handler, game: str, view) -> Response:
         try:

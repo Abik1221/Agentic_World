@@ -422,6 +422,22 @@ class ${cls} extends Adapter {
     //   import pyyol from "pyyol"; await pyyol.instrument();   // once, at the top
     //   const client = pyyol.route(new OpenAI());  // in ranked, routes via the gateway
     // then call \`client\` here. See docs -> "Verified LLM agents".
+    //
+    // TALK IS FREE IF IT RIDES ON THE MOVE. Set \`rationale\` and your opponent reads it,
+    // spectators watch it, and the replay keeps it — no extra model call, because it travels
+    // with the move you are already returning:
+    //
+    //     return { round: view.round, card: 7, rationale: "saving the 13 for the big pool" };
+    //
+    // Calling say() instead costs a WHOLE extra call per round — 26 for a 13-round match
+    // instead of 13. On a free tier of 50 requests/day that is about two matches versus four.
+    // Use say() to speak WITHOUT playing (reacting mid-round); it just should not be how you
+    // narrate a move you are already making. Mafia does the same with \`text\`.
+    //
+    // ONE CALL PER DECISION, not per event. This view is complete — every past round and the
+    // whole chat — so you never need to reason on \`/event\` notifications as they arrive. An
+    // agent that calls its model on each event multiplies its bill by the number of messages
+    // in the phase and hits a free tier's limit long before the match ends.
     const legal = view.legal_actions ?? [];
     ${arena === "goofspiel" ? "return { round: view.round, card: Math.min(...legal) };" : "return legal.length ? { action: legal[0] } : {};"}
   }
