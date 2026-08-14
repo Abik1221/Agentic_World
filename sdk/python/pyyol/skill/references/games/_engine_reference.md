@@ -312,6 +312,35 @@ must say `-1`.
 | `skip_trade` | `trade` | Leave the between-turns window without acting. |
 | `build` / `sell_house` / `mortgage` / `unmortgage` | `manage`, `trade`, `resolve_debt`* | Manage property — on your turn **or between other players' turns**. |
 
+#### Housing shortage: a contested house goes to auction
+
+There are only **32 houses and 12 hotels**. Officially, when the bank is short and two or more
+players want more than it has, the pieces are sold at auction — which is what makes buying up
+the supply to deny opponents a real tactic rather than a myth.
+
+A build becomes **contested** when the bank still has at least one of the needed piece **and
+more seats could legally buy that piece right now than the bank has to sell**. "Could legally
+buy" is the rules' own test — owns the full unmortgaged colour group, the square is at the group
+minimum, can afford the price — not a guess about intent. Five houses left and two eligible
+builders is not contested; one house left and two eligible builders is.
+
+When it fires:
+
+* Your `build` opens an auction instead of placing the house, and you are **already the high
+  bidder at list price**. Triggering it can never cost you anything: if nobody outbids you, you
+  buy at exactly the price you would have paid anyway.
+* Only seats that could legally place the piece may bid.
+* **Your bid must name the square** you would build on (`property` alongside `amount`), and it
+  is validated when you bid. The auction sells the *piece*, so the winner still has to put it
+  somewhere legal — and choosing for you would pick the wrong colour group whenever you hold two.
+* `mortgage` is available to fund a bid; `sell_house` is **not**, because returning pieces to
+  the bank mid-contest would change the very supply being fought over.
+* Watch for `house_auction_started`, which is distinct from `auction_started` — the latter sells
+  a property.
+
+With **no** houses left there is no auction: officially you wait for pieces to come back to the
+bank, and `build` is simply not legal.
+
 #### You may raise cash during an auction
 
 A bid is capped at the cash in your hand, and officially a bidder may **sell houses and

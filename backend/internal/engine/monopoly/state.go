@@ -13,7 +13,7 @@ package monopoly
 // Version identifies the rule set. It is embedded in the match_created event and
 // stored on every match so a replay is reproduced with the exact same rules.
 // Bump on ANY behavioral change to the engine.
-const Version = "monopoly-1.4.0"
+const Version = "monopoly-1.5.0"
 
 // Bank is the sentinel "owner" for unowned property and the sentinel creditor for
 // payments that go to / come from the bank. Tie is the sentinel winner for a draw.
@@ -51,7 +51,7 @@ const OpenToTable = -1
 type Trade struct {
 	Proposer int `json:"proposer"`
 	// Target is the seat being offered to, or OpenToTable for an open offer.
-	Target int `json:"target"`
+	Target    int   `json:"target"`
 	GiveProps []int `json:"give_props"`           // proposer -> target
 	GiveCash  int   `json:"give_cash"`            // proposer -> target
 	GiveCards int   `json:"give_cards,omitempty"` // get-out-of-jail cards proposer -> target
@@ -92,6 +92,21 @@ type AuctionState struct {
 	// Estate marks an auction of a bankrupt-to-bank estate: when it (and the rest of
 	// EstateQueue) closes, the debtor's turn ends rather than returning to PhaseManage.
 	Estate bool `json:"estate,omitempty"`
+	// House marks a HOUSING SHORTAGE auction: what is being sold is one scarce house or
+	// hotel, not a property. Property is -1 for these — no title deed changes hands.
+	House bool `json:"house,omitempty"`
+	// Hotel distinguishes which scarce supply is being contested. The two are separate
+	// (32 houses, 12 hotels) and can be short independently.
+	Hotel bool `json:"hotel,omitempty"`
+	// Targets[seat] is the square that seat would put the piece on, named with its bid.
+	// -1 for a seat that has not bid. A house auction sells the PIECE, so the winner still
+	// has to place it somewhere legal, and choosing for them would pick the wrong colour
+	// group for anyone holding two.
+	Targets []int `json:"targets,omitempty"`
+	// Return is the phase to resume when the auction closes. A shortage auction can be
+	// triggered from the owner's manage phase OR from the between-turns window, and
+	// dropping back into the wrong one would either skip a seat's turn or strand the window.
+	Return string `json:"return,omitempty"`
 }
 
 // Debt records an unpaid obligation that exceeds the debtor's cash. While it is
@@ -248,6 +263,9 @@ func (s State) clone() State {
 	if s.Auction != nil {
 		a := *s.Auction
 		a.InAuction = append([]bool(nil), s.Auction.InAuction...)
+		// Targets rides along with InAuction. Step returns the ORIGINAL state on any error,
+		// and a shared backing array would let a rejected bid's target survive the rollback.
+		a.Targets = append([]int(nil), s.Auction.Targets...)
 		cp.Auction = &a
 	}
 	if s.Debt != nil {

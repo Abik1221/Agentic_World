@@ -829,8 +829,8 @@ func TestAZeroTargetIsNeverAnOpenOffer(t *testing.T) {
 func TestADebtorMayTradeItsWayOut(t *testing.T) {
 	e := New(Config{Players: 2, StartingCash: 1500, MaxTurns: 300})
 	s, _ := e.Init(testSeed)
-	s.Holdings[1] = Holding{Owner: 0}  // seat 0 owns Mediterranean
-	s.Players[0].Cash = 10             // and is broke
+	s.Holdings[1] = Holding{Owner: 0} // seat 0 owns Mediterranean
+	s.Players[0].Cash = 10            // and is broke
 	s.Players[1].Cash = 1000
 	s.Current = 0
 	s.Phase = PhaseResolveDebt
@@ -1061,5 +1061,225 @@ func TestABidderMayRaiseCashDuringAnAuction(t *testing.T) {
 	}
 	if ns2.Auction.HighBid != 60 || ns2.Auction.HighBidder != 0 {
 		t.Fatalf("high bid = %d by %d, want 60 by seat 0", ns2.Auction.HighBid, ns2.Auction.HighBidder)
+	}
+}
+
+// ── the housing shortage auction ─────────────────────────────────────────────
+//
+// Official: "if there are a limited number of houses and hotels available and two or more
+// players wish to buy more than the Bank has, the houses or hotels must be sold at auction to
+// the highest bidder." The trigger chosen — the bank has at least one piece, and more seats
+// could legally buy that piece than the bank has to sell — is documented in shortage.go.
+
+// shortageBoard: seats 0 and 1 each own a complete, unmortgaged colour group, so both could
+// legally build. Supply is set per test.
+func shortageBoard(t *testing.T) (*Engine, State) {
+	t.Helper()
+	e := New(Config{Players: 3, StartingCash: 2000, MaxTurns: 300})
+	s, _ := e.Init(testSeed)
+	s.Holdings[1] = Holding{Owner: 0} // brown group — seat 0
+	s.Holdings[3] = Holding{Owner: 0}
+	s.Holdings[6] = Holding{Owner: 1} // light blue — seat 1
+	s.Holdings[8] = Holding{Owner: 1}
+	s.Holdings[9] = Holding{Owner: 1}
+	s.Current = 0
+	s.Phase = PhaseManage
+	return e, s
+}
+
+func TestAPlentifulBankNeverTriggersAnAuction(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 32 // no shortage at all
+	ns, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Auction != nil {
+		t.Fatal("an auction opened with 32 houses in the bank; the common case must be untouched")
+	}
+	if ns.Holdings[1].Houses != 1 {
+		t.Fatalf("houses = %d, want the ordinary build to have happened", ns.Holdings[1].Houses)
+	}
+}
+
+func TestAShortageIsNotContestedWhenOnlyOneSeatCouldBuild(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 1
+	// Take seat 1 out of contention: mortgage one of its group, so it cannot build.
+	s.Holdings[6] = Holding{Owner: 1, Mortgaged: true}
+	ns, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Auction != nil {
+		t.Fatal("one house and ONE eligible builder is not a contest — the rule needs two or " +
+			"more players wanting more than the bank has")
+	}
+	if ns.Holdings[1].Houses != 1 || ns.HousesRemaining != 0 {
+		t.Fatalf("the uncontested build did not happen: houses=%d remaining=%d",
+			ns.Holdings[1].Houses, ns.HousesRemaining)
+	}
+}
+
+func TestAnEmptyBankStillMeansWaitNotAuction(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 0
+	if containsAction(e.LegalActions(s, 0), ActBuild) {
+		t.Fatal("build offered with an empty bank")
+	}
+	if _, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed); err == nil {
+		t.Fatal("building from an empty bank must fail; officially players WAIT for houses to " +
+			"come back, and there is nothing to auction")
+	}
+}
+
+func TestAContestedHouseGoesToAuctionAndCanBeOutbid(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 1 // one house, two eligible builders
+
+	ns, evs, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatalf("contested build errored instead of opening an auction: %v", err)
+	}
+	if ns.Auction == nil || !ns.Auction.House {
+		t.Fatal("no housing-shortage auction opened")
+	}
+	if evs[0].Type != EvHouseAuctionStarted {
+		t.Fatalf("first event = %s, want house_auction_started", evs[0].Type)
+	}
+	// The initiator's list price is the standing bid, so triggering costs it nothing.
+	if ns.Auction.HighBidder != 0 || ns.Auction.HighBid != space(1).HouseCost {
+		t.Fatalf("opening bid = %d by seat %d, want the initiator at list price %d",
+			ns.Auction.HighBid, ns.Auction.HighBidder, space(1).HouseCost)
+	}
+	// The house has NOT been taken from the bank yet — the auction decides who gets it.
+	if ns.HousesRemaining != 1 {
+		t.Fatalf("bank supply = %d before the auction closed, want 1", ns.HousesRemaining)
+	}
+	// Seat 2 owns nothing, so it cannot bid on a house it could not place.
+	if ns.Auction.InAuction[2] {
+		t.Error("a seat that could not legally build was put in the auction")
+	}
+	// Bidding starts with the next eligible seat, not the initiator outbidding itself.
+	if ns.Auction.Current != 1 {
+		t.Fatalf("first bidder = %d, want seat 1", ns.Auction.Current)
+	}
+
+	// Seat 1 outbids, naming ITS square.
+	ns2, _, err := e.Step(ns, 1, Action{Kind: ActBid, Amount: 120, Property: 6}, testSeed)
+	if err != nil {
+		t.Fatalf("outbid refused: %v", err)
+	}
+	// The auction does NOT close yet: seat 0 is still in and must get the chance to
+	// respond to the raise. That is ordinary ascending-auction behaviour and the reason
+	// this assertion was wrong the first time it was written.
+	if ns2.Auction == nil || ns2.Auction.Current != 0 {
+		t.Fatalf("after a raise the previous high bidder must get a chance to respond: %+v", ns2.Auction)
+	}
+	// Seat 0 declines to go higher, and the auction closes.
+	ns2, _, err = e.Step(ns2, 0, Action{Kind: ActPass}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns2.Auction != nil {
+		t.Fatalf("auction still open after every rival passed: %+v", ns2.Auction)
+	}
+	if ns2.Holdings[6].Houses != 1 {
+		t.Fatalf("the winner's square has %d houses, want 1 — the piece must land on the "+
+			"square the winner NAMED, not on the initiator's", ns2.Holdings[6].Houses)
+	}
+	if ns2.Holdings[1].Houses != 0 {
+		t.Error("the initiator got a house despite being outbid")
+	}
+	if ns2.Players[1].Cash != 2000-120 {
+		t.Fatalf("winner cash = %d, want the bid deducted", ns2.Players[1].Cash)
+	}
+	if ns2.HousesRemaining != 0 {
+		t.Fatalf("bank supply = %d, want the auctioned house gone", ns2.HousesRemaining)
+	}
+	if ns2.Phase != PhaseManage {
+		t.Fatalf("phase = %s, want the interrupted phase resumed", ns2.Phase)
+	}
+}
+
+func TestAnUnopposedInitiatorPaysListPrice(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 1
+	ns, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seat 1 passes: nobody wants to pay more.
+	ns2, _, err := e.Step(ns, 1, Action{Kind: ActPass}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns2.Holdings[1].Houses != 1 {
+		t.Fatal("the initiator did not get the house it was never outbid for")
+	}
+	if ns2.Players[0].Cash != 2000-space(1).HouseCost {
+		t.Fatalf("initiator paid %d, want list price %d — triggering a contest must never "+
+			"cost the initiator anything", 2000-ns2.Players[0].Cash, space(1).HouseCost)
+	}
+}
+
+func TestABidMustNameASquareTheBidderCanBuildOn(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 1
+	ns, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seat 1 bids on seat 0's square. Winning it would leave the piece unplaceable.
+	if _, _, err := e.Step(ns, 1, Action{Kind: ActBid, Amount: 200, Property: 1}, testSeed); err == nil {
+		t.Fatal("a bid naming a square the bidder cannot build on was accepted")
+	}
+	// And on a square nobody owns.
+	if _, _, err := e.Step(ns, 1, Action{Kind: ActBid, Amount: 200, Property: 11}, testSeed); err == nil {
+		t.Fatal("a bid naming an unowned square was accepted")
+	}
+}
+
+func TestSellingHousesIsWithheldDuringAShortageAuction(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 1
+	s.Holdings[6] = Holding{Owner: 1, Houses: 1} // seat 1 has a house it could sell back
+	s.Holdings[8] = Holding{Owner: 1, Houses: 1}
+	s.Holdings[9] = Holding{Owner: 1, Houses: 1}
+	ns, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Auction == nil {
+		t.Fatal("expected a contested auction")
+	}
+	legal := e.LegalActions(ns, ns.Auction.Current)
+	if containsAction(legal, ActSellHouse) {
+		t.Errorf("sell_house offered during a shortage auction (%v): returning pieces to the "+
+			"bank mid-contest would move the very supply being fought over", legal)
+	}
+	if !containsAction(legal, ActMortgage) && anyMortgageable(&ns, ns.Auction.Current) {
+		t.Error("mortgage withheld too; it raises cash without touching the supply")
+	}
+}
+
+// TestARejectedBidLeavesTheAuctionUntouched pins the transactional guarantee against the new
+// Targets slice: Step returns the ORIGINAL state on error, and a shared backing array would
+// let a refused bid's target survive the rollback.
+func TestARejectedBidLeavesTheAuctionUntouched(t *testing.T) {
+	e, s := shortageBoard(t)
+	s.HousesRemaining = 1
+	ns, _, err := e.Step(s, 0, Action{Kind: ActBuild, Property: 1}, testSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append([]int(nil), ns.Auction.Targets...)
+	if _, _, err := e.Step(ns, 1, Action{Kind: ActBid, Amount: 200, Property: 1}, testSeed); err == nil {
+		t.Fatal("expected the illegal bid to be refused")
+	}
+	for i := range before {
+		if ns.Auction.Targets[i] != before[i] {
+			t.Fatalf("targets mutated by a REFUSED bid: %v -> %v", before, ns.Auction.Targets)
+		}
 	}
 }

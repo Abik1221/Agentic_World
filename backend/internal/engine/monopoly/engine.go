@@ -34,7 +34,7 @@ var (
 	// at 0 and a bid must exceed it), so this covers an absent field and an explicit zero without
 	// having to claim which one occurred — Amount is a plain int and cannot tell them apart.
 	ErrBidAmountMissing = errors.New("monopoly: bid named no amount; send a positive \"amount\" with the bid")
-	ErrEmptyMessage      = errors.New("monopoly: message text is empty")
+	ErrEmptyMessage     = errors.New("monopoly: message text is empty")
 )
 
 // Action kinds — the verbs an agent submits via Step.
@@ -293,7 +293,9 @@ func (e *Engine) LegalActions(s State, seat int) []string {
 		// sell_house makes the sequence monotonic — each property mortgages once, each
 		// house sells once — so it is bounded by the board itself and needs no allowance.
 		acts := []string{ActBid, ActPass}
-		if anySellable(&s, seat) {
+		// sell_house is withheld during a shortage auction: returning pieces to the bank
+		// mid-contest would change the supply under dispute.
+		if s.Auction != nil && !s.Auction.House && anySellable(&s, seat) {
 			acts = append(acts, ActSellHouse)
 		}
 		if anyMortgageable(&s, seat) {
@@ -623,6 +625,21 @@ func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
 		if a.Amount > ns.Players[seat].Cash {
 			return nil, ErrInsufficientFunds
 		}
+		if au.House {
+			// A shortage auction sells the PIECE, so a bid has to say where the piece would
+			// go. Validated now rather than at close: a bid on a square the seat cannot
+			// build on would otherwise win an auction and then be unplaceable, and the
+			// piece would vanish between the bank and the board.
+			if !canBuildIgnoringSupply(ns, seat, a.Property) {
+				return nil, ErrIllegalAction
+			}
+			// The piece kind must match what is actually scarce. Letting a hotel-builder
+			// win an auction for a contested HOUSE would draw down the wrong supply.
+			if needsHotel(ns, a.Property) != au.Hotel {
+				return nil, ErrIllegalAction
+			}
+			au.Targets[seat] = a.Property
+		}
 		au.HighBid = a.Amount
 		au.HighBidder = seat
 		evs := []Event{e.emit(ns, EvBidPlaced, BidPayload{Seat: seat, Property: au.Property, Amount: a.Amount})}
@@ -632,6 +649,13 @@ func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
 		// Does NOT advance the auction: the seat is raising money in order to bid, so the
 		// floor stays with it until it actually bids or passes.
 		if a.Kind == ActSellHouse {
+			if au.House {
+				// Selling a house during a HOUSING SHORTAGE auction would return pieces to
+				// the bank mid-contest — changing the very supply being fought over, and
+				// possibly ending the shortage that justified the auction. Mortgaging
+				// raises cash without touching the supply, so it stays available.
+				return nil, ErrIllegalAction
+			}
 			return e.doSellHouse(ns, seat, a.Property)
 		}
 		return e.doMortgage(ns, seat, a.Property)
@@ -666,6 +690,13 @@ func (e *Engine) advanceAuction(ns *State, evs *[]Event) {
 
 func (e *Engine) closeAuction(ns *State, evs *[]Event) {
 	au := ns.Auction
+	if au.House {
+		// A shortage auction sells a piece, not a title deed, and resumes whatever phase it
+		// interrupted rather than always dropping into PhaseManage — it can be triggered
+		// from the between-turns window too.
+		e.closeHouseAuction(ns, evs)
+		return
+	}
 	if au.HighBidder != Bank {
 		ns.Players[au.HighBidder].Cash -= au.HighBid
 		ns.Holdings[au.Property] = Holding{Owner: au.HighBidder}
@@ -1621,6 +1652,12 @@ func (e *Engine) doBuild(ns *State, seat, pos int) ([]Event, error) {
 	}
 	if !canBuildOn(ns, seat, pos) {
 		return nil, ErrIllegalAction
+	}
+	// HOUSING SHORTAGE. Checked here, after legality and affordability, so a contest can
+	// only be triggered by a build that would otherwise have succeeded — an illegal build
+	// must stay an error rather than becoming an auction nobody asked for.
+	if contested, rivals := buildIsContested(ns, pos); contested {
+		return e.startHouseAuction(ns, seat, pos, rivals, ns.Phase), nil
 	}
 	ns.Players[seat].Cash -= sp.HouseCost
 	if h.Houses < 4 {
