@@ -64,7 +64,7 @@ type State struct {
 	Finished bool           `json:"finished"`
 	Winner   string         `json:"winner,omitempty"`
 
-	NightActs    map[int]Action `json:"night_acts,omitempty"`
+	NightActs map[int]Action `json:"night_acts,omitempty"`
 	// LastProtect maps a doctor's seat to the seat it shielded LAST night.
 	//
 	// The rule it enforces: a doctor may not shield the same player — including itself — two
@@ -72,12 +72,12 @@ type State struct {
 	// unkillable, or locks one key player down permanently; either way the role stops being a
 	// decision. Keyed by doctor seat rather than a single field because a table may seat more
 	// than one doctor, and a shared field would let one doctor's choice bar another's.
-	LastProtect map[int]int `json:"last_protect,omitempty"`
-	MafiaKill    map[int]int    `json:"mafia_kill,omitempty"`
-	Votes        map[int]int    `json:"votes,omitempty"`
-	Messages     int            `json:"messages,omitempty"`
-	PendingElim  int            `json:"pending_elim,omitempty"`
-	PendingCause string         `json:"pending_cause,omitempty"`
+	LastProtect  map[int]int `json:"last_protect,omitempty"`
+	MafiaKill    map[int]int `json:"mafia_kill,omitempty"`
+	Votes        map[int]int `json:"votes,omitempty"`
+	Messages     int         `json:"messages,omitempty"`
+	PendingElim  int         `json:"pending_elim,omitempty"`
+	PendingCause string      `json:"pending_cause,omitempty"`
 
 	// Timeouts counts, per seat, how many phases the platform had to act FOR that seat
 	// because it did not answer in time; Asks counts how many times it was asked at all.
