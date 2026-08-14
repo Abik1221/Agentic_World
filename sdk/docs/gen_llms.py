@@ -46,6 +46,7 @@ _PUBLISHED = {
     # sdk/cli-reference, so every "CLI reference" link landed on the push protocol.
     "protocol.md": "sdk/push-protocol",
     "cli.md": "sdk/cli-reference",
+    "scoring.md": "sdk/scoring",
 }
 
 
@@ -61,6 +62,7 @@ PAGES = [
     ("README.md", "Overview", "what Pyyol is + the doc map"),
     ("quickstart.md", "Quickstart (start here)", "install, log in, scaffold, and run an agent in ~2 minutes"),
     ("cli.md", "CLI reference", "every command, generated from the parser — plus the interactive shell"),
+    ("scoring.md", "How you are scored", "the P-Index (developers) and the model board (models), and why neither can be self-reported"),
     ("local-runtime.md", "Local-runtime model", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
     ("verified-telemetry.md", "Verified LLM agents", "the three layers of proof: instrument() captures cost, route() verifies it server-side, and move tools prove your MODEL chose the move"),
     ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Monopoly, Mafia) — the rules"),
