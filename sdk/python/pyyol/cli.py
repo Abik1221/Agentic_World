@@ -1258,6 +1258,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Normalize an Adapter (or Adapter subclass) into a runnable Agent, matching how
+    # `pyyol dev`/`pyyol play` load agents. The scaffold exposes an Adapter, which has
+    # no run(); without this, `pyyol run` crashes with AttributeError.
+    from .server import as_agent
+
+    agent = as_agent(agent)
+
     from .console import build_console
 
     console = build_console(
@@ -1667,7 +1674,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         tmpl = _PY_STARTER_GOOFSPIEL if arena == "goofspiel" else _PY_STARTER_GENERIC
         code = tmpl.format(name=name, cls=cls, arena=arena)
         entry = "agent.py:agent"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(code)
 
     # A manifest scaffold, because ranked REQUIRES one and there was no way to get a
@@ -1687,7 +1694,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # they never intended to run. Add a real URL only when you want always-on play.
     manifest.pop("endpoint", None)
     manifest_path = os.path.join(d, "manifest.json")
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
 
