@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
+	mafiapkg "github.com/agent-arena/arena/internal/mafia"
 )
 
 // The lab agent must play complete Mafia matches without proposing an illegal action.
@@ -67,8 +68,10 @@ func TestLabAgentPlaysMafiaToCompletion(t *testing.T) {
 					next, evs, err := eng.Act(st, seat, a)
 					if err != nil {
 						t.Fatalf("step %d: engine rejected %q (target %d) from seat %d in phase %q "+
-							"(role %s, legal %v): %v\nrationale: %s",
-							step, kind, a.Target, seat, st.Phase, st.Roles[seat], legal, err, why)
+							"(role %s, legal %v): %v\nrationale: %s\nview: cannotProtect=%d alive=%v\n"+
+							"engine: alive=%v lastProtect=%v",
+							step, kind, a.Target, seat, st.Phase, st.Roles[seat], legal, err, why,
+							v.CannotProtect, v.Alive, st.Alive, st.LastProtect)
 					}
 					st = next
 					log = append(log, evs...)
@@ -100,27 +103,27 @@ func TestLabAgentPlaysMafiaToCompletion(t *testing.T) {
 // is what an agent receives over the wire; handing it the in-process struct would let the test
 // pass on a shape no real agent ever sees — which is how a lab ends up certifying a contract it
 // never exercised.
+// viewForSeat builds the view the PLATFORM would send this seat.
+//
+// It marshals the REAL wire struct, mafiapkg.MafiaPushView, populated from the engine's own
+// redaction (mf.BuildView) exactly as internal/mafia does at run time.
+//
+// Two earlier versions were wrong in instructive ways. The first hand-assembled the JSON, so
+// the harness could never see a field the platform added: when the engine began publishing
+// `cannot_protect`, this test kept sending a view without it and the resulting failure was
+// blamed on the policy. The second marshalled mf.AgentView directly — but that is the ENGINE's
+// shape (`seat`, `role`), not the wire's (`your_seat`, `your_role`), so every field silently
+// decoded to zero and a mafia tried to kill itself.
+//
+// Marshalling the wire struct is the only version that cannot drift from what an agent gets.
 func viewForSeat(t *testing.T, st mf.State, seat int, legal []string, log []mf.Event) mafiaView {
 	t.Helper()
-	var allies []int
-	if st.Roles[seat] == mf.RoleMafia {
-		for s, role := range st.Roles {
-			if role == mf.RoleMafia && s != seat && st.Alive[s] {
-				allies = append(allies, s)
-			}
-		}
-	}
-	// Only this seat's OWN night results, matching the engine's redaction.
-	var private []mf.Event
-	for _, e := range log {
-		if m, ok := e.Payload.(mf.NightPayload); ok && m.Seat == seat {
-			private = append(private, e)
-		}
-	}
-	raw, err := json.Marshal(map[string]any{
-		"day": st.Day, "phase": st.Phase, "your_seat": seat,
-		"your_role": st.Roles[seat], "alive": st.Alive, "allies": allies,
-		"legal": legal, "private": private, "vote_tally": voteTally(st),
+	av := mf.BuildView(st, seat, log)
+	raw, err := json.Marshal(mafiapkg.MafiaPushView{
+		Game: "mafia", MatchID: "m_test", YourSeat: av.Seat, YourRole: av.Role,
+		Day: av.Day, Phase: av.Phase, Alive: av.Alive, Allies: av.Allies, Legal: legal,
+		Private: av.Private, VoteTally: voteTally(st),
+		CannotProtect: av.CannotProtect, AllyKills: av.AllyKills,
 	})
 	if err != nil {
 		t.Fatalf("marshalling the view: %v", err)

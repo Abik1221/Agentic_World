@@ -34,7 +34,7 @@ type AgentView struct {
 	// that has to learn it by having a move refused wastes a decision and a model call to find
 	// out something the engine already knows. Doctors only — nobody else's constraint is
 	// anyone else's business.
-	CannotProtect int `json:"cannot_protect,omitempty"`
+	CannotProtect int `json:"cannot_protect"`
 
 	// Public is the shared transcript (moderator lines, messages, votes,
 	// eliminations, phase changes, victory) every agent may see.
@@ -81,11 +81,12 @@ func BuildView(s State, seat int, log []Event) AgentView {
 		Legal: LegalActions(s, seat),
 	}
 
+	// -1 on every view, then overwritten for a doctor that is actually barred. Defaulting to
+	// -1 rather than leaving the zero value is what keeps 0 meaning "seat 0" everywhere.
+	v.CannotProtect = -1
 	if role == RoleDoctor {
 		if last, ok := s.LastProtect[seat]; ok {
 			v.CannotProtect = last
-		} else {
-			v.CannotProtect = -1
 		}
 	}
 

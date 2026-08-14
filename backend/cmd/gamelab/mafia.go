@@ -42,6 +42,12 @@ type mafiaView struct {
 	// this struct until now, which is why -bind could never work for Mafia.
 	Round     int    `json:"round"`
 	TurnProof string `json:"turn_proof"`
+	// CannotProtect is the seat this DOCTOR shielded last night and may not shield again
+	// tonight. The engine publishes it so an agent never has to learn the rule by having a
+	// move refused — which is exactly what happened here: the policy below protected the same
+	// seat every night, the engine started refusing it, and the doctor fell through to an
+	// invalid target. Reading the field is the fix AND the demonstration that it works.
+	CannotProtect int `json:"cannot_protect"`
 }
 
 func (a *labAgent) playMafia(w http.ResponseWriter, r *http.Request, raw []byte) {
@@ -130,13 +136,22 @@ func mafiaAction(p persona, v mafiaView) (map[string]any, string) {
 				"investigating an unchecked seat"
 		}
 	case legal[mf.ActProtect]:
+		// A doctor may not shield the same seat two nights running, so last night's choice is
+		// excluded here rather than discovered by rejection.
+		barred := map[int]bool{}
+		// >= 0, not > 0: seat 0 is a real player, so a bar on seat 0 is a real bar. -1 is the
+		// only value meaning "nothing barred".
+		if v.CannotProtect >= 0 {
+			barred[v.CannotProtect] = true
+		}
 		// Protect self early (the doctor is the first target once revealed), then spread.
-		if v.Day <= 1 {
+		if v.Day <= 1 && !barred[v.YourSeat] {
 			return map[string]any{"action": mf.ActProtect, "target": v.YourSeat},
 				"protecting myself on the opening night"
 		}
-		if t, ok := pickTarget(alive, -1, nil); ok {
-			return map[string]any{"action": mf.ActProtect, "target": t}, "protecting a townsfolk"
+		if t, ok := pickTarget(alive, -1, barred); ok {
+			return map[string]any{"action": mf.ActProtect, "target": t},
+				fmt.Sprintf("shielding seat %d (seat %d is barred tonight)", t, v.CannotProtect)
 		}
 	case legal[mf.ActProfile]:
 		if t, ok := pickTarget(alive, v.YourSeat, nil); ok {

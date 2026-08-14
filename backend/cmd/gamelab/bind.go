@@ -57,6 +57,14 @@ var (
 	BindProvider = ""
 	BindKey      = ""
 	BindModel    = ""
+	// BindModels is BindModel split on commas: one model per SEAT, cycling.
+	//
+	// A benchmark needs different models in the SAME match. With one global model every seat
+	// plays the same one, so the match measures the harness and the dice, never the models —
+	// which is the exact confound scaffold fingerprinting exists to remove. Passing
+	// "modelA,modelB" seats them against each other, and the result is a paired comparison:
+	// same board, same rules, same harness, different model.
+	BindModels []string
 )
 
 // BindStream routes the decision as a STREAMED completion. Worth a separate run: streamed
@@ -184,6 +192,18 @@ type bindResult struct {
 // lab's own persona logic), and the provider is simply made to say what the strategy decided.
 // That keeps the match's play identical to a non-bound run, which is what makes the two
 // comparable.
+// modelFor is the model THIS agent binds through.
+//
+// Cycles over BindModels by the agent's own index, so seat 0 and seat 1 differ even when the
+// list is shorter than the table. Falls back to the single BindModel when no list was given,
+// which keeps every existing invocation behaving exactly as before.
+func (a *labAgent) modelFor() string {
+	if len(BindModels) == 0 {
+		return BindModel
+	}
+	return BindModels[a.Index%len(BindModels)]
+}
+
 func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string, legal []int, prize int) (bindResult, error) {
 	if BindGatewayBase == "" {
 		return bindResult{}, fmt.Errorf("gateway base URL not set")
@@ -221,7 +241,7 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// the Anthropic shape and it is a 400, not a silent mis-parse.
 	if BindProvider != "" && BindProvider != "anthropic" {
 		reqBody = map[string]any{
-			"model":      BindModel,
+			"model":      a.modelFor(),
 			"max_tokens": 256,
 			"stream":     BindStream,
 			"tools": []map[string]any{{

@@ -1,6 +1,10 @@
 package mafia
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 // nightState builds a minimal night-1 state with the given roles (all alive) and a
 // single Mafia kill vote (killer → victim). No detective/doctor/sheriff seats, so
@@ -151,6 +155,30 @@ func TestTheBarIsOnlyForONENight(t *testing.T) {
 	}
 }
 
+// TestABarOnSeatZeroSurvivesTheWire is the seat-0 trap, in the field that introduced it.
+//
+// cannot_protect was tagged `omitempty`, so a doctor barred from SEAT 0 — a real player — had
+// the field dropped from its JSON entirely, read back the zero value, concluded nothing was
+// barred, and re-shielded seat 0. The engine then refused it every night. The bug looked like
+// a broken policy and was a broken encoding, and it only surfaced in a table whose seats are
+// numbered from 0.
+func TestABarOnSeatZeroSurvivesTheWire(t *testing.T) {
+	s := doctorNight(5, map[int]int{1: 0}) // shielded SEAT 0 last night
+	s.Roles[0] = RoleVillager
+	s.Alive[0] = true
+	v := BuildView(s, 1, nil)
+	if v.CannotProtect != 0 {
+		t.Fatalf("cannot_protect = %d, want 0 (seat 0 is barred)", v.CannotProtect)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"cannot_protect":0`) {
+		t.Fatalf("a bar on seat 0 did not survive encoding: %s", raw)
+	}
+}
+
 func TestTheDoctorIsToldWhichSeatIsBarred(t *testing.T) {
 	// Published rather than left to be discovered by rejection: an agent that learns the rule
 	// by having a move refused wastes a decision and a model call on something the engine
@@ -160,9 +188,10 @@ func TestTheDoctorIsToldWhichSeatIsBarred(t *testing.T) {
 	if v.CannotProtect != 3 {
 		t.Fatalf("doctor view says cannot_protect=%d, want 3", v.CannotProtect)
 	}
-	// A non-doctor's view must not carry it — nobody else's constraint is their business, and
-	// a villager seeing it would learn a doctor exists and what it did.
-	if BuildView(s, 2, nil).CannotProtect != 0 {
+	// A non-doctor's view must not carry a real seat — nobody else's constraint is their
+	// business, and a villager seeing one would learn a doctor exists and what it did. -1,
+	// not 0: seat 0 is a real player, so the zero value cannot mean "nothing".
+	if BuildView(s, 2, nil).CannotProtect != -1 {
 		t.Error("a non-doctor seat was told the doctor's constraint")
 	}
 	// First night: nothing barred.

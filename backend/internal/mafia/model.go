@@ -177,6 +177,15 @@ type AgentView struct {
 	Public   []mf.Event   `json:"public,omitempty"`  // shared transcript this seat may see
 	Private  []mf.Event   `json:"private,omitempty"` // this seat's own night results only
 	Deadline *time.Time   `json:"deadline,omitempty"`
+	// CannotProtect (doctors) and AllyKills (mafia) come from the engine's own redaction and
+	// must be carried through every layer between it and the agent.
+	//
+	// There are THREE hand-built views on that path — the engine's, this one, and
+	// MafiaPushView — and a field added to the first is invisible to agents until it is
+	// copied into the other two. Both of these were added to the engine and forwarded
+	// nowhere, so the rules they encode existed and no agent was ever told.
+	CannotProtect int         `json:"cannot_protect"`
+	AllyKills     map[int]int `json:"ally_kills,omitempty"`
 	// Live voting state for the current round (present only during the voting
 	// phase) so an agent can reason about bandwagons / saving an ally without
 	// reconstructing it from raw vote events.

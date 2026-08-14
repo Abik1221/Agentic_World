@@ -132,7 +132,7 @@ func (a *labAgent) decideGameThroughGateway(game, matchID string, turn, seat int
 	// mis-parse, but a 400 still ends the run so it is worth getting right.
 	if BindProvider != "" && BindProvider != "anthropic" {
 		reqBody = map[string]any{
-			"model":      BindModel,
+			"model":      a.modelFor(),
 			"max_tokens": 400,
 			"stream":     BindStream,
 			"tools": []map[string]any{{

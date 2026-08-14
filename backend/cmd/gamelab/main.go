@@ -59,7 +59,7 @@ func main() {
 	// population rather than against a harness that binds every round by construction.
 	bindFailPct := flag.Int("bind-fail-pct", 0, "with -bind, this %% of turns have their model call FAIL; the agent falls back to its strategy and plays on, unbound (honest, not cheating)")
 	bindProvider := flag.String("bind-provider", "", "gateway upstream to route through (e.g. groq); default is the local stand-in on the anthropic path")
-	bindModel := flag.String("bind-model", "llama-3.1-8b-instant", "model id to ask that provider for")
+	bindModel := flag.String("bind-model", "llama-3.1-8b-instant", "model id to ask that provider for. COMMA-SEPARATED seats a different model per agent, e.g. \"a:free,b:free\" — that is what makes a run a model-vs-model comparison")
 	matches := flag.Int("matches", 0, "play this many matches one after another in THIS process, then exit (0 = play one and keep serving). Batching in one process avoids re-onboarding and the port races that killing the process between runs causes")
 	perMatch := flag.Duration("per-match-timeout", 8*time.Minute, "with -matches, give up waiting on a single match after this long and move to the next")
 	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
@@ -76,6 +76,15 @@ func main() {
 	BindThroughGateway, BindStream, SubstituteAtRound = *bindGw, *bindStream, *substituteAt
 	BindFailPct, BindBatchRounds = *bindFailPct, *bindBatch
 	BindProvider, BindKey, BindModel = *bindProvider, os.Getenv("PYYOL_PROVIDER_KEY"), *bindModel
+	// A comma-separated -bind-model seats a DIFFERENT model per agent, which is what turns a
+	// run into a paired comparison instead of one model playing itself.
+	if strings.Contains(*bindModel, ",") {
+		for _, m := range strings.Split(*bindModel, ",") {
+			if m = strings.TrimSpace(m); m != "" {
+				BindModels = append(BindModels, m)
+			}
+		}
+	}
 	BindGatewayBase = base
 	if BindThroughGateway {
 		lg := log.New(os.Stdout, "", log.Ltime)
@@ -114,6 +123,7 @@ func main() {
 		p := personas[i%len(personas)]
 		ag := &labAgent{
 			Persona: p,
+			Index:   i,
 			Port:    *basePort + i,
 			Host:    agentHost,
 			PublicURL: func() string {

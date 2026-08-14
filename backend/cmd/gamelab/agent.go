@@ -147,7 +147,11 @@ func (p persona) tokens(viewBytes int, think time.Duration) map[string]any {
 // labAgent is one simulated agent: an HTTP endpoint the platform pushes turns to, plus
 // the credentials it needs to talk back (chat).
 type labAgent struct {
-	Persona   persona
+	Persona persona
+	// Index is this agent's position in the lab roster (0-based). Used to seat a DIFFERENT
+	// model per agent when -bind-model carries a comma-separated list, which is what makes a
+	// run a model-vs-model comparison rather than one model playing itself.
+	Index     int
 	AgentID   string
 	OwnerID   string
 	Email     string

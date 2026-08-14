@@ -1316,6 +1316,10 @@ func (s *Service) viewFor(ctx context.Context, m Match, viewerAgent string) Agen
 	v.Legal = bv.Legal
 	v.Public = bv.Public
 	v.Private = bv.Private
+	// Role-scoped by BuildView itself — only a doctor's view carries one, only a mafia's the
+	// other — so copying both unconditionally cannot leak either to a seat not entitled to it.
+	v.CannotProtect = bv.CannotProtect
+	v.AllyKills = bv.AllyKills
 	return v
 }
 

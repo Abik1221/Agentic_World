@@ -165,6 +165,16 @@ type MafiaPushView struct {
 	// Mafia shipped no proof at all, so no seat could ever be shown to be LLM-backed and
 	// the integrity check on paid tables could never arm.
 	TurnProof string `json:"turn_proof,omitempty"`
+	// CannotProtect is the seat this DOCTOR shielded last night and may not shield again
+	// tonight (-1 when nothing is barred). AllyKills is what each fellow MAFIA has selected
+	// so far tonight.
+	//
+	// Both are published by the engine's own view and were NOT forwarded here, which made
+	// them inert: the engine knew, and no agent was ever told. That is the same defect as the
+	// Monopoly wire mismatch — a hand-built push struct silently dropping a field the engine
+	// added. Anything added to mf.AgentView has to be carried here too, or it does not exist.
+	CannotProtect int         `json:"cannot_protect"`
+	AllyKills     map[int]int `json:"ally_kills,omitempty"`
 }
 
 // MafiaPushMove is the action the agent returns. Rationale is optional private
@@ -475,6 +485,10 @@ func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, m
 		// number is published as Round above, which is what the agent reports back.
 		Round:     turnproof.MafiaTurn(v.Day, v.Phase),
 		TurnProof: p.mintProof(agentID, matchID, turnproof.MafiaTurn(v.Day, v.Phase)),
+		// Role-scoped by the engine already: only a doctor's view carries CannotProtect and
+		// only a mafia's carries AllyKills, so copying them unconditionally cannot leak.
+		CannotProtect: v.CannotProtect,
+		AllyKills:     v.AllyKills,
 	}
 	var move MafiaPushMove
 	start := time.Now()
@@ -506,6 +520,9 @@ func toEngineView(v AgentView) mf.AgentView {
 		Legal:   v.Legal,
 		Public:  v.Public,
 		Private: v.Private,
+		// Carried so the built-in bot plays by the same rules a developer's agent does.
+		CannotProtect: v.CannotProtect,
+		AllyKills:     v.AllyKills,
 	}
 }
 
@@ -519,7 +536,16 @@ func botDecide(v AgentView) mf.Action {
 	case "message":
 		return mf.Action{Kind: "message", Tone: "info", Text: "Observing the table.", Target: target}
 	case "protect":
-		return mf.Action{Kind: "protect", Target: v.YourSeat} // doctor may guard itself
+		// The doctor may guard itself, but NOT the same seat two nights running — so a bot
+		// that always returned its own seat was legal on night one and refused every night
+		// after, leaving the house doctor doing nothing for the rest of the match.
+		if v.CannotProtect != v.YourSeat {
+			return mf.Action{Kind: "protect", Target: v.YourSeat}
+		}
+		if t := firstOtherAliveExcluding(v.Alive, v.YourSeat, v.CannotProtect); t > 0 {
+			return mf.Action{Kind: "protect", Target: t}
+		}
+		return mf.Action{Kind: "abstain"}
 	case "":
 		return mf.Action{}
 	default: // night_kill | investigate | profile | vote
@@ -531,6 +557,19 @@ func firstOtherAlive(alive map[int]bool, seat int) int {
 	best := 0
 	for s, ok := range alive {
 		if ok && s != seat && (best == 0 || s < best) {
+			best = s
+		}
+	}
+	return best
+}
+
+// firstOtherAliveExcluding is firstOtherAlive with one more seat ruled out — the seat a
+// doctor shielded last night and may not shield again tonight. Lowest seat first, so the
+// choice stays deterministic and a replay reproduces it.
+func firstOtherAliveExcluding(alive map[int]bool, seat, barred int) int {
+	best := 0
+	for s, ok := range alive {
+		if ok && s != seat && s != barred && (best == 0 || s < best) {
 			best = s
 		}
 	}
