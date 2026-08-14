@@ -2599,7 +2599,19 @@ def cmd_play(args: argparse.Namespace) -> int:
 
 
 def _add_api(sp):
-    sp.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
+    """Attach --api to a subcommand.
+
+    default=SUPPRESS, not "". `pyyol --api URL leaderboard` parses the top level first and the
+    subcommand second INTO THE SAME NAMESPACE, so an ordinary default would overwrite the
+    global value with an empty string the moment the subcommand was reached — the flag would
+    parse, and then be silently discarded. SUPPRESS makes argparse leave the attribute alone
+    when the flag is absent, so whichever position the developer used is the one that survives.
+    """
+    sp.add_argument(
+        "--api",
+        default=argparse.SUPPRESS,
+        help="platform API base (defaults to the logged-in one)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2609,6 +2621,18 @@ def build_parser() -> argparse.ArgumentParser:
         "Quickstart: pyyol login → pyyol init → pyyol dev.",
     )
     p.add_argument("--version", action="version", version=f"pyyol {__version__}")
+    # GLOBAL --api, accepted before the command as well as after it.
+    #
+    # It used to be per-command only, so `pyyol --api https://... leaderboard` — the position
+    # every other tool accepts, and the one people reach for first — died with an argparse
+    # error listing all 25 commands and claiming the URL was an invalid choice of command. The
+    # message named the wrong problem entirely.
+    p.add_argument(
+        "--api",
+        default="",
+        metavar="URL",
+        help="platform API base (defaults to the logged-in one). Accepted here or after the command.",
+    )
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
 
     # --- auth ---
@@ -2627,7 +2651,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pl.add_argument(
         "--api",
-        default="",
+        default=argparse.SUPPRESS,
         help="platform API base URL to record (default: https://api.pyyol.com; or $PYYOL_API)",
     )
     pl.add_argument("--connect", default="", help="override the WSS connect URL")
@@ -2742,7 +2766,7 @@ def build_parser() -> argparse.ArgumentParser:
     ppub = sub.add_parser(
         "publish", help="certify your agent for RANKED play (verify a hosted endpoint)"
     )
-    ppub.add_argument("--api", default="", help="platform API base (or from login)")
+    ppub.add_argument("--api", default=argparse.SUPPRESS, help="platform API base (or from login)")
     ppub.add_argument("--agent", default="", help="agent public id (or from login)")
     ppub.add_argument("--token", default="", help="dashboard/access token (or from login)")
     ppub.add_argument("--manifest", required=True, help="path to manifest.json (hosted endpoint)")

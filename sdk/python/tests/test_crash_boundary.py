@@ -134,3 +134,23 @@ def test_profile_without_a_handle_says_to_log_in(capsys, monkeypatch, tmp_path):
     assert "pyyol login" in err, "and the fix must be one copyable command"
     # The other route stays offered: someone may simply want to look at another developer.
     assert "pyyol profile <@handle>" in err
+
+
+def test_api_is_accepted_before_the_command_as_well_as_after():
+    """`pyyol --api URL leaderboard` is the position every other tool accepts.
+
+    It used to die with an argparse error listing all 25 commands and claiming the URL was an
+    invalid choice of command — a message that named the wrong problem entirely. The trap is
+    that the top level and the subcommand parse into the SAME namespace, so an ordinary default
+    on the subcommand's flag silently overwrites a global value with "".
+    """
+    from pyyol import cli
+
+    parser = cli.build_parser()
+    before = parser.parse_args(["--api", "https://before.example", "leaderboard"])
+    after = parser.parse_args(["leaderboard", "--api", "https://after.example"])
+    neither = parser.parse_args(["leaderboard"])
+
+    assert before.api == "https://before.example", "a global --api must survive the subcommand"
+    assert after.api == "https://after.example", "the per-command position must still work"
+    assert neither.api == "", "absent means absent, so the usual resolution order still applies"

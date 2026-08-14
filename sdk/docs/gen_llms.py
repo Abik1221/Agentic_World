@@ -426,7 +426,32 @@ def main() -> None:
         # PACKAGE's settings, or `ruff format --check` fails in CI on files nobody
         # edited:
         #   ruff format --line-length 100 --target-version py39 sdk/skill/**/templates
-        shutil.copytree(skill_src, sk, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache"))
+        shutil.copytree(
+            skill_src,
+            sk,
+            ignore=shutil.ignore_patterns(
+                "__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache",
+                # templates-js is selected per SDK below, never copied wholesale — a Python
+                # developer must not find .mjs files in their skill any more than a JS
+                # developer should find .py ones.
+                "templates-js",
+            ),
+        )
+
+        # EACH SDK GETS TEMPLATES IN ITS OWN LANGUAGE.
+        #
+        # The skill's templates are the runnable example an assistant copies from, and both
+        # SDKs shipped the PYTHON ones. A JavaScript developer — or their assistant, working in
+        # their repo — opened references/templates/ and found .py files for a project where
+        # `pyyol init` writes agent.mjs. The fastest possible way to make someone think the
+        # tool is not really for them.
+        templates = sk / "references" / "templates"
+        if "js" in sk.parts:
+            js_src = skill_src / "references" / "templates-js"
+            if templates.exists():
+                shutil.rmtree(templates)
+            shutil.copytree(js_src, templates)
+
         # The engine-generated game reference rides along, so a skill can never
         # describe a game the engine no longer plays.
         (sk / "references" / "games" / "_engine_reference.md").write_text(games_md, encoding="utf-8")

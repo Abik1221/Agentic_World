@@ -145,3 +145,31 @@ def test_every_template_is_idempotent_on_a_redelivered_turn():
         first = agent.step(view)
         again = agent.step(view)  # a reconnect can redeliver the same turn
         assert first is not None and again is not None, f"{name} failed on replay"
+
+
+def test_each_sdk_ships_templates_in_its_own_language():
+    """The skill's templates are the runnable example an assistant copies from.
+
+    Both SDKs shipped the PYTHON ones, so a JavaScript developer — or their assistant, working
+    in their repo — opened references/templates/ and found .py files for a project where
+    `pyyol init` writes agent.mjs. That is the fastest possible way to make someone think the
+    tool is not really for them.
+    """
+    root = Path(__file__).resolve().parents[3] / "sdk"
+
+    # Files only: __pycache__ appears the moment a test imports a template, and it is not
+    # something either SDK ships.
+    def shipped(d):
+        return sorted(f.name for f in d.glob("*") if f.is_file())
+
+    py = shipped(root / "python" / "pyyol" / "skill" / "references" / "templates")
+    js = shipped(root / "js" / "skill" / "references" / "templates")
+
+    assert py and js, "both SDKs must ship templates at all"
+    assert all(n.endswith(".py") for n in py), f"python SDK ships non-python templates: {py}"
+    assert all(n.endswith(".mjs") for n in js), f"js SDK ships non-js templates: {js}"
+
+    # The same THREE games plus the shared helper, in both — a language difference must not
+    # become a coverage difference.
+    stems = lambda names: {n.rsplit(".", 1)[0] for n in names}
+    assert stems(py) == stems(js), f"the two SDKs teach different games: {stems(py)} vs {stems(js)}"
