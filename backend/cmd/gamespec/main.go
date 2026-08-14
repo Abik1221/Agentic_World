@@ -121,6 +121,17 @@ func renderGame(b *strings.Builder, g gamespec.Game) {
 		b.WriteString("\n")
 	}
 
+	// Rendered after the tables and before Events: the tables say WHAT an action is, and
+	// these say what actually happens when you use it. Reading order matters for the LLM
+	// corpus too — llms-full.txt is this file, so a rule explained out of order is a rule
+	// an agent applies out of order.
+	if len(g.Deep) > 0 {
+		b.WriteString("### Rules in depth\n\n")
+		for _, d := range g.Deep {
+			fmt.Fprintf(b, "#### %s\n\n%s\n\n", d.Title, strings.TrimSpace(d.Body))
+		}
+	}
+
 	b.WriteString("### Events\n\n")
 	b.WriteString("Between turns the platform pushes `/event` notifications (each `{seq, type, payload}`; " +
 		"order by `seq`) so you can build memory. `/game-end` delivers the final `result`. Both are " +
