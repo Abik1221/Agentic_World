@@ -272,12 +272,16 @@ class Agent:
     def decide_turn(self, view_data: dict[str, Any], turn_no: int | None = None) -> Response:
         """Run the turn handler for a raw view dict; return ``(status, move)``.
 
-        ``turn_no`` lets the socket runtime supply the round it already derived. Only the
-        runtime can: Monopoly views carry no numeric round, so it falls back to a monotonic
-        per-match counter that a stateless webhook request has no equivalent for. Getting this
-        wrong is not cosmetic — a turn proof is bound to (agent, match, round), so a round that
-        disagrees with the platform's verifies against nothing and the decision silently fails
-        to earn Verified.
+        ``turn_no`` lets the socket runtime supply the round it already derived, for any view
+        that does not publish one. Getting this wrong is not cosmetic — a turn proof is bound to
+        (agent, match, round), so a round that disagrees with the platform's verifies against
+        nothing and the decision silently fails to earn Verified.
+
+        Monopoly USED to be the reason this parameter existed: its view carried no numeric
+        round, so the runtime fell back to a per-match counter the server could not predict and
+        no Monopoly turn could ever bind. The platform now publishes `round` (the engine's turn
+        counter) and `_turn_number` reads it first, so the fallback is a safety net rather than
+        the Monopoly path.
         """
         return self._handle_turn(view_data, turn_no=turn_no)
 

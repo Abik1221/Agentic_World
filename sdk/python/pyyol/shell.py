@@ -597,4 +597,10 @@ def _dispatch(parser: Any, argv: list[str], s: _Style, out: TextIO) -> None:
         if code:
             out.write(s(f"  exited {code}\n", _WARN))
     except Exception as e:  # noqa: BLE001 — the session must outlive any single command
-        out.write(s(f"  {type(e).__name__}: {e}\n", _ERR))
+        # The SAME report the command line gives, minus the exit: a crash here printed a bare
+        # "IndexError: list index out of range", which tells a developer nothing about whose
+        # bug it is or where the detail went. The session continues either way.
+        from ._crash import report_crash
+        from . import __version__
+
+        report_crash(e, argv[0] if argv else "", __version__, stream=out)

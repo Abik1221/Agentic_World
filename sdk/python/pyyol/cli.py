@@ -90,6 +90,17 @@ def _net_err(e: Exception) -> str:
     return "network unreachable — check your internet connection"
 
 
+def _status(st: int) -> str:
+    """" (404)" for a real HTTP status, and NOTHING for 0.
+
+    The HTTP helpers return 0 to mean "no response at all" — offline, refused, DNS. Printing
+    that verbatim gave developers "could not fetch leaderboard (0)", where the one number on
+    the line is fake and the reader's first thought is that zero is a status code they should
+    look up. The cause is already in the message that follows it.
+    """
+    return f" ({st})" if st else ""
+
+
 _insecure_warned = False
 
 
@@ -463,7 +474,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     st, m = api_req("POST", f"/v1/agents/{agent_q}/manifest", manifest)
     if st != 201:
-        print(f"{BAD} submit failed ({st}): {m}", file=sys.stderr)
+        print(f"{BAD} submit failed{_status(st)}: {m}", file=sys.stderr)
         return 1
     mid = urllib.parse.quote(str(m.get("manifest_id", "")), safe="")
     print(f"{OK} manifest submitted: {m.get('manifest_id')}")
@@ -476,14 +487,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
             json.dumps({"token": args.secret}).encode(),
         )
         if st != 200:
-            print(f"{BAD} set endpoint secret failed ({st}): {r}", file=sys.stderr)
+            print(f"{BAD} set endpoint secret failed{_status(st)}: {r}", file=sys.stderr)
             return 1
         print(f"{OK} endpoint secret stored")
 
     st, report = api_req("POST", f"/v1/agents/{agent_q}/manifest/{mid}/verify", b"")
     verified = st == 200 and (report.get("verified") or report.get("status") == "verified")
     mark = OK if verified else BAD
-    print(f"{mark} verify ({st}): {json.dumps(report)}")
+    print(f"{mark} verify{_status(st)}: {json.dumps(report)}")
     return 0 if verified else 1
 
 
@@ -629,7 +640,7 @@ def cmd_wallet(args: argparse.Namespace) -> int:
     base = _http_base(args, creds)
     st, w = _api_get(f"{base}/v1/user/wallet", creds.access_token)
     if st != 200:
-        print(f"{BAD} could not fetch wallet ({st}): {w}", file=sys.stderr)
+        print(f"{BAD} could not fetch wallet{_status(st)}: {w}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(w, indent=2))
@@ -764,7 +775,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     if args.list:
         st, resp = _api_get(f"{base}/v1/games/{game}/stakes")
         if st != 200:
-            print(f"{BAD} could not fetch tiers ({st}): {resp}", file=sys.stderr)
+            print(f"{BAD} could not fetch tiers{_status(st)}: {resp}", file=sys.stderr)
             return 1
         tiers = resp.get("tiers") or []
         if not tiers:
@@ -816,7 +827,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         else:
-            print(f"{BAD} could not queue ({st}): {resp}", file=sys.stderr)
+            print(f"{BAD} could not queue{_status(st)}: {resp}", file=sys.stderr)
         return 1
 
     print(
@@ -2041,7 +2052,7 @@ def _start_ranked(base, token, arena, args, console) -> None:
             "agent not certified for ranked — run `pyyol publish` first (ranked needs a verified endpoint).",
         )
     else:
-        console.emit("error", f"could not queue ranked ({st}): {resp}")
+        console.emit("error", f"could not queue ranked{_status(st)}: {resp}")
 
 
 # --- v2: informational commands (whoami / arenas / leaderboard / profile / replay) ---
@@ -2080,7 +2091,7 @@ def cmd_arenas(args: argparse.Namespace) -> int:
         return 2
     st, resp = _api_get(f"{base}/v1/arenas")
     if st != 200:
-        print(f"{BAD} could not fetch arenas ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(f"{BAD} could not fetch arenas{_status(st)}: {resp.get('error') or resp}", file=sys.stderr)
         return 1
     arenas = resp.get("arenas") or []
     print(f"{'ARENA':<12}{'PLAYERS':<10}{'SANDBOX':<9}{'RANKED':<8}STATUS")
@@ -2105,7 +2116,7 @@ def cmd_games(args: argparse.Namespace) -> int:
         return 2
     st, resp = _api_get(f"{base}/v1/games")
     if st != 200:
-        print(f"{BAD} could not fetch games ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(f"{BAD} could not fetch games{_status(st)}: {resp.get('error') or resp}", file=sys.stderr)
         return 1
     games = resp.get("games") or []
     if not games:
@@ -2166,7 +2177,7 @@ def cmd_leaderboard(args: argparse.Namespace) -> int:
     st, resp = _api_get(url)
     if st != 200:
         print(
-            f"{BAD} could not fetch leaderboard ({st}): {resp.get('error') or resp}",
+            f"{BAD} could not fetch leaderboard{_status(st)}: {resp.get('error') or resp}",
             file=sys.stderr,
         )
         return 1
@@ -2190,14 +2201,31 @@ def cmd_profile(args: argparse.Namespace) -> int:
         return 2
     handle = args.handle
     if not handle:  # self
-        _, me = _api_get(f"{base}/v1/me", creds.access_token if creds else "")
+        # BEING LOGGED OUT IS THE COMMON CAUSE, AND IT USED TO BE INVISIBLE.
+        #
+        # `pyyol profile` is documented as "self if omitted". Logged out, /v1/me returns
+        # nothing and the old message was "pass a handle" — technically true, and it hides the
+        # actual fix. A developer reads it as "this command needs an argument" and never
+        # learns that logging in is what they wanted.
+        if not (creds and creds.access_token):
+            print(
+                f"{BAD} not logged in, so there is no 'self' to show — run `pyyol login`,"
+                f" or name someone: `pyyol profile <@handle>`",
+                file=sys.stderr,
+            )
+            return 2
+        _, me = _api_get(f"{base}/v1/me", creds.access_token)
         handle = me.get("user_id") or ""
         if not handle:
-            print(f"{BAD} pass a handle: `pyyol profile <@handle>`", file=sys.stderr)
+            print(
+                f"{BAD} logged in, but the platform did not return your handle."
+                f" Try `pyyol whoami`, or name someone: `pyyol profile <@handle>`",
+                file=sys.stderr,
+            )
             return 2
     st, p = _api_get(f"{base}/v1/developers/{urllib.parse.quote(handle)}")
     if st != 200:
-        print(f"{BAD} no such developer {handle!r} ({st}).", file=sys.stderr)
+        print(f"{BAD} no such developer {handle!r}{_status(st)}.", file=sys.stderr)
         return 1
     dev = p.get("developer", {})
     pidx = p.get("p_index") or {}
@@ -2255,7 +2283,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     )
     st, resp = _api_get(f"{base}{path}")
     if st != 200:
-        print(f"{BAD} could not fetch replay ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(f"{BAD} could not fetch replay{_status(st)}: {resp.get('error') or resp}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(resp, indent=2))
@@ -2513,7 +2541,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
         creds.access_token,
     )
     if st != 200:
-        print(f"{BAD} could not read usage ({st}): {body}", file=sys.stderr)
+        print(f"{BAD} could not read usage{_status(st)}: {body}", file=sys.stderr)
         return 1
     if getattr(args, "json", False):
         print(json.dumps(body, indent=2))

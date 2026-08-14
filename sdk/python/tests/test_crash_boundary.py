@@ -91,3 +91,46 @@ def test_a_crash_survives_an_unwritable_report_directory(capsys, monkeypatch, tm
     code = _crash.guard(boom, None, version="1", argv=["whoami"])
     assert code == _crash.EXIT_INTERNAL
     assert "bug in pyyol" in capsys.readouterr().err
+
+
+# ── expected failures, not crashes ───────────────────────────────────────────
+#
+# The crash boundary above covers faults nobody planned for. These cover the errors a
+# developer is SUPPOSED to hit — where the whole value is whether the message tells them what
+# to do next.
+
+
+def test_a_status_of_zero_is_not_shown_as_one():
+    """The HTTP helpers return 0 for "no response at all" (offline, refused, DNS).
+
+    Printing it gave "could not fetch leaderboard (0)", where the only number on the line is
+    fake and a reader's first instinct is to look up status zero. The cause is already in the
+    text that follows.
+    """
+    from pyyol import cli
+
+    assert cli._status(0) == "", "a non-status must print nothing at all"
+    assert cli._status(404) == " (404)", "a real status is worth showing"
+    assert cli._status(500) == " (500)"
+
+
+def test_profile_without_a_handle_says_to_log_in(capsys, monkeypatch, tmp_path):
+    """`pyyol profile` is documented as "self if omitted".
+
+    Logged out there is no self, and the old message was "pass a handle" — true, and it hides
+    the actual fix. A developer reads it as "this command needs an argument" and never learns
+    that logging in is what they wanted.
+    """
+    import argparse
+
+    from pyyol import cli, credentials
+
+    monkeypatch.setattr(credentials, "load", lambda: None)
+    code = cli.cmd_profile(argparse.Namespace(handle=None, api="https://example.invalid"))
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "not logged in" in err, "the real cause must be named"
+    assert "pyyol login" in err, "and the fix must be one copyable command"
+    # The other route stays offered: someone may simply want to look at another developer.
+    assert "pyyol profile <@handle>" in err

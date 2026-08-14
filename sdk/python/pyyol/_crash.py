@@ -138,24 +138,42 @@ def guard(fn: Callable[..., int], *args: Any, version: str = "", argv: list[str]
             pass
         return EXIT_INTERRUPTED
     except Exception as exc:  # noqa: BLE001 — this is the boundary; everything stops here
-        if os.environ.get("PYYOL_DEBUG"):
-            # An explicit request for the raw fault. Printed BEFORE the summary so the summary
-            # stays the last thing on screen.
-            traceback.print_exception(type(exc), exc, exc.__traceback__)
-        report = _write_report(exc, argv, version)
-        cmd = argv[0] if argv else ""
-        print(file=sys.stderr)
-        print(f"✗ pyyol hit an internal error while running `{cmd}`.", file=sys.stderr)
-        print(f"  {_one_line(exc)}", file=sys.stderr)
-        print(file=sys.stderr)
-        # Said plainly, because the default assumption is the opposite. A developer who thinks
-        # they broke it goes hunting through their own agent code for a fault that is ours.
-        print("  This is a bug in pyyol, not in your agent.", file=sys.stderr)
-        if report is not None:
-            print(f"  Full details: {report}", file=sys.stderr)
-        print(f"  Report it: {_ISSUES_URL}", file=sys.stderr)
-        if not os.environ.get("PYYOL_DEBUG"):
-            print("  Re-run with PYYOL_DEBUG=1 to print the full traceback here.", file=sys.stderr)
-        if version:
-            print(f"  pyyol {version} · python {sys.version.split()[0]} · {sys.platform}", file=sys.stderr)
-        return EXIT_INTERNAL
+        return report_crash(exc, argv[0] if argv else "", version)
+
+
+def report_crash(
+    exc: BaseException, command: str, version: str, stream: Any = None
+) -> int:
+    """Print the crash report and return the exit code to use.
+
+    Separate from `guard` so the INTERACTIVE SHELL can use it too. The shell must not exit on a
+    crash — the session outlives any one command — but a developer there deserves the same
+    report as on the command line, rather than the bare `IndexError: list index out of range`
+    it used to print. One wording, one crash file, both entry points.
+
+    `stream` exists for that second caller. The shell writes everything through its own stream
+    so the session's output stays in one place (and stays capturable); sending only the crash
+    to stderr would make it the one thing a developer could not see in context, or scroll back
+    to, or pipe to a file with the rest of the session.
+    """
+    out = stream if stream is not None else sys.stderr
+    if os.environ.get("PYYOL_DEBUG"):
+        # An explicit request for the raw fault. Printed BEFORE the summary so the summary
+        # stays the last thing on screen.
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+    report = _write_report(exc, [command] if command else [], version)
+    print(file=out)
+    print(f"✗ pyyol hit an internal error while running `{command}`.", file=out)
+    print(f"  {_one_line(exc)}", file=out)
+    print(file=out)
+    # Said plainly, because the default assumption is the opposite. A developer who thinks
+    # they broke it goes hunting through their own agent code for a fault that is ours.
+    print("  This is a bug in pyyol, not in your agent.", file=out)
+    if report is not None:
+        print(f"  Full details: {report}", file=out)
+    print(f"  Report it: {_ISSUES_URL}", file=out)
+    if not os.environ.get("PYYOL_DEBUG"):
+        print("  Re-run with PYYOL_DEBUG=1 to print the full traceback here.", file=out)
+    if version:
+        print(f"  pyyol {version} · python {sys.version.split()[0]} · {sys.platform}", file=out)
+    return EXIT_INTERNAL
