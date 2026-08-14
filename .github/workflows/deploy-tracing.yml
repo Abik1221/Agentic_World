@@ -142,7 +142,21 @@ jobs:
           docker network create pyyol 2>/dev/null || true
 
           echo "Building + starting the Lens stack (ClickHouse → processor migrates → ingest/query)..."
-          $DC -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file deploy/.env up -d --build --remove-orphans
+          COMPOSE="$DC -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file deploy/.env"
+          # `up` is the step that actually fails, and under `set -e` it used to abort the
+          # script before a single container log was printed. All CI showed was
+          # "container pyyol-lens-control is unhealthy" — which does not say whether the
+          # process crashed at boot, failed its healthcheck, or never got a dependency.
+          # A deploy that can fail undiagnosably costs more than the deploy it protects.
+          if ! $COMPOSE up -d --build --remove-orphans; then
+            echo "❌ compose up failed. State and logs follow:"
+            $COMPOSE ps || true
+            for svc in control-api query-api ingest-api processor web; do
+              echo "───────── $svc ─────────"
+              $COMPOSE logs --tail=80 "$svc" 2>&1 || true
+            done
+            exit 1
+          fi
           docker image prune -f >/dev/null 2>&1 || true
 
           echo "Waiting for ClickHouse to be healthy..."
