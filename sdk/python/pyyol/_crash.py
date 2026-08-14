@@ -1,0 +1,161 @@
+"""The last line of defence between a bug in this CLI and the developer using it.
+
+# What a developer used to see
+
+`main()` ended in `return args.func(args)`, unguarded. So ANY unexpected exception — an
+IndexError in a response parser, a KeyError on a field the platform renamed, an AttributeError
+after a refactor — printed a raw Python traceback:
+
+    Traceback (most recent call last):
+      File "/usr/lib/python3.12/site-packages/pyyol/cli.py", line 2898, in main
+        return args.func(args)
+      ...
+    IndexError: list index out of range
+
+That is OUR source, OUR line numbers, and OUR variable names, shown to somebody who wanted to
+know whether their agent was ranked. It reads as "this tool is broken and I cannot use it", it
+is unactionable, and the one detail that WOULD help us fix it — what the user was doing and
+which version they were on — is exactly what a traceback buries.
+
+Ctrl-C was worse: pressing it during any command dumped a KeyboardInterrupt stack trace, as if
+stopping a program were a crash.
+
+# What replaces it
+
+A crash becomes a short, honest report: this is our bug, not yours; here is how to tell us;
+here is where the full detail is. The traceback still exists — it is written to a crash file
+and is one env var away — because a developer who WANTS it (or is filing an issue) must not
+have to reproduce the fault under a debugger to get it back.
+
+Exit codes follow the shell convention so scripts and CI can branch on them:
+
+    0    fine
+    1    an ordinary, expected failure (already reported by the command itself)
+    2    usage error (argparse's own)
+    70   an internal fault — this module's job (EX_SOFTWARE, sysexits.h)
+    130  interrupted with Ctrl-C (128 + SIGINT)
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import traceback
+from pathlib import Path
+from typing import Any, Callable
+
+# EX_SOFTWARE from sysexits.h. Distinct from 1 on purpose: "the command ran and told you it
+# failed" and "the command itself broke" are different events, and a CI pipeline should be able
+# to tell them apart without scraping stderr.
+EXIT_INTERNAL = 70
+# 128 + SIGINT, the shell convention. A tool that exits 0 or 1 on Ctrl-C makes `&&` chains
+# continue after a human has explicitly stopped them.
+EXIT_INTERRUPTED = 130
+
+_ISSUES_URL = "https://github.com/pyyol/pyyol/issues/new"
+
+
+def _crash_dir() -> Path:
+    """Where crash reports go.
+
+    XDG_STATE_HOME is the correct home for this (state a program keeps that is not config and
+    not a cache), falling back to ~/.local/state, then to the system temp dir — because a
+    read-only or unusual HOME must not turn a crash report into a second crash.
+    """
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    try:
+        d = Path(base) / "pyyol"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except OSError:
+        return Path(tempfile.gettempdir())
+
+
+def _write_report(exc: BaseException, argv: list[str], version: str) -> Path | None:
+    """Write the full traceback somewhere retrievable. Returns None if it cannot.
+
+    Failing to write a crash report must never replace the crash message with a different
+    error, so every failure here is swallowed: the developer still gets the summary, and still
+    gets the traceback via PYYOL_DEBUG.
+    """
+    try:
+        path = _crash_dir() / "last-crash.log"
+        with path.open("w", encoding="utf-8") as fh:
+            fh.write(f"pyyol {version}\n")
+            fh.write(f"python {sys.version.split()[0]} on {sys.platform}\n")
+            # The command only — never the arguments. A crash report is a file a developer may
+            # paste into a public issue, and pyyol's own arguments include things like
+            # `--api`, agent names and, on some commands, tokens.
+            fh.write(f"command: pyyol {argv[0] if argv else ''}\n\n")
+            fh.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        return path
+    except OSError:
+        return None
+
+
+def _one_line(exc: BaseException) -> str:
+    """The exception, in a form that fits on one line and says something."""
+    text = str(exc).strip().splitlines()
+    head = text[0] if text else ""
+    name = type(exc).__name__
+    if not head:
+        return name
+    if len(head) > 160:
+        head = head[:157] + "…"
+    return f"{name}: {head}"
+
+
+def guard(fn: Callable[..., int], *args: Any, version: str = "", argv: list[str] | None = None) -> int:
+    """Run a CLI command, converting a crash or a Ctrl-C into a civilised exit.
+
+    Deliberately catches BaseException-derived KeyboardInterrupt separately and lets
+    SystemExit pass straight through — a command that has already decided its exit code has
+    made a decision, and swallowing it here would override a deliberate `sys.exit(2)` with a
+    crash report about nothing.
+    """
+    argv = argv if argv is not None else sys.argv[1:]
+    try:
+        return fn(*args)
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        # Deliberately quiet. The user pressed Ctrl-C; they know what happened, and printing a
+        # stack trace to explain their own keystroke is noise. A newline keeps the shell prompt
+        # from landing mid-line after the ^C.
+        print(file=sys.stderr)
+        print("Stopped.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    except BrokenPipeError:
+        # `pyyol leaderboard | head` closes the pipe early. That is the pipeline working, not a
+        # failure, and Python would otherwise print "BrokenPipeError ... Exception ignored" at
+        # shutdown. stdout is redirected to devnull so the interpreter's flush-on-exit has
+        # somewhere harmless to go.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except OSError:
+            pass
+        return EXIT_INTERRUPTED
+    except Exception as exc:  # noqa: BLE001 — this is the boundary; everything stops here
+        if os.environ.get("PYYOL_DEBUG"):
+            # An explicit request for the raw fault. Printed BEFORE the summary so the summary
+            # stays the last thing on screen.
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+        report = _write_report(exc, argv, version)
+        cmd = argv[0] if argv else ""
+        print(file=sys.stderr)
+        print(f"✗ pyyol hit an internal error while running `{cmd}`.", file=sys.stderr)
+        print(f"  {_one_line(exc)}", file=sys.stderr)
+        print(file=sys.stderr)
+        # Said plainly, because the default assumption is the opposite. A developer who thinks
+        # they broke it goes hunting through their own agent code for a fault that is ours.
+        print("  This is a bug in pyyol, not in your agent.", file=sys.stderr)
+        if report is not None:
+            print(f"  Full details: {report}", file=sys.stderr)
+        print(f"  Report it: {_ISSUES_URL}", file=sys.stderr)
+        if not os.environ.get("PYYOL_DEBUG"):
+            print("  Re-run with PYYOL_DEBUG=1 to print the full traceback here.", file=sys.stderr)
+        if version:
+            print(f"  pyyol {version} · python {sys.version.split()[0]} · {sys.platform}", file=sys.stderr)
+        return EXIT_INTERNAL

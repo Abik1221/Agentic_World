@@ -1,0 +1,93 @@
+"""The CLI must never show a developer our tracebacks.
+
+`main()` ended in a bare `return args.func(args)`, so any unexpected exception printed OUR file
+paths and line numbers to somebody who wanted to know whether their agent was ranked — and
+Ctrl-C printed a stack trace as if stopping a program were a crash. These pin the replacement.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from pyyol import _crash
+
+
+def test_an_internal_fault_exits_70_and_says_whose_bug_it_is(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("PYYOL_DEBUG", raising=False)
+
+    def boom(_args):
+        raise ValueError("internal detail nobody asked about")
+
+    code = _crash.guard(boom, None, version="9.9.9", argv=["whoami"])
+
+    assert code == _crash.EXIT_INTERNAL, "an internal fault must be distinguishable from a reported failure"
+    err = capsys.readouterr().err
+    # The single most important line: a developer who thinks they broke it goes hunting
+    # through their own agent code for a fault that is ours.
+    assert "bug in pyyol, not in your agent" in err
+    assert "ValueError: internal detail nobody asked about" in err
+    assert "Traceback (most recent call last)" not in err, "the raw traceback must not be the default output"
+    assert "PYYOL_DEBUG=1" in err, "the developer must be told how to get the full detail"
+    # The report exists and carries what we need to fix it.
+    report = tmp_path / "pyyol" / "last-crash.log"
+    assert report.exists()
+    body = report.read_text()
+    assert "Traceback" in body and "9.9.9" in body
+
+
+def test_the_crash_report_records_the_command_but_not_its_arguments(tmp_path, monkeypatch):
+    """A crash file is something a developer may paste into a public issue, and pyyol's own
+    arguments include agent names and, on some commands, tokens."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    def boom(_args):
+        raise RuntimeError("x")
+
+    _crash.guard(boom, None, version="1", argv=["publish", "--token", "secret-token-value"])
+    body = (tmp_path / "pyyol" / "last-crash.log").read_text()
+    assert "publish" in body
+    assert "secret-token-value" not in body, "a crash report must never carry argument values"
+
+
+def test_ctrl_c_is_quiet_and_exits_130(capsys, monkeypatch):
+    monkeypatch.delenv("PYYOL_DEBUG", raising=False)
+
+    def interrupted(_args):
+        raise KeyboardInterrupt
+
+    code = _crash.guard(interrupted, None, version="1", argv=["dev"])
+    assert code == _crash.EXIT_INTERRUPTED, "128 + SIGINT, so `&&` chains stop when a human does"
+    err = capsys.readouterr().err
+    assert "Stopped." in err
+    assert "KeyboardInterrupt" not in err, "printing a stack trace to explain the user's own keystroke is noise"
+
+
+def test_a_deliberate_exit_code_is_not_swallowed():
+    """A command that has already decided its exit code has made a decision. Overriding a
+    deliberate sys.exit(2) with a crash report about nothing would be worse than the bug."""
+
+    def deliberate(_args):
+        raise SystemExit(2)
+
+    with pytest.raises(SystemExit) as got:
+        _crash.guard(deliberate, None, version="1", argv=["init"])
+    assert got.value.code == 2
+
+
+def test_a_successful_command_passes_its_code_through():
+    assert _crash.guard(lambda _a: 0, None, version="1", argv=["whoami"]) == 0
+    assert _crash.guard(lambda _a: 1, None, version="1", argv=["whoami"]) == 1
+
+
+def test_a_crash_survives_an_unwritable_report_directory(capsys, monkeypatch, tmp_path):
+    """Failing to write the report must never replace the crash message with a different error."""
+    monkeypatch.setattr(_crash, "_crash_dir", lambda: (_ for _ in ()).throw(OSError("read-only")))
+
+    def boom(_args):
+        raise ValueError("still needs reporting")
+
+    # The thrown OSError is raised inside _write_report's own try, so guard must still return.
+    code = _crash.guard(boom, None, version="1", argv=["whoami"])
+    assert code == _crash.EXIT_INTERNAL
+    assert "bug in pyyol" in capsys.readouterr().err

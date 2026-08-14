@@ -2895,7 +2895,12 @@ def main(argv: list[str] | None = None) -> int:
     from . import install_ping
 
     install_ping.maybe_ping(getattr(args, "api", "") or DEFAULT_API_BASE, __version__)
-    return args.func(args)
+    # THE ERROR BOUNDARY. This call used to be bare, so any unexpected exception printed a raw
+    # traceback — our file paths, our line numbers — to a developer who only wanted to know
+    # whether their agent was ranked. Ctrl-C did the same. See pyyol/_crash.py.
+    from ._crash import guard
+
+    return guard(args.func, args, version=__version__, argv=argv if argv is not None else sys.argv[1:])
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { asAgent } from "./adapter.js";
+import { installInterruptHandler, ignoreBrokenPipe, reportCrash } from "./crash.js";
 import * as config from "./config.js";
 import * as creds from "./credentials.js";
 import { enableGateway } from "./instrument.js";
@@ -1855,6 +1856,11 @@ try {
   invoked = false;
 }
 if (invoked) {
+  // THE ERROR BOUNDARY. This catch used to print `e.message` and exit 1, so an internal fault
+  // read exactly like something the DEVELOPER had done wrong, and no script could tell a
+  // reported failure from a broken tool. See crash.ts.
+  installInterruptHandler();
+  ignoreBrokenPipe();
   // Set exitCode and let the event loop drain — process.exit() can truncate a
   // large piped stdout (e.g. `pyyol replay … --json | jq`) mid-write.
   main()
@@ -1862,7 +1868,6 @@ if (invoked) {
       process.exitCode = code;
     })
     .catch((e) => {
-      console.error(`${BAD} ${e instanceof Error ? e.message : String(e)}`);
-      process.exitCode = 1;
+      process.exitCode = reportCrash(e, process.argv[2] ?? "", SDK_VERSION);
     });
 }

@@ -43,6 +43,10 @@ PY_ONLY = {
     "GoofspielMove",
     "MonopolyView",
     "MonopolyMove",
+    # Same reason as the views above: a dataclass in Python, an interface in TS. Both SDKs can
+    # express a Monopoly trade — OPEN_TO_TABLE, the value that carries the open-offer
+    # convention, IS exported by both and is deliberately NOT in this list.
+    "MonopolyTrade",
     "MafiaView",
     "MafiaMove",
 }
