@@ -1002,7 +1002,13 @@ func (e *Engine) stepTradeResponse(ns *State, a Action, seed []byte) ([]Event, e
 		ns.OpenResponders = nil
 		ns.PendingTrade = nil
 		e.resumeAfterTrade(ns) // control returns to the window, the debt, or the turn owner
-		evs := append(interest, e.emit(ns, EvTradeExecuted, executed))
+		// Appended in place rather than `evs := append(interest, …)`: assigning the result of
+		// an append to a DIFFERENT variable leaves two names for one backing array, so a later
+		// append through either can overwrite events the other still refers to. Harmless today
+		// because `interest` is dead from here, which is exactly the kind of "safe until
+		// somebody moves it" that gocritic's appendAssign is pointing at.
+		evs := interest
+		evs = append(evs, e.emit(ns, EvTradeExecuted, executed))
 		// A trade struck to RAISE MONEY has to settle the debt it was struck for. Without
 		// this the seat sits in PhaseResolveDebt holding more than it owes, having done the
 		// one thing the rules say saves it — which is how the first version of this failed:

@@ -2,6 +2,13 @@ module github.com/agent-arena/arena
 
 go 1.25.0
 
+// Pinned for the standard-library fixes in GO-2026-6088/6089/6090/5026/5972/6218 — the
+// whole set landed in 1.25.13. Every one of them was reachable here (net/http, crypto/tls,
+// encoding/xml via pgx row scans, encoding/asn1 via the Privy JWT verifier), and none is
+// fixable in our own code: they ARE the standard library. Raise this, not the `go` line, so
+// the language version stays where the code was written.
+toolchain go1.25.13
+
 require (
 	github.com/coder/websocket v1.8.13
 	github.com/gagliardetto/solana-go v1.22.0

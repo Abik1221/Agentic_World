@@ -2,6 +2,11 @@ module github.com/agent-arena/pyyol-lens/backend
 
 go 1.26.1
 
+// Same standard-library advisory set as the arena backend; on the 1.26 line the fixes are
+// in 1.26.6. Lens is a separate module on a separate Go minor, so it needs its own pin —
+// bumping only the arena leaves this stack reported vulnerable by the same gate.
+toolchain go1.26.6
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.45.0
 	github.com/gofiber/fiber/v2 v2.52.12
