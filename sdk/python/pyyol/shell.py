@@ -407,46 +407,89 @@ def _pick(
         return None
 
     # Flattened in the SAME order the palette groups use, so the picker and the printed list
-    # never disagree about what comes first.
-    ordered: list[tuple[str, str]] = []
+    # never disagree about what comes first — and carrying each command's GROUP with it, so the
+    # menu can show the same headings the palette does. A flat list of twenty-five verbs is a
+    # wall; the headings are what make it readable at a glance.
+    ordered: list[tuple[str, str, str]] = []  # (name, help, group title)
     seen: set[str] = set()
-    for _title, names in groups:
+    for title, names in groups:
         for n in names:
             if n in cmds and n not in seen:
-                ordered.append((n, cmds[n]))
+                ordered.append((n, cmds[n], title))
                 seen.add(n)
     for n in sorted(set(cmds) - seen):
-        ordered.append((n, cmds[n]))
+        ordered.append((n, cmds[n], "More"))
 
     query = ""
-    idx = 0
+    idx = 0          # index into the FILTERED list
+    top = 0          # first visible row — the scroll window's origin
     rows = min(10, len(ordered))
     drawn = 0
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
 
-    def matches() -> list[tuple[str, str]]:
+    def matches() -> list[tuple[str, str, str]]:
+        """Name first, then description.
+
+        Matching the description too is what lets someone who knows WHAT they want but not what
+        it is called find it: typing "stake" finds `play`, "coins" finds `wallet`. Name matches
+        sort first so an exact verb never loses its place to a word buried in someone's help text.
+        """
         if not query:
             return ordered
         q = query.lower()
-        return [(n, h) for n, h in ordered if q in n.lower()]
+        by_name = [e for e in ordered if q in e[0].lower()]
+        by_help = [e for e in ordered if q not in e[0].lower() and q in e[1].lower()]
+        return by_name + by_help
 
     def draw() -> None:
-        nonlocal drawn
+        nonlocal drawn, top
         if drawn:
             stream.write(f"\x1b[{drawn}A")
         stream.write("\x1b[J")
         hits = matches()
-        head = "  " + s("/" + query, _BOLD) + s("   ↑↓ move · enter run · esc cancel", _DIM)
+
+        # Keep the cursor inside the window. Without this the list showed only the first ten
+        # and the selection clamped there too, so with twenty-five commands FIFTEEN could never
+        # be chosen from the menu at all — the affordance the banner advertises silently
+        # covered under half the tool.
+        if idx < top:
+            top = idx
+        elif idx >= top + rows:
+            top = idx - rows + 1
+        top = max(0, min(top, max(0, len(hits) - rows)))
+
+        more = ""
+        if len(hits) > rows:
+            more = s(f"   {idx + 1}/{len(hits)}", _DIM)
+        head = "  " + s("/" + query, _BOLD) + s("   ↑↓ move · enter run · esc cancel", _DIM) + more
         stream.write(head + "\n")
-        shown = hits[:rows]
-        for i, (name, help_text) in enumerate(shown):
-            mark = s(" ❯ ", _BRAND) if i == idx else "   "
-            label = s(name.ljust(12), _BRAND if i == idx else _DIM)
-            stream.write(f"{mark}{label} {s(help_text[:60], _DIM)}\n")
-        if not shown:
+
+        window = hits[top : top + rows]
+        last_group = ""
+        for i, (name, help_text, group) in enumerate(window):
+            real = top + i
+            # The heading only when it CHANGES, so the list reads as sections rather than a
+            # repeated label. Suppressed entirely while filtering: a filtered list is already
+            # the answer to a question and headings only add noise to it.
+            if not query and group != last_group:
+                stream.write("   " + s(group.upper(), _DIM) + "\n")
+                last_group = group
+            mark = s(" ❯ ", _BRAND) if real == idx else "   "
+            label = s(name.ljust(12), _BRAND if real == idx else _DIM)
+            stream.write(f"{mark}{label} {s(help_text[:58], _DIM)}\n")
+        if not window:
             stream.write("   " + s("no command matches", _DIM) + "\n")
-        drawn = 1 + max(1, len(shown))
+        # Count the headings too, or the redraw rewinds by the wrong number of lines and the
+        # menu smears down the terminal.
+        headings = 0
+        if not query:
+            seen_titles: set[str] = set()
+            for _n, _h, g in window:
+                if g not in seen_titles:
+                    seen_titles.add(g)
+                    headings += 1
+        drawn = 1 + max(1, len(window)) + headings
         stream.flush()
 
     try:
@@ -463,7 +506,9 @@ def _pick(
                 if key == "A":
                     idx = max(0, idx - 1)
                 elif key == "B":
-                    idx = min(max(0, min(rows, len(hits)) - 1), idx + 1)
+                    # Bounded by the FILTERED LIST, not by the visible window. Bounding it by
+                    # the window is what made everything past row ten unreachable.
+                    idx = min(max(0, len(hits) - 1), idx + 1)
                 continue
             if ch in ("\r", "\n"):
                 return hits[idx][0] if hits else None
@@ -471,11 +516,11 @@ def _pick(
                 return None
             if ch in ("\x7f", "\b"):
                 query = query[:-1]
-                idx = 0
+                idx, top = 0, 0
                 continue
             if ch.isprintable():
                 query += ch
-                idx = 0
+                idx, top = 0, 0
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         stream.write("\x1b[J")
