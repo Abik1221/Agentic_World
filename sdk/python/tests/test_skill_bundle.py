@@ -97,6 +97,12 @@ class _PV:
     phase = "acquire"
     legal_actions = ["buy", "decline"]
     state = {"turn": 3, "players": {"1": {"cash": 800}}}
+    # The engine's turn counter, published on every Monopoly view. This stand-in predated the
+    # field and its absence hid a real contract: a template keying its replay guard on
+    # `view.round` — the only number the turn proof is bound to — cannot be checked against a
+    # fake that does not have one.
+    round = 3
+    turn_proof = ""
 
 
 def test_every_template_returns_a_legal_move():

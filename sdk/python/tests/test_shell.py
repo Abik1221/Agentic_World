@@ -216,3 +216,40 @@ def test_the_wordmark_is_coloured_per_letter_not_mid_glyph():
     # rendering fault. Per letter means exactly one colour start per letter, per row.
     row = shell._wordmark(color=True).split("\n")[0]
     assert row.count("\x1b[38;5;") == len(shell._LETTERS)
+
+
+# ── the shell against the REAL command set ───────────────────────────────────
+#
+# Every test above drives a stand-in parser with three commands. That checks the loop's own
+# rules and cannot see the shell meeting the actual CLI: a command whose registration confuses
+# _commands(), or a name the menu cannot group, breaks the front door — the first screen anyone
+# sees after installing — while the whole suite stays green.
+
+
+def test_the_shell_lists_every_real_command(monkeypatch):
+    text = _run(monkeypatch, ["/help", "/exit"], cli.build_parser)
+    parser = cli.build_parser()
+    for name in shell._commands(parser):
+        assert name in text, f"{name!r} is a real command the shell's own help never shows"
+
+
+def test_the_real_front_door_opens_and_leaves_cleanly(monkeypatch):
+    """`pyyol` → banner → a command → `/exit`, on the parser developers actually get."""
+    text = _run(monkeypatch, ["games --api https://example.invalid", "/exit"], cli.build_parser)
+    # Assert the AFFORDANCES, not the wordmark: the banner is ASCII block art, so searching it
+    # for the literal name finds nothing (which is how the first version of this test failed).
+    # What a new developer actually needs from the first screen is how to find commands and how
+    # to leave.
+    assert "/ for commands" in text, "the front door must show how to discover commands"
+    assert "/exit" in text, "and how to get out"
+    # The command was dispatched through the real parser rather than rejected as unknown.
+    assert "unknown command" not in text
+    # An unreachable arena is reported as a plain failure, not as a crash — this runs against
+    # a deliberately invalid host, which is the common case on a plane or behind a proxy.
+    assert "bug in pyyol" not in text, "a network failure must never be reported as our bug"
+
+
+def test_an_unknown_command_is_refused_against_the_real_set(monkeypatch):
+    text = _run(monkeypatch, ["definitely-not-a-command", "/exit"], cli.build_parser)
+    assert "unknown command" in text
+    assert "/help" in text, "a refusal must point at the way to discover the real names"

@@ -1382,6 +1382,31 @@ must say `-1`.
 | `skip_trade` | `trade` | Leave the between-turns window without acting. |
 | `build` / `sell_house` / `mortgage` / `unmortgage` | `manage`, `trade`, `resolve_debt`* | Manage property — on your turn **or between other players' turns**. |
 
+#### Where Pyyol Monopoly deliberately differs from the official rules
+
+The engine follows the official rules closely — even build and even sell, the 32/12 piece
+supply, mortgages at half with 10% to lift, no rent on a mortgaged property, double rent on an
+unimproved full group, the three ways out of jail, bankruptcy liquidation and the estate
+auction. Four things are deliberately different, and you should know them because they change
+what a good agent does:
+
+* **Rent is collected automatically.** Officially the owner must ASK before the next player
+  rolls or forfeit it. Here the engine pays it. Nothing is lost by not noticing you were owed.
+* **Counter-offers are capped** at a few rounds per negotiation. Official Monopoly lets you
+  haggle indefinitely; a bounded arena cannot, because every exchange is a model call somebody
+  pays for. Reject and re-propose if you need more room.
+* **A match has a turn cap.** If it is reached before anyone wins, the seat with the highest
+  NET WORTH wins — cash plus what property is worth. Official Monopoly ends only when one
+  player is left. This is worth reading twice: it means accumulating value is a way to win, not
+  only bankrupting everyone else.
+* **Trades bind on the verb alone.** Completion binding proves the model chose `propose_trade`,
+  not the specific deal, because re-rendering a nested structure differently would reject an
+  honest turn. The trade itself is still enforced by the engine's ordinary rules.
+
+Everything else you would expect from the rulebook is implemented. Where the official text
+depends on players acting simultaneously — the housing shortage — the trigger is written down
+above rather than left to guess.
+
 #### Housing shortage: a contested house goes to auction
 
 There are only **32 houses and 12 hotels**. Officially, when the bank is short and two or more
