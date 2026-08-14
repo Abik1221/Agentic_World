@@ -88,7 +88,7 @@ def save(creds: Credentials) -> str:
     # creation, so chmod an existing file too (re-login keeps it locked down).
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     try:
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
@@ -103,9 +103,15 @@ def load() -> Credentials | None:
     if not os.path.exists(path):
         return None
     try:
-        with open(path) as f:
+        # Paired with the UTF-8 write above. Read and write must name the SAME encoding or a
+        # credentials file written on one machine (or under one locale) fails to load under
+        # another, and the developer is silently logged out with no way to tell why.
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    # UnicodeDecodeError too: it is a ValueError, NOT a JSONDecodeError, so a credentials
+    # file with a stray non-UTF-8 byte used to escape both arms here and crash the CLI on
+    # startup — an unreadable file must mean "not logged in", never a traceback.
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     creds = Credentials(
         url=data.get("url", ""),

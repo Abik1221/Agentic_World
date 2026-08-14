@@ -744,7 +744,11 @@ def cmd_logs(args: argparse.Namespace) -> int:
     if not os.path.exists(path):
         print(f"no logs yet at {path} (run `pyyol run` to generate them)")
         return 0
-    with open(path) as f:
+    # errors="replace", not just encoding="utf-8". A log is arbitrary agent output: it can
+    # hold a half-written line from a killed process, or bytes from an agent that logged in
+    # some other encoding. `pyyol logs` exists to show a developer what went wrong, so it is
+    # the one command that must never itself crash — a mojibake character beats a traceback.
+    with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     for line in lines[-args.n :]:
         sys.stdout.write(line)
@@ -1086,7 +1090,11 @@ def _log_file_handler():
 
     d = os.path.join(credentials.config_dir(), "logs")
     os.makedirs(d, exist_ok=True)
-    handler = logging.FileHandler(os.path.join(d, "agent.log"))
+    # UTF-8 explicitly: an agent logs whatever its model produced, so a log line can hold
+    # any character. Without this the handler encodes in the locale's encoding, and a
+    # single accented player name raises inside logging itself — which surfaces as
+    # "--- Logging error ---" on stderr and a silently truncated log.
+    handler = logging.FileHandler(os.path.join(d, "agent.log"), encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger = logging.getLogger("pyyol")
     logger.setLevel(logging.INFO)
@@ -1256,6 +1264,24 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)",
             file=sys.stderr,
         )
+        return 2
+
+    # Normalize whatever the developer exported into an Agent, exactly as
+    # `_load_agent_from_config` does for `pyyol dev` / `pyyol play`.
+    #
+    # `pyyol init` scaffolds an Adapter SUBCLASS, and an Adapter has no .run() — so the
+    # scaffold produced by our own quickstart crashed the moment it was handed to
+    # `pyyol run`, with an AttributeError that reads like the developer's mistake. Every
+    # other load path already normalized; this one alone did a raw getattr.
+    #
+    # TypeError carries the message naming `entry`, so a genuinely wrong export still gets
+    # the friendly explanation rather than a stack trace.
+    from .server import as_agent
+
+    try:
+        agent = as_agent(agent)
+    except TypeError as e:
+        print(f"{BAD} {e}", file=sys.stderr)
         return 2
 
     from .console import build_console
@@ -1667,7 +1693,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         tmpl = _PY_STARTER_GOOFSPIEL if arena == "goofspiel" else _PY_STARTER_GENERIC
         code = tmpl.format(name=name, cls=cls, arena=arena)
         entry = "agent.py:agent"
-    with open(path, "w") as f:
+    # UTF-8, not the locale's encoding. The starter templates contain an em dash, so on any
+    # machine whose preferred encoding is not UTF-8 this raised UnicodeEncodeError and
+    # `pyyol init` — the very first command a developer runs — died. Verified failing under
+    # LC_ALL=C with coercion off, and under a latin-1 locale, on Linux as well as Windows.
+    with open(path, "w", encoding="utf-8") as f:
         f.write(code)
 
     # A manifest scaffold, because ranked REQUIRES one and there was no way to get a
@@ -1687,7 +1717,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # they never intended to run. Add a real URL only when you want always-on play.
     manifest.pop("endpoint", None)
     manifest_path = os.path.join(d, "manifest.json")
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
 
