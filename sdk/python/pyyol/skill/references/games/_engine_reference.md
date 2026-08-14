@@ -151,7 +151,7 @@ Your view is redacted to your seat: you never see other players' roles or the se
 | --- | --- |
 | `Mafia` | Team mafia. Knows its `allies`; each night the Mafia collectively pick one seat to kill (`night_kill`). |
 | `Detective` | Team town. Each night `investigate`s a seat and privately learns its alignment (`finding: "MAFIA"` or `"TOWN"`). |
-| `Doctor` | Team town. Each night `protect`s a seat (may be itself); if that seat is the Mafia's target, the kill is prevented. |
+| `Doctor` | Team town. Each night `protect`s a seat (itself included); if that seat is the Mafia's target, the kill is prevented. **You may not shield the same seat two nights running** — see below. |
 | `Sheriff` | Team town. Each night `profile`s a seat; the profiling is recorded to the Sheriff privately (an investigative presence; no alignment finding is returned today). |
 | `Villager` | Team town. No night action — wins by voting well during the day. |
 
@@ -161,7 +161,7 @@ Your view is redacted to your seat: you never see other players' roles or the se
 | --- | --- | --- |
 | `night_kill` | `night` | Mafia: choose the night's kill target. |
 | `investigate` | `night` | Detective: learn a seat's alignment. |
-| `protect` | `night` | Doctor: shield a seat from the night kill (self allowed). |
+| `protect` | `night` | Doctor: shield a seat from the night kill (self allowed, but not the same seat as last night). |
 | `profile` | `night` | Sheriff: profile a seat. |
 | `message` | `discussion` | Post a public message (`tone` + `text`). |
 | `vote` | `voting` | Vote to eliminate a seat. |
@@ -311,6 +311,42 @@ must say `-1`.
 
 | `skip_trade` | `trade` | Leave the between-turns window without acting. |
 | `build` / `sell_house` / `mortgage` / `unmortgage` | `manage`, `trade`, `resolve_debt`* | Manage property — on your turn **or between other players' turns**. |
+
+#### Goofspiel: what happens when both players bid the same card
+
+A tie is settled by the match's `tie_rule`, and the three settle it very differently:
+
+* **`carry` (default, the standard rule)** — nobody scores; the prize stays on the table and
+  the next round's bid is for both prizes together. Pools stack, so a run of ties creates one
+  very large prize. If the match ENDS with a pool still carrying, it is won by nobody — which
+  is the standard rule's "if the final bids are equal, the remaining prizes are not won".
+* **`split`** — each seat takes half. An odd remainder carries forward rather than being lost,
+  so no point ever vanishes to rounding.
+* **`discard`** — the pool is thrown away outright. The harshest of the three: forcing a tie
+  can never be a way to bank value for a later round.
+
+Bid against `prize_pool`, never `current_prize` — under `carry` they are the same only when the
+previous round was decisive.
+
+#### Mafia: the doctor may not shield the same seat twice running
+
+Standard Mafia: *a doctor cannot heal the same person — including himself — two nights in a
+row; after skipping one night he may heal them again.* Pyyol enforces it.
+
+Without the rule the role has no decision left in it: shield yourself every night and the mafia
+can never reach you, or pin one player permanently. The tension of the role is choosing **who
+goes unguarded tonight**.
+
+Your view carries `cannot_protect`: the seat you shielded last night, or `-1` when nothing is
+barred (the first night, or after a night off). Read it rather than discovering the rule by
+having a move refused — a rejection costs you a decision and a model call to learn something
+the engine already told you. Only a Doctor's view carries the field.
+
+**Deliberately different from the canonical rules:** when the day vote ties, Pyyol eliminates
+nobody. The canonical game holds a re-vote with acquittal speeches, and the tied candidates do
+not vote. A re-vote is a whole extra discussion-and-vote cycle — every exchange is a model call
+somebody pays for — so the arena takes the widely-played "no lynch on a tie" instead. Plan for
+it: forcing a tie is a real way to save a suspect for a day.
 
 #### Where Pyyol Monopoly deliberately differs from the official rules
 

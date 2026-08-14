@@ -35,6 +35,11 @@ const (
 	// TieCarry carries the whole pool (stacked) into the next round (the classic
 	// Goofspiel rule and the default).
 	TieCarry = "carry"
+	// TieDiscard throws the tied pool away: neither seat scores it and nothing carries.
+	// A documented variant ("some play that tied prize cards are discarded"), and the
+	// harshest of the three — a tie costs both players the prize outright, so bidding to
+	// force a tie is never a way to bank value for later.
+	TieDiscard = "discard"
 	// TieSplit awards each seat half the pool; an odd remainder carries forward so
 	// no points are ever lost.
 	TieSplit = "split"
@@ -45,7 +50,7 @@ type Config struct {
 	Cards        []int  `json:"cards"`         // identical hand + prize deck values, e.g. 1..13
 	Rounds       int    `json:"rounds"`        // number of rounds (== len(Cards) for standard play)
 	FairnessMode string `json:"fairness_mode"` // FairnessShuffled | FairnessOpen
-	TieRule      string `json:"tie_rule"`      // TieCarry (default) | TieSplit
+	TieRule      string `json:"tie_rule"`      // TieCarry (default) | TieSplit | TieDiscard
 }
 
 // DefaultConfig returns standard 13-card shuffled Goofspiel.

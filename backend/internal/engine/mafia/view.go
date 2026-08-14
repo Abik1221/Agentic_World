@@ -18,6 +18,14 @@ type AgentView struct {
 	Alive  map[int]bool `json:"alive"`
 	Allies []int        `json:"allies,omitempty"` // fellow Mafia seats (Mafia agents only)
 	Legal  []string     `json:"legal"`            // action kinds valid for this seat now
+	// CannotProtect is the seat this DOCTOR shielded last night and therefore may not shield
+	// again tonight. -1 when there is no such seat (the first night, or after a night off).
+	//
+	// Published rather than left to be discovered by rejection: the rule is real, and an agent
+	// that has to learn it by having a move refused wastes a decision and a model call to find
+	// out something the engine already knows. Doctors only — nobody else's constraint is
+	// anyone else's business.
+	CannotProtect int `json:"cannot_protect,omitempty"`
 
 	// Public is the shared transcript (moderator lines, messages, votes,
 	// eliminations, phase changes, victory) every agent may see.
@@ -62,6 +70,14 @@ func BuildView(s State, seat int, log []Event) AgentView {
 		Phase: s.Phase,
 		Alive: cloneAliveMap(s.Alive),
 		Legal: LegalActions(s, seat),
+	}
+
+	if role == RoleDoctor {
+		if last, ok := s.LastProtect[seat]; ok {
+			v.CannotProtect = last
+		} else {
+			v.CannotProtect = -1
+		}
 	}
 
 	if role == RoleMafia {

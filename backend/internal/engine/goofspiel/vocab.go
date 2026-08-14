@@ -28,5 +28,6 @@ var AllFairnessModes = []string{
 // AllTieRules is every tied-round settlement rule a match may be configured with.
 var AllTieRules = []string{
 	TieCarry,
+	TieDiscard,
 	TieSplit,
 }

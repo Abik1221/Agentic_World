@@ -173,6 +173,9 @@ func (e *Engine) Resolve(s State) (State, []Event, error) {
 	switch {
 	case winner != Tie:
 		ns.Scores[winner] += pool
+	case e.cfg.TieRule == TieDiscard:
+		// Nothing scored and nothing carried: carry stays 0, so the next round starts on its
+		// own prize alone.
 	case e.cfg.TieRule == TieSplit:
 		half := pool / 2
 		ns.Scores[SeatA] += half

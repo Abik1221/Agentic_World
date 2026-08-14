@@ -65,6 +65,14 @@ type State struct {
 	Winner   string         `json:"winner,omitempty"`
 
 	NightActs    map[int]Action `json:"night_acts,omitempty"`
+	// LastProtect maps a doctor's seat to the seat it shielded LAST night.
+	//
+	// The rule it enforces: a doctor may not shield the same player — including itself — two
+	// nights running. Without it the optimal doctor simply shields itself every night and is
+	// unkillable, or locks one key player down permanently; either way the role stops being a
+	// decision. Keyed by doctor seat rather than a single field because a table may seat more
+	// than one doctor, and a shared field would let one doctor's choice bar another's.
+	LastProtect map[int]int `json:"last_protect,omitempty"`
 	MafiaKill    map[int]int    `json:"mafia_kill,omitempty"`
 	Votes        map[int]int    `json:"votes,omitempty"`
 	Messages     int            `json:"messages,omitempty"`
@@ -121,6 +129,7 @@ func (s *State) clone() State {
 	out.Alive = cloneBoolMap(s.Alive)
 	out.Roles = cloneStrMap(s.Roles)
 	out.NightActs = cloneActMap(s.NightActs)
+	out.LastProtect = cloneIntMap(s.LastProtect)
 	out.MafiaKill = cloneIntMap(s.MafiaKill)
 	out.Votes = cloneIntMap(s.Votes)
 	out.Timeouts = cloneIntMap(s.Timeouts)
