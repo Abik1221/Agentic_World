@@ -154,3 +154,80 @@ def test_api_is_accepted_before_the_command_as_well_as_after():
     assert before.api == "https://before.example", "a global --api must survive the subcommand"
     assert after.api == "https://after.example", "the per-command position must still work"
     assert neither.api == "", "absent means absent, so the usual resolution order still applies"
+
+
+# ── a legacy console must not turn output into a crash ───────────────────────
+
+
+def test_output_is_made_unicode_safe_before_anything_prints():
+    """Windows consoles still default to cp1252 in plenty of setups, and this CLI prints →, ●,
+    box-drawing and a block-glyph wordmark. Writing any of those to a cp1252 stream raises
+    UnicodeEncodeError from inside `print`, so `pyyol --help` died with a traceback before
+    printing one line of help — on the platform least equipped to debug it.
+
+    Reproduced with PYTHONIOENCODING=cp1252 before the fix; it is a pre-existing bug, not a new
+    one: the arrows in the parser description were enough on their own.
+    """
+    from pyyol import cli
+
+    class FakeStream:
+        def __init__(self, encoding):
+            self.encoding = encoding
+            self.calls = []
+
+        def reconfigure(self, **kw):
+            self.calls.append(kw)
+            if "encoding" in kw:
+                self.encoding = kw["encoding"]
+
+    legacy = FakeStream("cp1252")
+    already = FakeStream("utf-8")
+
+    import sys as _sys
+
+    orig_out, orig_err = _sys.stdout, _sys.stderr
+    try:
+        _sys.stdout, _sys.stderr = legacy, already
+        cli._make_output_unicode_safe()
+    finally:
+        _sys.stdout, _sys.stderr = orig_out, orig_err
+
+    assert legacy.calls, "a cp1252 stream must be reconfigured"
+    assert legacy.calls[0].get("encoding") == "utf-8", (
+        "prefer switching to UTF-8: modern Windows Terminal renders it, so the right answer is "
+        "usually to use it rather than to degrade the output"
+    )
+    assert not already.calls, "a stream that is already UTF-8 must be left alone"
+
+
+def test_a_stream_that_cannot_be_reconfigured_is_left_alone():
+    """An embedded runtime or a test double may not implement reconfigure. Decoration must
+    never be the reason a command cannot run."""
+    from pyyol import cli
+
+    class Bare:
+        encoding = "cp1252"  # no reconfigure attribute at all
+
+    import sys as _sys
+
+    orig_out, orig_err = _sys.stdout, _sys.stderr
+    try:
+        _sys.stdout, _sys.stderr = Bare(), Bare()
+        cli._make_output_unicode_safe()  # must not raise
+    finally:
+        _sys.stdout, _sys.stderr = orig_out, orig_err
+
+
+def test_the_wordmark_is_dropped_when_the_stream_cannot_draw_it():
+    """A logo that can break `--help` is not a logo, it is an outage with a brand on it."""
+    from pyyol import shell
+
+    class Stream:
+        def __init__(self, encoding):
+            self.encoding = encoding
+
+        def isatty(self):
+            return False
+
+    assert shell.wordmark_for(Stream("utf-8")), "a UTF-8 stream should get the wordmark"
+    assert shell.wordmark_for(Stream("ascii")) == "", "an ASCII stream must get nothing at all"

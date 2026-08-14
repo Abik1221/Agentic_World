@@ -441,8 +441,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # Refreshed, not read raw: see _owner_token. An expired JWT here is what made
     # `pyyol publish` fail hours after a successful login.
     token = _owner_token(creds, args.token)
+    if _already_reported(creds):
+        return 2
     if not (api and agent and token):
-        print(f"{BAD} need --api, --agent and --token (or `pyyol login` first)", file=sys.stderr)
+        print(
+            f"{BAD} publish needs a signed-in device with an agent. "
+            "Run `pyyol login`, then `pyyol init <dir>` if you have no agent yet.",
+            file=sys.stderr,
+        )
         return 2
     if args.token:
         _warn_argv_secret()
@@ -521,6 +527,22 @@ def _login_and_save(api: str, dashboard: str, connect: str = "", provider: str =
             creds.api_key = resp["api_key"]
     credentials.save(creds)
     return creds
+
+
+def _already_reported(creds) -> bool:
+    """True when _ensure_login has ALREADY told the developer what to do.
+
+    It prints a complete, actionable line ("not logged in on this device. Run `pyyol login`…")
+    and returns None. Callers used to print a second line on top of it, in flag language:
+
+        ✗ not logged in on this device. Run `pyyol login` (opens the browser)…
+        ✗ need --api, --agent and --token (or `pyyol login` first)
+
+    Two errors for one problem, and the second one is worse — it describes the plumbing rather
+    than the fix, and reads as a tool that does not know what went wrong. A caller that sees
+    None should exit quietly; the message a developer needs has already been said.
+    """
+    return creds is None
 
 
 def _ensure_login(args: argparse.Namespace):
@@ -679,7 +701,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     api = (args.api or creds.url).rstrip("/")
     agent_id = args.agent or creds.agent_id
     if not api or not agent_id:
-        print(f"{BAD} need an API url and agent id (login or pass --api/--agent)", file=sys.stderr)
+        if _already_reported(creds):
+            return 2
+        print(
+            f"{BAD} no agent on this device yet — run `pyyol init <dir>` to create one.",
+            file=sys.stderr,
+        )
         return 2
     _warn_insecure_transport(api, True)
     req = urllib.request.Request(
@@ -767,7 +794,9 @@ def cmd_queue(args: argparse.Namespace) -> int:
     creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
     base = _http_base(args, creds)
     if not base:
-        print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
+        if _already_reported(creds):
+            return 2
+        print(f"{BAD} no arena to talk to — run `pyyol login`, or pass --api.", file=sys.stderr)
         return 2
     game = args.game
 
@@ -2532,7 +2561,12 @@ def cmd_usage(args: argparse.Namespace) -> int:
     api = (args.api or creds.url).rstrip("/")
     agent = args.agent or creds.agent_id
     if not (api and agent):
-        print(f"{BAD} need an API url and agent id (login, or pass --api/--agent)", file=sys.stderr)
+        if _already_reported(creds):
+            return 2
+        print(
+            f"{BAD} no agent on this device yet — run `pyyol init <dir>` to create one.",
+            file=sys.stderr,
+        )
         return 2
 
     st, body = _api_get(
@@ -2615,10 +2649,30 @@ def _add_api(sp):
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # The wordmark on --help too, not only inside the shell.
+    #
+    # `pyyol --help` is what a developer sees in CI, in a Dockerfile, and any time the tool is
+    # piped — and it was bare argparse with no sign of what this is. Colour is decided by the
+    # STREAM, so a pipe or a redirect gets clean ASCII and a terminal gets the brand; a
+    # wordmark full of escape codes in a CI log is worse than none.
+    #
+    # RawDescriptionHelpFormatter because argparse otherwise re-wraps the description and
+    # turns the art into rubble.
+    banner = ""
+    try:
+        from .shell import wordmark_for
+
+        art = wordmark_for(sys.stdout)
+        banner = art + "\n\n" if art else ""
+    except Exception:  # noqa: BLE001 — a decoration must never stop the tool from running
+        banner = ""
     p = argparse.ArgumentParser(
         prog="pyyol",
-        description="Pyyol — build, run, and rank autonomous AI agents. "
-        "Quickstart: pyyol login → pyyol init → pyyol dev.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=banner + "  Pyyol — build, run, and rank autonomous AI agents.\n"
+        "  Quickstart: pyyol login → pyyol init → pyyol dev",
+        epilog="Run `pyyol` with no arguments to open the interactive shell:\n"
+        "  a command menu on `/`, tab completion, and every command below available inside it.",
     )
     p.add_argument("--version", action="version", version=f"pyyol {__version__}")
     # GLOBAL --api, accepted before the command as well as after it.
@@ -2921,7 +2975,48 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _make_output_unicode_safe() -> None:
+    """Stop a legacy console from turning output into a crash.
+
+    Windows consoles still default to cp1252 in plenty of setups, and this CLI prints ‚Üí, ‚àí,
+    ‚óè, box-drawing and the wordmark. Writing any of those to a cp1252 stream raises
+    UnicodeEncodeError from inside `print` ‚Äî so `pyyol --help` died with a traceback before
+    printing a single line of help, on the platform least equipped to debug it. Reported from
+    a real Windows session, reproduced here with PYTHONIOENCODING=cp1252.
+
+    Two steps, in order:
+
+      1. Try to switch the stream to UTF-8. Modern Windows Terminal, PowerShell 7 and VS Code
+         all render it correctly, so the right answer is usually "just use UTF-8".
+      2. Failing that, keep the console's encoding but replace what it cannot draw. A "?"
+         where an arrow should be is a cosmetic blemish; a traceback is a broken tool.
+
+    Deliberately best-effort and silent: a stream that does not support reconfigure (a pipe
+    wrapped by a test, an embedded runtime) is left exactly as it was.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc in ("utf8", "utf8mb4"):
+            continue  # already fine; leave it alone
+        try:
+            reconfigure(encoding="utf-8")
+            continue
+        except (ValueError, OSError, LookupError):
+            pass
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError, LookupError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, before anything can print: a cp1252 console must not turn our own output into a
+    # traceback. See _make_output_unicode_safe.
+    _make_output_unicode_safe()
+
     # BARE `pyyol` ON A TTY OPENS THE SHELL.
     #
     # The subcommand is required=True, so typing the tool's own name — the first thing anyone

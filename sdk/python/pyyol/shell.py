@@ -233,6 +233,30 @@ class _LiveStrip:
         self._stop.set()
 
 
+def wordmark_for(stream: TextIO) -> str:
+    """The wordmark, if this stream can actually print it. Empty string otherwise.
+
+    `pyyol --help` is the first thing a developer sees in CI, in a Dockerfile, or when they
+    pipe the tool anywhere, and it showed bare argparse output with no sign of what this is.
+    The shell had all the identity and only people who found the shell ever saw it.
+
+    THE ENCODING CHECK IS NOT OPTIONAL. The glyphs are U+2588 FULL BLOCK. On a legacy Windows
+    console (cp1252) printing them raises UnicodeEncodeError — so decorating --help crashed
+    --help, with a traceback, on the one platform least likely to be able to read the fix. A
+    logo that can break `--help` is not a logo, it is an outage with a brand on it.
+
+    Measured, not assumed: the candidate string is encoded against the stream's own encoding,
+    so a terminal that can render it gets it and one that cannot gets clean text.
+    """
+    art = _wordmark(use_color(stream))
+    enc = getattr(stream, "encoding", None) or "ascii"
+    try:
+        art.encode(enc, errors="strict")
+    except (UnicodeEncodeError, LookupError):
+        return ""
+    return art
+
+
 def _banner(s: _Style, version: str, api: str, who: dict[str, Any] | None) -> str:
     lines = [_wordmark(s.color)]
     lines.append("")
