@@ -18,6 +18,15 @@ type AgentView struct {
 	Alive  map[int]bool `json:"alive"`
 	Allies []int        `json:"allies,omitempty"` // fellow Mafia seats (Mafia agents only)
 	Legal  []string     `json:"legal"`            // action kinds valid for this seat now
+	// AllyKills is what each fellow MAFIA has selected so far tonight (ally seat → target).
+	// Empty outside the night, and never present for a non-mafia seat.
+	//
+	// In the real game the mafia wake TOGETHER and point at their choice, seeing each other —
+	// that mutual sight is how they converge on one target. Without it here they were choosing
+	// blind, and because a tie in the kill vote means NOBODY DIES, three mafia splitting 1-1-1
+	// silently vetoed their own night. The team could not reliably perform the one action it
+	// exists to perform.
+	AllyKills map[int]int `json:"ally_kills,omitempty"`
 	// CannotProtect is the seat this DOCTOR shielded last night and therefore may not shield
 	// again tonight. -1 when there is no such seat (the first night, or after a night off).
 	//
@@ -89,6 +98,20 @@ func BuildView(s State, seat int, log []Event) AgentView {
 		}
 		sort.Ints(allies)
 		v.Allies = allies
+		// What the others have picked so far tonight, so the team can converge rather than
+		// split. Only during the night, and only an ALLY's choice: this seat's own pick is
+		// already in Private, and nobody else's night action is any mafia's business.
+		if s.Phase == PhaseNight && len(s.MafiaKill) > 0 {
+			kills := map[int]int{}
+			for _, ally := range allies {
+				if target, ok := s.MafiaKill[ally]; ok && target > 0 {
+					kills[ally] = target
+				}
+			}
+			if len(kills) > 0 {
+				v.AllyKills = kills
+			}
+		}
 	}
 
 	// COMPLETE, deliberately. BuildView feeds three consumers and only one of them wants a

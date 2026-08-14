@@ -170,3 +170,90 @@ func TestTheDoctorIsToldWhichSeatIsBarred(t *testing.T) {
 		t.Error("the first night should bar nothing")
 	}
 }
+
+// ── the mafia must be able to converge on one target ─────────────────────────
+//
+// In the real game the mafia wake TOGETHER and point at their choice, seeing each other; that
+// mutual sight is how they agree. Here each seat saw only its OWN night event, so they chose
+// blind — and because a tied kill vote means NOBODY DIES, three mafia splitting 1-1-1 silently
+// vetoed their own night. The team could not reliably perform the one action it exists for.
+
+func mafiaNight(kills map[int]int) State {
+	s := State{
+		Day: 2, Phase: PhaseNight,
+		Alive: map[int]bool{}, Roles: map[int]string{},
+		NightActs: map[int]Action{}, MafiaKill: kills,
+	}
+	for seat := 1; seat <= 6; seat++ {
+		s.Alive[seat] = true
+		s.Roles[seat] = RoleVillager
+	}
+	s.Roles[1], s.Roles[2], s.Roles[3] = RoleMafia, RoleMafia, RoleMafia
+	return s
+}
+
+func TestAMafiaSeesWhatItsAlliesHavePicked(t *testing.T) {
+	// Seat 1 has ALREADY picked too. That matters: without its own entry in the fixture the
+	// "own pick is not echoed" assertion below cannot fail, and a mutation replacing the ally
+	// filter with every seat survived it. A test that cannot fail is not a test.
+	v := BuildView(mafiaNight(map[int]int{1: 4, 2: 5, 3: 6}), 1, nil)
+
+	if len(v.AllyKills) != 2 || v.AllyKills[2] != 5 || v.AllyKills[3] != 6 {
+		t.Fatalf("ally kills = %v, want seat 2→5 and seat 3→6 so the team can converge", v.AllyKills)
+	}
+	// Its OWN pick is not duplicated here — that is already in Private.
+	if _, self := v.AllyKills[1]; self {
+		t.Error("a mafia's own pick was echoed back as an ally's")
+	}
+}
+
+func TestAllyKillsNeverLeakToTheTown(t *testing.T) {
+	// This is the field's whole risk: it names mafia seats AND their intent. A villager who
+	// could read it would win the game on the spot.
+	s := mafiaNight(map[int]int{2: 5, 3: 6})
+	for _, seat := range []int{4, 5, 6} {
+		if v := BuildView(s, seat, nil); v.AllyKills != nil {
+			t.Fatalf("seat %d (town) can see the mafia's kill selections: %v", seat, v.AllyKills)
+		}
+	}
+}
+
+func TestAllyKillsAreNightOnly(t *testing.T) {
+	// Outside the night there is no pending kill to coordinate, and carrying yesterday's
+	// selections into the day would hand a mafia stale information it never had at the table.
+	s := mafiaNight(map[int]int{2: 5})
+	s.Phase = PhaseDiscussion
+	if v := BuildView(s, 1, nil); v.AllyKills != nil {
+		t.Fatalf("ally kills present during %s: %v", s.Phase, v.AllyKills)
+	}
+}
+
+func TestAnAbstainingAllyIsNotShownAsATarget(t *testing.T) {
+	// An abstaining mafia records target 0. Reporting that as a choice would tell the others
+	// their ally picked seat 0, which is not a seat.
+	v := BuildView(mafiaNight(map[int]int{2: 0, 3: 6}), 1, nil)
+	if _, ok := v.AllyKills[2]; ok {
+		t.Errorf("an abstaining ally was reported as having picked a target: %v", v.AllyKills)
+	}
+	if v.AllyKills[3] != 6 {
+		t.Errorf("the ally that DID pick was lost: %v", v.AllyKills)
+	}
+}
+
+// TestATiedMafiaVoteKillsNobody documents the consequence that makes ally visibility matter:
+// a split is a wasted night, so the team has a real reason to converge.
+func TestATiedMafiaVoteKillsNobody(t *testing.T) {
+	s := mafiaNight(map[int]int{1: 4, 2: 5, 3: 6}) // 1-1-1
+	ns, evs, err := New().resolveNight(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, eliminated := findElim(evs); eliminated {
+		t.Fatal("a 1-1-1 mafia split killed someone; a tie must kill nobody")
+	}
+	for seat := 4; seat <= 6; seat++ {
+		if !ns.Alive[seat] {
+			t.Fatalf("seat %d died on a tied kill vote", seat)
+		}
+	}
+}

@@ -328,6 +328,20 @@ A tie is settled by the match's `tie_rule`, and the three settle it very differe
 Bid against `prize_pool`, never `current_prize` — under `carry` they are the same only when the
 previous round was decisive.
 
+#### Mafia: the mafia see each other's picks, and a tie kills nobody
+
+Your night kill is decided by **plurality across all mafia**. If the mafia split evenly —
+1-1-1 with three of you — **nobody dies and the night is wasted**. Converging is not optional.
+
+So a mafia's view carries `ally_kills`: what each of your fellow mafia has selected so far
+tonight, as `{ally_seat: target_seat}`. It mirrors the real game, where the mafia wake together
+and point at their choice in sight of one another. It is present only during the night, only
+for mafia, and only for allies — your own pick is already in `private`, and an ally who
+abstained is absent rather than shown as choosing seat 0.
+
+Act late and you see more; act early and you set the anchor others converge on. Both are real
+strategies.
+
 #### Mafia: the doctor may not shield the same seat twice running
 
 Standard Mafia: *a doctor cannot heal the same person — including himself — two nights in a
