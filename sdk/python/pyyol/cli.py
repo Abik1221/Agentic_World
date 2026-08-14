@@ -91,7 +91,7 @@ def _net_err(e: Exception) -> str:
 
 
 def _status(st: int) -> str:
-    """" (404)" for a real HTTP status, and NOTHING for 0.
+    """ " (404)" for a real HTTP status, and NOTHING for 0.
 
     The HTTP helpers return 0 to mean "no response at all" — offline, refused, DNS. Printing
     that verbatim gave developers "could not fetch leaderboard (0)", where the one number on
@@ -2120,7 +2120,10 @@ def cmd_arenas(args: argparse.Namespace) -> int:
         return 2
     st, resp = _api_get(f"{base}/v1/arenas")
     if st != 200:
-        print(f"{BAD} could not fetch arenas{_status(st)}: {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch arenas{_status(st)}: {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     arenas = resp.get("arenas") or []
     print(f"{'ARENA':<12}{'PLAYERS':<10}{'SANDBOX':<9}{'RANKED':<8}STATUS")
@@ -2145,7 +2148,10 @@ def cmd_games(args: argparse.Namespace) -> int:
         return 2
     st, resp = _api_get(f"{base}/v1/games")
     if st != 200:
-        print(f"{BAD} could not fetch games{_status(st)}: {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch games{_status(st)}: {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     games = resp.get("games") or []
     if not games:
@@ -2312,7 +2318,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
     )
     st, resp = _api_get(f"{base}{path}")
     if st != 200:
-        print(f"{BAD} could not fetch replay{_status(st)}: {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch replay{_status(st)}: {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     if args.json:
         print(json.dumps(resp, indent=2))
@@ -3047,7 +3056,9 @@ def main(argv: list[str] | None = None) -> int:
     # whether their agent was ranked. Ctrl-C did the same. See pyyol/_crash.py.
     from ._crash import guard
 
-    return guard(args.func, args, version=__version__, argv=argv if argv is not None else sys.argv[1:])
+    return guard(
+        args.func, args, version=__version__, argv=argv if argv is not None else sys.argv[1:]
+    )
 
 
 if __name__ == "__main__":

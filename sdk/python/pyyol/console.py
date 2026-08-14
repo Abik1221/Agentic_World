@@ -255,7 +255,7 @@ def _read_line(stdin: TextIO, timeout: float) -> str | None:
     A thread rather than ``select`` because select() on Windows accepts sockets only,
     and this is the path a developer on Windows runs every day.
     """
-    box: "queue.Queue[str]" = queue.Queue(maxsize=1)
+    box: queue.Queue[str] = queue.Queue(maxsize=1)
 
     def read() -> None:
         try:

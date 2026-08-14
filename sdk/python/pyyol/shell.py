@@ -421,8 +421,8 @@ def _pick(
         ordered.append((n, cmds[n], "More"))
 
     query = ""
-    idx = 0          # index into the FILTERED list
-    top = 0          # first visible row — the scroll window's origin
+    idx = 0  # index into the FILTERED list
+    top = 0  # first visible row — the scroll window's origin
     rows = min(10, len(ordered))
     drawn = 0
     fd = sys.stdin.fileno()

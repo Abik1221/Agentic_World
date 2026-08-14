@@ -51,7 +51,9 @@ def test_offered_once_per_connection(monkeypatch):
     stdin, so a second ask would find its answer swallowed by the first.
     """
     asks = []
-    monkeypatch.setattr("pyyol.console.ask_watch", lambda label, url, **k: asks.append(label) or "terminal")
+    monkeypatch.setattr(
+        "pyyol.console.ask_watch", lambda label, url, **k: asks.append(label) or "terminal"
+    )
 
     c = _connector()
     for i in range(5):
@@ -66,6 +68,7 @@ def test_env_override_skips_the_prompt_entirely(monkeypatch):
     The timeout alone is not enough: a supervised process that pauses ten seconds per
     match is still wrong, just quieter about it.
     """
+
     def boom(*a, **k):
         raise AssertionError("stdin was read despite PYYOL_WATCH")
 
@@ -98,7 +101,9 @@ def test_env_browser_opens_without_asking(monkeypatch):
 def test_a_game_with_no_viewer_route_is_silent(monkeypatch):
     """No link rather than a wrong one — a tab on someone else's match is worse."""
     asked = []
-    monkeypatch.setattr("pyyol.console.ask_watch", lambda label, url, **k: asked.append(url) or "terminal")
+    monkeypatch.setattr(
+        "pyyol.console.ask_watch", lambda label, url, **k: asked.append(url) or "terminal"
+    )
 
     c = _connector()
     c._offer_watch({"match_id": "m_1", "game": "not-a-game"})

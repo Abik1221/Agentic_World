@@ -43,7 +43,8 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # EX_SOFTWARE from sysexits.h. Distinct from 1 on purpose: "the command ran and told you it
 # failed" and "the command itself broke" are different events, and a CI pipeline should be able
@@ -63,7 +64,9 @@ def _crash_dir() -> Path:
     not a cache), falling back to ~/.local/state, then to the system temp dir — because a
     read-only or unusual HOME must not turn a crash report into a second crash.
     """
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state"
+    )
     try:
         d = Path(base) / "pyyol"
         d.mkdir(parents=True, exist_ok=True)
@@ -106,7 +109,9 @@ def _one_line(exc: BaseException) -> str:
     return f"{name}: {head}"
 
 
-def guard(fn: Callable[..., int], *args: Any, version: str = "", argv: list[str] | None = None) -> int:
+def guard(
+    fn: Callable[..., int], *args: Any, version: str = "", argv: list[str] | None = None
+) -> int:
     """Run a CLI command, converting a crash or a Ctrl-C into a civilised exit.
 
     Deliberately catches BaseException-derived KeyboardInterrupt separately and lets
@@ -141,9 +146,7 @@ def guard(fn: Callable[..., int], *args: Any, version: str = "", argv: list[str]
         return report_crash(exc, argv[0] if argv else "", version)
 
 
-def report_crash(
-    exc: BaseException, command: str, version: str, stream: Any = None
-) -> int:
+def report_crash(exc: BaseException, command: str, version: str, stream: Any = None) -> int:
     """Print the crash report and return the exit code to use.
 
     Separate from `guard` so the INTERACTIVE SHELL can use it too. The shell must not exit on a

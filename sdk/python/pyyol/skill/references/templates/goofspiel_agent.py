@@ -7,8 +7,6 @@ Read references/games/goofspiel.md first. Replace `decide_card`; leave the rest.
 
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from _shared import MatchMemory
 from pyyol import Adapter
 from pyyol.models import GoofspielMove, GoofspielView
@@ -41,7 +39,7 @@ class GoofspielAgent(Adapter):
 
     # --- your strategy -----------------------------------------------------
 
-    def decide_card(self, view: GoofspielView) -> Tuple[int, str]:
+    def decide_card(self, view: GoofspielView) -> tuple[int, str]:
         """Return (card, one-line reason).
 
         Bid against `prize_pool`, not `current_prize` — ties carry.
@@ -56,7 +54,7 @@ class GoofspielAgent(Adapter):
         return min(view.legal_actions), f"pool {view.prize_pool}: conceding cheaply"
 
     @staticmethod
-    def opponent_hand(view: GoofspielView) -> List[int]:
+    def opponent_hand(view: GoofspielView) -> list[int]:
         """Exactly what they still hold — identical starting hands mean their played
         cards tell you the rest."""
         spent = {r["opp_card"] for r in (view.history or []) if r.get("opp_card")}

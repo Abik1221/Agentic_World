@@ -29,7 +29,10 @@ class FakeTTY(io.StringIO):
 def test_no_tty_returns_terminal_without_prompting():
     """CI must never see a prompt. This is the test that keeps pipelines alive."""
     out = FakeTTY(tty=False)
-    assert ask_watch("goofspiel · m_x", "http://x", timeout=5, stream=out, stdin=FakeTTY(tty=False)) == WATCH_TERMINAL
+    assert (
+        ask_watch("goofspiel · m_x", "http://x", timeout=5, stream=out, stdin=FakeTTY(tty=False))
+        == WATCH_TERMINAL
+    )
     assert out.getvalue() == "", "a non-interactive run must print no prompt at all"
 
 
@@ -51,7 +54,10 @@ def test_b_chooses_browser():
 def test_everything_other_than_b_follows_here(answer):
     """The default must be the SAFE one: staying put cannot fail, opening a tab can."""
     out = FakeTTY(tty=True)
-    assert ask_watch("g · m", "http://x", timeout=5, stream=out, stdin=FakeTTY(answer)) == WATCH_TERMINAL
+    assert (
+        ask_watch("g · m", "http://x", timeout=5, stream=out, stdin=FakeTTY(answer))
+        == WATCH_TERMINAL
+    )
 
 
 def test_silence_defaults_within_the_timeout():
@@ -72,7 +78,9 @@ def test_silence_defaults_within_the_timeout():
     elapsed = time.monotonic() - t0
 
     assert got == WATCH_TERMINAL
-    assert elapsed < 3, f"waited {elapsed:.1f}s on a 0.3s timeout — the prompt outlived the countdown"
+    assert elapsed < 3, (
+        f"waited {elapsed:.1f}s on a 0.3s timeout — the prompt outlived the countdown"
+    )
     assert "no answer" in out.getvalue(), "a silent default reads as a dropped keystroke"
 
 
@@ -95,9 +103,19 @@ def test_box_is_aligned_regardless_of_match_id_length():
     that is visibly crooked exactly when colour is on.
     """
     out = FakeTTY(tty=True)
-    ask_watch("goofspiel · m_tqp7ze5jzmn7xoxu_and_then_some", "http://x",
-              timeout=0.2, stream=out, stdin=FakeTTY(tty=True), color=True)
-    box = [ln for ln in out.getvalue().splitlines() if ln.startswith(("\033[90m╭", "\033[90m│", "\033[90m╰"))]
+    ask_watch(
+        "goofspiel · m_tqp7ze5jzmn7xoxu_and_then_some",
+        "http://x",
+        timeout=0.2,
+        stream=out,
+        stdin=FakeTTY(tty=True),
+        color=True,
+    )
+    box = [
+        ln
+        for ln in out.getvalue().splitlines()
+        if ln.startswith(("\033[90m╭", "\033[90m│", "\033[90m╰"))
+    ]
     assert len(box) >= 3
     widths = {_visible(ln) for ln in box}
     assert len(widths) == 1, f"border rows disagree on width: {widths}"

@@ -8,7 +8,7 @@ Replace `decide`; leave the rest.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any
 
 from _shared import MatchMemory
 from pyyol import Adapter
@@ -85,7 +85,7 @@ class MonopolyAgent(Adapter):
         # Replace it — what you ask for, and who you ask, is the game.
         return MonopolyTrade(target=OPEN_TO_TABLE, give_props=[min(mine)], want_cash=150)
 
-    def decide(self, view: MonopolyView) -> Tuple[str, int, int, str]:
+    def decide(self, view: MonopolyView) -> tuple[str, int, int, str]:
         """Return (action, property, amount, reason).
 
         Read `phase` for the situation and `legal_actions` for what is allowed —
@@ -98,7 +98,7 @@ class MonopolyAgent(Adapter):
         the piece on — the auction sells the house, and you still have to place it legally.
         """
         legal = view.legal_actions or []
-        me: Dict[str, Any] = (view.state or {}).get("players", {}).get(str(view.seat), {})
+        me: dict[str, Any] = (view.state or {}).get("players", {}).get(str(view.seat), {})
         cash = int(me.get("cash", 0) or 0)
 
         if view.phase == "acquire" and "buy" in legal:

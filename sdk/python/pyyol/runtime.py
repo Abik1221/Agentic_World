@@ -446,8 +446,11 @@ class RuntimeConnector:
         elif t == EVENT:
             kind = frame.get("kind", "event")
             if kind == "match_start":
-                self._emit("match_start", _countdown_line(frame.get("payload")),
-                           match=frame.get("match_id"))
+                self._emit(
+                    "match_start",
+                    _countdown_line(frame.get("payload")),
+                    match=frame.get("match_id"),
+                )
             else:
                 self._emit("event", kind, seq=frame.get("seq"))
             self.agent.notify_event(self._event_dict(frame))
@@ -568,6 +571,7 @@ def _summarize_result(result: Any) -> str:
             break
     return "game finished" + (" · " + " · ".join(str(b) for b in bits) if bits else "")
 
+
 def _countdown_line(payload: Any) -> str:
     """How long until play begins, as a line for the terminal.
 
@@ -600,7 +604,7 @@ def _countdown_line(payload: Any) -> str:
         return "match starting"
 
 
-def _parse_ts(v: Any) -> "datetime | None":
+def _parse_ts(v: Any) -> datetime | None:
     """Parse an RFC3339 timestamp, tolerating the trailing Z Go emits."""
     if not isinstance(v, str) or not v:
         return None

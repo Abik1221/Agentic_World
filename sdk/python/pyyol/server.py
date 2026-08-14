@@ -246,7 +246,9 @@ class Agent:
                 "model inside an event handler, move it into step(): the turn view is already "
                 "complete, and on a free tier of 50 requests/day this ratio is the difference "
                 "between finishing a match and running out mid-game.",
-                self._calls_seen, self._decisions_seen, ratio,
+                self._calls_seen,
+                self._decisions_seen,
+                ratio,
             )
 
     def _invoke_turn(self, handler, game: str, view) -> Response:

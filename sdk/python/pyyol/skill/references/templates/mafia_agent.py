@@ -8,8 +8,6 @@ Replace `decide`; leave the rest.
 
 from __future__ import annotations
 
-from typing import Tuple
-
 from _shared import MatchMemory
 from pyyol import Adapter
 from pyyol.models import MafiaMove, MafiaView
@@ -48,7 +46,7 @@ class MafiaAgent(Adapter):
 
     # --- your strategy -----------------------------------------------------
 
-    def decide(self, view: MafiaView) -> Tuple[str, int, str, str]:
+    def decide(self, view: MafiaView) -> tuple[str, int, str, str]:
         """Return (action, target, text, reason).
 
         `view.public` is the table transcript; `view.private` carries what only you

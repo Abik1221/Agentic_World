@@ -136,12 +136,26 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
                             "is a real player."
                         ),
                     },
-                    "give_props": {"type": "array", "items": {"type": "integer"}, "description": "Squares you give."},
+                    "give_props": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Squares you give.",
+                    },
                     "give_cash": {"type": "integer", "description": "Cash you give."},
-                    "give_cards": {"type": "integer", "description": "Get-out-of-jail-free cards you give."},
-                    "want_props": {"type": "array", "items": {"type": "integer"}, "description": "Squares you want."},
+                    "give_cards": {
+                        "type": "integer",
+                        "description": "Get-out-of-jail-free cards you give.",
+                    },
+                    "want_props": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Squares you want.",
+                    },
                     "want_cash": {"type": "integer", "description": "Cash you want."},
-                    "want_cards": {"type": "integer", "description": "Get-out-of-jail-free cards you want."},
+                    "want_cards": {
+                        "type": "integer",
+                        "description": "Get-out-of-jail-free cards you want.",
+                    },
                 },
                 "required": ["target"],
             },

@@ -171,5 +171,7 @@ def test_each_sdk_ships_templates_in_its_own_language():
 
     # The same THREE games plus the shared helper, in both — a language difference must not
     # become a coverage difference.
-    stems = lambda names: {n.rsplit(".", 1)[0] for n in names}
+    def stems(names):
+        return {n.rsplit(".", 1)[0] for n in names}
+
     assert stems(py) == stems(js), f"the two SDKs teach different games: {stems(py)} vs {stems(js)}"

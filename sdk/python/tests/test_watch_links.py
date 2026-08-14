@@ -122,6 +122,7 @@ def test_a_flag_means_stdin_is_never_read(monkeypatch):
     The timeout alone is not enough: a script that pauses ten seconds per match is still
     broken, just less obviously. A known answer must skip the read entirely.
     """
+
     def boom(*a, **k):
         raise AssertionError("stdin was read despite an explicit --watch")
 

@@ -21,13 +21,17 @@ def test_an_internal_fault_exits_70_and_says_whose_bug_it_is(capsys, tmp_path, m
 
     code = _crash.guard(boom, None, version="9.9.9", argv=["whoami"])
 
-    assert code == _crash.EXIT_INTERNAL, "an internal fault must be distinguishable from a reported failure"
+    assert code == _crash.EXIT_INTERNAL, (
+        "an internal fault must be distinguishable from a reported failure"
+    )
     err = capsys.readouterr().err
     # The single most important line: a developer who thinks they broke it goes hunting
     # through their own agent code for a fault that is ours.
     assert "bug in pyyol, not in your agent" in err
     assert "ValueError: internal detail nobody asked about" in err
-    assert "Traceback (most recent call last)" not in err, "the raw traceback must not be the default output"
+    assert "Traceback (most recent call last)" not in err, (
+        "the raw traceback must not be the default output"
+    )
     assert "PYYOL_DEBUG=1" in err, "the developer must be told how to get the full detail"
     # The report exists and carries what we need to fix it.
     report = tmp_path / "pyyol" / "last-crash.log"
@@ -60,7 +64,9 @@ def test_ctrl_c_is_quiet_and_exits_130(capsys, monkeypatch):
     assert code == _crash.EXIT_INTERRUPTED, "128 + SIGINT, so `&&` chains stop when a human does"
     err = capsys.readouterr().err
     assert "Stopped." in err
-    assert "KeyboardInterrupt" not in err, "printing a stack trace to explain the user's own keystroke is noise"
+    assert "KeyboardInterrupt" not in err, (
+        "printing a stack trace to explain the user's own keystroke is noise"
+    )
 
 
 def test_a_deliberate_exit_code_is_not_swallowed():
