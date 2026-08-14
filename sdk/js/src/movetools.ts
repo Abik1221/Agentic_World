@@ -228,6 +228,17 @@ export function moveTool(
  * Worth using. Without it a model may answer in prose, and a turn with no tool call is
  * unverified — the agent keeps playing but earns no completion binding.
  */
+/**
+ * The tool_choice value that FORCES the model to answer with the move tool.
+ *
+ * NOT every model accepts forcing. Some advertise tool support and still reject a
+ * required/named tool_choice — observed live: OpenRouter's `openai/gpt-oss-20b:free` answers
+ * `inference-enforced tool_choice (required/named) is not supported`, HTTP 400, on every call.
+ *
+ * If you see that, send `"auto"` instead. Binding reads the RESPONSE, so forcing is only a way
+ * to raise the hit rate — a model that emits the tool call on its own binds exactly the same.
+ * Forcing is the default because most models take it and it wastes fewer turns.
+ */
 export function moveToolChoice(game: string, provider = "openai"): unknown {
   const name = moveToolName(game);
   if (!name) throw new Error(`pyyol.moveToolChoice: no move tool for game ${JSON.stringify(game)}`);
