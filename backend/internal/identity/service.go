@@ -264,6 +264,17 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 // (`pyyol login`, /cli-login, the dashboard button), so the documented deployment
 // flow signed the developer's own laptop out as a side effect and nothing said so.
 // See migration 0071 for the full account.
+// IssueDashboardToken mints a user-scope access JWT for an ALREADY-AUTHENTICATED owner.
+//
+// Used by the CLI handoff, which needs a real credential to hand a terminal. It mints rather
+// than forwarding the browser's own token on purpose: the browser's JWT is short-lived and its
+// refresh token rotates, so passing either to the CLI would either expire within the hour or
+// have the two clients fighting over one rotating token — whichever refreshed first would log
+// the other out.
+func (s *Service) IssueDashboardToken(ownerPublicID string) (string, error) {
+	return s.jwt.Issue(ownerPublicID)
+}
+
 func (s *Service) IssueKey(ctx context.Context, ownerPublicID, agentPublicID, label string) (string, error) {
 	if _, err := s.repo.AgentByOwner(ctx, agentPublicID, ownerPublicID); err != nil {
 		return "", ErrForbiddenOwner

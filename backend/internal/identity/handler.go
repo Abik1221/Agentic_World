@@ -128,6 +128,8 @@ func (h *Handler) Register(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/config", h.updateConfig)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/me", h.me)
+		// The CLI handoff. Owner-scoped: it re-expresses authority the caller already proved.
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/auth/cli-token", h.cliToken)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agent/keys", h.listKeys)
 		r.With(auth.RequireScope(auth.ScopeUser), h.keysRL).Post("/v1/agent/keys", h.createKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/agent/keys/{prefix}", h.revokeKey)
@@ -728,6 +730,61 @@ func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"dashboard_token": access,
 		"refresh_token":   next,
+	})
+}
+
+// cliToken mints a SEPARATE, independently-revocable session for a terminal.
+//
+// # The bug this fixes
+//
+// The web CLI-login page handed the CLI whatever `session.dashboardToken` held — and in the
+// browser that is the literal sentinel "cookie:user", never a JWT. The real token lives in an
+// HttpOnly cookie that JS cannot read (deliberately: a JS-readable credential is an XSS-exfil
+// path), and inside the browser the BFF swaps the sentinel for the real cookie on every call.
+// The CLI is not a browser. It stored "cookie:user" and sent it as a Bearer, so EVERY
+// owner-scoped command answered 401 — publish first, and therefore certification, and
+// therefore every match including sandbox. A freshly logged-in CLI user could not play at all.
+//
+// # Why a new session rather than the browser's
+//
+// Forwarding the browser's access token would expire in about an hour. Forwarding its refresh
+// token is worse: refresh ROTATES, so browser and CLI would share one token and whichever
+// spent it first would silently log the other out.
+//
+// RefreshService.Issue starts a NEW FAMILY, and revocation is per-family. So the terminal gets
+// a session that lives alongside the browser's, can be revoked on its own, and refreshes on
+// its own — which is exactly what `pyyol logout` on one machine should mean.
+//
+// Owner-scoped: the caller must already hold a valid user JWT, which through the BFF means a
+// live session cookie. This endpoint never widens authority — it re-expresses authority the
+// caller already proved, in a form a terminal can hold.
+func (h *Handler) cliToken(w http.ResponseWriter, r *http.Request) {
+	// PrincipalFromContext returns a POINTER that is nil when nothing authenticated the
+	// request. Dereferencing it straight away — which the first version of this did — turns
+	// the unauthenticated case into a panic instead of a 401, in the one handler whose whole
+	// job is to be careful about authority. The route is behind RequireScope(ScopeUser) so it
+	// should be unreachable; a guard that is only correct while another guard holds is not a
+	// guard.
+	p := auth.PrincipalFromContext(r.Context())
+	owner := ""
+	if p != nil {
+		owner = p.UserPublicID
+	}
+	if owner == "" {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "unauthenticated", "Authentication is required."))
+		return
+	}
+	access, err := h.svc.IssueDashboardToken(owner)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// A refresh token is what keeps the CLI signed in past the access token's short TTL.
+	// Best-effort: without it the CLI still works until the access token expires, which is a
+	// far better outcome than refusing to hand over any credential at all.
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"dashboard_token": access,
+		"refresh_token":   h.issueRefresh(r.Context(), owner),
 	})
 }
 
