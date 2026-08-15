@@ -565,6 +565,98 @@ func (r *IdentityRepo) UpsertGoogleAccount(ctx context.Context, in identity.Goog
 	}, nil
 }
 
+// UpsertGitHubAccount implements identity.Repo. See the interface doc. Deliberately
+// mirrors UpsertGoogleAccount step-for-step, keyed on github_id instead of google_sub.
+func (r *IdentityRepo) UpsertGitHubAccount(ctx context.Context, in identity.GitHubUpsertInput) (identity.GitHubUpsertResult, error) {
+	// 1. Already linked to this GitHub identity → log in.
+	var uPub, aPub, aName string
+	err := r.db.QueryRow(ctx,
+		`SELECT u.public_id, a.public_id, a.name
+		 FROM users u JOIN agents a ON a.owner_user_id = u.id
+		 WHERE u.github_id = $1
+		 ORDER BY a.id LIMIT 1`, in.GitHubID).Scan(&uPub, &aPub, &aName)
+	if err == nil {
+		return identity.GitHubUpsertResult{UserPublicID: uPub, AgentPublicID: aPub, AgentName: aName}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return identity.GitHubUpsertResult{}, err
+	}
+
+	// 2. A pre-existing, unlinked email account (GitHub verified this email) → link it.
+	if in.Email != "" {
+		var uid int64
+		e2 := r.db.QueryRow(ctx,
+			`SELECT u.id, u.public_id, COALESCE(a.public_id,''), COALESCE(a.name,'')
+			 FROM users u LEFT JOIN agents a ON a.owner_user_id = u.id
+			 WHERE u.email = $1 AND u.github_id IS NULL
+			 ORDER BY a.id LIMIT 1`, in.Email).Scan(&uid, &uPub, &aPub, &aName)
+		if e2 == nil {
+			if _, err := r.db.Exec(ctx,
+				`UPDATE users SET github_id = $1 WHERE id = $2 AND github_id IS NULL`, in.GitHubID, uid); err != nil {
+				return identity.GitHubUpsertResult{}, err
+			}
+			return identity.GitHubUpsertResult{UserPublicID: uPub, AgentPublicID: aPub, AgentName: aName}, nil
+		}
+		if !errors.Is(e2, pgx.ErrNoRows) {
+			return identity.GitHubUpsertResult{}, e2
+		}
+	}
+
+	// 3. Create a fresh account: user + treasury wallet + agent + first key + agent wallet.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var userID int64
+	err = tx.QueryRow(ctx,
+		`INSERT INTO users (public_id, email, github_id) VALUES ($1, $2, $3) RETURNING id`,
+		in.UserPublicID, nullString(in.Email), in.GitHubID).Scan(&userID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return identity.GitHubUpsertResult{}, identity.ErrEmailTaken
+		}
+		return identity.GitHubUpsertResult{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO wallets (user_id, kind, balance)
+		 SELECT $1, 'user', 0 WHERE NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1)`, userID); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	l := in.Limits
+	var agentID int64
+	err = tx.QueryRow(ctx,
+		`INSERT INTO agents (public_id, owner_user_id, name, slug, description, framework,
+		     status, verification_level, coin_limit_per_match, daily_loss_limit, session_loss_limit,
+		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid, auto_join)
+		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		 RETURNING id`,
+		in.AgentPublicID, userID, in.AgentName, in.AgentSlug, nullString(""), nullString(""),
+		l.CoinLimitPerMatch, l.DailyLossLimit, l.SessionLossLimit, l.MinWalletBalance,
+		l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds, l.MaxBid, l.AutoJoin).
+		Scan(&agentID)
+	if err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
+		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO wallets (agent_id, kind, balance) VALUES ($1, 'agent', 0)`, agentID); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	return identity.GitHubUpsertResult{
+		UserPublicID: in.UserPublicID, AgentPublicID: in.AgentPublicID, AgentName: in.AgentName, Created: true,
+	}, nil
+}
+
 // CredentialsByEmail returns the auth record for a password-enabled owner. The
 // LEFT JOIN yields the owner's single agent when present (one-agent-per-user is
 // enforced by uq_agents_owner, migration 0016).

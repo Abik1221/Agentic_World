@@ -88,6 +88,11 @@ type Repo interface {
 	// Else creates a fresh user + agent + treasury wallet + first API key (created=true).
 	UpsertGoogleAccount(ctx context.Context, in GoogleUpsertInput) (GoogleUpsertResult, error)
 
+	// UpsertGitHubAccount is the GitHub analogue of UpsertGoogleAccount, keyed on the
+	// stable GitHub numeric id (github_id). Same three-step logic: existing link → log
+	// in; verified-email match on an unlinked account → link; else create fresh.
+	UpsertGitHubAccount(ctx context.Context, in GitHubUpsertInput) (GitHubUpsertResult, error)
+
 	// CredentialsByEmail returns the auth record for a password-enabled account,
 	// or ErrNotFound if the email is unknown or has no password set.
 	CredentialsByEmail(ctx context.Context, email string) (AuthRecord, error)
