@@ -52,9 +52,16 @@ var _ rating.Repo = (*RatingRepo)(nil)
 // the prior question of whether the agent routes at all.
 //
 // alias is the agents-table alias in the calling query.
+// The status guard is here for the same reason it is on the model board's `verified` CTE, and
+// it has to be on BOTH or the two definitions drift — which the paragraph above promises they
+// do not. `bound` is set from the turn proof before the upstream is called, so on its own it
+// admits a call the provider refused: 108 harness calls to openrouter.ai in the lab were 429s
+// and 401s with zero tokens and bound=true. "Routes at all" has to mean a provider answered,
+// not that we successfully sent something and were turned away.
 func publishedAgent(alias string) string {
 	return `EXISTS (SELECT 1 FROM agent_model_calls mc
-	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> '')`
+	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> ''
+	                   AND mc.status BETWEEN 200 AND 299)`
 }
 
 // publishedDeveloper is the same rule one level up: a developer is published once ANY of

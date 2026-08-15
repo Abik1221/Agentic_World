@@ -97,6 +97,15 @@ verified AS (
          NULLIF(mc.provider,'') || '/' || NULLIF(mc.model,'') AS model_key
     FROM agent_model_calls mc
    WHERE mc.bound AND COALESCE(mc.model,'') <> '' AND mc.match_id IS NOT NULL
+     -- The provider actually ANSWERED. mc.bound is set from the turn proof BEFORE the
+     -- upstream is called, so it says "this request belonged to this decision" and nothing
+     -- about whether a model replied. Without this line a rate-limited run is indistinguishable
+     -- from a played one: measured in the lab, 108 harness calls to openrouter.ai were 429s and
+     -- 401s returning zero tokens, every one of them bound=true, and the two google/gemma models
+     -- they named were attributed matches and a WIN RATE on the board having never emitted a
+     -- token. The gateway already refuses to bind a MOVE from a non-2xx call (llmgw.go); this
+     -- makes attribution agree with it instead of contradicting it.
+     AND mc.status BETWEEN 200 AND 299
      -- WHO ANSWERED, not who was asked. provider/model are read from the REQUEST, and the
      -- upstream map decides where that request actually goes; point a provider at a local
      -- stand-in and this row is a bound, well-formed call under the requested model name

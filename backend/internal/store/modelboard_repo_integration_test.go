@@ -209,3 +209,72 @@ func TestModelBoardExcludesStandInUpstreams(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyAnsweredCallsAttributeAModel pins the rule that a REFUSED upstream call must never
+// name the model a seat is ranked as.
+//
+// # The bug this caught
+//
+// `agent_model_calls.bound` is set from the turn proof BEFORE the request leaves the gateway,
+// so it certifies "this call belonged to this decision" and says nothing about whether a model
+// replied. The attribution CTE tested only `bound`, and the effect was measured rather than
+// imagined: in the lab, 108 harness calls to openrouter.ai came back 429 and 401 with zero
+// tokens, every one of them bound=true, and the two google/gemma models named on those requests
+// were attributed 25 seats and carried a WIN RATE on the harness board having never emitted a
+// single token. Adding the 2xx guard removed both models from the board outright.
+//
+// It also made attribution agree with binding, which had silently disagreed: llmgw refuses to
+// bind a MOVE from a non-2xx call, so the platform would decline to record what a model chose
+// while still ranking the model for the match.
+//
+// # Why this is asserted as an invariant over real rows
+//
+// The query is five joins and two window functions; a predicate dropped from it returns MORE
+// rows rather than an error, which reads as a better-attributed board rather than a broken one.
+// Any database with a rate-limited run in it exercises this — and a free tier guarantees there
+// will be one.
+func TestOnlyAnsweredCallsAttributeAModel(t *testing.T) {
+	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	repo := NewModelBoardRepo(pool)
+	start := time.Now().AddDate(-5, 0, 0)
+	end := time.Now().AddDate(1, 0, 0)
+	seats, err := repo.Seats(ctx, "", start, end, realHosts())
+	if err != nil {
+		t.Fatalf("Seats: %v", err)
+	}
+
+	// Every attributed seat must have at least one call the provider actually answered.
+	// Asked as a question of the database rather than of the returned rows, because the
+	// point is the relationship between the two tables, not the shape of the struct.
+	for _, s := range seats {
+		if s.Model == "" {
+			continue // correctly unattributed; the builder counts these as no_verified_model
+		}
+		var answered int
+		err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM agent_model_calls mc
+			  JOIN agents a ON a.id = mc.agent_id
+			 WHERE a.public_id = $1 AND mc.match_id = $2
+			   AND mc.bound AND COALESCE(mc.model,'') <> ''
+			   AND mc.status BETWEEN 200 AND 299`,
+			s.AgentID, s.MatchID).Scan(&answered)
+		if err != nil {
+			t.Fatalf("count answered calls for %s/%s: %v", s.AgentID, s.MatchID, err)
+		}
+		if answered == 0 {
+			t.Errorf("seat %s in %s is attributed to %q, but no call to it was ever answered "+
+				"(every bound call was a non-2xx). A refused request must not name a model.",
+				s.AgentID, s.MatchID, s.Model)
+		}
+	}
+}
