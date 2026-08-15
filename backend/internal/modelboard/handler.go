@@ -19,11 +19,18 @@ import (
 type Handler struct {
 	svc     *Service
 	history HistoryReader
+	// boardName scopes history reads to this instance's own series. Taken from the service so a
+	// handler and the service behind it can never disagree about which board they serve —
+	// which would surface as a chart quietly plotting the other board's numbers.
+	boardName string
 }
+
+// SetBoard names the series this handler reads. Mirrors Service.SetBoard.
+func (h *Handler) SetBoard(name string) { h.boardName = name }
 
 // HistoryReader serves one model's per-day series. Satisfied by *store.ModelBoardRepo.
 type HistoryReader interface {
-	BoardHistory(ctx context.Context, model string, since time.Time) ([]HistoryPoint, error)
+	BoardHistory(ctx context.Context, board, model string, since time.Time) ([]HistoryPoint, error)
 }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
@@ -63,7 +70,7 @@ func (h *Handler) seriesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	since := time.Now().AddDate(0, 0, -days)
-	points, err := h.history.BoardHistory(r.Context(), model, since)
+	points, err := h.history.BoardHistory(r.Context(), h.boardName, model, since)
 	if err != nil {
 		httpx.Error(w, err)
 		return

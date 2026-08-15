@@ -42,7 +42,7 @@ func TestBoardHistoryRoundTripIntegration(t *testing.T) {
 		Rank: 2, RankStability: 0.71, Comparisons: 40, Wins: 25, Losses: 12, Draws: 3,
 		Harnesses: 2, Separability: 0.5,
 	}
-	if err := repo.RecordBoardHistory(ctx, day, 90, []modelboard.Rating{first}); err != nil {
+	if err := repo.RecordBoardHistory(ctx, "developer", day, 90, []modelboard.Rating{first}); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 
@@ -51,11 +51,11 @@ func TestBoardHistoryRoundTripIntegration(t *testing.T) {
 	// which one the day "was".
 	later := first
 	later.Elo, later.Comparisons, later.Rank = 1533, 61, 1
-	if err := repo.RecordBoardHistory(ctx, day.Add(9*time.Hour), 90, []modelboard.Rating{later}); err != nil {
+	if err := repo.RecordBoardHistory(ctx, "developer", day.Add(9*time.Hour), 90, []modelboard.Rating{later}); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 
-	pts, err := repo.BoardHistory(ctx, model, day.AddDate(0, 0, -1))
+	pts, err := repo.BoardHistory(ctx, "developer", model, day.AddDate(0, 0, -1))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -81,10 +81,10 @@ func TestBoardHistoryRoundTripIntegration(t *testing.T) {
 	// A second day must be its own point, ordered oldest-first for the chart.
 	next := first
 	next.Elo = 1499
-	if err := repo.RecordBoardHistory(ctx, day.AddDate(0, 0, 1), 90, []modelboard.Rating{next}); err != nil {
+	if err := repo.RecordBoardHistory(ctx, "developer", day.AddDate(0, 0, 1), 90, []modelboard.Rating{next}); err != nil {
 		t.Fatalf("next day: %v", err)
 	}
-	pts, _ = repo.BoardHistory(ctx, model, day.AddDate(0, 0, -1))
+	pts, _ = repo.BoardHistory(ctx, "developer", model, day.AddDate(0, 0, -1))
 	if len(pts) != 2 {
 		t.Fatalf("got %d points across two days, want 2", len(pts))
 	}
@@ -109,7 +109,76 @@ func TestNoRatingsWritesNothingRatherThanZeroes(t *testing.T) {
 	// Registered FIRST so LIFO ordering runs it LAST, after the data cleanups.
 	t.Cleanup(pool.Close)
 	repo := NewModelBoardRepo(pool)
-	if err := repo.RecordBoardHistory(ctx, time.Now(), 90, nil); err != nil {
+	if err := repo.RecordBoardHistory(ctx, "developer", time.Now(), 90, nil); err != nil {
 		t.Fatalf("empty write errored: %v", err)
+	}
+}
+
+// TestBoardHistoryKeepsBoardsIndependent pins the control that lets two boards share one
+// table.
+//
+// The platform harness benchmark runs the SAME fit as the developer board — same Build,
+// same estimator, same intervals — over a different set of matches, and writes the same
+// shape of row. Under the original PRIMARY KEY (day, model) the second writer's upsert
+// silently overwrote the first on any day both measured the same model, with refresh order
+// deciding whose numbers survived. Two independent measurements became one, with nothing to
+// notice afterwards.
+//
+// The control is the `board` discriminator in the key (0093). Drop it and this test fails
+// on the developer series carrying the harness elo.
+func TestBoardHistoryKeepsBoardsIndependent(t *testing.T) {
+	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	repo := NewModelBoardRepo(pool)
+
+	const model = "test/independence-probe"
+	day := time.Now().UTC().Truncate(24 * time.Hour)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_board_history WHERE model=$1`, model)
+	})
+
+	// Same model, same day, two boards, deliberately different numbers.
+	if err := repo.RecordBoardHistory(ctx, "developer", day, 90,
+		[]modelboard.Rating{{Model: model, Elo: 1500, EloLow: 1450, EloHigh: 1550, Rank: 1}}); err != nil {
+		t.Fatalf("record developer: %v", err)
+	}
+	if err := repo.RecordBoardHistory(ctx, "harness", day, 90,
+		[]modelboard.Rating{{Model: model, Elo: 1200, EloLow: 1150, EloHigh: 1250, Rank: 4}}); err != nil {
+		t.Fatalf("record harness: %v", err)
+	}
+
+	since := day.AddDate(0, 0, -1)
+	dev, err := repo.BoardHistory(ctx, "developer", model, since)
+	if err != nil {
+		t.Fatalf("read developer: %v", err)
+	}
+	harn, err := repo.BoardHistory(ctx, "harness", model, since)
+	if err != nil {
+		t.Fatalf("read harness: %v", err)
+	}
+	if len(dev) != 1 || len(harn) != 1 {
+		t.Fatalf("each board should have exactly one point: developer=%d harness=%d", len(dev), len(harn))
+	}
+	// The assertion that matters: the second write did not become the first.
+	if dev[0].Elo != 1500 {
+		t.Errorf("the harness board overwrote the developer series: elo=%v want 1500", dev[0].Elo)
+	}
+	if harn[0].Elo != 1200 {
+		t.Errorf("harness series wrong: elo=%v want 1200", harn[0].Elo)
+	}
+
+	// An unnamed board must be refused rather than pooled into one bucket, which would
+	// reintroduce the collision through the back door.
+	if err := repo.RecordBoardHistory(ctx, "", day, 90,
+		[]modelboard.Rating{{Model: model, Elo: 1}}); err == nil {
+		t.Error("RecordBoardHistory must refuse an empty board name")
 	}
 }

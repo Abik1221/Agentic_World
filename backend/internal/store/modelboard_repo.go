@@ -42,7 +42,7 @@ WITH seat AS (
          a.public_id AS agent_public_id,
          u.public_id AS developer_public_id
     FROM agent_match_benchmark b
-    JOIN agents a  ON a.id = b.agent_id AND a.kind <> 'house'
+    JOIN agents a  ON a.id = b.agent_id AND a.kind = 'external'
     JOIN users  u  ON u.id = a.owner_user_id
     JOIN matches m ON m.public_id = b.match_id
                   AND m.finished_at IS NOT NULL

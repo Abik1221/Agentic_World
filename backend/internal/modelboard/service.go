@@ -35,6 +35,11 @@ type Service struct {
 
 	history HistoryWriter
 
+	// board names which series this instance owns. Two instances run the SAME algorithm over
+	// different matches — the developer board and the platform harness — and the name is what
+	// keeps their histories from overwriting each other.
+	board string
+
 	// publishableHosts gates model ATTRIBUTION — see llmgw.PublishableUpstreamHosts. Empty
 	// means nothing is attributable, which is the correct failure: a board that cannot
 	// establish where a call went should show unattributed seats rather than guess.
@@ -46,6 +51,10 @@ type Service struct {
 
 // SetHistoryWriter attaches per-day history persistence. Optional.
 func (s *Service) SetHistoryWriter(h HistoryWriter) { s.history = h }
+
+// SetBoard names the series this instance writes. Required before history is recorded;
+// see RecordBoardHistory, which refuses an empty name rather than defaulting to one.
+func (s *Service) SetBoard(name string) { s.board = name }
 
 // SetPublishableHosts declares which upstreams may be attributed to a model.
 //
@@ -71,7 +80,7 @@ type SeatSource interface {
 // Separate from SeatSource because reading and writing fail independently — a history write that
 // errors must not cost the reader the board that was just computed.
 type HistoryWriter interface {
-	RecordBoardHistory(ctx context.Context, day time.Time, windowDays int, ratings []Rating) error
+	RecordBoardHistory(ctx context.Context, board string, day time.Time, windowDays int, ratings []Rating) error
 }
 
 // HistoryPoint is one day of one model's series.
@@ -160,7 +169,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	// that succeeded. History is also the one thing that cannot be backfilled, so the failure is
 	// logged loudly rather than swallowed.
 	if s.history != nil && len(board.Ratings) > 0 {
-		if err := s.history.RecordBoardHistory(ctx, start, snap.WindowDays, board.Ratings); err != nil {
+		if err := s.history.RecordBoardHistory(ctx, s.board, start, snap.WindowDays, board.Ratings); err != nil {
 			s.log.Error("model board history not recorded — this day of the series cannot be "+
 				"recovered later", "error", err)
 		}

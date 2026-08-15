@@ -80,7 +80,7 @@ func publishedAgent(alias string) string {
 // alias is the users-table alias in the calling query.
 func publishedDeveloper(alias string) string {
 	return `EXISTS (SELECT 1 FROM agents a_pub
-	                 WHERE a_pub.owner_user_id = ` + alias + `.id AND a_pub.kind <> 'house'
+	                 WHERE a_pub.owner_user_id = ` + alias + `.id AND a_pub.kind = 'external'
 	                   AND ` + publishedAgent("a_pub") + `)`
 }
 
@@ -259,7 +259,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 		          r.coins_earned, r.current_streak, r.agent_id, r.game, r.season,
 		          RANK() OVER (ORDER BY r.elo DESC, r.agent_id ASC) AS rnk
 		   FROM ratings r JOIN agents a ON a.id = r.agent_id
-		   WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
+		   WHERE r.game = $1 AND r.season = $2 AND a.kind = 'external'
 		     AND `+publishedAgent("a")+`
 		 ) cur
 		 LEFT JOIN LATERAL (
@@ -302,7 +302,7 @@ func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int,
 		        RANK() OVER (PARTITION BY r.game, r.season ORDER BY r.elo DESC, r.agent_id ASC),
 		        $1::date
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE a.kind <> 'house' AND `+publishedAgent("a")+`
+		 WHERE a.kind = 'external' AND `+publishedAgent("a")+`
 		 ON CONFLICT (game, season, agent_id, taken_on) DO NOTHING`, takenOn)
 	if err != nil {
 		return 0, err
@@ -384,14 +384,14 @@ fact AS (
          CASE WHEN m.started_at IS NOT NULL AND m.finished_at > m.started_at
               THEN EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) END AS match_seconds
   FROM agent_match_benchmark b
-  JOIN agents  a ON a.id = b.agent_id AND a.kind <> 'house'
+  JOIN agents  a ON a.id = b.agent_id AND a.kind = 'external'
   -- Only FINISHED matches inside the season window count. The window is applied here,
   -- on the fact's own match, so an agent's totals cannot leak across a season boundary.
   JOIN matches m ON m.public_id = b.match_id
                 AND m.finished_at IS NOT NULL
                 AND m.finished_at >= $2 AND m.finished_at < $3
                 -- Exclude tables that house bots had to fill to reach their roster
-                -- (matches.rated = false, migration 0076). The a.kind <> 'house' join
+                -- (matches.rated = false, migration 0076). The a.kind = 'external' join
                 -- above only drops the BOTS' own rows; the human seats at such a table
                 -- are real agents making real LLM calls, so without this the board would
                 -- credit a model for beating engine bots.
@@ -632,11 +632,11 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		   -- here would tell a developer they are 40th of 75 while the ladder they are
 		   -- comparing against has 20 rows.
 		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
-		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind <> 'house'
+		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind = 'external'
 		        AND `+publishedAgent("a2")+`
 		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
 		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
-		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house'
+		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind = 'external'
 		        AND `+publishedAgent("a3")+`) AS total,
 		   -- Whether this agent is itself on the board. An unverified agent still has a real
 		   -- rating and real coins; it is simply not published, and saying so plainly is the

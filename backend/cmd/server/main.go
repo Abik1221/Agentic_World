@@ -661,8 +661,13 @@ func run() error {
 	// well-formed `anthropic / claude-opus-4` calls that never left the machine. Without this
 	// they are indistinguishable from real ones and would be ranked as a model.
 	modelBoardSvc.SetPublishableHosts(publishableHosts())
+	// Names this instance's history series. The platform harness benchmark runs the same fit
+	// over its own matches and writes the same shape of row; the discriminator is what keeps
+	// the two series independent instead of one silently overwriting the other.
+	modelBoardSvc.SetBoard("developer")
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
+	modelBoardHandler.SetBoard("developer")
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
 	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement

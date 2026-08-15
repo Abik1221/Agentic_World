@@ -25,6 +25,22 @@ func NewPIndexRepo(db *pgxpool.Pool) *PIndexRepo { return &PIndexRepo{db: db} }
 
 var _ pindex.Repo = (*PIndexRepo)(nil)
 
+// Public sinks filter agents by an ALLOWLIST (kind = 'external'), never by excluding a
+// kind they happen to know about.
+//
+// They used to read `kind <> 'house'`, which means "everything except the one thing I
+// thought of". That is safe only while exactly two kinds exist. The moment a third is added
+// — the platform's own benchmark harness is the immediate case — every one of these queries
+// starts including it, silently: no error, nothing odd in review, just the platform's own
+// agents appearing on public developer boards as though they were developers.
+//
+// An allowlist inverts the default. A new kind is invisible to the public surfaces until
+// somebody deliberately lists it, which is the same fail-closed shape as mustCertify
+// returning "must certify" when the roster is nil.
+//
+// Admin repos deliberately do NOT do this: a console that cannot see the agents it operates
+// is broken. The split is public-facing vs operator-facing, not a blanket rule.
+
 func (r *PIndexRepo) ActiveConfig(ctx context.Context) (pindex.Config, error) {
 	var version int
 	var params []byte
@@ -53,7 +69,7 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 	rows, err := r.db.Query(ctx,
 		`SELECT DISTINCT ON (r.game) r.game, r.elo, r.rd, r.sigma, r.algo, (r.wins + r.losses + r.ties)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE a.owner_user_id = $1 AND r.season = $2 AND a.kind <> 'house'
+		 WHERE a.owner_user_id = $1 AND r.season = $2 AND a.kind = 'external'
 		 ORDER BY r.game, r.elo DESC`, uid, season)
 	if err != nil {
 		return in, err
@@ -79,7 +95,7 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 	if err := r.db.QueryRow(ctx,
 		`SELECT COUNT(DISTINCT mrc.match_id), COUNT(DISTINCT mrc.game), MAX(mrc.created_at)
 		 FROM match_rating_changes mrc JOIN agents a ON a.id = mrc.agent_id
-		 WHERE a.owner_user_id = $1 AND mrc.season = $2 AND a.kind <> 'house'
+		 WHERE a.owner_user_id = $1 AND mrc.season = $2 AND a.kind = 'external'
 		   AND NOT EXISTS (SELECT 1 FROM fraud_flags f WHERE f.match_id = mrc.match_id AND f.active)`,
 		uid, season).Scan(&in.TotalMatches, &in.DistinctArenas, &last); err != nil {
 		return in, err
@@ -94,7 +110,7 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 		`SELECT COALESCE(AVG(opp.rating_before), 0),
 		        COALESCE(AVG(opp.rating_before) FILTER (WHERE self.rank_in_match < opp.rank_in_match), 0)
 		 FROM match_rating_changes self
-		 JOIN agents sa ON sa.id = self.agent_id AND sa.owner_user_id = $1 AND sa.kind <> 'house'
+		 JOIN agents sa ON sa.id = self.agent_id AND sa.owner_user_id = $1 AND sa.kind = 'external'
 		 JOIN match_rating_changes opp ON opp.match_id = self.match_id AND opp.agent_id <> self.agent_id
 		 JOIN agents oa ON oa.id = opp.agent_id AND oa.owner_user_id <> $1
 		 WHERE self.season = $2
@@ -114,7 +130,7 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 		 FROM agent_match_benchmark amb
 		 JOIN matches m ON m.public_id = amb.match_id
 		 JOIN match_rating_changes mrc ON mrc.match_id = m.id AND mrc.agent_id = amb.agent_id
-		 JOIN agents a ON a.id = amb.agent_id AND a.owner_user_id = $1 AND a.kind <> 'house'
+		 JOIN agents a ON a.id = amb.agent_id AND a.owner_user_id = $1 AND a.kind = 'external'
 		 WHERE mrc.season = $2
 		   AND NOT EXISTS (SELECT 1 FROM fraud_flags f WHERE f.match_id = mrc.match_id AND f.active)`,
 		uid, season).Scan(&dec, &legal, &fb, &latSum); err != nil {
@@ -148,7 +164,7 @@ func (r *PIndexRepo) Inputs(ctx context.Context, userPublicID string, season int
 		   FROM agent_match_decisions d
 		   JOIN matches m ON m.public_id = d.match_id
 		   JOIN match_rating_changes mrc ON mrc.match_id = m.id AND mrc.agent_id = d.agent_id
-		   JOIN agents a ON a.id = d.agent_id AND a.owner_user_id = $1 AND a.kind <> 'house'
+		   JOIN agents a ON a.id = d.agent_id AND a.owner_user_id = $1 AND a.kind = 'external'
 		  WHERE mrc.season = $2
 		    AND d.skill_regret IS NOT NULL
 		    AND d.skill_scorer_version = $4
