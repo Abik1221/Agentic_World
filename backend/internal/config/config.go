@@ -87,7 +87,12 @@ type Config struct {
 	// backend verifies the GIS ID token's signature (Google JWKS) + aud against it.
 	// Empty => Google login disabled (POST /v1/auth/google returns 503). No secret.
 	GoogleClientID string
-	HCaptchaSecret string // optional; empty => dev pass-through captcha
+	// GitHub OAuth "web application" login. Both halves are needed: the browser sends
+	// back an authorization code, and the backend exchanges it with the client secret.
+	// Empty => GitHub login disabled (POST /v1/auth/github returns 503).
+	GitHubClientID     string
+	GitHubClientSecret string
+	HCaptchaSecret     string // optional; empty => dev pass-through captcha
 	XBearerToken   string // optional; empty => dev claim verifier (auto-verify)
 
 	// Solana USDC deposits (Beta wallet pipeline P2). Deposits are enabled only
@@ -535,6 +540,8 @@ func Load() (*Config, error) {
 		PrivyAppID:           l.str("PRIVY_APP_ID", ""),
 		PrivyVerificationKey: l.str("PRIVY_VERIFICATION_KEY", ""),
 		GoogleClientID:       l.str("GOOGLE_CLIENT_ID", ""),
+		GitHubClientID:       l.str("GITHUB_CLIENT_ID", ""),
+		GitHubClientSecret:   l.str("GITHUB_CLIENT_SECRET", ""),
 
 		SolanaCluster: strings.ToLower(strings.TrimSpace(l.str("SOLANA_CLUSTER", ""))),
 		// The next three carry NO literal default: they are properties of the network, so

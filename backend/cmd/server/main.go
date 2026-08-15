@@ -313,6 +313,7 @@ func run() error {
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
 	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
+	idHandler.SetGitHub(auth.NewGitHubVerifier(cfg.GitHubClientID, cfg.GitHubClientSecret)) // POST /v1/auth/github (disabled unless GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set)
 	idHandler.SetKeysRateLimit(keysRL)
 	// Per-ACCOUNT credential throttle, alongside the per-IP loginRL above. Per-IP is
 	// blind to a password list spread one-guess-per-host across a botnet, which never

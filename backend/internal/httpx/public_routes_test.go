@@ -95,6 +95,7 @@ var publicRoutes = []string{
 	"Get /v1/stats/live",
 	"Get /v1/tournaments",
 	"Get /v1/tournaments/{id}",
+	"Post /v1/auth/github",
 	"Post /v1/auth/google",
 	"Post /v1/auth/login",
 	"Post /v1/auth/logout",

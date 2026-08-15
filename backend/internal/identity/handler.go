@@ -24,6 +24,7 @@ type Handler struct {
 	authn        *auth.Authenticator
 	privy        *auth.PrivyVerifier  // nil ⇒ Privy login disabled (503)
 	google       *auth.GoogleVerifier // nil/unconfigured ⇒ Google login disabled (503)
+	github       *auth.GitHubVerifier // nil/unconfigured ⇒ GitHub login disabled (503)
 	registerRL   func(http.Handler) http.Handler
 	loginRL      func(http.Handler) http.Handler
 	keysRL       func(http.Handler) http.Handler
@@ -118,6 +119,7 @@ func (h *Handler) Register(r chi.Router) {
 		// owner, return a dashboard session. Rate-limited alongside login.
 		r.Post("/v1/auth/privy", h.privyLogin)
 		r.Post("/v1/auth/google", h.googleLogin)
+		r.Post("/v1/auth/github", h.githubLogin)
 	})
 	// Magic-link verify consumes a single-use token (public; the token is the
 	// credential), so it is not IP-rate-limited.
@@ -304,6 +306,59 @@ func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 		email = ""
 	}
 	res, err := h.svc.SignUpOrLoginGoogle(r.Context(), claims.Sub, email, claims.Name)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	out := map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
+		"agent_id":        res.AgentID,
+		"agent_name":      res.AgentName,
+		"created":         res.Created,
+	}
+	if res.APIKey != "" {
+		out["api_key"] = res.APIKey // new account's first key, shown once
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// SetGitHub wires the GitHub OAuth verifier (enables POST /v1/auth/github).
+func (h *Handler) SetGitHub(v *auth.GitHubVerifier) { h.github = v }
+
+// githubLogin completes the GitHub OAuth code exchange (the `code` the browser came
+// back with), find-or-creates the account, and returns a dashboard session — the same
+// response shape as googleLogin, so the frontend session handling is identical.
+func (h *Handler) githubLogin(w http.ResponseWriter, r *http.Request) {
+	if h.github == nil || !h.github.Enabled() {
+		httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "github_unavailable",
+			"GitHub login is not configured here. Use email/password (POST /v1/auth/login)."))
+		return
+	}
+	var in struct {
+		Code        string `json:"code"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.Code == "" {
+		httpx.Error(w, errInvalid("code is required"))
+		return
+	}
+	claims, err := h.github.Exchange(r.Context(), in.Code, in.RedirectURI)
+	if err != nil {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "invalid_github_code", "GitHub sign-in verification failed."))
+		return
+	}
+	// Same trust boundary as Google: only a VERIFIED email may link this GitHub login
+	// onto an existing local account. The stable numeric id keys the account either way.
+	email := claims.Email
+	if !claims.EmailVerified {
+		email = ""
+	}
+	res, err := h.svc.SignUpOrLoginGitHub(r.Context(), claims.ID, claims.Login, email, claims.Name)
 	if err != nil {
 		httpx.Error(w, err)
 		return
