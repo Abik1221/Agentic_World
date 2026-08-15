@@ -62,7 +62,7 @@ jobs:
       AUTH_REGISTER_LIMIT: "10000"
       AUTH_LOGIN_LIMIT: "10000"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "stable"
