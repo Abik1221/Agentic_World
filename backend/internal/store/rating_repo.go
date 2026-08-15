@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/events"
@@ -416,6 +417,40 @@ fact AS (
 // Shape: one row per (provider, model) TOTAL plus one row per (provider, model, game),
 // produced in a single pass with GROUPING SETS rather than by two round trips over the
 // same facts. is_total=1 marks the aggregate row.
+// modelFactCTEHarness is modelFactCTE with ONE change: which seats are eligible.
+//
+// Derived by substitution rather than copied, deliberately. Every other line — the token
+// and latency aggregation, the cost join, the verification coverage, the attribution
+// tiering — is the SAME source, so the harness stats mean exactly what the developer stats
+// mean and cannot drift from them in a later edit. A hand-copied second query would be
+// identical for about one release.
+//
+// Two conditions differ, and both have to:
+//
+//	kind: 'harness' instead of 'external'. Obvious.
+//	rated: dropped. The developer query uses m.rated to exclude tables house bots filled,
+//	  because crediting a model for beating an engine bot is fiction. Harness matches are
+//	  UNRATED BY DESIGN — that is what keeps them out of user ratings — so keeping the
+//	  filter would return nothing at all. The equivalent guard is enforced on the harness
+//	  board's own seat query: every seat at the table must itself be a harness agent.
+var modelFactCTEHarness = func() string {
+	s := strings.Replace(modelFactCTE,
+		"JOIN agents  a ON a.id = b.agent_id AND a.kind = 'external'",
+		"JOIN agents  a ON a.id = b.agent_id AND a.kind = 'harness'", 1)
+	if s == modelFactCTE {
+		panic("rating: harness fact CTE substitution missed the kind join — the source moved")
+	}
+	out := strings.Replace(s, "\n                AND m.rated\n", "\n", 1)
+	if out == s {
+		panic("rating: harness fact CTE substitution missed the rated filter — the source moved")
+	}
+	return out
+}()
+
+// modelBenchmarkHarnessSQL serves the platform harness board's per-model operational stats:
+// decisions, thinking time, reasoning tokens and cost.
+var modelBenchmarkHarnessSQL = modelFactCTEHarness + strings.TrimPrefix(modelBenchmarkSQL, modelFactCTE)
+
 const modelBenchmarkSQL = modelFactCTE + `,
 agg AS (
   SELECT provider, model, game, GROUPING(game) AS is_total,
@@ -492,7 +527,20 @@ ORDER BY a.provider, a.model, a.is_total DESC, a.game`
 // ModelBenchmark aggregates a season's benchmark facts per model, for one arena or
 // (game == "") every arena with a per-arena breakdown attached. See modelBenchmarkSQL.
 func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
-	rows, err := r.db.Query(ctx, modelBenchmarkSQL, game, start, end, season)
+	return r.modelStats(ctx, modelBenchmarkSQL, season, game, start, end)
+}
+
+// HarnessModelBenchmark is the same aggregation over the PLATFORM's own benchmark matches.
+//
+// Same columns, same arithmetic, same meaning — a latency or a cost here is directly
+// comparable with one on the developer board, which is the entire reason the two share a
+// query body.
+func (r *RatingRepo) HarnessModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
+	return r.modelStats(ctx, modelBenchmarkHarnessSQL, season, game, start, end)
+}
+
+func (r *RatingRepo) modelStats(ctx context.Context, sql string, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
+	rows, err := r.db.Query(ctx, sql, game, start, end, season)
 	if err != nil {
 		return nil, err
 	}

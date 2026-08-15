@@ -53,6 +53,14 @@ func (f *rollFakeRepo) RollSeason(_ context.Context, season int, champion string
 	f.champSeen[season] = champion
 	return true, nil
 }
+
+// HarnessModelBenchmark returns nothing: these tests exercise the DEVELOPER board, and a
+// fake that returned the same rows for both would make the two indistinguishable in exactly
+// the tests meant to tell them apart.
+func (f *rollFakeRepo) HarnessModelBenchmark(context.Context, int, string, time.Time, time.Time) ([]ModelStat, error) {
+	return nil, nil
+}
+
 func (f *rollFakeRepo) ModelBenchmark(_ context.Context, _ int, game string, start, end time.Time) ([]ModelStat, error) {
 	f.benchGame, f.benchStart, f.benchEnd = game, start, end
 	return f.models, nil

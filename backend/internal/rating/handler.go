@@ -32,6 +32,11 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/seasons/current", h.currentSeason)
 	r.Get("/v1/seasons/champion", h.seasonChampion)
 	r.Get("/v1/benchmark/models", h.modelBenchmark)
+	// The PLATFORM harness board's operational stats: thinking time, reasoning tokens and
+	// cost per decision, over matches Pyyol ran itself. A literal path rather than a
+	// parameter on the line above, because the public route surface is pinned by a scan for
+	// literal route strings and a computed one would be invisible to it.
+	r.Get("/v1/benchmark/harness/models", h.harnessBenchmark)
 	r.Get("/v1/benchmark/model", h.modelDetail)
 	r.Get("/v1/benchmark/developers", h.developerBoard)
 	r.Get("/v1/rankings/standing", h.standing)
@@ -91,6 +96,24 @@ func (h *Handler) modelBenchmark(w http.ResponseWriter, r *http.Request) {
 	}
 	minGames, _ := strconv.Atoi(r.URL.Query().Get("min_games"))
 	page, err := h.svc.ModelBenchmark(r.Context(), game, minGames)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=30")
+	httpx.JSON(w, http.StatusOK, page)
+}
+
+// harnessBenchmark mirrors modelBenchmark over the platform's own benchmark matches.
+func (h *Handler) harnessBenchmark(w http.ResponseWriter, r *http.Request) {
+	game := r.URL.Query().Get("game")
+	if !IsArena(game) {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "unknown_arena",
+			"game must be one of: all, "+strings.Join(Arenas, ", ")))
+		return
+	}
+	minGames, _ := strconv.Atoi(r.URL.Query().Get("min_games"))
+	page, err := h.svc.HarnessBenchmark(r.Context(), game, minGames)
 	if err != nil {
 		httpx.Error(w, err)
 		return

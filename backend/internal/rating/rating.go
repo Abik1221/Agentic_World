@@ -351,7 +351,20 @@ type BenchmarkPage struct {
 // enough games to RANK on, which is what ModelStat.Preliminary and the win-rate
 // confidence interval report: dropping thin rows would make the board look complete
 // when it is not, so they are shown and marked instead.
+// HarnessBenchmark is ModelBenchmark over the platform's own benchmark matches.
+//
+// Delegates to the same body so every derived figure — win rate, tokens per match, cost per
+// win, the attribution tiering — is computed identically. A second copy of that derivation
+// would be the same for one release and subtly different for every release after.
+func (s *Service) HarnessBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	return s.benchmarkPage(ctx, game, minGames, true)
+}
+
 func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	return s.benchmarkPage(ctx, game, minGames, false)
+}
+
+func (s *Service) benchmarkPage(ctx context.Context, game string, minGames int, harness bool) (BenchmarkPage, error) {
 	if game == ArenaAll {
 		game = "" // the repo reads "" as "do not filter by arena"
 	}
@@ -360,7 +373,11 @@ func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int)
 	}
 	season := s.CurrentSeason()
 	start, end := s.SeasonBounds(season)
-	models, err := s.repo.ModelBenchmark(ctx, season, game, start, end)
+	read := s.repo.ModelBenchmark
+	if harness {
+		read = s.repo.HarnessModelBenchmark
+	}
+	models, err := read(ctx, season, game, start, end)
 	if err != nil {
 		return BenchmarkPage{}, err
 	}

@@ -38,6 +38,11 @@ type Repo interface {
 	// because the facts it aggregates live on matches, which carry a timestamp and not
 	// a season. Rows are returned unfiltered; minimum-sample policy is the service's.
 	ModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]ModelStat, error)
+	// HarnessModelBenchmark is the same aggregation over the PLATFORM's own benchmark
+	// matches. Same columns, same arithmetic, so a latency or a cost from one is directly
+	// comparable with the other — which is why the two share a query body rather than
+	// being written twice.
+	HarnessModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]ModelStat, error)
 
 	// AgentStanding returns one agent's place in an arena for the season (rank,
 	// totals, declared model). found=false when the agent has no rating row.
