@@ -22,6 +22,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/readycheck"
 	"github.com/agent-arena/arena/internal/turnproof"
 )
 
@@ -511,8 +512,28 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 		}
 	}
 
-	deadline := s.clock.Now().Add(s.phaseWindow(state.Phase))
-	if err := s.repo.Start(ctx, m.PublicID, roles, state, deadline, events); err != nil {
+	// The start countdown, and the reason the first phase window opens at startsAt rather
+	// than now.
+	//
+	// A table filled its last seat and is about to play. Until now it went live in the same
+	// instant, so a developer watching a terminal — or the console — saw a lobby become a
+	// running match with no moment in between, and an agent that was still finishing its
+	// startup lost the front of its first phase to a game already in progress.
+	//
+	// startsAt is ABSOLUTE and persisted, never a duration, for the reason internal/readycheck
+	// gives: two surfaces each counting down from ten drift apart within seconds, and visibly
+	// disagreeing about when a staked match begins is worse than showing nothing. Every
+	// surface counts to this one value.
+	//
+	// Play is NOT gated on it — the match is active immediately and the driver runs, exactly
+	// as goofspiel's startAfterReady does. What the countdown buys is that the first phase's
+	// window opens when play does, so the countdown does not eat the first phase's thinking
+	// time. Gating the engine on a wall-clock instant would be a second scheduler to keep
+	// correct, and this needs none.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy("mafia").Countdown)
+	deadline := startsAt.Add(s.phaseWindow(state.Phase))
+	if err := s.repo.Start(ctx, m.PublicID, roles, state, startsAt, deadline, events); err != nil {
 		// Compensate the stake-then-start dual-write: the stake committed (ledger tx)
 		// but flipping the match to active failed, so the coins would be stranded in a
 		// full 'waiting' table with no retry. Refund immediately (idempotent disburse
@@ -1333,6 +1354,11 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 		Economy: ComputeEconomy(len(HumanPlayers(m.Players)), m.EntryFee, m.RakePct),
 		// Public identities only — roles stay in the redacted per-seat view.
 		Roster: RosterOf(m.Players, m.State.Alive),
+		// Shipped on EVERY view, in every status, so a client can measure its clock offset
+		// once and render any absolute instant correctly. Only useful in company: StartsAt
+		// alone is unreadable on a device whose clock is minutes out, which is most of them.
+		ServerNow: s.clock.Now().UTC(),
+		StartsAt:  m.StartsAt,
 	}
 	if m.Status == StatusActive {
 		// Who the table is waiting on, straight from the rules. PendingActors was

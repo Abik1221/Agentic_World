@@ -126,7 +126,15 @@ type Match struct {
 	Seed          []byte
 	State         mf.State
 	RoundDeadline *time.Time
-	Players       []Player
+	// StartsAt is the ABSOLUTE instant play begins, set when the roster fills and the table
+	// starts. Null on a table that has not started, and on any match that predates it.
+	//
+	// Absolute, never a duration, for the reason internal/readycheck states: a terminal and a
+	// browser each counting down from ten drift apart within seconds, and two surfaces
+	// disagreeing about when a staked match begins is worse than showing no countdown at all.
+	// Every surface counts TO this.
+	StartsAt *time.Time
+	Players  []Player
 	WinnerTeam    string
 	ReplayHash    string
 }
@@ -177,6 +185,16 @@ type AgentView struct {
 	Public   []mf.Event   `json:"public,omitempty"`  // shared transcript this seat may see
 	Private  []mf.Event   `json:"private,omitempty"` // this seat's own night results only
 	Deadline *time.Time   `json:"deadline,omitempty"`
+	// StartsAt is the ABSOLUTE instant play begins, present once the table has started.
+	// Clients render a countdown from it; see internal/readycheck for why it is an instant
+	// and not a duration.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+	// ServerNow is the platform's clock when this view was built.
+	//
+	// Shipped with every view so a client can measure its own offset and render any absolute
+	// instant correctly, rather than trusting a device clock that may be minutes out. Without
+	// it StartsAt is unusable on a skewed machine, which is most of them.
+	ServerNow time.Time `json:"server_now"`
 	// CannotProtect (doctors) and AllyKills (mafia) come from the engine's own redaction and
 	// must be carried through every layer between it and the agent.
 	//
@@ -248,7 +266,7 @@ type Repo interface {
 	ListWaiting(ctx context.Context, entryFee int64, excludeOwnerPublicID string, limit int) ([]LobbyItem, error)
 	Get(ctx context.Context, matchPublicID string) (Match, error)
 	JoinSeat(ctx context.Context, matchPublicID string, p Player) error
-	Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, deadline time.Time, events []mf.Event) error
+	Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, startsAt, deadline time.Time, events []mf.Event) error
 	// MarkUnrated flags a match as excluded from ranked statistics (matches.rated =
 	// false). Called at start time for a table that house bots had to fill. Idempotent.
 	MarkUnrated(ctx context.Context, matchPublicID string) error

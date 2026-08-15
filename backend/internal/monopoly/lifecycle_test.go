@@ -46,7 +46,7 @@ func (f *fakeRepo) ListWaiting(context.Context, int64, string, int) ([]LobbyItem
 	return nil, nil
 }
 func (f *fakeRepo) JoinSeat(context.Context, string, Player) error { return nil }
-func (f *fakeRepo) Start(context.Context, string, mono.State, time.Time, []mono.Event) error {
+func (f *fakeRepo) Start(context.Context, string, mono.State, time.Time, time.Time, []mono.Event) error {
 	return nil
 }
 func (f *fakeRepo) CancelWaiting(context.Context, string, string) error { return nil }

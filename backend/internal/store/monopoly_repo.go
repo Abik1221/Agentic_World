@@ -135,13 +135,16 @@ func (r *MonopolyRepo) JoinSeat(ctx context.Context, matchPublicID string, p mon
 }
 
 // Start flips a full waiting table to active with its initialized engine state.
-func (r *MonopolyRepo) Start(ctx context.Context, matchPublicID string, state mono.State, deadline time.Time, events []mono.Event) error {
+// Start activates a full table. startsAt is the ABSOLUTE instant play begins and is
+// persisted so every surface counts to the same moment; the caller opens the first move
+// window at it, not at now, so the countdown does not eat the first seat's thinking time.
+func (r *MonopolyRepo) Start(ctx context.Context, matchPublicID string, state mono.State, startsAt, deadline time.Time, events []mono.Event) error {
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, starts_at=$4, started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' AND game='monopoly' RETURNING id`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
+			matchPublicID, mustJSON(state), deadline, startsAt).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return monopoly.ErrNotWaiting
 		}
@@ -193,14 +196,15 @@ func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.
 	var m monopoly.Match
 	var stateBytes []byte
 	var deadline *time.Time
+	var startsAt *time.Time
 	var seed []byte
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.status, m.bid, m.rake_pct, m.engine_version,
 		        m.prize_seed_commit, m.prize_seed, COALESCE(m.state, '{}'::jsonb),
-		        m.round_deadline, COALESCE(m.replay_hash, ''), COALESCE(m.target_players, 0)
+		        m.round_deadline, m.starts_at, COALESCE(m.replay_hash, ''), COALESCE(m.target_players, 0)
 		 FROM matches m WHERE m.public_id = $1 AND m.game = 'monopoly'`, matchPublicID).
 		Scan(&m.PublicID, &m.Status, &m.EntryFee, &m.RakePct, &m.EngineVersion,
-			&m.Commit, &seed, &stateBytes, &deadline, &m.ReplayHash, &m.TargetPlayers)
+			&m.Commit, &seed, &stateBytes, &deadline, &startsAt, &m.ReplayHash, &m.TargetPlayers)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return monopoly.Match{}, monopoly.ErrNotFound
@@ -210,6 +214,7 @@ func (r *MonopolyRepo) Get(ctx context.Context, matchPublicID string) (monopoly.
 	m.Title = "Monopoly AI Arena"
 	m.Seed = seed
 	m.RoundDeadline = deadline
+	m.StartsAt = startsAt
 	if len(stateBytes) > 0 {
 		// Authoritative state: fail loudly on a decode error rather than load a
 		// zero-value (phantom reset) board that PendingSeat/view/Act would trust.

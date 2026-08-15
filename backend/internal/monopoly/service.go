@@ -19,6 +19,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/readycheck"
 )
 
 // monopolyCanonAction is the deterministic string an agent signs for one move:
@@ -498,8 +499,18 @@ func (s *Service) startTable(ctx context.Context, m Match) error {
 			return err
 		}
 	}
-	deadline := s.clock.Now().Add(s.moveWindow(ctx, agents...))
-	if err := s.repo.Start(ctx, m.PublicID, state, deadline, events); err != nil {
+	// The start countdown. See the same block in internal/mafia's startMatch: startsAt is an
+	// ABSOLUTE, persisted instant so a terminal and a browser count to the same moment instead
+	// of each counting down independently and drifting apart.
+	//
+	// Play is NOT gated on it — the table is active immediately, exactly as goofspiel's
+	// startAfterReady leaves it. The countdown's effect is that the FIRST move window opens at
+	// startsAt rather than now, so the seat that moves first is not handed a clock that has
+	// already been running while nobody could act.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy("monopoly").Countdown)
+	deadline := startsAt.Add(s.moveWindow(ctx, agents...))
+	if err := s.repo.Start(ctx, m.PublicID, state, startsAt, deadline, events); err != nil {
 		// Compensate a stake-then-start dual-write failure so no coins are trapped.
 		if s.wallet != nil && m.EntryFee > 0 {
 			_ = s.wallet.RefundTable(ctx, m.PublicID, agents, m.EntryFee)
@@ -1208,6 +1219,11 @@ func (s *Service) view(m Match, viewerAgent string) AgentView {
 		v := AgentView{
 			MatchID: m.PublicID, Status: m.Status, EntryFee: m.EntryFee,
 			Economy: ComputeEconomy(len(m.Agents), m.EntryFee, m.RakePct),
+			// Carried on the light view too: a client sitting on a waiting table needs the
+			// clock offset ready BEFORE starts_at arrives, or the first countdown it renders
+			// is the one drawn with an unmeasured offset.
+			ServerNow: s.clock.Now().UTC(),
+			StartsAt:  m.StartsAt,
 		}
 		if p := m.agentByAgentID(viewerAgent); p != nil {
 			v.YourSeat = p.Seat
@@ -1228,6 +1244,11 @@ func (s *Service) view(m Match, viewerAgent string) AgentView {
 		// Every seat, bots included — see RosterOf.
 		Roster:  RosterOf(m.Agents, m.Players),
 		Pending: pendingSeats(m.State, pending),
+		// The start countdown, and the clock the client measures its own offset against.
+		// Unconditional: a FINISHED match still reports when it began, which is what makes a
+		// replay able to render the same countdown the spectators saw.
+		ServerNow: s.clock.Now().UTC(),
+		StartsAt:  m.StartsAt,
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline
