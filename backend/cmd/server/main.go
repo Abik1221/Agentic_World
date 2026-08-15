@@ -327,6 +327,9 @@ func run() error {
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
 	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
 	idHandler.SetKeysRateLimit(keysRL)
+	// POST /v1/admin/agents — create an account with an explicit agent kind (the platform's
+	// harness seats). Additive to the Platform token, like every other admin surface.
+	idHandler.SetAdmins(cfg.AdminUserIDs)
 	// Per-ACCOUNT credential throttle, alongside the per-IP loginRL above. Per-IP is
 	// blind to a password list spread one-guess-per-host across a botnet, which never
 	// trips any single IP bucket; keying on the identity under attack bounds what one
@@ -1415,6 +1418,10 @@ func run() error {
 	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
 	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
 	llmGateway.SetCoverageReader(llmGatewayRepo)
+	// Labels each Lens span with WHOSE traffic it is (external / harness). The platform's
+	// benchmark plays real matches through this same gateway, so without the label a
+	// benchmark run is indistinguishable from user telemetry in the trace views.
+	llmGateway.SetKindReader(llmGatewayRepo)
 	// A 429 must never cost a stake.
 	//
 	// The gateway already records every proxied call with its upstream status, match and round,

@@ -82,6 +82,11 @@ type TelemetryEvent struct {
 	Currency         string         `json:"currency"`
 	PricingVersion   string         `json:"pricing_version"`
 	MeterSource      string         `json:"meter_source"`
+	// AgentKind is whose traffic this span is: "external" (a developer's agent) or
+	// "harness" (a Pyyol platform benchmark seat). Empty means UNKNOWN — including every
+	// row written before ClickHouse migration 007 — and must never be read as "external",
+	// which would fold platform benchmark calls back into a developer's telemetry.
+	AgentKind string `json:"agent_kind"`
 	ErrorType        string         `json:"error_type"`
 	ErrorCode        string         `json:"error_code"`
 	ErrorMessage     string         `json:"error_message"`

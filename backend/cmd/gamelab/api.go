@@ -28,6 +28,20 @@ func newAPI(base string) *api {
 // Returns the status code, and an error only for transport/decode problems — a non-2xx
 // is reported through the code plus a body excerpt so callers can decide.
 func (a *api) do(method, path, bearer string, body, out any) (int, string, error) {
+	auth := ""
+	if bearer != "" {
+		auth = "Bearer " + bearer
+	}
+	return a.doWithAuth(method, path, auth, body, out)
+}
+
+// doWithAuth is do() with the Authorization header supplied verbatim.
+//
+// Exists for the one credential in this lab that is not a Bearer token: the Super Admin's
+// Platform token, which the server reads as "Authorization: Platform <token>" and verifies
+// as an Ed25519 signature rather than looking it up. Everything else about the request is
+// the same code path, so the admin call cannot drift from the developer calls beside it.
+func (a *api) doWithAuth(method, path, authorization string, body, out any) (int, string, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -43,8 +57,8 @@ func (a *api) do(method, path, bearer string, body, out any) (int, string, error
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
 	}
 	res, err := a.http.Do(req)
 	if err != nil {

@@ -415,18 +415,32 @@ func (r *IdentityRepo) CreateAccount(ctx context.Context, in identity.CreateAcco
 		return identity.Agent{}, identity.User{}, err
 	}
 
-	// 2. Create the agent with default limits.
+	// 2. Create the agent with the limits and kind the caller asked for.
+	//
+	// THE KIND IS WRITTEN HERE, at creation, and there is no update path for it. Public
+	// sinks filter on an allowlist of kind='external', so what an agent is has to be true
+	// from its first row: a match played while the agent was still `external` is already
+	// attributed to the developer board, and re-labelling the agent afterwards leaves that
+	// match exactly where it was. Empty means external, so every caller that does not set
+	// it — X-claim onboarding, Google sign-in, the public sign-up — keeps creating
+	// developer agents unchanged.
 	l := in.Limits
+	kind := in.Kind
+	if kind == "" {
+		kind = identity.KindExternal
+	}
 	var agentID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO agents (public_id, owner_user_id, name, slug, description, framework,
 		     status, verification_level, coin_limit_per_match, daily_loss_limit, session_loss_limit,
-		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid, auto_join)
-		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid, auto_join,
+		     kind)
+		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		 RETURNING id`,
 		in.AgentPublicID, userID, in.AgentName, in.AgentSlug, nullString(in.Description), nullString(in.Framework),
 		l.CoinLimitPerMatch, l.DailyLossLimit, l.SessionLossLimit, l.MinWalletBalance,
-		l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds, l.MaxBid, l.AutoJoin).
+		l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds, l.MaxBid, l.AutoJoin,
+		kind).
 		Scan(&agentID)
 	if err != nil {
 		return identity.Agent{}, identity.User{}, err

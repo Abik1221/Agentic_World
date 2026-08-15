@@ -135,6 +135,13 @@ type CreateAccountInput struct {
 	KeyPrefix     string
 	KeyHash       string
 	Limits        Limits
+	// Kind is the agent kind to create (see KindExternal / KindHarness). Empty means
+	// KindExternal, so every existing caller keeps creating developer agents unchanged.
+	//
+	// It is an input to CREATION and there is no counterpart on any update path, which is
+	// deliberate: the kind decides which surfaces already-written matches belong to, so
+	// changing it afterwards repairs the label without moving the evidence.
+	Kind string
 }
 
 // AuthRecord is the row needed to authenticate an email+password login, plus the

@@ -142,7 +142,35 @@ type SignUpResult struct {
 // SignUp creates an owner from an email + password plus their first agent, in one
 // atomic call, and returns a fresh dashboard session and one-time API key. This
 // is the "normal" account-creation path that sits beside X-claim onboarding.
+//
+// Public and unauthenticated, so it always creates KindExternal. The kind is not a field a
+// caller may set here at any privilege level — see SignUpAs.
 func (s *Service) SignUp(ctx context.Context, email, password, agentName, description string) (SignUpResult, error) {
+	return s.signUp(ctx, email, password, agentName, description, KindExternal)
+}
+
+// SignUpAs creates an account whose agent carries an explicit kind, and is otherwise the
+// SAME account creation the public sign-up performs — same validation, same atomic
+// CreateAccount, same one-time key, same dashboard session. A harness agent then onboards
+// through the ordinary developer surface (manifest, endpoint verification, agent key,
+// lobby/queue) because it is meant to be the same object a developer's agent is; the only
+// thing that differs is who is allowed to say what it IS.
+//
+// ADMIN-ONLY, and its single route is guarded by auth.RequirePlatformOrAdmin. The kind
+// decides which surfaces an agent's matches reach, so a caller who can set it can decide
+// whether their results are rated on the public developer board or invisible to it. That
+// is a platform decision, never a self-service one — which is also why there is no second
+// credential check in here: the guard is the route's, in the one place guards live.
+func (s *Service) SignUpAs(ctx context.Context, email, password, agentName, description, kind string) (SignUpResult, error) {
+	if err := ValidateCreatableKind(kind); err != nil {
+		return SignUpResult{}, err
+	}
+	return s.signUp(ctx, email, password, agentName, description, kind)
+}
+
+// signUp is the one implementation both paths run, so the admin path cannot drift from the
+// public one in validation, hashing, or what it creates.
+func (s *Service) signUp(ctx context.Context, email, password, agentName, description, kind string) (SignUpResult, error) {
 	normEmail, ok := normalizeEmail(email)
 	if !ok {
 		return SignUpResult{}, errInvalid("a valid email is required")
@@ -174,7 +202,11 @@ func (s *Service) SignUp(ctx context.Context, email, password, agentName, descri
 		Description:   strings.TrimSpace(description),
 		KeyPrefix:     key.Prefix,
 		KeyHash:       key.Hash,
-		Limits:        DefaultLimits(),
+		Kind:          kind,
+		// Guardrails follow the kind. A harness agent differs in exactly one of them
+		// (throughput) and is otherwise created under the developer defaults — see
+		// LimitsForKind.
+		Limits: LimitsForKind(kind),
 	})
 	if err != nil {
 		return SignUpResult{}, err

@@ -45,6 +45,22 @@ type Handler struct {
 	//
 	// Nil ⇒ per-IP only (unchanged behaviour).
 	accountRL func(ctx context.Context, identifier string) (ok bool, retryAfter time.Duration)
+	// admins is the ADMIN_USER_IDS allowlist, for the one admin-scoped route this handler
+	// serves (POST /v1/admin/agents). Nil/empty is safe: RequirePlatformOrAdmin still
+	// admits a valid Platform token, and admits nobody else.
+	admins map[string]bool
+}
+
+// SetAdmins installs the ADMIN_USER_IDS allowlist used by the admin create-agent route.
+// Additive to the Platform token, exactly as every other admin surface treats it.
+func (h *Handler) SetAdmins(userIDs []string) {
+	m := make(map[string]bool, len(userIDs))
+	for _, id := range userIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			m[id] = true
+		}
+	}
+	h.admins = m
 }
 
 // SetAccountRateLimit installs the per-account credential throttle used by password
@@ -126,6 +142,20 @@ func (h *Handler) Register(r chi.Router) {
 	// Authenticated routes: attach the principal, then guard by scope.
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
+		// ADMIN account creation. The same account creation the public sign-up performs,
+		// with one extra field the public path has no business accepting: the agent's KIND.
+		//
+		// It is a separate route rather than a privileged field on /v1/auth/signup because
+		// signup is deliberately public and unauthenticated (see the pinned public route
+		// surface). Teaching it to read a principal that is normally absent, in order to
+		// decide whether to honour one field, is how an "only when authenticated" check
+		// becomes an "authenticated check that was skipped".
+		//
+		// The guard is auth.RequirePlatformOrAdmin — the same one every other admin surface
+		// uses. There is no second credential path, no shared secret, and no env-var escape
+		// hatch: a caller either presents the Super Admin's Platform token or is in
+		// ADMIN_USER_IDS.
+		r.With(auth.RequirePlatformOrAdmin(h.admins)).Post("/v1/admin/agents", h.adminCreateAgent)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/config", h.updateConfig)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/me", h.me)
 		// The CLI handoff. Owner-scoped: it re-expresses authority the caller already proved.
@@ -228,6 +258,58 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		"api_key":         res.APIKey, // shown exactly once
 		"agent_id":        res.AgentID,
 		"agent_name":      res.AgentName,
+	})
+}
+
+// adminCreateAgent creates an account whose agent carries an explicit kind.
+//
+// This exists for ONE reason: the platform's own benchmark agents must be `harness` from
+// the moment they are created. gamelab used to sign them up on the public path, which
+// makes them `external` — so a benchmark run landed on the public DEVELOPER leaderboard,
+// rated, as though the platform were a competitor, and /harness stayed empty because no
+// harness-kind seats existed for it to fit.
+//
+// Everything AFTER creation is deliberately identical to a developer's flow. The agent
+// submits a manifest, has its endpoint verified by the platform, is issued an agent-scope
+// key, funds a wallet, and plays through the same lobby and queue with every decision
+// completion-bound. That sameness is the point — a benchmark run on a private code path
+// would measure the private code path. The only thing this route changes is who the agent
+// is declared to BE, which is the one judgement a developer cannot be allowed to make
+// about themselves.
+//
+// Response shape mirrors signup exactly, so the caller's onboarding code is shared.
+func (h *Handler) adminCreateAgent(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		AgentName   string `json:"agent_name"`
+		Description string `json:"description"`
+		Kind        string `json:"kind"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Required, not defaulted. An admin route whose kind silently defaults to `external`
+	// would answer 201 for a typo'd kind and hand back exactly the agent this route exists
+	// to stop being created.
+	if strings.TrimSpace(in.Kind) == "" {
+		httpx.Error(w, errInvalid("kind is required"))
+		return
+	}
+	res, err := h.svc.SignUpAs(r.Context(), in.Email, in.Password, in.AgentName, in.Description,
+		strings.TrimSpace(in.Kind))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
+		"api_key":         res.APIKey, // shown exactly once
+		"agent_id":        res.AgentID,
+		"agent_name":      res.AgentName,
+		"kind":            strings.TrimSpace(in.Kind),
 	})
 }
 

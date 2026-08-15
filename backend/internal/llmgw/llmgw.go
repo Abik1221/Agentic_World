@@ -129,6 +129,17 @@ type Emitter interface {
 	Enabled() bool
 }
 
+// KindReader resolves an agent's kind — `external` for a developer's agent, `harness` for
+// one of the platform's own benchmark seats.
+//
+// Read-only and OPTIONAL. Without it, spans carry no kind and Lens shows the traffic
+// undifferentiated, which is the behaviour before this existed. It must never be able to
+// fail a call: this feeds observability, and refusing a developer's model call because a
+// telemetry label could not be looked up would be a strictly worse platform.
+type KindReader interface {
+	AgentKind(ctx context.Context, agentPublicID string) (string, error)
+}
+
 // Verifier checks a turn proof and mints the completion-binding receipt. Satisfied by
 // *turnproof.Signer.
 //
@@ -352,6 +363,45 @@ type Gateway struct {
 	// awarded dedups the badge in-process. The award itself is idempotent, so this is a
 	// courtesy to the database rather than a correctness requirement.
 	awarded sync.Map
+	// kinds resolves an agent's kind for the Lens span. Nil leaves spans unlabelled.
+	kinds KindReader
+	// kindCache memoises agentPublicID → kind for the life of the process.
+	//
+	// Safe to cache without expiry, and that is a property of the schema rather than an
+	// assumption: an agent's kind is written at INSERT and there is no update path for it
+	// anywhere in the codebase, deliberately, because relabelling an agent would not move
+	// the matches it already played. A value that cannot change cannot go stale.
+	kindCache sync.Map
+}
+
+// SetKindReader wires agent-kind labelling of Lens spans. Optional; nil leaves spans
+// unlabelled rather than guessing a kind.
+func (g *Gateway) SetKindReader(k KindReader) { g.kinds = k }
+
+// agentKind resolves the kind for a span, memoised, and answers "" for anything it cannot
+// determine.
+//
+// Empty is deliberately NOT defaulted to `external`. An unknown-kind span is an honest gap;
+// a span mislabelled `external` puts platform benchmark traffic back into a developer's
+// telemetry, which is the exact confusion this label exists to remove.
+func (g *Gateway) agentKind(ctx context.Context, agentPublicID string) string {
+	if g.kinds == nil || agentPublicID == "" {
+		return ""
+	}
+	if v, ok := g.kindCache.Load(agentPublicID); ok {
+		return v.(string)
+	}
+	kind, err := g.kinds.AgentKind(ctx, agentPublicID)
+	if err != nil {
+		// Not cached: a transient read error must not pin this agent to "unknown" for the
+		// rest of the process's life. Not logged at anything above debug either — this is a
+		// label on a trace, and a noisy warning per call would be worse than the gap.
+		g.log.Debug("llmgw: could not resolve agent kind for the Lens span",
+			"agent", agentPublicID, "error", err)
+		return ""
+	}
+	g.kindCache.Store(agentPublicID, kind)
+	return kind
 }
 
 // SetCoverageReader wires verified-coverage reporting. Nil leaves it unavailable.
@@ -912,6 +962,14 @@ func (g *Gateway) emit(c Call) {
 	if g.em == nil || !g.em.Enabled() {
 		return
 	}
+	// Detached and short, for the same reason record() detaches: by the time emit runs the
+	// client's context is already finished, so inheriting it would cancel the lookup on
+	// every single call. Bounded tightly because this sits on the response path — a slow
+	// database must cost the span its label, not the request its latency.
+	kindCtx, cancelKind := context.WithTimeout(context.Background(), 2*time.Second)
+	agentKind := g.agentKind(kindCtx, c.AgentPublicID)
+	cancelKind()
+
 	status := "ok"
 	if c.Status < 200 || c.Status > 299 {
 		status = "error"
@@ -941,7 +999,11 @@ func (g *Gateway) emit(c Call) {
 		PricingVersion:   pricing.Version,
 		Currency:         telemetry.CurrencyUSD,
 		MeterSource:      telemetry.MeterSourceGateway,
-		LatencyMS:        int64(c.LatencyMS),
+		// Whose traffic this is. The platform's harness plays real matches through this same
+		// gateway, so without this an operator tracing a benchmark run is reading developer
+		// telemetry and a developer's cost view contains calls that were never theirs.
+		AgentKind: agentKind,
+		LatencyMS: int64(c.LatencyMS),
 		Priority:         telemetry.PriorityHigh,
 		PayloadJSON: map[string]any{
 			"turn": c.Round,

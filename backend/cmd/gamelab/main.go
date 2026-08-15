@@ -63,6 +63,9 @@ func main() {
 	matches := flag.Int("matches", 0, "play this many matches one after another in THIS process, then exit (0 = play one and keep serving). Batching in one process avoids re-onboarding and the port races that killing the process between runs causes")
 	perMatch := flag.Duration("per-match-timeout", 8*time.Minute, "with -matches, give up waiting on a single match after this long and move to the next")
 	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
+	// The PLATFORM's own benchmark, rather than a simulated developer. Changes exactly one
+	// step of onboarding (see harness.go) and nothing about how the agents then play.
+	harness := flag.Bool("harness", false, "onboard the agents as kind='harness' through the ADMIN create route, so the run feeds /harness instead of the public developer leaderboard")
 	flag.Parse()
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
@@ -122,6 +125,23 @@ func main() {
 		lg.Fatalf("FATAL: %v", err)
 	}
 	lg.Printf("platform healthy")
+
+	// Harness mode is resolved BEFORE any account is created, and a failure here is fatal.
+	//
+	// The bug this guards against is silent: without it, onboarding falls back to the public
+	// signup, the agents come out kind='external', and the run lands on the public developer
+	// leaderboard while /harness stays empty. Nothing in the log says so, and the matches are
+	// real, so the only way to notice is to read the board afterwards and wonder.
+	HarnessMode = *harness || harnessEnabledFromEnv()
+	if HarnessMode {
+		tok, err := mintPlatformToken()
+		if err != nil {
+			lg.Fatalf("FATAL: -harness needs a Platform credential: %v", err)
+		}
+		PlatformToken = tok
+		lg.Printf("HARNESS MODE — agents will be created as kind='harness' via the admin route; "+
+			"this run feeds %s/harness and is invisible to the public developer board", webBase())
+	}
 
 	label := *runLabel
 	if label == "" {
@@ -290,12 +310,22 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	// Underscores are permitted, so the persona name stays readable in the UI without
 	// collapsing to a lowercase slug.
 	name := strings.ReplaceAll(ag.Persona.Name, " ", "_")
-	if err := a.mustDo("signup", http.MethodPost, "/v1/auth/signup", "", map[string]any{
+	account := map[string]any{
 		"email":       ag.Email,
 		"password":    "lab-passphrase-strong-2026",
 		"agent_name":  acctName,
 		"description": fmt.Sprintf("Deterministic lab agent (%s style), simulating %s latency.", ag.Persona.Style, ag.Persona.Model),
-	}, &signup, http.StatusCreated, http.StatusOK); err != nil {
+	}
+	// THE ONLY STEP -harness CHANGES. A harness seat is created through the admin route so
+	// it is kind='harness' from its first row; everything below this point — manifest,
+	// endpoint verification, agent key, funding, lobby/queue, completion binding — is the
+	// identical developer flow, which is what makes the two boards measure the same object.
+	if HarnessMode {
+		if err := a.createHarnessAccount(PlatformToken, account, &signup); err != nil {
+			return err
+		}
+	} else if err := a.mustDo("signup", http.MethodPost, "/v1/auth/signup", "", account,
+		&signup, http.StatusCreated, http.StatusOK); err != nil {
 		return err
 	}
 	ag.AgentID, ag.DashToken = signup.AgentID, signup.DashboardToken
