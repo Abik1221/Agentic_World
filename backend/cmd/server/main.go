@@ -12,8 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"sort"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -668,6 +668,26 @@ func run() error {
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
 	modelBoardHandler.SetBoard("developer")
+
+	// THE PLATFORM HARNESS BOARD — the same service type, instantiated a second time.
+	//
+	// Same Build, same Bradley-Terry estimator, same intervals, same attribution rule; a
+	// different seat source and its own snapshot. modelboard.Service keeps all of its state
+	// per-instance, so the two cannot influence each other, and identical arithmetic is what
+	// makes a harness rating comparable to a developer rating rather than merely adjacent to
+	// one.
+	//
+	// Its own board name keeps the two history series apart — see migration 0093, where a
+	// shared key meant the second writer silently overwrote the first.
+	harnessBoardSvc := modelboard.NewService(store.HarnessSeatSource{Repo: modelBoardRepo}, 90*24*time.Hour, log)
+	harnessBoardSvc.SetHistoryWriter(modelBoardRepo)
+	harnessBoardSvc.SetPublishableHosts(publishableHosts())
+	harnessBoardSvc.SetBoard("harness")
+	harnessBoardHandler := modelboard.NewHandler(harnessBoardSvc)
+	harnessBoardHandler.SetHistoryReader(modelBoardRepo)
+	harnessBoardHandler.SetBoard("harness")
+
+	launch("harnessboard", modelboard.NewWorker(harnessBoardSvc, 10*time.Minute, log).Run)
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
 	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
@@ -1873,6 +1893,7 @@ func run() error {
 		ratingHandler.Register,
 		pindexHandler.Register,
 		modelBoardHandler.Register,
+		harnessBoardHandler.RegisterHarness, // public GET /v1/benchmark/harness (platform-run benchmark)
 		llmGatewayHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,

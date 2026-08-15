@@ -50,6 +50,12 @@ var publicRoutes = []string{
 	"Get /v1/benchmark/deception",
 	"Get /v1/benchmark/deception/methodology",
 	"Get /v1/benchmark/developers",
+	// The PLATFORM harness board: the same fit over the platform's own benchmark matches,
+	// published deliberately. Public because a benchmark nobody can read is not a benchmark,
+	// and separate from /modelboard because the two must never be confused for one another.
+	"Get /v1/benchmark/harness",
+	"Get /v1/benchmark/harness/history",
+	"Get /v1/benchmark/harness/methodology",
 	"Get /v1/benchmark/model",
 	"Get /v1/benchmark/modelboard",
 	"Get /v1/benchmark/modelboard/history",

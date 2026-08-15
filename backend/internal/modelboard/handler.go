@@ -39,10 +39,31 @@ func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
 // current state, there is simply no history to plot.
 func (h *Handler) SetHistoryReader(r HistoryReader) { h.history = r }
 
+// Register mounts the board under its own prefix.
+//
+// Parameterised because the platform harness board is the SAME handler serving a different
+// instance: identical shapes, identical semantics, different data. Giving it its own prefix
+// rather than a query parameter keeps the two independently cacheable, independently
+// linkable, and impossible to confuse in a log.
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/benchmark/modelboard", h.board)
 	r.Get("/v1/benchmark/modelboard/history", h.seriesHandler)
 	r.Get("/v1/benchmark/modelboard/methodology", h.methodology)
+}
+
+// RegisterHarness mounts the SAME handlers under the platform-harness paths, for a second
+// instance fitted from the platform's own benchmark matches.
+//
+// Written out as literals rather than built from a prefix, and that is deliberate. The
+// public route surface is pinned by a test that scans this source for literal route
+// strings (internal/httpx/public_routes_test.go), so a computed path is
+// INVISIBLE to it — a new public route would stop being a decision point and just appear.
+// A first draft of this did exactly that and silently un-pinned three existing routes.
+// Three duplicated lines are cheaper than a safety control that quietly stops working.
+func (h *Handler) RegisterHarness(r chi.Router) {
+	r.Get("/v1/benchmark/harness", h.board)
+	r.Get("/v1/benchmark/harness/history", h.seriesHandler)
+	r.Get("/v1/benchmark/harness/methodology", h.methodology)
 }
 
 // seriesHandler serves one model's rating over time.
