@@ -125,3 +125,28 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # Pyyol Lens, on its own Go 1.26 toolchain.
+  #
+  # Added because this module was tested only at DEPLOY time. deploy-tracing runs `go test`
+  # before shipping, so a change that broke Lens compiled fine in `ci`, passed review, merged,
+  # and failed at the deploy — which is the most expensive place to find it and the one with
+  # a half-updated stack on the other side. Phase 6 put the harness discriminator in here, so
+  # the module now carries logic the boards depend on.
+  #
+  # Separate job rather than a step on `backend`: this is a DIFFERENT MODULE on a different Go
+  # minor (go.mod requires 1.26.1, the arena is on 1.25), and sharing a setup-go step would
+  # silently build one of them with the wrong toolchain.
+  lens:
+    name: lens (tracing)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tracing/backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26.6', cache: true, cache-dependency-path: tracing/backend/go.sum }
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -count=1 ./...
