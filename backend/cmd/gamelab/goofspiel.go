@@ -150,7 +150,7 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 			writeJSON(w, map[string]any{
 				"round": v.Round, "card": play,
 				"rationale": note,
-				"usage":     a.Persona.tokens(len(raw), think),
+				"usage":     a.usage(len(raw), think),
 			})
 			return
 		}
@@ -164,7 +164,7 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 			writeJSON(w, map[string]any{
 				"round": v.Round, "card": card,
 				"rationale": "unbound this turn: " + why,
-				"usage":     a.Persona.tokens(len(raw), think),
+				"usage":     a.usage(len(raw), think),
 			})
 			return
 		}
@@ -211,7 +211,8 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 		"round":     v.Round,
 		"card":      card,
 		"rationale": why,
-		"usage":     a.Persona.tokens(len(raw), think),
+		"usage":     a.usage(len(raw), think),
+		"scaffold":  a.scaffold(),
 	})
 }
 

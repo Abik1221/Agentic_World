@@ -65,6 +65,16 @@ var (
 	// "modelA,modelB" seats them against each other, and the result is a paired comparison:
 	// same board, same rules, same harness, different model.
 	BindModels []string
+	// BindProviders is BindProvider split on commas: one upstream per SEAT, cycling.
+	//
+	// Exists because a cross-PROVIDER comparison is the interesting one and was impossible:
+	// a single provider meant every seat at the table routed to the same upstream, so
+	// "Groq vs OpenRouter" could only be run as two separate batches whose agents never met.
+	// Models that never play each other produce no comparison for the fit to use.
+	BindProviders []string
+	// BindKeys pairs with BindProviders: each upstream needs its OWN key, and sending
+	// Groq's key to OpenRouter authenticates as nobody.
+	BindKeys []string
 )
 
 // BindStream routes the decision as a STREAMED completion. Worth a separate run: streamed
@@ -197,6 +207,25 @@ type bindResult struct {
 // Cycles over BindModels by the agent's own index, so seat 0 and seat 1 differ even when the
 // list is shorter than the table. Falls back to the single BindModel when no list was given,
 // which keeps every existing invocation behaving exactly as before.
+// providerFor is the upstream THIS agent binds through, cycling by seat index exactly as
+// modelFor does, so seat 0 can be Groq while seat 1 is OpenRouter in the same match.
+func (a *labAgent) providerFor() string {
+	if len(BindProviders) == 0 {
+		return BindProvider
+	}
+	return BindProviders[a.Index%len(BindProviders)]
+}
+
+// keyFor is the credential for THIS agent's upstream. Indexed by the same seat position as
+// the provider so the two cannot drift apart — a key matched to the wrong upstream fails as
+// a 401 that reads like a broken gateway rather than a misconfigured run.
+func (a *labAgent) keyFor() string {
+	if len(BindKeys) == 0 {
+		return BindKey
+	}
+	return BindKeys[a.Index%len(BindKeys)]
+}
+
 func (a *labAgent) modelFor() string {
 	if len(BindModels) == 0 {
 		return BindModel
@@ -239,7 +268,7 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// OPENAI WIRE for anything that is not Anthropic. Groq, and every other OpenAI-compatible
 	// provider, nests the tool under `function` and names the forcing field differently — send
 	// the Anthropic shape and it is a 400, not a silent mis-parse.
-	if BindProvider != "" && BindProvider != "anthropic" {
+	if a.providerFor() != "" && a.providerFor() != "anthropic" {
 		reqBody = map[string]any{
 			"model":      a.modelFor(),
 			"max_tokens": 256,
@@ -273,8 +302,8 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// The gateway routes /v1/gw/{provider}/*, so the path after the provider is the
 	// provider's OWN path — Anthropic's /v1/messages, OpenAI-wire /v1/chat/completions.
 	route := "/v1/gw/anthropic/v1/messages"
-	if BindProvider != "" && BindProvider != "anthropic" {
-		route = "/v1/gw/" + BindProvider + "/v1/chat/completions"
+	if a.providerFor() != "" && a.providerFor() != "anthropic" {
+		route = "/v1/gw/" + a.providerFor() + "/v1/chat/completions"
 	}
 	req, err := http.NewRequest(http.MethodPost, BindGatewayBase+route, bytes.NewReader(raw))
 	if err != nil {
@@ -283,10 +312,10 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	req.Header.Set("Content-Type", "application/json")
 	// The developer's own provider credential, passed through untouched. A placeholder here
 	// because the upstream is a stand-in; the gateway must not care either way.
-	if BindKey != "" {
+	if a.keyFor() != "" {
 		// The developer's OWN credential, passed through. This is the whole trust model: they
 		// cannot claim a model they are not billed for.
-		req.Header.Set("Authorization", "Bearer "+BindKey)
+		req.Header.Set("Authorization", "Bearer "+a.keyFor())
 	} else {
 		req.Header.Set("x-api-key", "lab-provider-key")
 		req.Header.Set("anthropic-version", "2023-06-01")

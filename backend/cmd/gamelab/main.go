@@ -76,6 +76,22 @@ func main() {
 	BindThroughGateway, BindStream, SubstituteAtRound = *bindGw, *bindStream, *substituteAt
 	BindFailPct, BindBatchRounds = *bindFailPct, *bindBatch
 	BindProvider, BindKey, BindModel = *bindProvider, os.Getenv("PYYOL_PROVIDER_KEY"), *bindModel
+	// Per-seat upstreams, so one match can pit one provider's model against another's.
+	// Keys are read from the environment and never from a flag: a flag lands in the process
+	// table and in shell history, and these are live provider credentials.
+	if strings.Contains(*bindProvider, ",") {
+		BindProviders = strings.Split(*bindProvider, ",")
+		for i, p := range BindProviders {
+			BindProviders[i] = strings.TrimSpace(p)
+			// PYYOL_PROVIDER_KEY_<UPPER> per upstream, falling back to the shared key so a
+			// single-provider run is unchanged.
+			k := os.Getenv("PYYOL_PROVIDER_KEY_" + strings.ToUpper(BindProviders[i]))
+			if k == "" {
+				k = BindKey
+			}
+			BindKeys = append(BindKeys, k)
+		}
+	}
 	// A comma-separated -bind-model seats a DIFFERENT model per agent, which is what turns a
 	// run into a paired comparison instead of one model playing itself.
 	if strings.Contains(*bindModel, ",") {

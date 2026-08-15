@@ -119,7 +119,7 @@ func (a *labAgent) playMonopoly(w http.ResponseWriter, r *http.Request, raw []by
 		v.YourSeat, v.Phase, v.Legal, act["kind"], why)
 
 	act["rationale"] = why
-	act["usage"] = a.Persona.tokens(len(raw), think)
+	act["usage"] = a.usage(len(raw), think)
 	writeJSON(w, monopolyWireMove(act))
 }
 

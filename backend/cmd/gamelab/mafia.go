@@ -105,7 +105,7 @@ func (a *labAgent) playMafia(w http.ResponseWriter, r *http.Request, raw []byte)
 		v.YourSeat, v.YourRole, v.Day, v.Phase, v.Legal, act["action"], why)
 
 	act["rationale"] = why
-	act["usage"] = a.Persona.tokens(len(raw), think)
+	act["usage"] = a.usage(len(raw), think)
 	writeJSON(w, act)
 }
 
