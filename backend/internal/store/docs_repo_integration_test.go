@@ -108,3 +108,68 @@ func TestDocsRepoIntegration(t *testing.T) {
 		t.Errorf("latest after edit = %q, want %q", latest2, editVer)
 	}
 }
+
+// TestDocsSeedDoesNotRevertAdminEdits pins the fix for a silent data-loss bug.
+//
+// Seed runs on EVERY boot, at the constant docs.DocsVersion, with ON CONFLICT DO UPDATE.
+// So an admin who corrected a page through /v1/admin/docs/pages saw their edit survive
+// until the next restart and then revert to the embedded copy — no error, no log, just
+// the old text back. Migration 0058 explicitly promised the opposite ("an admin can later
+// edit a row to override a page without a redeploy").
+//
+// The guard is `WHERE NOT docs_pages.admin_edited` on the seeder's update. Remove it and
+// this test fails on the body assertion, which is the point of writing it this way rather
+// than asserting on the column.
+func TestDocsSeedDoesNotRevertAdminEdits(t *testing.T) {
+	ctx := context.Background()
+	pool := openGroupTestDB(t)
+	repo := NewDocsRepo(pool)
+
+	pages, err := docs.Load()
+	if err != nil {
+		t.Fatalf("docs.Load: %v", err)
+	}
+	const ver = "seed-guard-test"
+	if err := repo.Seed(ctx, ver, pages); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM docs_pages WHERE version=$1`, ver)
+	})
+
+	// An admin corrects a page that the embedded content also ships.
+	const slug = "research/p-index-paper"
+	const corrected = "# Corrected by an operator\n\nThis text came from the admin API.\n"
+	orig, ok, err := repo.GetPage(ctx, ver, slug)
+	if err != nil || !ok {
+		t.Fatalf("the seeded corpus must contain %s: ok=%v err=%v", slug, ok, err)
+	}
+	if err := repo.UpsertPage(ctx, ver, docs.Page{
+		Slug: slug, Title: orig.Title, Section: orig.Section, Order: orig.Order, Body: corrected,
+	}); err != nil {
+		t.Fatalf("UpsertPage: %v", err)
+	}
+
+	// A deploy happens. The seeder runs again over the same version.
+	if err := repo.Seed(ctx, ver, pages); err != nil {
+		t.Fatalf("re-Seed: %v", err)
+	}
+
+	got, ok, err := repo.GetPage(ctx, ver, slug)
+	if err != nil || !ok {
+		t.Fatalf("GetPage after re-seed: ok=%v err=%v", ok, err)
+	}
+	if got.Body != corrected {
+		t.Errorf("the boot seeder reverted an admin edit.\n got: %.60q\nwant: %.60q", got.Body, corrected)
+	}
+
+	// A page the admin never touched must still update on deploy, or the guard would have
+	// frozen the entire corpus rather than just the edited row.
+	untouched, ok, err := repo.GetPage(ctx, ver, "games/goofspiel")
+	if err != nil || !ok {
+		t.Fatalf("GetPage(games/goofspiel): ok=%v err=%v", ok, err)
+	}
+	if untouched.Body == corrected || untouched.Body == "" {
+		t.Error("an un-edited page should still carry the embedded content after a re-seed")
+	}
+}

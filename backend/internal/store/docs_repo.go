@@ -26,11 +26,22 @@ func (r *DocsRepo) Seed(ctx context.Context, version string, pages []docs.Page) 
 	batch := &pgx.Batch{}
 	for _, p := range pages {
 		batch.Queue(
+			// WHERE NOT admin_edited is the whole point of this statement.
+			//
+			// Seed runs on EVERY boot at the constant DocsVersion, so without the guard an
+			// admin's correction through /v1/admin/docs/pages lived until the next restart
+			// and then silently reverted to the embedded copy — no error, no log, just the
+			// old text back. A page somebody deliberately fixed is the last thing that
+			// should quietly un-fix itself.
+			//
+			// Pages the admin has not touched still update on deploy, which is what makes
+			// shipping doc changes with the binary work.
 			`INSERT INTO docs_pages (version, slug, title, section, game, category, ord, body_md, updated_at)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
 			 ON CONFLICT (version, slug) DO UPDATE SET
 			   title=EXCLUDED.title, section=EXCLUDED.section, game=EXCLUDED.game,
-			   category=EXCLUDED.category, ord=EXCLUDED.ord, body_md=EXCLUDED.body_md, updated_at=now()`,
+			   category=EXCLUDED.category, ord=EXCLUDED.ord, body_md=EXCLUDED.body_md, updated_at=now()
+			 WHERE NOT docs_pages.admin_edited`,
 			version, p.Slug, p.Title, p.Section, p.Game, p.Category, p.Order, p.Body)
 	}
 	br := r.db.SendBatch(ctx, batch)
@@ -45,12 +56,15 @@ func (r *DocsRepo) Seed(ctx context.Context, version string, pages []docs.Page) 
 
 // UpsertPage inserts or updates a single page in a version (admin edit).
 func (r *DocsRepo) UpsertPage(ctx context.Context, version string, p docs.Page) error {
+	// admin_edited=true claims the row from the seeder — see Seed above. Set on the admin
+	// path only, so the flag means "a human overrode this", never "a deploy touched it".
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO docs_pages (version, slug, title, section, game, category, ord, body_md, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+		`INSERT INTO docs_pages (version, slug, title, section, game, category, ord, body_md, updated_at, admin_edited)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now(), true)
 		 ON CONFLICT (version, slug) DO UPDATE SET
 		   title=EXCLUDED.title, section=EXCLUDED.section, game=EXCLUDED.game,
-		   category=EXCLUDED.category, ord=EXCLUDED.ord, body_md=EXCLUDED.body_md, updated_at=now()`,
+		   category=EXCLUDED.category, ord=EXCLUDED.ord, body_md=EXCLUDED.body_md, updated_at=now(),
+		   admin_edited=true`,
 		version, p.Slug, p.Title, p.Section, p.Game, p.Category, p.Order, p.Body)
 	return err
 }
