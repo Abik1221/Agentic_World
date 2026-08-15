@@ -23,6 +23,10 @@ import (
 // renamed account be hijacked by whoever claimed the freed-up name.
 
 const (
+	// #nosec G101 -- a public OAuth endpoint, not a credential. gosec flags the constant
+	// because its NAME contains "token"; the value is the documented GitHub URL that a
+	// code is exchanged at. The actual secret is GitHubClientSecret, which is read from
+	// the environment and never appears in source.
 	githubTokenURL   = "https://github.com/login/oauth/access_token"
 	githubUserURL    = "https://api.github.com/user"
 	githubEmailsURL  = "https://api.github.com/user/emails"
