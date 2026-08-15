@@ -61,6 +61,12 @@ verified AS (
          NULLIF(mc.provider,'') || '/' || NULLIF(mc.model,'') AS model_key
     FROM agent_model_calls mc
    WHERE mc.bound AND COALESCE(mc.model,'') <> '' AND mc.match_id IS NOT NULL
+     -- WHO ANSWERED, not who was asked. provider/model are read from the REQUEST, and the
+     -- upstream map decides where that request actually goes; point a provider at a local
+     -- stand-in and this row is a bound, well-formed call under the requested model name
+     -- that never left the machine. Rows written before migration 0092 carry '' and are
+     -- excluded as UNKNOWN provenance rather than assumed real.
+     AND mc.upstream_host = ANY($4)
    ORDER BY mc.agent_id, mc.match_id, mc.id DESC
 ),
 -- The harness that actually played the match: the most frequent fingerprint across the seat's
@@ -109,8 +115,10 @@ SELECT s.match_id, s.game, s.agent_public_id, s.developer_public_id, s.result,
 // their reasons are computed in modelboard.BuildComparisons so they can be published: a model
 // absent from the board is a claim about that model, and "never verified" has to be
 // distinguishable from "never played".
-func (r *ModelBoardRepo) Seats(ctx context.Context, game string, start, end time.Time) ([]modelboard.Seat, error) {
-	rows, err := r.db.Query(ctx, modelBoardSeatsSQL, game, start, end)
+// publishableHosts are the upstreams whose responses may be attributed to a model. See
+// llmgw.PublishableUpstreamHosts for why the operator has to declare an override.
+func (r *ModelBoardRepo) Seats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]modelboard.Seat, error) {
+	rows, err := r.db.Query(ctx, modelBoardSeatsSQL, game, start, end, publishableHosts)
 	if err != nil {
 		return nil, err
 	}

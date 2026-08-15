@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -91,6 +92,18 @@ import (
 
 // version is injected at build time via -ldflags "-X main.version=$(git rev-parse --short HEAD)".
 var version = "dev"
+
+// publishableHosts is the set of upstreams whose responses may be published as a model
+// measurement, as a sorted slice for the SQL ANY(...) parameter.
+func publishableHosts() []string {
+	set := llmgw.PublishableUpstreamHosts(os.Getenv("BENCHMARK_EXTRA_HOSTS"))
+	out := make([]string, 0, len(set))
+	for h := range set {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -639,6 +652,15 @@ func run() error {
 	// is built: history is the one thing that cannot be backfilled — a fit describes the matches
 	// that existed at a moment, and that moment does not come again.
 	modelBoardSvc.SetHistoryWriter(modelBoardRepo)
+	// WHICH upstreams may be attributed to a model. Defaults to the vendor endpoints this
+	// binary ships, so a production deployment behaves exactly as before; BENCHMARK_EXTRA_HOSTS
+	// declares a legitimate override (an enterprise egress proxy, a self-hosted vLLM whose
+	// results the operator genuinely wants ranked).
+	//
+	// What it stops: a lab that points anthropic at a local stand-in records bound,
+	// well-formed `anthropic / claude-opus-4` calls that never left the machine. Without this
+	// they are indistinguishable from real ones and would be ranked as a model.
+	modelBoardSvc.SetPublishableHosts(publishableHosts())
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)

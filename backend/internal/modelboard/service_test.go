@@ -14,7 +14,7 @@ type stubSeats struct {
 	calls int
 }
 
-func (s *stubSeats) Seats(context.Context, string, time.Time, time.Time) ([]Seat, error) {
+func (s *stubSeats) Seats(context.Context, string, time.Time, time.Time, []string) ([]Seat, error) {
 	s.calls++
 	return s.seats, s.err
 }

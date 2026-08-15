@@ -35,6 +35,11 @@ type Service struct {
 
 	history HistoryWriter
 
+	// publishableHosts gates model ATTRIBUTION — see llmgw.PublishableUpstreamHosts. Empty
+	// means nothing is attributable, which is the correct failure: a board that cannot
+	// establish where a call went should show unattributed seats rather than guess.
+	publishableHosts []string
+
 	mu       sync.RWMutex
 	snapshot *Snapshot
 }
@@ -42,9 +47,22 @@ type Service struct {
 // SetHistoryWriter attaches per-day history persistence. Optional.
 func (s *Service) SetHistoryWriter(h HistoryWriter) { s.history = h }
 
+// SetPublishableHosts declares which upstreams may be attributed to a model.
+//
+// A setter rather than a constructor argument so an existing deployment keeps compiling,
+// but note what the zero value means: NO host is publishable, so every seat comes back
+// unattributed and the board is empty. That is deliberate. The alternative default —
+// publish everything — is how a lab stand-in ends up ranked as a model, which is the exact
+// failure this whole path exists to prevent. main wires it from llmgw's default set.
+func (s *Service) SetPublishableHosts(hosts []string) { s.publishableHosts = hosts }
+
 // SeatSource reads the seats a board is fitted from. Satisfied by *store.ModelBoardRepo.
+//
+// publishableHosts names the upstreams whose responses may be attributed to a model. It is
+// threaded through rather than read inside the repo so the rule is visible at the boundary:
+// what the board is willing to publish is a policy decision, not a storage detail.
 type SeatSource interface {
-	Seats(ctx context.Context, game string, start, end time.Time) ([]Seat, error)
+	Seats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]Seat, error)
 }
 
 // HistoryWriter persists one day's fitted board so a rating can be shown as a series.
@@ -122,7 +140,7 @@ func (s *Service) Snapshot() *Snapshot {
 func (s *Service) Refresh(ctx context.Context) error {
 	start := time.Now()
 	from := start.Add(-s.window)
-	seats, err := s.seats.Seats(ctx, "", from, start.Add(time.Hour))
+	seats, err := s.seats.Seats(ctx, "", from, start.Add(time.Hour), s.publishableHosts)
 	if err != nil {
 		return err
 	}

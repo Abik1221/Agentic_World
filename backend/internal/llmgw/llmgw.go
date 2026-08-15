@@ -51,6 +51,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -173,6 +174,15 @@ type Call struct {
 	LatencyMS int64
 	Status    int
 	Streamed  bool
+	// UpstreamHost is the host the gateway actually dialled, resolved from the configured
+	// upstream map rather than from anything the agent sent.
+	//
+	// It is what separates a measurement from a recording. `Provider` and `Model` say what
+	// the developer ASKED for and is billed for; this says who answered. In a lab the two
+	// routinely disagree — anthropic pointed at a local stand-in returns a perfectly
+	// well-formed, bindable response under the model name that was requested — and without
+	// this field nothing downstream can tell that call apart from a real one.
+	UpstreamHost string
 	// CostUSD is what this call cost, priced from the NORMALIZED token counts by the versioned
 	// table. Computed once here and carried, so the recorder and the Lens span cannot report
 	// two different costs for one call — and so pricing runs once rather than per consumer.
@@ -234,7 +244,53 @@ func DefaultUpstreams() map[string]string {
 		"groq":      "https://api.groq.com",
 		"mistral":   "https://api.mistral.ai",
 		"deepseek":  "https://api.deepseek.com",
+		// Already used in practice via an override. Shipping it as a default means its
+		// host is publishable without an operator having to declare it by hand.
+		"openrouter": "https://openrouter.ai/api",
 	}
+}
+
+// PublishableUpstreamHosts returns the hosts whose responses may be published as MODEL
+// measurements — on the harness benchmark, the model board, anywhere a model is ranked.
+//
+// The problem it solves is specific. provider/model are read from the request, and the
+// upstream map decides where that request actually goes. Point anthropic at a local
+// stand-in and the gateway records a bound, well-formed `anthropic / claude-opus-4` call
+// that never left the machine. Every lab run does exactly this, and afterwards nothing on
+// the row distinguishes it from a real call.
+//
+// The default set is the vendor endpoints this binary ships, which gives the two behaviours
+// that matter without anyone configuring anything:
+//
+//   - a production deployment on the defaults publishes everything, as before;
+//   - a lab pointing a provider at a stand-in publishes nothing from it, because the
+//     stand-in's host is not in the set.
+//
+// A deployment with a legitimate override — an enterprise egress proxy, a self-hosted vLLM
+// whose results it genuinely wants ranked — declares that host explicitly. Requiring the
+// declaration is the point: publishing a model ranking is a claim about a model, and the
+// operator should have to say which hosts they stand behind.
+func PublishableUpstreamHosts(extra string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, base := range DefaultUpstreams() {
+		if h := upstreamHost(base); h != "" {
+			out[h] = struct{}{}
+		}
+	}
+	for _, raw := range strings.Split(extra, ",") {
+		// Accept a bare host or a full URL, because an operator copying from
+		// LLM_GATEWAY_UPSTREAMS will paste whichever they have to hand.
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if h := upstreamHost(v); h != "" {
+			out[h] = struct{}{}
+			continue
+		}
+		out[v] = struct{}{}
+	}
+	return out
 }
 
 // UpstreamsFromEnv parses a "slug=url,slug=url" override list onto the defaults.
@@ -246,6 +302,22 @@ func DefaultUpstreams() map[string]string {
 //
 // Still an allowlist afterwards — this widens what an OPERATOR permits, never what an agent
 // can request. An agent naming its own upstream would be an SSRF pivot and an open relay.
+// upstreamHost reduces a configured upstream base URL to its host, for recording on each
+// call. Ports are kept: a stand-in and a real provider can share a hostname and differ
+// only by port, and collapsing them would erase exactly the distinction being recorded.
+//
+// An unparseable base returns "" — UNKNOWN, never a guess. Everything downstream treats
+// an empty host as "provenance not established" and refuses to publish it as a model
+// measurement, so a malformed config costs us a row on the board rather than putting an
+// unverifiable one on it.
+func upstreamHost(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
 func UpstreamsFromEnv(raw string) map[string]string {
 	out := DefaultUpstreams()
 	for _, pair := range strings.Split(raw, ",") {
@@ -361,6 +433,12 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 		AgentPublicID: agentPublicID,
 		MatchID:       r.Header.Get(HeaderMatch),
 		Provider:      providerSlug,
+		// WHERE this call actually went, captured here because this is the only moment the
+		// fact exists. Provider and Model are read from the request — what the developer
+		// asked for — and `base` is what LLM_GATEWAY_UPSTREAMS resolved that to. Point a
+		// provider at a local stand-in and the two disagree completely, with nothing on the
+		// row to say so afterwards.
+		UpstreamHost: upstreamHost(base),
 	}
 	call.Round, _ = strconv.Atoi(r.Header.Get(HeaderTurn))
 	call.Model, call.Streamed = peekRequest(body)
