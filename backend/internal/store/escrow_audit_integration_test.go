@@ -109,7 +109,6 @@ func TestOnlyAPayoutHoldExplainsRetainedEscrow(t *testing.T) {
 		t.Fatalf("seed stake txn: %v", err)
 	}
 
-
 	// WITHOUT the hold record the audit must call this out — otherwise the test would pass for
 	// the wrong reason, and a check that never fires is not a check.
 	withMatch := unexplained()

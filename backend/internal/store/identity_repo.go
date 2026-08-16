@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/agent-arena/arena/internal/identity"
@@ -917,4 +918,71 @@ func ensureUserWallet(ctx context.Context, tx pgx.Tx, userID int64) error {
 		 SELECT $1, 'user', 0 WHERE NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1)`,
 		userID)
 	return err
+}
+
+// CreatePlatformAgent creates an agent under an EXISTING owner, creating no user account.
+//
+// Every other path in this file mints a user and an agent together, because every other path
+// is somebody signing up. The platform's own benchmark agents are not somebody: there is no
+// person behind them, no email that should receive mail, and no password that should exist.
+// Minting a throwaway account per benchmark seat produced exactly what you would expect —
+// `lab+78611-0@pyyol.test` rows sitting in the users table looking like developers.
+//
+// So they hang off `usr_system`, the same owner the house bots already use (migration 0017).
+// One platform identity, no credentials, and a users table that only ever contains people.
+func (r *IdentityRepo) CreatePlatformAgent(ctx context.Context, in identity.PlatformAgentInput) (identity.Agent, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return identity.Agent{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The owner must already exist. Created here on demand it would be a second place that
+	// defines the system identity, and the two would disagree the first time one changed.
+	var ownerID int64
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM users WHERE public_id = $1`, in.OwnerPublicID).Scan(&ownerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.Agent{}, fmt.Errorf("platform owner %q does not exist", in.OwnerPublicID)
+		}
+		return identity.Agent{}, err
+	}
+
+	l := in.Limits
+	var agentID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO agents (public_id, owner_user_id, name, slug, description, framework,
+		     status, verification_level, coin_limit_per_match, daily_loss_limit, session_loss_limit,
+		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid,
+		     auto_join, kind)
+		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		 RETURNING id`,
+		in.AgentPublicID, ownerID, in.AgentName, in.AgentSlug, nullString(in.Description),
+		nullString(in.Framework), l.CoinLimitPerMatch, l.DailyLossLimit, l.SessionLossLimit,
+		l.MinWalletBalance, l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds,
+		l.MaxBid, l.AutoJoin, in.Kind).Scan(&agentID); err != nil {
+		return identity.Agent{}, err
+	}
+
+	// The key and the wallet, exactly as CreateAccount issues them. A benchmark agent
+	// authenticates and holds a wallet like any other seat — what differs is who owns it and
+	// which boards its results reach, not how it plays.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
+		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+		return identity.Agent{}, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO wallets (agent_id, kind, balance) VALUES ($1, 'agent', 0)`,
+		agentID); err != nil {
+		return identity.Agent{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return identity.Agent{}, err
+	}
+	return identity.Agent{
+		PublicID: in.AgentPublicID, OwnerPublicID: in.OwnerPublicID, Name: in.AgentName,
+		Slug: in.AgentSlug, Description: in.Description, Status: "unverified", Limits: in.Limits,
+	}, nil
 }

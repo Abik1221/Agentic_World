@@ -141,9 +141,13 @@ func TestBoardHistoryKeepsBoardsIndependent(t *testing.T) {
 
 	const model = "test/independence-probe"
 	day := time.Now().UTC().Truncate(24 * time.Hour)
-	t.Cleanup(func() {
+	// Cleared BEFORE as well as after, for the same reason: rows left by a run that failed
+	// partway make the next run count them and fail on the wrong assertion.
+	clear := func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM model_board_history WHERE model=$1`, model)
-	})
+	}
+	clear()
+	t.Cleanup(clear)
 
 	// Same model, same day, two boards, deliberately different numbers.
 	if err := repo.RecordBoardHistory(ctx, "developer", day, 90,

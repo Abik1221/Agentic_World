@@ -49,6 +49,23 @@ func main() {
 	// platform reaches an agent it shares no network with, and that nothing on the turn path
 	// quietly assumes a docker hostname or a local port.
 	publicURL := flag.String("public-url", "", "external base URL for seat 0 (e.g. a tunnel); empty = all agents local")
+	// Seating agents this process does NOT host.
+	//
+	// -public-url already did this for seat 0, for the tunnel case. The benchmark needs it
+	// for EVERY seat: the model harness (harness/bench) is a Python process per model, and
+	// the whole point of the run is that those processes decide the moves. gamelab keeps the
+	// parts that are hard and already correct — admin onboarding as kind='harness', manifest
+	// verification, wallet funding, the group queue, batching — and stops pretending to be
+	// the brain.
+	//
+	// A seat with a URL here is not served locally; the external process is expected to be
+	// already listening, and onboarding's own verification probe is what proves it. That
+	// probe is why an unreachable URL fails loudly at registration rather than as a forfeit
+	// on the first turn.
+	agentURLs := flag.String("agent-urls", "",
+		"comma-separated base URLs, one per seat, for agents hosted OUTSIDE this process "+
+			"(e.g. \"http://bench-opus5:9101,http://bench-gpt56:9102\"). An empty entry means "+
+			"host that seat locally as usual. Overrides -public-url for the seats it names.")
 	churn := flag.Int("churn", 0, "run the queue-churn test for N ticks: a mixed population of autoplay, one-shot, underfunded and late-joining agents")
 	// Completion binding. Off by default: adding a proxy hop to an ordinary run would change
 	// the shot-clock and forfeit behaviour the lab exists to measure.
@@ -154,6 +171,11 @@ func main() {
 		// four behaviours can actually interfere with each other.
 		n = 5
 	}
+	// One entry per seat, empty where the seat is hosted locally. Split once rather than
+	// per iteration so a trailing comma or a short list is a defined shape (missing seats
+	// simply fall through to local hosting) instead of an index panic mid-onboarding.
+	externalURLs := splitSeatURLs(*agentURLs, n)
+
 	agents := make([]*labAgent, 0, n)
 	for i := 0; i < n; i++ {
 		p := personas[i%len(personas)]
@@ -163,6 +185,11 @@ func main() {
 			Port:    *basePort + i,
 			Host:    agentHost,
 			PublicURL: func() string {
+				// -agent-urls wins where it names a seat: it is the more specific flag, and
+				// a run that set both almost certainly meant the per-seat one.
+				if externalURLs[i] != "" {
+					return externalURLs[i]
+				}
 				if i == 0 {
 					return *publicURL
 				}
@@ -171,10 +198,20 @@ func main() {
 			api: a,
 			log: log.New(os.Stdout, fmt.Sprintf("[%-14s] ", p.Name), log.Ltime),
 		}
-		if err := ag.serve(); err != nil {
-			lg.Fatalf("FATAL: agent %s could not listen on :%d: %v", p.Name, ag.Port, err)
+		// Only bind a port for a seat WE host. Serving a local endpoint for an externally
+		// hosted seat would bind a port nobody calls, and — worse — would answer /health and
+		// /handshake, so a misconfigured URL would pass verification against the wrong
+		// process and the run would silently measure gamelab's built-in strategy instead of
+		// the model. Not serving makes that failure loud.
+		if externalURLs[i] == "" {
+			if err := ag.serve(); err != nil {
+				lg.Fatalf("FATAL: agent %s could not listen on :%d: %v", p.Name, ag.Port, err)
+			}
+			lg.Printf("agent endpoint up: %s → %s", p.Name, ag.endpointURL())
+		} else {
+			lg.Printf("agent endpoint EXTERNAL: %s → %s (this process will not serve it)",
+				p.Name, ag.endpointURL())
 		}
-		lg.Printf("agent endpoint up: %s → %s", p.Name, ag.endpointURL())
 		agents = append(agents, ag)
 	}
 
@@ -537,4 +574,28 @@ func waitPublicReachable(playURL string, timeout time.Duration) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("no 200 from %s within %s (last: %v)", healthURL, timeout, last)
+}
+
+// splitSeatURLs turns the -agent-urls list into exactly n entries, one per seat.
+//
+// Short lists pad with "" (host that seat locally) and long ones are truncated, because the
+// alternative — indexing a caller-supplied slice by seat — turns a trailing comma into a
+// panic partway through onboarding, after accounts have been created and funded. A run that
+// seats one fewer external agent than intended is recoverable; a half-onboarded run leaves
+// wallets and agents behind.
+//
+// Entries are trimmed and their trailing slash removed so "http://h:9101/" and "http://h:9101"
+// are the same seat, which matters because endpointURL appends "/play".
+func splitSeatURLs(raw string, n int) []string {
+	out := make([]string, n)
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	for i, part := range strings.Split(raw, ",") {
+		if i >= n {
+			break
+		}
+		out[i] = strings.TrimRight(strings.TrimSpace(part), "/")
+	}
+	return out
 }

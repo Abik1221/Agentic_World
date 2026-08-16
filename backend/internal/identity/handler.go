@@ -299,20 +299,44 @@ func (h *Handler) adminCreateAgent(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, errInvalid("kind is required"))
 		return
 	}
-	res, err := h.svc.SignUpAs(r.Context(), in.Email, in.Password, in.AgentName, in.Description,
-		strings.TrimSpace(in.Kind))
+	kind := strings.TrimSpace(in.Kind)
+
+	// PLATFORM agents create no user account.
+	//
+	// This route used to run every kind through SignUpAs, which mints a user with an email
+	// and a password. For the platform's own benchmark seats that produced a throwaway
+	// account each — `lab+78611-0@pyyol.test` and its siblings sitting in the users table
+	// beside real developers, and their matches attributed to the DEVELOPER board.
+	//
+	// A benchmark seat has no person behind it. It hangs off `usr_system`, the identity the
+	// house bots have used since migration 0017, and email/password on the request are
+	// ignored rather than rejected: an admin script that still sends them keeps working, and
+	// nothing it sends can bring an account into existence.
+	var res SignUpResult
+	var err error
+	if kind == KindExternal {
+		res, err = h.svc.SignUpAs(r.Context(), in.Email, in.Password, in.AgentName, in.Description, kind)
+	} else {
+		res, err = h.svc.CreatePlatformAgent(r.Context(), in.AgentName, in.Description, kind)
+	}
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{
-		"dashboard_token": res.DashboardToken,
-		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
-		"api_key":         res.APIKey, // shown exactly once
-		"agent_id":        res.AgentID,
-		"agent_name":      res.AgentName,
-		"kind":            strings.TrimSpace(in.Kind),
-	})
+	out := map[string]any{
+		"api_key":    res.APIKey, // shown exactly once
+		"agent_id":   res.AgentID,
+		"agent_name": res.AgentName,
+		"kind":       kind,
+	}
+	// Session tokens only where there is a session to hold them. A platform agent has no
+	// owner who can log in, and handing back a dashboard token for one would be issuing a
+	// login to an account nobody has.
+	if res.DashboardToken != "" {
+		out["dashboard_token"] = res.DashboardToken
+		out["refresh_token"] = h.issueRefresh(r.Context(), res.UserPublicID)
+	}
+	httpx.JSON(w, http.StatusCreated, out)
 }
 
 // login authenticates an email + password and returns a fresh dashboard session.

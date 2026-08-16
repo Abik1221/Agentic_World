@@ -81,6 +81,9 @@ type Repo interface {
 	// the agent's first API key. Returns ErrEmailTaken if the email already
 	// belongs to an account. This is the email/password analogue of CompleteClaim.
 	CreateAccount(ctx context.Context, in CreateAccountInput) (Agent, User, error)
+	// CreatePlatformAgent attaches an agent to an EXISTING owner and creates no user.
+	// See PlatformAgentInput for why the platform's own agents must not mint accounts.
+	CreatePlatformAgent(ctx context.Context, in PlatformAgentInput) (Agent, error)
 
 	// UpsertGoogleAccount find-or-creates the account for a verified Google identity.
 	// Existing google_sub → returns that user + its agent (created=false). Else if a
@@ -172,4 +175,28 @@ type CompleteClaimInput struct {
 	KeyHash       string
 	UserPublicID  string // used only when a new user must be created
 	Limits        Limits
+}
+
+// PlatformAgentInput creates an agent under an existing owner, with NO user account.
+//
+// Distinct from CreateAccountInput by exactly what it lacks: no email, no password hash, no
+// user public id to mint. That absence is the point — the platform's benchmark agents have
+// no person behind them, and giving each one a throwaway login is how `lab+…@pyyol.test`
+// rows ended up in the users table looking like developers.
+type PlatformAgentInput struct {
+	// OwnerPublicID must already exist. `usr_system` (migration 0017) is the platform
+	// identity the house bots already hang off.
+	OwnerPublicID string
+	AgentPublicID string
+	AgentName     string
+	AgentSlug     string
+	Description   string
+	Framework     string
+	KeyPrefix     string
+	KeyHash       string
+	Limits        Limits
+	// Kind is the platform kind being created. Never KindExternal: a developer's agent has
+	// an owner who is a person, and routing one through here would hide it under the system
+	// account where its owner could never reach it.
+	Kind string
 }

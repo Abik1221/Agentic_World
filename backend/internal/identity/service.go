@@ -511,3 +511,71 @@ func newClaimToken() string {
 	}
 	return "AA-" + seg() + "-" + seg()
 }
+
+// SystemOwnerPublicID is the platform's own identity — the owner the house bots have used
+// since migration 0017. Platform agents hang off it so the users table only ever contains
+// people.
+const SystemOwnerPublicID = "usr_system"
+
+// CreatePlatformAgent creates one of the PLATFORM's agents: owned by the system identity,
+// with no user account, no email and no password.
+//
+// The benchmark is the platform measuring itself, so its seats are not developers and must
+// not be represented as them. Creating them through SignUpAs did exactly that — a throwaway
+// account per seat, which is how `lab+78611-0@pyyol.test` ended up in the users table beside
+// real people, and how 397 bound model calls ended up attributed to the DEVELOPER board.
+//
+// Refuses KindExternal. A developer's agent has a person behind it; routing one through here
+// would bury it under the system account where its actual owner could never reach it.
+func (s *Service) CreatePlatformAgent(ctx context.Context, agentName, description, kind string) (SignUpResult, error) {
+	if err := ValidateCreatableKind(kind); err != nil {
+		return SignUpResult{}, err
+	}
+	if kind == KindExternal {
+		return SignUpResult{}, errInvalid("external agents belong to a person; create them through sign-up")
+	}
+	agentName = strings.TrimSpace(agentName)
+	if !validAgentName(agentName) {
+		return SignUpResult{}, errInvalid("agent name must be 3–32 characters: letters, digits, _ or -")
+	}
+	key, err := generateKey(s.pepper)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	agent, err := s.repo.CreatePlatformAgent(ctx, PlatformAgentInput{
+		OwnerPublicID: SystemOwnerPublicID,
+		AgentPublicID: platform.NewID(platform.PrefixAgent),
+		AgentName:     agentName,
+		AgentSlug:     slugify(agentName),
+		Description:   strings.TrimSpace(description),
+		KeyPrefix:     key.Prefix,
+		KeyHash:       key.Hash,
+		Kind:          kind,
+		Limits:        LimitsForKind(kind),
+	})
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	// A session for the PLATFORM identity, not for a new account.
+	//
+	// The agent still has to be funded and still has to submit a manifest, and both routes
+	// are owner-scoped — RequireScope(ScopeUser) rejects a Platform-scope principal outright,
+	// so without a user-scope token onboarding dies before the first match. Widening those
+	// routes to accept Platform scope was the alternative and it is worse: it would loosen
+	// wallet and manifest authorization platform-wide to fix one caller.
+	//
+	// What was actually wrong was minting an ACCOUNT PER SEAT. One shared platform identity
+	// owning every benchmark agent is the thing being asked for, and `usr_system` has been
+	// exactly that since migration 0017.
+	dash, err := s.jwt.Issue(SystemOwnerPublicID)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	return SignUpResult{
+		APIKey:         key.Raw,
+		AgentID:        agent.PublicID,
+		AgentName:      agent.Name,
+		UserPublicID:   SystemOwnerPublicID,
+		DashboardToken: dash,
+	}, nil
+}

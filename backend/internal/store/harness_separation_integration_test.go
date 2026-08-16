@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/identity"
 	"os"
 	"testing"
 
@@ -180,4 +181,89 @@ func trimLeadingSpace(s string) string {
 		i++
 	}
 	return s[i:]
+}
+
+// TestPlatformAgentCreatesNoUserAccount pins what "admin only, no user account" means.
+//
+// The benchmark is the platform measuring itself. Its seats are not developers, and the
+// users table should only ever contain people. Creating them through the sign-up path put a
+// throwaway account behind each one — `lab+78611-0@pyyol.test` and its siblings, sitting
+// beside real developers, indistinguishable from them in any query that reads users.
+//
+// Asserts both halves: an agent exists, owned by the system identity, and the user count did
+// not move. Counting users is the part that matters — an assertion that only checked the
+// owner would pass just as well if a fresh account had been created AND then re-pointed.
+func TestPlatformAgentCreatesNoUserAccount(t *testing.T) {
+	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	repo := NewIdentityRepo(pool)
+	const pub = "ag_platform_owner_probe"
+	// Cleared BEFORE as well as after. Cleanup only runs if the test reaches it, so a single
+	// mid-test failure leaves this row behind and every later run dies on the unique
+	// constraint instead of on the thing being tested.
+	// Children first: CreatePlatformAgent issues a key and opens a wallet in the same
+	// transaction, and both hold a foreign key onto the agent — deleting the agent alone
+	// fails and leaves the row that breaks the next run.
+	clear := func() {
+		c := context.Background()
+		for _, q := range []string{
+			`DELETE FROM agent_keys WHERE agent_id IN (SELECT id FROM agents WHERE public_id=$1)`,
+			`DELETE FROM wallets    WHERE agent_id IN (SELECT id FROM agents WHERE public_id=$1)`,
+			`DELETE FROM agents     WHERE public_id=$1`,
+		} {
+			_, _ = pool.Exec(c, q, pub)
+		}
+	}
+	clear()
+	t.Cleanup(clear)
+	var before int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&before); err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+
+	agent, err := repo.CreatePlatformAgent(ctx, identity.PlatformAgentInput{
+		OwnerPublicID: identity.SystemOwnerPublicID,
+		AgentPublicID: pub,
+		AgentName:     "platform-probe",
+		AgentSlug:     pub,
+		KeyPrefix:     "pk_probe_" + pub[3:11],
+		KeyHash:       "not-a-real-hash",
+		Kind:          identity.KindHarness,
+		Limits:        identity.LimitsForKind(identity.KindHarness),
+	})
+	if err != nil {
+		t.Fatalf("CreatePlatformAgent: %v", err)
+	}
+	if agent.OwnerPublicID != identity.SystemOwnerPublicID {
+		t.Errorf("owner = %q, want the system identity", agent.OwnerPublicID)
+	}
+
+	var after int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&after); err != nil {
+		t.Fatalf("recount users: %v", err)
+	}
+	if after != before {
+		t.Errorf("creating a platform agent added %d user account(s); it must add none", after-before)
+	}
+
+	// And it really is a harness agent under the system owner, which is what keeps it off
+	// every public developer surface.
+	var kind, owner string
+	if err := pool.QueryRow(ctx,
+		`SELECT a.kind, u.public_id FROM agents a JOIN users u ON u.id=a.owner_user_id
+		  WHERE a.public_id=$1`, pub).Scan(&kind, &owner); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if kind != identity.KindHarness || owner != identity.SystemOwnerPublicID {
+		t.Errorf("stored kind=%q owner=%q, want harness under %q", kind, owner, identity.SystemOwnerPublicID)
+	}
 }
