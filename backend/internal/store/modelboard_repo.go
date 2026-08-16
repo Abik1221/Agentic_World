@@ -112,6 +112,20 @@ verified AS (
      -- that never left the machine. Rows written before migration 0092 carry '' and are
      -- excluded as UNKNOWN provenance rather than assumed real.
      AND mc.upstream_host = ANY($4)
+     -- AND THE UPSTREAM MUST HAVE ANSWERED.
+     --
+     -- bound means the TURN PROOF verified — that this call belongs to this decision. It
+     -- does not mean the provider returned anything. A 401 or a 429 is a bound call with no
+     -- completion, no tokens and no model output, and reading it as attribution credits a
+     -- model for a request it never saw.
+     --
+     -- Measured, not hypothetical: of 251 bound harness calls in the lab, 108 were OpenRouter
+     -- failures (25 unauthorized, 83 rate-limited) and 33 were Groq failures. Without this
+     -- line the board ranked two Gemma models whose every single call had been rejected.
+     --
+     -- The decision-binding path already requires 2xx (llmgw.Proxy); attribution read a
+     -- different column and inherited none of that check.
+     AND mc.status BETWEEN 200 AND 299
    ORDER BY mc.agent_id, mc.match_id, mc.id DESC
 ),
 -- The harness that actually played the match: the most frequent fingerprint across the seat's

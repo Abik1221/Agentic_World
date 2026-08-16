@@ -267,3 +267,78 @@ func TestPlatformAgentCreatesNoUserAccount(t *testing.T) {
 		t.Errorf("stored kind=%q owner=%q, want harness under %q", kind, owner, identity.SystemOwnerPublicID)
 	}
 }
+
+// TestFailedUpstreamCallsAreNotAttributed pins the difference between "we proved this call
+// belongs to this decision" and "a model answered".
+//
+// agent_model_calls.bound records only the TURN PROOF. A 401 or a 429 verifies its proof
+// exactly like a success does — it is a real request, made for a real turn — but the
+// provider returned nothing: no completion, no tokens, no decision. Reading bound alone as
+// attribution credits a model for a request it never saw.
+//
+// This is not hypothetical. Of 251 bound harness calls in this database, 108 were OpenRouter
+// failures (25 unauthorized, 83 rate-limited) and 33 were Groq failures. The board ranked two
+// Gemma models whose every single call had been rejected, on a page whose entire claim is
+// that its numbers are measured.
+//
+// The decision-binding path already required 2xx; attribution read a different column and
+// inherited none of that check.
+func TestFailedUpstreamCallsAreNotAttributed(t *testing.T) {
+	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set PYYOL_TEST_DATABASE_URL to a migrated Postgres to run this")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	var failedBound, attributable int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+		  count(*) FILTER (WHERE bound AND (status < 200 OR status > 299)),
+		  count(*) FILTER (WHERE bound AND status BETWEEN 200 AND 299
+		                     AND upstream_host = ANY($1) AND COALESCE(model,'') <> '')
+		FROM agent_model_calls`, realHosts()).Scan(&failedBound, &attributable); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	t.Logf("bound-but-failed calls: %d; genuinely attributable: %d", failedBound, attributable)
+	if failedBound == 0 {
+		t.Skip("no failed calls in this database — nothing for the rule to exclude")
+	}
+
+	// The rule, asserted directly against the same predicate the board uses: no model may be
+	// attributable on the strength of calls that all failed.
+	rows, err := pool.Query(ctx, `
+		SELECT provider || '/' || model,
+		       count(*) FILTER (WHERE status BETWEEN 200 AND 299) AS ok,
+		       count(*) AS total
+		  FROM agent_model_calls
+		 WHERE bound AND COALESCE(model,'') <> '' AND upstream_host = ANY($1)
+		 GROUP BY 1 HAVING count(*) FILTER (WHERE status BETWEEN 200 AND 299) = 0`, realHosts())
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var ok, total int
+		if err := rows.Scan(&key, &ok, &total); err != nil {
+			t.Fatal(err)
+		}
+		// Reaching here means a model exists whose calls ALL failed. That model must not be
+		// attributable, and the board's own filter is what has to exclude it.
+		var boardSees int
+		if err := pool.QueryRow(ctx, `
+			SELECT count(*) FROM agent_model_calls
+			 WHERE bound AND status BETWEEN 200 AND 299 AND upstream_host = ANY($1)
+			   AND provider || '/' || model = $2`, realHosts(), key).Scan(&boardSees); err != nil {
+			t.Fatal(err)
+		}
+		if boardSees != 0 {
+			t.Errorf("%s has %d/%d successful calls yet the board attributes %d", key, ok, total, boardSees)
+		}
+	}
+}

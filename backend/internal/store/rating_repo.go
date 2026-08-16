@@ -60,7 +60,7 @@ var _ rating.Repo = (*RatingRepo)(nil)
 // not that we successfully sent something and were turned away.
 func publishedAgent(alias string) string {
 	return `EXISTS (SELECT 1 FROM agent_model_calls mc
-	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> ''
+	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND mc.status BETWEEN 200 AND 299 AND COALESCE(mc.model,'') <> ''
 	                   AND mc.status BETWEEN 200 AND 299)`
 }
 
@@ -722,7 +722,7 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		 -- call proves nothing about which model decided a move, and this is the top tier.
 		 LEFT JOIN LATERAL (
 		   SELECT mc.provider, mc.model FROM agent_model_calls mc
-		    WHERE mc.agent_id = a.id AND mc.bound AND mc.model <> ''
+		    WHERE mc.agent_id = a.id AND mc.bound AND mc.status BETWEEN 200 AND 299 AND mc.model <> ''
 		    ORDER BY mc.id DESC LIMIT 1
 		 ) gw ON true
 		 -- The most recent model the SDK reported for a real match.
