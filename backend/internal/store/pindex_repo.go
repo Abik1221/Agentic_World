@@ -815,10 +815,18 @@ func (r *PIndexRepo) PutConfig(ctx context.Context, version int, params []byte) 
 
 // ActivateConfig makes exactly one version live.
 //
-// One statement, so there is never an instant with two active configs or none. The table
-// carries a UNIQUE partial index on active, which would reject a two-step deactivate/
-// activate anyway — and an interval with NO active config would leave every recompute
-// unable to score at all.
+// Clear-then-set inside one transaction. The obvious one-liner
+// `UPDATE pindex_config SET active = (version = $1)` LOOKS atomic, but the UNIQUE
+// partial index on active is enforced PER ROW as the statement walks the table: if
+// the target row is updated before the currently-active row is cleared, two rows are
+// briefly active at once and Postgres rejects the whole statement. Whether that
+// happens depends on physical row order, so it fails exactly when activating a version
+// whose row precedes the live one — i.e. rolling BACK to an older version reliably 500s.
+//
+// Deactivating first (0 active) then activating (1 active) can never produce two active
+// rows regardless of order. The interim 0-active state lives only inside this
+// transaction: MVCC keeps concurrent recomputes reading the previous active row until
+// COMMIT flips them to the new one, so no reader ever sees zero active configs.
 func (r *PIndexRepo) ActivateConfig(ctx context.Context, version int) error {
 	var exists bool
 	if err := r.db.QueryRow(ctx,
@@ -828,6 +836,16 @@ func (r *PIndexRepo) ActivateConfig(ctx context.Context, version int) error {
 	if !exists {
 		return httpx.NewError(404, "not_found", "no such P-Index config version")
 	}
-	_, err := r.db.Exec(ctx, `UPDATE pindex_config SET active = (version = $1)`, version)
-	return err
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE pindex_config SET active = false WHERE active`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE pindex_config SET active = true WHERE version = $1`, version); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

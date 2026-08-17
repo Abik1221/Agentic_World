@@ -324,3 +324,35 @@ func (a *api) setAutoplay(agentKey string, enabled bool, mode string, bid int64,
 		"enabled": enabled, "mode": mode, "bid": bid, "games": games,
 	}, nil)
 }
+
+// createFreeTable opens a ZERO-STAKE table and returns its id.
+//
+// Same lobby endpoint a developer uses, with no tier and no bid. gamestakes.ResolveStake
+// already reads that as "no tier, no fee → no-stakes practice" and resolves the entry fee to
+// 0, so this needs no new route and no exemption: it is the ordinary path, asked for the
+// ordinary free case.
+//
+// This is what the platform benchmark needs and what it never had. runStakedTable pairs two
+// agents but funds and stakes them, which a research harness must not do — the house never
+// stakes, and neither does this. startSandboxPushPlay stakes nothing but opens ONE table per
+// agent against house bots, so two benchmark models never meet and the run yields no
+// comparison to fit.
+func (a *api) createFreeTable(agentKey string) (string, error) {
+	var out struct {
+		MatchID string `json:"match_id"`
+		ID      string `json:"id"`
+	}
+	if err := a.mustDo("create free table", http.MethodPost, "/v1/lobby/create", agentKey,
+		map[string]any{}, &out, http.StatusCreated, http.StatusOK); err != nil {
+		return "", err
+	}
+	return firstNonEmpty(out.MatchID, out.ID), nil
+}
+
+// enqueueFree puts an agent into the group queue with NO tier, for the N-player games.
+//
+// Mafia and Monopoly do not use the 1v1 lobby; they matchmake through the group queue, and
+// the queue resolves an absent tier to a zero entry fee exactly as the lobby does.
+func (a *api) enqueueFree(agentKey, game string) (int, string, error) {
+	return a.do(http.MethodPost, "/v1/group-queue", agentKey, map[string]any{"game": game}, nil)
+}

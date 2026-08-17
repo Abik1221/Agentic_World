@@ -301,11 +301,38 @@ func main() {
 	startOne := func() error {
 		if *tier != "" {
 			if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {
+				// A HARNESS RUN MUST NOT FALL BACK. Free push-play seats HOUSE BOTS around
+				// the agent, and a house bot produces no benchmark row — so the match yields
+				// ONE attributed seat instead of two, and a paired comparison needs two in
+				// the same match. The fallback therefore turns a benchmark table into a
+				// non-event that still looks like a completed match afterwards.
+				//
+				// Measured, not feared: a 4-match batch produced 8 matches each seating one
+				// harness agent against ag_house_challenger, 43 attributable model calls, and
+				// ZERO comparisons. The board kept showing older data and nothing said why.
+				//
+				// Same rule createHarnessAccount already applies to signup: a harness run that
+				// cannot do the right thing stops, rather than quietly doing a different thing
+				// that reads as success.
+				if HarnessMode {
+					return fmt.Errorf("harness: staked table could not start: %w — NOT falling "+
+						"back to free push-play, which would seat house bots and produce a "+
+						"match with no opponent to compare against", err)
+				}
 				lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
 				startFreePushPlay(a, lg, agents, *game)
 			}
 			return nil
 		}
+		// NOT YET runHarnessTable. The zero-stake pairing it needs does not exist in the
+		// backend: match.CreateOpen requires bid > 0, so the 1v1 lobby cannot open a free
+		// table, and the only zero-stake path (sandbox push-play) seats HOUSE BOTS.
+		//
+		// Wiring it here would make every harness run fail rather than produce house-bot
+		// tables — and while those tables yield no comparison, failing outright is a
+		// regression against a path that currently runs. The honest fix is a backend path
+		// that seats two harness agents at zero stake; until then this stays as it was and
+		// runHarnessTable waits, unused and documented, for that endpoint.
 		startFreePushPlay(a, lg, agents, *game)
 		return nil
 	}
@@ -598,4 +625,64 @@ func splitSeatURLs(raw string, n int) []string {
 		out[i] = strings.TrimRight(strings.TrimSpace(part), "/")
 	}
 	return out
+}
+
+// runHarnessTable seats the PLATFORM's benchmark agents against EACH OTHER, at zero stake.
+//
+// The third path, and the one the benchmark actually needs. The other two each get half of
+// it right:
+//
+//	runStakedTable      pairs two agents — and funds and stakes them. A research harness
+//	                    must not stake: "the house never stakes" is an invariant of this
+//	                    platform, and a benchmark seat winning coins would be fraud.
+//	startFreePushPlay   stakes nothing — and opens ONE table per agent against house bots.
+//	                    A house bot writes no benchmark row, so each table yields a single
+//	                    attributed seat, and a paired comparison needs two IN THE SAME
+//	                    MATCH. Measured: a 4-match batch produced 8 tables, 43 real model
+//	                    calls and ZERO comparisons.
+//
+// So: the ordinary lobby, with no tier. gamestakes.ResolveStake already resolves that to a
+// zero entry fee, which is why this needs no new endpoint and no exemption cut into a fee
+// check — the free case was always expressible, and nothing was asking for it.
+//
+// Deliberately leaves the developer paths untouched. Both remain exactly as they were; this
+// is only reached when -harness is set and no tier was given, which is the shape
+// run_pairing.sh already invokes.
+func runHarnessTable(a *api, lg *log.Logger, agents []*labAgent, game string) error {
+	need := seatsFor(game)
+	if len(agents) < need {
+		return fmt.Errorf("need %d agents for a %s benchmark table, have %d", need, game, len(agents))
+	}
+
+	// N-player games matchmake through the group queue; the 1v1 lobby is Goofspiel's. Using
+	// the wrong one is what previously made `-game mafia` produce a Goofspiel table.
+	if isGroupGame(game) {
+		for _, ag := range agents {
+			code, body, err := a.enqueueFree(ag.AgentKey, game)
+			if err != nil {
+				return fmt.Errorf("enqueue %s: %w", ag.Persona.Name, err)
+			}
+			if code < 200 || code > 299 {
+				return fmt.Errorf("enqueue %s: HTTP %d — %s", ag.Persona.Name, code, body)
+			}
+			lg.Printf("QUEUED  %-14s  %s (benchmark, no stake)", ag.Persona.Name, game)
+		}
+		return nil
+	}
+
+	host, guest := agents[0], agents[1]
+	matchID, err := a.createFreeTable(host.AgentKey)
+	if err != nil {
+		return fmt.Errorf("create benchmark table for %s: %w", host.Persona.Name, err)
+	}
+	if err := a.joinStakedTable(guest.AgentKey, matchID); err != nil {
+		// Named for what it costs: the host is now sitting at a table nobody joined, and the
+		// run would otherwise continue and report a match that never had an opponent.
+		return fmt.Errorf("seat %s opposite %s at %s: %w",
+			guest.Persona.Name, host.Persona.Name, matchID, err)
+	}
+	lg.Printf("BENCHMARK TABLE  %s  %s vs %s  (no stake)",
+		matchID, host.Persona.Name, guest.Persona.Name)
+	lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
+	return nil
 }
