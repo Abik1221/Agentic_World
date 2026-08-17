@@ -451,6 +451,29 @@ var modelFactCTEHarness = func() string {
 	if out == s {
 		panic("rating: harness fact CTE substitution missed the rated filter — the source moved")
 	}
+	// GATEWAY ATTRIBUTION ONLY. The developer fact falls back to the SDK-reported model and
+	// then the manifest-declared one, which is right for a developer board: a developer who
+	// has not routed through the gateway still played, and saying so with a lower attribution
+	// rank is more useful than dropping them.
+	//
+	// It is wrong here. A PLATFORM benchmark exists to publish what a provider was observed to
+	// return; a name the agent asserted about itself is precisely what it is not. Seeded
+	// without the verified rows, the fallback made the page advertise `claude-opus-4` and
+	// `gpt-5.2` — the lab personas' DECLARED models, for calls no such model answered.
+	attr := strings.Replace(out,
+		`COALESCE(NULLIF(v.model,''),    NULLIF(b.observed_model,''),
+                  NULLIF(b.declared_model,''),    NULLIF(dc.model,''),    '') AS model`,
+		`NULLIF(v.model,'') AS model`, 1)
+	if attr == out {
+		panic("rating: harness fact CTE substitution missed the model fallback — the source moved")
+	}
+	out = strings.Replace(attr,
+		`COALESCE(NULLIF(v.provider,''), NULLIF(b.observed_provider,''),
+                  NULLIF(b.declared_provider,''), NULLIF(dc.provider,''), '') AS provider`,
+		`NULLIF(v.provider,'') AS provider`, 1)
+	if out == attr {
+		panic("rating: harness fact CTE substitution missed the provider fallback — the source moved")
+	}
 	return out
 }()
 

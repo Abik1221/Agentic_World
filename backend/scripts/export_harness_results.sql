@@ -81,6 +81,18 @@ SELECT json_build_object(
       FROM agent_match_decisions d
       JOIN h_agents a ON a.id = d.agent_id
       JOIN h_matches m ON m.public_id = d.match_id),
+  -- The GATEWAY-VERIFIED attribution. Omitting this was a real defect: without it the stats
+  -- query falls back through the SDK-reported and manifest-declared model, and the seeded
+  -- benchmark advertised `claude-opus-4` and `gpt-5.2` — the lab personas' DECLARED names,
+  -- for calls no such model ever answered.
+  'verified_cost', (SELECT coalesce(json_agg(json_build_object(
+        'match_id', v.match_id, 'agent', a.public_id, 'verified_cost', v.verified_cost,
+        'calls', v.calls, 'provider', v.provider, 'model', v.model,
+        'prompt_tokens', v.prompt_tokens, 'completion_tokens', v.completion_tokens,
+        'total_tokens', v.total_tokens)), '[]'::json)
+      FROM agent_match_verified_cost v
+      JOIN h_agents a ON a.id = v.agent_id
+      JOIN h_matches m ON m.public_id = v.match_id),
   'bound_decisions', (SELECT coalesce(json_agg(json_build_object(
         'match_id', bd.match_id, 'agent', a.public_id, 'round', bd.round,
         'extracted_move', bd.extracted_move, 'completion_hash', bd.completion_hash,

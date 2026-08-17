@@ -128,6 +128,21 @@ type results struct {
 		ScaffoldIssue    *string  `json:"scaffold_issue"`
 		CreatedAt        *string  `json:"created_at"`
 	} `json:"decisions"`
+	// VerifiedCost is the GATEWAY-VERIFIED attribution: what the provider was actually
+	// observed to return, per seat. Without it the stats query falls back through the
+	// SDK-reported and then the manifest-declared model, and the benchmark advertises names
+	// no model answered to.
+	VerifiedCost []struct {
+		MatchID          string  `json:"match_id"`
+		Agent            string  `json:"agent"`
+		VerifiedCost     float64 `json:"verified_cost"`
+		Calls            int     `json:"calls"`
+		Provider         string  `json:"provider"`
+		Model            string  `json:"model"`
+		PromptTokens     int     `json:"prompt_tokens"`
+		CompletionTokens int     `json:"completion_tokens"`
+		TotalTokens      int     `json:"total_tokens"`
+	} `json:"verified_cost"`
 	BoundDecisions []struct {
 		MatchID        string  `json:"match_id"`
 		Agent          string  `json:"agent"`
@@ -289,6 +304,22 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 		}
 	}
 
+	for _, v := range r.VerifiedCost {
+		if present[v.MatchID] {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_match_verified_cost (match_id, agent_id, verified_cost, calls,
+			     provider, model, prompt_tokens, completion_tokens, total_tokens, updated_at)
+			 SELECT $1, a.id, $2, $3, $4, $5, $6, $7, $8, now()
+			   FROM agents a WHERE a.public_id = $9
+			 ON CONFLICT (match_id, agent_id) DO NOTHING`,
+			v.MatchID, v.VerifiedCost, v.Calls, v.Provider, v.Model, v.PromptTokens,
+			v.CompletionTokens, v.TotalTokens, v.Agent); err != nil {
+			return false, fmt.Errorf("harnessseed: verified cost %s/%s: %w", v.MatchID, v.Agent, err)
+		}
+	}
+
 	for _, bd := range r.BoundDecisions {
 		if present[bd.MatchID] {
 			continue
@@ -311,6 +342,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 	}
 	log.Info("harness results seeded",
 		"matches", seeded, "agents", len(r.Agents), "model_calls", len(r.ModelCalls),
+		"verified_attributions", len(r.VerifiedCost),
 		"source", r.Source, "exported_at", r.ExportedAt)
 	return true, nil
 }
