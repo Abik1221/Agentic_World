@@ -41,6 +41,7 @@ import (
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/groupmatch"
+	"github.com/agent-arena/arena/internal/harnessseed"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
@@ -1792,6 +1793,13 @@ func run() error {
 		log.Warn("docs: failed to seed docs_pages", "version", docs.DocsVersion, "err", serr)
 	} else {
 		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
+	}
+
+	// The platform benchmark's published results. Idempotent at the match level, so a
+	// restart re-imports nothing; best-effort, because a benchmark that failed to load is a
+	// page with less on it while a server that will not start is an outage.
+	if herr := harnessseed.Seed(ctx, st.DB, log); herr != nil {
+		log.Warn("harness results: seed failed", "err", herr)
 	}
 
 	// THE OPERATOR'S OWN LOGIN, provisioned at boot.

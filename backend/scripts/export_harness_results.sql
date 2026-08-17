@@ -24,7 +24,8 @@ WITH h_agents AS (
     FROM agents a WHERE a.kind = 'harness'
 ),
 h_matches AS (
-  SELECT DISTINCT m.id, m.public_id, m.game, m.rated, m.started_at, m.finished_at, m.status
+  SELECT DISTINCT m.id, m.public_id, m.game, m.rated, m.started_at, m.finished_at, m.status,
+         m.engine_version, m.prize_seed_commit, m.total_rounds
     FROM matches m
     JOIN agent_match_benchmark b ON b.match_id = m.public_id
     JOIN h_agents a ON a.id = b.agent_id
@@ -40,7 +41,10 @@ SELECT json_build_object(
         'description', a.description, 'kind', a.kind)), '[]'::json) FROM h_agents a),
   'matches', (SELECT coalesce(json_agg(json_build_object(
         'public_id', m.public_id, 'game', m.game, 'rated', m.rated,
-        'started_at', m.started_at, 'finished_at', m.finished_at, 'status', m.status)), '[]'::json)
+        'started_at', m.started_at, 'finished_at', m.finished_at, 'status', m.status,
+        -- NOT NULL on matches, and provenance besides: which engine produced this result.
+        'engine_version', m.engine_version, 'prize_seed_commit', m.prize_seed_commit,
+        'total_rounds', m.total_rounds)), '[]'::json)
       FROM h_matches m),
   'benchmark', (SELECT coalesce(json_agg(json_build_object(
         'match_id', b.match_id, 'agent', a.public_id, 'game', b.game, 'result', b.result,
