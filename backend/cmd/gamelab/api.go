@@ -337,14 +337,18 @@ func (a *api) setAutoplay(agentKey string, enabled bool, mode string, bid int64,
 // stakes, and neither does this. startSandboxPushPlay stakes nothing but opens ONE table per
 // agent against house bots, so two benchmark models never meet and the run yields no
 // comparison to fit.
-func (a *api) createFreeTable(agentKey string) (string, error) {
+func (a *api) createHarnessTable(platformToken, agentA, agentB string) (string, error) {
 	var out struct {
 		MatchID string `json:"match_id"`
 		ID      string `json:"id"`
 	}
-	if err := a.mustDo("create free table", http.MethodPost, "/v1/lobby/create", agentKey,
-		map[string]any{}, &out, http.StatusCreated, http.StatusOK); err != nil {
-		return "", err
+	code, excerpt, err := a.doWithAuth(http.MethodPost, "/v1/admin/harness/table",
+		"Platform "+platformToken, map[string]any{"agent_a": agentA, "agent_b": agentB}, &out)
+	if err != nil {
+		return "", fmt.Errorf("create harness table: %w", err)
+	}
+	if code < 200 || code > 299 {
+		return "", fmt.Errorf("create harness table: HTTP %d — %s", code, excerpt)
 	}
 	return firstNonEmpty(out.MatchID, out.ID), nil
 }

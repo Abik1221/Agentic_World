@@ -324,15 +324,12 @@ func main() {
 			}
 			return nil
 		}
-		// NOT YET runHarnessTable. The zero-stake pairing it needs does not exist in the
-		// backend: match.CreateOpen requires bid > 0, so the 1v1 lobby cannot open a free
-		// table, and the only zero-stake path (sandbox push-play) seats HOUSE BOTS.
-		//
-		// Wiring it here would make every harness run fail rather than produce house-bot
-		// tables — and while those tables yield no comparison, failing outright is a
-		// regression against a path that currently runs. The honest fix is a backend path
-		// that seats two harness agents at zero stake; until then this stays as it was and
-		// runHarnessTable waits, unused and documented, for that endpoint.
+		// The PLATFORM benchmark seats its agents against EACH OTHER at zero stake, through
+		// the admin route. Free push-play would open one table per agent against house bots,
+		// which yields a single attributed seat and therefore no comparison to fit.
+		if HarnessMode {
+			return runHarnessTable(a, lg, agents, *game)
+		}
 		startFreePushPlay(a, lg, agents, *game)
 		return nil
 	}
@@ -671,15 +668,12 @@ func runHarnessTable(a *api, lg *log.Logger, agents []*labAgent, game string) er
 	}
 
 	host, guest := agents[0], agents[1]
-	matchID, err := a.createFreeTable(host.AgentKey)
+	// ONE call seats both. The lobby's create-then-join is a developer flow: it opens a
+	// waiting table and lets someone else take the other seat, which is the wrong shape here
+	// — there is no one else, and a half-seated benchmark table is a match that never runs.
+	matchID, err := a.createHarnessTable(PlatformToken, host.AgentID, guest.AgentID)
 	if err != nil {
-		return fmt.Errorf("create benchmark table for %s: %w", host.Persona.Name, err)
-	}
-	if err := a.joinStakedTable(guest.AgentKey, matchID); err != nil {
-		// Named for what it costs: the host is now sitting at a table nobody joined, and the
-		// run would otherwise continue and report a match that never had an opponent.
-		return fmt.Errorf("seat %s opposite %s at %s: %w",
-			guest.Persona.Name, host.Persona.Name, matchID, err)
+		return fmt.Errorf("seat %s vs %s: %w", host.Persona.Name, guest.Persona.Name, err)
 	}
 	lg.Printf("BENCHMARK TABLE  %s  %s vs %s  (no stake)",
 		matchID, host.Persona.Name, guest.Persona.Name)

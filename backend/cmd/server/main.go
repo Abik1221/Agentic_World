@@ -325,7 +325,7 @@ func run() error {
 	verifyRL := middleware.RateLimit(limiter, 12, time.Minute, userKey("manifest-verify"))
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
-	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
+	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID))                         // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
 	idHandler.SetGitHub(auth.NewGitHubVerifier(cfg.GitHubClientID, cfg.GitHubClientSecret)) // POST /v1/auth/github (disabled unless GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set)
 	idHandler.SetKeysRateLimit(keysRL)
 	// POST /v1/admin/agents — create an account with an explicit agent kind (the platform's
@@ -1482,6 +1482,7 @@ func run() error {
 	}
 
 	matchHandler := match.NewHandler(matchSvc, authn)
+	matchHandler.SetAdmins(cfg.AdminUserIDs)
 	// Honour the admin-configured stake tiers on direct table creation too. Without
 	// this, /v1/lobby/create accepted an arbitrary bid while /v1/queue and
 	// /v1/group-queue rejected free-form stakes for the same game — so tier config was

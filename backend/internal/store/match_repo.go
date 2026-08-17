@@ -185,13 +185,15 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 		err := tx.QueryRow(ctx,
 			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
-			     state, round_deadline, round_deadline_base, round_started_at, started_at, creator_owner_user_id)
+			     state, round_deadline, round_deadline_base, round_started_at, started_at, creator_owner_user_id,
+			     rated)
 			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),now(),
-			     (SELECT id FROM users WHERE public_id=$12))
+			     (SELECT id FROM users WHERE public_id=$12), NOT $15)
 			 RETURNING id`,
 			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
 			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
-			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy).Scan(&matchID)
+			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy,
+			in.Unrated).Scan(&matchID)
 		if err != nil {
 			return err
 		}
@@ -707,4 +709,19 @@ func (r *MatchRepo) ReadyCheckMatches(ctx context.Context, limit int) ([]string,
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// AgentKind reports an agent's kind. Implements match.Repo.
+//
+// An unknown agent answers "" rather than an error: the caller reads "" as "not a harness
+// agent" and refuses, which is the safe direction. Returning an error instead would make a
+// deleted agent look like a database fault and invite a retry that can never succeed.
+func (r *MatchRepo) AgentKind(ctx context.Context, agentPublicID string) (string, error) {
+	var kind string
+	err := r.db.QueryRow(ctx,
+		`SELECT kind FROM agents WHERE public_id = $1`, agentPublicID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return kind, err
 }

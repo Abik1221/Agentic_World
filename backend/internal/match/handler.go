@@ -2,6 +2,7 @@ package match
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/identity"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,8 +16,12 @@ import (
 
 // Handler exposes the agent-facing match API plus the public replay endpoint.
 type Handler struct {
-	svc    *Service
-	authn  *auth.Authenticator
+	svc   *Service
+	authn *auth.Authenticator
+	// admins is the explicit operator allowlist for the harness-table route. Nil/empty is
+	// safe: RequirePlatformOrAdmin still admits a Platform-scope service credential, and
+	// admits nobody else.
+	admins map[string]bool
 	stakes stakeResolver
 }
 
@@ -28,12 +33,32 @@ const maxStateWait = 15 * time.Second
 
 // Register mounts the routes. Lobby/state/action require an agent credential;
 // replay is public (anyone can verify a finished match).
+// SetAdmins injects the operator allowlist for the harness-table route. A setter rather
+// than a constructor argument so existing callers keep compiling; nil means only a
+// Platform-scope service credential is admitted, which is the safe default.
+func (h *Handler) SetAdmins(ids []string) {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			m[id] = true
+		}
+	}
+	h.admins = m
+}
+
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
 		r.With(agent).Get("/v1/lobby", h.lobby)
 		r.With(agent).Post("/v1/lobby/create", h.create)
+		// ZERO-STAKE BENCHMARK TABLE — operator only, and the service still refuses any seat
+		// that is not a harness agent. Two independent gates on purpose: this one says who
+		// may ASK, the service says what may be SEATED, and only the second is a statement
+		// about free play. An admin credential is not a reason to seat a developer's agent
+		// for free.
+		r.With(auth.RequirePlatformOrAdmin(h.admins)).
+			Post("/v1/admin/harness/table", h.createHarnessTable)
 		r.With(agent).Post("/v1/lobby/join", h.join)
 		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
 		r.With(agent).Get("/v1/match/{id}/state", h.state)
@@ -102,6 +127,34 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		bid = b
 	}
 	id, err := h.svc.CreateOpen(r.Context(), p.AgentPublicID, p.UserPublicID, bid)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id})
+}
+
+// createHarnessTable seats two platform benchmark agents in one match at zero stake.
+//
+// Takes agent ids rather than reading the caller's own principal: the operator is not a
+// player here, they are asking the platform to seat two of ITS agents against each other.
+func (h *Handler) createHarnessTable(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AgentA string `json:"agent_a"`
+		AgentB string `json:"agent_b"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.AgentA == "" || in.AgentB == "" {
+		httpx.Error(w, httpx.NewError(400, "invalid_request", "agent_a and agent_b are required"))
+		return
+	}
+	// Both seats are owned by the platform identity — that is what a harness agent IS, and
+	// the service verifies the kind before seating either of them.
+	id, err := h.svc.CreateHarnessPaired(r.Context(), in.AgentA, identity.SystemOwnerPublicID,
+		in.AgentB, identity.SystemOwnerPublicID)
 	if err != nil {
 		httpx.Error(w, err)
 		return

@@ -614,3 +614,8 @@ func TestRoundStartIsStampedOnlyWhenARoundOpens(t *testing.T) {
 		t.Errorf("%d Advance calls stamped a round start when the round resolved; want exactly 1", stamped)
 	}
 }
+
+// AgentKind answers "external" for anything these tests seat. They exercise the DEVELOPER
+// paths, and a stub that claimed "harness" would let a zero-stake benchmark table be created
+// in tests that are not about it — hiding the very check CreateHarnessPaired exists for.
+func (f *fakeRepo) AgentKind(context.Context, string) (string, error) { return "external", nil }
