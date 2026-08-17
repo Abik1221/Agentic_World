@@ -1798,8 +1798,21 @@ func run() error {
 	// The platform benchmark's published results. Idempotent at the match level, so a
 	// restart re-imports nothing; best-effort, because a benchmark that failed to load is a
 	// page with less on it while a server that will not start is an outage.
-	if herr := harnessseed.Seed(ctx, st.DB, log); herr != nil {
+	if seeded, herr := harnessseed.Seed(ctx, st.DB, log); herr != nil {
 		log.Warn("harness results: seed failed", "err", herr)
+	} else if seeded {
+		// Refit immediately. The board workers' first refresh already ran, above, BEFORE
+		// these rows existed — so without this the freshly-seeded benchmark is invisible for
+		// a full refresh interval and reads as a seed that silently did nothing. Both boards
+		// are refreshed because the seeded matches are unrated and harness-kind: the harness
+		// board should gain them and the developer board must NOT, and refreshing both is
+		// how that stays observable in one place rather than assumed.
+		if rerr := harnessBoardSvc.Refresh(ctx); rerr != nil {
+			log.Warn("harness board: refresh after seed failed", "err", rerr)
+		}
+		if rerr := modelBoardSvc.Refresh(ctx); rerr != nil {
+			log.Warn("model board: refresh after seed failed", "err", rerr)
+		}
 	}
 
 	// THE OPERATOR'S OWN LOGIN, provisioned at boot.

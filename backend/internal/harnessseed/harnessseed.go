@@ -142,10 +142,14 @@ type results struct {
 // Seed loads the embedded results. Best-effort by contract: it returns an error, and the
 // caller logs rather than refusing to boot. A benchmark that failed to import is a page with
 // less on it; a server that will not start is an outage.
-func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
+// Returns true when it actually imported matches, so the caller can refresh the boards
+// rather than leaving the page empty until the next scheduled fit. The worker's first
+// refresh runs at boot, BEFORE this seeder, so without that nudge freshly-seeded results are
+// invisible for a full refresh interval and read as "the seed did not work".
+func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error) {
 	var r results
 	if err := json.Unmarshal(resultsJSON, &r); err != nil {
-		return fmt.Errorf("harnessseed: parse embedded results: %w", err)
+		return false, fmt.Errorf("harnessseed: parse embedded results: %w", err)
 	}
 
 	// Which matches are already here. Everything else keys off this: a match present means
@@ -154,13 +158,13 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 	rows, err := db.Query(ctx, `SELECT public_id FROM matches WHERE public_id = ANY($1)`,
 		matchIDs(r))
 	if err != nil {
-		return fmt.Errorf("harnessseed: read existing matches: %w", err)
+		return false, fmt.Errorf("harnessseed: read existing matches: %w", err)
 	}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			return err
+			return false, err
 		}
 		present[id] = true
 	}
@@ -174,12 +178,12 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 	}
 	if wanted == 0 {
 		log.Info("harness results already seeded", "matches", len(r.Matches), "source", r.Source)
-		return nil
+		return false, nil
 	}
 
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -193,7 +197,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 			   FROM users u WHERE u.public_id = $5
 			 ON CONFLICT (public_id) DO NOTHING`,
 			a.PublicID, a.Name, a.Slug, a.Description, SystemOwner); err != nil {
-			return fmt.Errorf("harnessseed: agent %s: %w", a.PublicID, err)
+			return false, fmt.Errorf("harnessseed: agent %s: %w", a.PublicID, err)
 		}
 	}
 
@@ -214,7 +218,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 			 ON CONFLICT (public_id) DO NOTHING`,
 			m.PublicID, m.Game, m.Status, m.StartedAt, m.FinishedAt,
 			m.TotalRounds, m.EngineVersion, m.PrizeSeedCommit, SystemOwner); err != nil {
-			return fmt.Errorf("harnessseed: match %s: %w", m.PublicID, err)
+			return false, fmt.Errorf("harnessseed: match %s: %w", m.PublicID, err)
 		}
 		seeded++
 	}
@@ -237,7 +241,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 			b.Timeouts, b.TransportErrors, b.LatencySumMS, b.LatencyMinMS, b.LatencyMaxMS,
 			b.Tokens, b.PromptTokens, b.CompletionTokens, b.ReasoningTokens, b.CachedTokens,
 			b.EstimatedCost, b.ObservedProvider, b.ObservedModel, b.Agent); err != nil {
-			return fmt.Errorf("harnessseed: benchmark %s/%s: %w", b.MatchID, b.Agent, err)
+			return false, fmt.Errorf("harnessseed: benchmark %s/%s: %w", b.MatchID, b.Agent, err)
 		}
 	}
 
@@ -258,7 +262,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 			c.MatchID, c.Round, c.Bound, c.Provider, c.Model, c.PromptTokens, c.CompletionTokens,
 			c.CachedReadTokens, c.CachedWriteTokens, c.ReasoningTokens, c.LatencyMS, c.Status,
 			c.Streamed, c.UpstreamHost, c.CreatedAt, c.Agent); err != nil {
-			return fmt.Errorf("harnessseed: model call %s/%s: %w", c.MatchID, c.Agent, err)
+			return false, fmt.Errorf("harnessseed: model call %s/%s: %w", c.MatchID, c.Agent, err)
 		}
 	}
 
@@ -281,7 +285,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 			d.PromptTokens, d.CompletionTokens, d.ReasoningTokens, d.CachedTokens, d.TotalTokens,
 			d.EstimatedCost, d.Scaffold, d.ScaffoldUnstable, d.ScaffoldIssue, d.CreatedAt,
 			d.Agent); err != nil {
-			return fmt.Errorf("harnessseed: decision %s/%s#%d: %w", d.MatchID, d.Agent, d.Seq, err)
+			return false, fmt.Errorf("harnessseed: decision %s/%s#%d: %w", d.MatchID, d.Agent, d.Seq, err)
 		}
 	}
 
@@ -297,18 +301,18 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) error {
 			 ON CONFLICT (match_id, agent_id, round) DO NOTHING`,
 			bd.MatchID, bd.Round, bd.ExtractedMove, bd.CompletionHash, bd.BindReceipt,
 			bd.CreatedAt, bd.Agent); err != nil {
-			return fmt.Errorf("harnessseed: bound decision %s/%s#%d: %w",
+			return false, fmt.Errorf("harnessseed: bound decision %s/%s#%d: %w",
 				bd.MatchID, bd.Agent, bd.Round, err)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return false, err
 	}
 	log.Info("harness results seeded",
 		"matches", seeded, "agents", len(r.Agents), "model_calls", len(r.ModelCalls),
 		"source", r.Source, "exported_at", r.ExportedAt)
-	return nil
+	return true, nil
 }
 
 func matchIDs(r results) []string {
