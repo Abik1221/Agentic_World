@@ -22,6 +22,22 @@ import (
 //   - the raw secret is NEVER stored — only its SHA-256. The token is "<id>.<secret>".
 //   - reuse of an already-rotated token means the token leaked: we revoke the
 //     entire family (theft response), forcing a fresh sign-in.
+//
+// # The reuse INTERVAL, and why single-use alone was unusable
+//
+// Strict single-use is correct against theft and wrong against concurrency. One dashboard
+// navigation fires several requests at once — the page, its RSC payload, prefetches — and
+// each passes through the edge middleware. With the access JWT expired they ALL present the
+// same refresh token: the first rotates it, and every other one arrives at a token already
+// marked used. Read strictly that is theft, so the family was revoked and the user was
+// signed out of every device — by clicking a sidebar link.
+//
+// So a short grace window after rotation treats a repeat presentation as the race it almost
+// always is: a fresh token is minted in the same family and nothing is revoked. Past the
+// window the theft response stands. This is the same control Auth0 ships as its refresh
+// token "reuse interval" and Okta as rotation leeway; the window is deliberately seconds,
+// not minutes, because it is exactly the span in which a legitimate client can still be
+// holding the old token in flight.
 
 var (
 	ErrRefreshInvalid = errors.New("invalid refresh token")
@@ -53,11 +69,19 @@ type RefreshService struct {
 	repo RefreshRepo
 	jwt  *JWT
 	ttl  time.Duration
+	// reuseGrace is how long after rotation a repeat presentation is treated as a benign
+	// concurrent request rather than as theft. Seconds, not minutes: see the note above.
+	reuseGrace time.Duration
 	now  func() time.Time
 }
 
+// DefaultReuseGrace is the window in which a re-presented refresh token is a race rather
+// than a breach. Long enough to cover the concurrent requests of one navigation, short
+// enough that a stolen token is still caught almost immediately.
+const DefaultReuseGrace = 15 * time.Second
+
 func NewRefreshService(repo RefreshRepo, jwt *JWT, ttl time.Duration) *RefreshService {
-	return &RefreshService{repo: repo, jwt: jwt, ttl: ttl, now: time.Now}
+	return &RefreshService{repo: repo, jwt: jwt, ttl: ttl, reuseGrace: DefaultReuseGrace, now: time.Now}
 }
 
 // TTL is the sliding idle window for a refresh token.
@@ -122,7 +146,25 @@ func (s *RefreshService) Rotate(ctx context.Context, raw string) (access, newRef
 		return "", "", "", ErrRefreshInvalid
 	}
 	if row.UsedAt != nil {
-		// A rotated (single-use) token was presented again → likely stolen.
+		// Presented again. Within the grace window this is the concurrency race described
+		// above, not a breach: mint a fresh token in the SAME family and revoke nothing. The
+		// row stays marked used — we are not re-rotating it, we are answering a second
+		// caller who never saw the first response.
+		if now.Sub(*row.UsedAt) <= s.reuseGrace {
+			if now.After(row.ExpiresAt) {
+				return "", "", "", ErrRefreshExpired
+			}
+			nr, mErr := s.mint(ctx, row.UserPublicID, row.FamilyID)
+			if mErr != nil {
+				return "", "", "", mErr
+			}
+			acc, aErr := s.jwt.Issue(row.UserPublicID)
+			if aErr != nil {
+				return "", "", "", aErr
+			}
+			return acc, nr, row.UserPublicID, nil
+		}
+		// Past the window → the token leaked. Revoke the whole family.
 		_ = s.repo.RevokeFamily(ctx, row.FamilyID, now)
 		return "", "", "", ErrRefreshReused
 	}

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -77,7 +78,15 @@ func TestRefresh_ReuseRevokesFamily(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// replay the ALREADY-USED token → theft → ErrRefreshReused
+	// Replay the ALREADY-USED token → theft → ErrRefreshReused.
+	//
+	// Advanced past the reuse interval first. Immediately after rotation a repeat
+	// presentation is the concurrency race one dashboard navigation produces — several
+	// requests holding the same token — and treating THAT as theft is what signed users out
+	// when they clicked between sections. The theft response is unchanged; what changed is
+	// that it no longer fires on a benign race. See TestRefresh_ConcurrentUseIsNotTheft.
+	base := time.Now()
+	s.now = func() time.Time { return base.Add(s.reuseGrace + time.Minute) }
 	if _, _, _, err := s.Rotate(ctx, raw); err != ErrRefreshReused {
 		t.Fatalf("expected ErrRefreshReused, got %v", err)
 	}
@@ -116,5 +125,79 @@ func TestRefresh_RevokeLogout(t *testing.T) {
 	}
 	if _, _, _, err := s.Rotate(ctx, raw); err != ErrRefreshInvalid {
 		t.Fatalf("expected revoked token to be invalid, got %v", err)
+	}
+}
+
+// TestRefresh_ConcurrentUseIsNotTheft reproduces the bug that signed users out of the
+// dashboard when they clicked between sections.
+//
+// One navigation fires several requests at once — the page, its RSC payload, prefetches —
+// and each passes through the edge middleware. With the access JWT expired they all present
+// the SAME refresh token. Strict single-use rotates on the first and reads every other as
+// theft, which revoked the whole family: clicking a sidebar link signed the user out of
+// every device.
+//
+// Within the grace window a repeat presentation must therefore succeed and revoke nothing.
+func TestRefresh_ConcurrentUseIsNotTheft(t *testing.T) {
+	s, repo := newSvc()
+	rt, err := s.Issue(context.Background(), "usr_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First request of the navigation rotates.
+	if _, _, _, err := s.Rotate(context.Background(), rt); err != nil {
+		t.Fatalf("first rotate: %v", err)
+	}
+	// The others arrive microseconds later holding the same token.
+	for i := 0; i < 3; i++ {
+		acc, nr, uid, err := s.Rotate(context.Background(), rt)
+		if err != nil {
+			t.Fatalf("concurrent rotate %d must succeed, got %v", i, err)
+		}
+		if acc == "" || nr == "" || uid != "usr_1" {
+			t.Errorf("concurrent rotate %d returned an unusable session", i)
+		}
+	}
+
+	// And nothing was revoked — the whole point. A revoked family is the user signed out
+	// everywhere, which is what the bug did.
+	for id, row := range repo.rows {
+		if row.RevokedAt != nil {
+			t.Errorf("row %s was revoked by a benign concurrent refresh", id)
+		}
+	}
+}
+
+// TestRefresh_ReuseAfterGraceStillRevokes pins the security half.
+//
+// The grace window buys concurrency, not amnesty. A token replayed long after it rotated is
+// still treated as leaked, and the family still dies — otherwise the reuse interval would
+// have quietly removed the theft response rather than narrowed it.
+func TestRefresh_ReuseAfterGraceStillRevokes(t *testing.T) {
+	s, repo := newSvc()
+	rt, err := s.Issue(context.Background(), "usr_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.Rotate(context.Background(), rt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Well past the window.
+	base := time.Now()
+	s.now = func() time.Time { return base.Add(s.reuseGrace + time.Minute) }
+
+	if _, _, _, err := s.Rotate(context.Background(), rt); !errors.Is(err, ErrRefreshReused) {
+		t.Fatalf("late reuse should be theft, got %v", err)
+	}
+	revoked := 0
+	for _, row := range repo.rows {
+		if row.RevokedAt != nil {
+			revoked++
+		}
+	}
+	if revoked == 0 {
+		t.Error("late reuse must revoke the family")
 	}
 }
