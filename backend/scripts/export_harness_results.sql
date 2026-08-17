@@ -19,10 +19,48 @@
 \a
 \pset format unaligned
 
+-- WHICH AGENTS COUNT AS PLATFORM RESEARCH.
+--
+-- Not just kind='harness'. The earliest LLM-gated runs happened before that kind existed, so
+-- they sit on lab agents marked 'external' — 286 attributable calls across 27 matches and 7
+-- models, every one a real model answering through the gateway. Dropping them because of a
+-- column that was added later would throw away most of the benchmark.
+--
+-- Two conditions, and both are required:
+--
+--   the agent is OURS — kind='harness', or a lab account (lab+…@pyyol.test). Verified before
+--   widening this: all 30 such agents are lab-owned and not one belongs to a real developer.
+--   Publishing somebody else's match as platform research would be the worst thing this
+--   export could do, so the ownership test is on the email and not on a naming convention.
+--
+--   and it actually reached a MODEL — at least one bound call to a real provider host with a
+--   2xx. That is what makes it research rather than lab traffic: the stand-in
+--   (pyyol-toolprovider) answered thousands of well-formed calls that no model ever saw, and
+--   those must never be published as a benchmark.
 WITH h_agents AS (
   SELECT DISTINCT a.id, a.public_id, a.name, a.slug, a.description, a.kind
-    FROM agents a WHERE a.kind = 'harness'
+    FROM agents a
+    JOIN users u ON u.id = a.owner_user_id
+   WHERE (a.kind = 'harness' OR (a.kind = 'external' AND u.email LIKE 'lab+%@pyyol.test'))
+     AND EXISTS (
+       SELECT 1 FROM agent_model_calls c
+        WHERE c.agent_id = a.id AND c.bound
+          AND c.status BETWEEN 200 AND 299
+          AND c.upstream_host IN ('api.groq.com', 'openrouter.ai')
+     )
 ),
+-- THE MATCH must itself be LLM-gated, not merely played by an agent that was gated once.
+--
+-- Selecting by agent was wrong and the published stats showed it: gemma-4-26b appeared with
+-- 1,726 decisions against 164 attributable calls, and nemotron-nano-9b with 1,399 decisions
+-- at a 0.2s mean think time — no model answers that fast. Those agents DID make real calls,
+-- in a handful of matches; the rest of their play was against the local stand-in, and
+-- importing the agent dragged all of it in. The benchmark would have published stand-in
+-- decision counts and stand-in latencies as model measurements.
+--
+-- So the gate is per match: at least one bound, 2xx call to a real provider host inside THIS
+-- match. That is the same rule the board's attribution uses, applied one level up, so the
+-- exported set and the fitted set cannot disagree about what counts.
 h_matches AS (
   SELECT DISTINCT m.id, m.public_id, m.game, m.rated, m.started_at, m.finished_at, m.status,
          m.engine_version, m.prize_seed_commit, m.total_rounds
@@ -30,6 +68,43 @@ h_matches AS (
     JOIN agent_match_benchmark b ON b.match_id = m.public_id
     JOIN h_agents a ON a.id = b.agent_id
    WHERE m.finished_at IS NOT NULL
+     AND EXISTS (
+       SELECT 1 FROM agent_model_calls c
+        WHERE c.match_id = m.public_id AND c.bound
+          AND c.status BETWEEN 200 AND 299
+          AND c.upstream_host IN ('api.groq.com', 'openrouter.ai')
+     )
+     -- AND THE MODEL MUST HAVE DECIDED THE MATCH, not merely appeared in it.
+     --
+     -- Measured across the qualifying set:
+     --
+     --     game        seat decisions   llm calls
+     --     mafia                   18          12
+     --     goofspiel              696         506
+     --     monopoly              2765          14
+     --
+     -- Monopoly runs to a 1000-turn cap and the seat falls back to the engine for almost
+     -- every move, so those matches carried 65% of all decisions and 2.6% of the model calls.
+     -- Imported, they inflated decision counts and pulled mean think-time toward zero — the
+     -- published stats showed nemotron at a 0.2s average, which no model achieves.
+     --
+     -- The ratio is the criterion and monopoly fails it structurally, not marginally: a
+     -- fallback move is a decision the ENGINE made. A match where the model chose under a
+     -- quarter of the seat's moves is not evidence about that model, whatever it is evidence
+     -- about. The bound share is computed per match rather than assumed per game, so a future
+     -- monopoly run that IS model-driven qualifies on its own merits.
+     AND (
+       SELECT count(*) FILTER (WHERE c2.bound AND c2.status BETWEEN 200 AND 299
+                                 AND c2.upstream_host IN ('api.groq.com', 'openrouter.ai'))::float
+              -- OUR seats only. Counting every seat put a Mafia table's eleven house bots
+              -- into the denominator, so a match where the model decided 12 of its own 18
+              -- moves scored as if it had decided 12 of a hundred-odd — and mafia was
+              -- dropped for a reason that had nothing to do with the model.
+              / GREATEST(1, (SELECT sum(b2.decisions) FROM agent_match_benchmark b2
+                              JOIN h_agents ha ON ha.id = b2.agent_id
+                              WHERE b2.match_id = m.public_id))
+         FROM agent_model_calls c2 WHERE c2.match_id = m.public_id
+     ) >= 0.25
 )
 SELECT json_build_object(
   'exported_at', now(),
