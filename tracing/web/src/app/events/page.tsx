@@ -7,7 +7,9 @@ export default async function EventsPage({
   searchParams: Promise<{ q?: string }>;
 }) {
   const { q } = await searchParams;
-  const query = q?.trim() || "error";
+  // Empty query returns the full recent stream (the search matches everything),
+  // so the page lands on all recent events rather than only errors.
+  const query = q?.trim() || "";
   const rows = (await fetchQuery<EventRow[]>(`/v1/search/events?q=${encodeURIComponent(query)}`)) ?? [];
 
   return (

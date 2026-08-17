@@ -44,7 +44,31 @@ func (h Handler) Traces(c *fiber.Ctx) error {
 			t.error_message,
 			coalesce(sm.primary_model, '') as model,
 			coalesce(tc.primary_tool, '') as tool_name
-		FROM traces t
+		FROM (
+			-- traces is a ReplacingMergeTree whose ORDER BY key includes started_at, a
+			-- value foldTrace keeps rewriting as events arrive; out-of-order events
+			-- therefore leave several un-collapsible rows per trace. Collapse to exactly
+			-- one row per trace_id here (latest wins by updated_at) so the list, and the
+			-- joins hanging off it, never multiply a trace.
+			SELECT
+				tr.trace_id AS trace_id,
+				argMax(tr.request_id, tr.updated_at)      AS request_id,
+				argMax(tr.status, tr.updated_at)          AS status,
+				argMax(tr.organization_id, tr.updated_at) AS organization_id,
+				argMax(tr.project_id, tr.updated_at)      AS project_id,
+				argMax(tr.environment, tr.updated_at)     AS environment,
+				argMax(tr.user_id, tr.updated_at)         AS user_id,
+				min(tr.started_at)                        AS started_at,
+				max(tr.ended_at)                          AS ended_at,
+				argMax(tr.latency_ms, tr.updated_at)      AS latency_ms,
+				argMax(tr.total_tokens, tr.updated_at)    AS total_tokens,
+				argMax(tr.total_cost, tr.updated_at)      AS total_cost,
+				argMax(tr.error_type, tr.updated_at)      AS error_type,
+				argMax(tr.error_message, tr.updated_at)   AS error_message
+			FROM traces AS tr
+			WHERE tr.organization_id = ? AND tr.trace_id != ''
+			GROUP BY tr.trace_id
+		) t
 		LEFT JOIN (
 			SELECT trace_id, count() AS event_count
 			FROM events
@@ -73,7 +97,7 @@ func (h Handler) Traces(c *fiber.Ctx) error {
 			WHERE tool_name != ''
 			GROUP BY trace_id
 		) tc ON tc.trace_id = t.trace_id
-		WHERE t.trace_id != '' AND t.organization_id = ?
+		WHERE t.trace_id != ''
 		ORDER BY t.started_at DESC
 		LIMIT ?`, orgID, orgID, limit)
 	if err != nil {
@@ -677,19 +701,33 @@ func (h Handler) SearchEvents(c *fiber.Ctx) error {
 		return err
 	}
 	q := c.Query("q")
+	// Honour a client-supplied limit for pagination, capped at the configured
+	// safety ceiling so a caller can page but never ask for an unbounded scan.
+	limit := parseInt(c.Query("limit"), h.Config.MaxEventsPerRead)
+	if limit <= 0 || limit > h.Config.MaxEventsPerRead {
+		limit = h.Config.MaxEventsPerRead
+	}
 	rows, err := h.Store.DB.QueryContext(c.UserContext(), `
 		SELECT e.event_id,e.event_type,e.event_time,e.trace_id,e.span_id,e.status,e.error_message,s.model,s.tool_name
 		FROM events e
-		LEFT JOIN spans s ON e.trace_id = s.trace_id AND e.span_id = s.span_id
+		LEFT JOIN (
+			-- spans is a ReplacingMergeTree; collapse to one row per (trace_id, span_id)
+			-- so the join can never multiply an event into duplicate result rows.
+			SELECT trace_id, span_id,
+				argMax(model, updated_at)     AS model,
+				argMax(tool_name, updated_at) AS tool_name
+			FROM spans
+			GROUP BY trace_id, span_id
+		) s ON e.trace_id = s.trace_id AND e.span_id = s.span_id
 		WHERE e.trace_id IN (SELECT trace_id FROM traces WHERE organization_id = ?)
 			AND (
-			positionCaseInsensitive(error_message, ?) > 0
-			OR positionCaseInsensitive(event_type, ?) > 0
+			positionCaseInsensitive(e.error_message, ?) > 0
+			OR positionCaseInsensitive(e.event_type, ?) > 0
 			OR positionCaseInsensitive(s.model, ?) > 0
 			OR positionCaseInsensitive(s.tool_name, ?) > 0
 			)
-		ORDER BY event_time DESC
-		LIMIT ?`, orgID, q, q, q, q, h.Config.MaxEventsPerRead)
+		ORDER BY e.event_time DESC
+		LIMIT ?`, orgID, q, q, q, q, limit)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
