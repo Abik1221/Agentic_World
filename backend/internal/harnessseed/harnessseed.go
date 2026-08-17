@@ -191,10 +191,9 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 			wanted++
 		}
 	}
-	if wanted == 0 {
-		log.Info("harness results already seeded", "matches", len(r.Matches), "source", r.Source)
-		return false, nil
-	}
+	// No early return when every match is present: the verified-attribution backfill below
+	// still has to run, and that is exactly the case it exists for.
+	allPresent := wanted == 0
 
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -304,10 +303,19 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 		}
 	}
 
+	// NOT gated on `present`, unlike everything above it.
+	//
+	// The match-level skip exists for tables with no natural key — re-running them would
+	// double a model's call count. agent_match_verified_cost is keyed (match_id, agent_id),
+	// so ON CONFLICT DO NOTHING makes it idempotent on its own terms.
+	//
+	// The distinction is load-bearing and was learned the hard way: production seeded before
+	// this table was exported, so its matches already existed, the skip fired, and the
+	// attribution never arrived. With the fallback removed the stats endpoint then returned
+	// an empty list — honest, but empty — and no amount of redeploying would have fixed it,
+	// because the seeder had decided there was nothing to do.
+	backfilled := 0
 	for _, v := range r.VerifiedCost {
-		if present[v.MatchID] {
-			continue
-		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO agent_match_verified_cost (match_id, agent_id, verified_cost, calls,
 			     provider, model, prompt_tokens, completion_tokens, total_tokens, updated_at)
@@ -318,6 +326,7 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 			v.CompletionTokens, v.TotalTokens, v.Agent); err != nil {
 			return false, fmt.Errorf("harnessseed: verified cost %s/%s: %w", v.MatchID, v.Agent, err)
 		}
+		backfilled++
 	}
 
 	for _, bd := range r.BoundDecisions {
@@ -340,11 +349,17 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
+	if allPresent && backfilled == 0 {
+		log.Info("harness results already seeded", "matches", len(r.Matches), "source", r.Source)
+		return false, nil
+	}
 	log.Info("harness results seeded",
 		"matches", seeded, "agents", len(r.Agents), "model_calls", len(r.ModelCalls),
-		"verified_attributions", len(r.VerifiedCost),
+		"verified_attributions", backfilled,
 		"source", r.Source, "exported_at", r.ExportedAt)
-	return true, nil
+	// Report change on EITHER path. A backfill with no new matches still alters what the
+	// boards will fit, so the caller must refit — that is the whole point of this run.
+	return seeded > 0 || backfilled > 0, nil
 }
 
 func matchIDs(r results) []string {
