@@ -54,6 +54,11 @@ type match struct {
 	MatchID string `json:"match_id"`
 	Game    string `json:"game"`
 	Seats   []seat `json:"seats"`
+	// Fallbacks is the platform's own count of decisions it had to substitute because a
+	// seat missed its window. It is NOT the same as the bind rate: every model call made
+	// can be cryptographically bound while a seventh of the turns were never model calls
+	// at all. A match whose loser went dark is a scoreline about an endpoint, not a model.
+	Fallbacks int `json:"fallbacks"`
 }
 
 // pair is one head-to-head result between two models.
@@ -61,13 +66,15 @@ type pair struct{ a, b string } // a beat b
 
 func main() {
 	var (
-		dataPath = flag.String("data", "", "path to matches.json from a research run (required)")
-		dsn      = flag.String("dsn", os.Getenv("DATABASE_URL"), "postgres DSN")
-		game     = flag.String("game", "goofspiel", "only seat results from this game")
-		boots    = flag.Int("bootstrap", 2000, "bootstrap resamples for the intervals")
-		day      = flag.String("day", "", "board day, YYYY-MM-DD (default: today UTC)")
-		board    = flag.String("board", "research", "board namespace to write under")
-		dry      = flag.Bool("dry-run", false, "print the board and write nothing")
+		dataPath     = flag.String("data", "", "path to matches.json from a research run (required)")
+		dsn          = flag.String("dsn", os.Getenv("DATABASE_URL"), "postgres DSN")
+		game         = flag.String("game", "goofspiel", "only seat results from this game")
+		boots        = flag.Int("bootstrap", 2000, "bootstrap resamples for the intervals")
+		maxFallbacks = flag.Int("max-fallbacks", 0,
+			"drop any match with more than this many platform fallbacks; 0 keeps only matches the models played end to end")
+		day   = flag.String("day", "", "board day, YYYY-MM-DD (default: today UTC)")
+		board = flag.String("board", "research", "board namespace to write under")
+		dry   = flag.Bool("dry-run", false, "print the board and write nothing")
 	)
 	flag.Parse()
 	if *dataPath == "" {
@@ -86,10 +93,22 @@ func main() {
 	// four-seat table are both real outcomes, but neither is a pairwise comparison, so
 	// folding them in would mean inventing one.
 	var results []pair
-	skipped := 0
+	skipped, contaminated := 0, 0
 	for _, m := range all {
 		if m.Game != *game || len(m.Seats) != 2 {
 			skipped++
+			continue
+		}
+		// Refuse a match the models did not actually finish.
+		//
+		// Two of this run's matches "completed" only because their agents were killed
+		// mid-game: the platform played the remaining turns with its legal fallback, and
+		// the surviving seat won 81-10 against an opponent that had stopped answering.
+		// Counting that as a win would credit a model for its opponent's outage. The
+		// threshold is zero rather than a tolerance because there is no principled level
+		// of "somebody else played some of it" that still measures the model.
+		if m.Fallbacks > *maxFallbacks {
+			contaminated++
 			continue
 		}
 		x, y := m.Seats[0], m.Seats[1]
@@ -168,8 +187,8 @@ func main() {
 	if *day != "" {
 		boardDay = *day
 	}
-	fmt.Printf("%s  %s  %d decisive pairings, %d skipped, separability %.2f\n",
-		boardDay, *game, len(results), skipped, sep)
+	fmt.Printf("%s  %s  %d decisive pairings, %d skipped, %d dropped for fallbacks, separability %.2f\n",
+		boardDay, *game, len(results), skipped, contaminated, sep)
 	fmt.Printf("%-30s %6s %8s %8s %5s %4s %4s\n", "model", "elo", "low", "high", "n", "W", "L")
 	for _, r := range rows {
 		fmt.Printf("%-30s %6.0f %8.0f %8.0f %5d %4d %4d\n", r.model, r.elo, r.low, r.high, r.n, r.w, r.l)

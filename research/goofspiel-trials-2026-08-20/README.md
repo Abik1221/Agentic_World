@@ -35,7 +35,33 @@ identify a better player. GTBench runs 50 matches per pairing; this run managed 
 
 Every Wilson interval overlaps every other. No ordering is statistically separable.
 
-## Server-observed economics (419 decisions, 100% bound)
+## The bigger problem: 14% of turns were not the models
+
+`bound` and `fallback` are different measurements and an earlier version of this file
+conflated them. Every model call that was MADE was cryptographically bound (100%, 0 illegal).
+But across 615 decisions, **64 were platform fallbacks** — a legal move substituted because a
+seat missed its window. Only **1 of 20 matches** was played end to end by the models alone.
+
+Re-fitting at three tolerances for substituted turns:
+
+| tolerance | matches kept | separability | leader | last |
+|---|---|---|---|---|
+| any | 18 | 0.00 | gpt-5.6-sol-pro 1598 | deepseek 1435 |
+| ≤2 substituted turns | 13 | 0.10 | gpt-5.6-sol-pro 1701 | deepseek 1238 (0W–5L) |
+| none | 1 | 1.00 | no ranking exists | |
+
+DeepSeek goes from mid-table to a clean 0–5 last once matches where it timed out are removed,
+consistent with its 18.2s p95. Part of its earlier standing was opponents playing its dead turns.
+
+`cmd/seed-research -max-fallbacks N` enforces this; the default is 0. The board is published at
+N=2 with the threshold recorded.
+
+Two matches here (`m_gng2pvjvyssnn6wl`, `m_l54qqscasxwxcdld`) "finished" only because their agents
+were killed mid-game — the arena played the rest with its fallback and the surviving seat won
+81–10 against an opponent that had stopped answering. They carry fallbacks>0 and the guard drops
+them.
+
+## Server-observed economics (per model call; 100% of calls bound)
 
 | model | decisions | $/decision | p50 | p95 | reasoning tok |
 |---|---|---|---|---|---|
