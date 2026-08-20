@@ -337,13 +337,21 @@ func (a *api) setAutoplay(agentKey string, enabled bool, mode string, bid int64,
 // stakes, and neither does this. startSandboxPushPlay stakes nothing but opens ONE table per
 // agent against house bots, so two benchmark models never meet and the run yields no
 // comparison to fit.
-func (a *api) createHarnessTable(platformToken, agentA, agentB string) (string, error) {
+// specSalt non-empty engages DUPLICATE scheduling: the table is dealt from (salt, board) rather
+// than at random, so the n-th match of every pairing in a run plays the same board. Empty salt
+// keeps the old random behaviour, which is what a one-off table wants.
+func (a *api) createHarnessTable(platformToken, agentA, agentB, specSalt string, board int) (string, error) {
 	var out struct {
 		MatchID string `json:"match_id"`
 		ID      string `json:"id"`
 	}
+	body := map[string]any{"agent_a": agentA, "agent_b": agentB}
+	if specSalt != "" {
+		body["spec_salt"] = specSalt
+		body["board"] = board
+	}
 	code, excerpt, err := a.doWithAuth(http.MethodPost, "/v1/admin/harness/table",
-		"Platform "+platformToken, map[string]any{"agent_a": agentA, "agent_b": agentB}, &out)
+		"Platform "+platformToken, body, &out)
 	if err != nil {
 		return "", fmt.Errorf("create harness table: %w", err)
 	}

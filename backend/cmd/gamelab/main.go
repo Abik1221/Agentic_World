@@ -27,6 +27,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/agent-arena/arena/internal/exploit"
 )
 
 // labEndpointSecret is the endpoint token the harness shares with the simulated agents it
@@ -36,6 +38,12 @@ const labEndpointSecret = "lab-endpoint-secret" // #nosec G101 -- local lab harn
 
 func main() {
 	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
+	specSalt := flag.String("spec-salt", "", "with -harness: engage DUPLICATE scheduling under this salt, "+
+		"so every pairing plays byte-identical boards and scores can be compared within a board. "+
+		"Empty = a random deal per table, which is what made earlier runs unreadable")
+	boards := flag.Int("boards", 8, "with -spec-salt: how many distinct boards the run cycles through")
+	replicate := flag.Int("replicate", 0, "with -spec-salt: this pairing's match index WITHIN the pairing "+
+		"(0 for its first match). Never a global counter — two pairings must share boards")
 	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
 	tier := flag.String("tier", "", "stake tier for a REAL staked table: low|mid|high (empty = free practice)")
 	basePort := flag.Int("base-port", 9101, "first local port for the agent endpoints")
@@ -84,6 +92,11 @@ func main() {
 	// step of onboarding (see harness.go) and nothing about how the agents then play.
 	harness := flag.Bool("harness", false, "onboard the agents as kind='harness' through the ADMIN create route, so the run feeds /harness instead of the public developer leaderboard")
 	flag.Parse()
+
+	SpecSalt, harnessBoards, harnessReplicate = *specSalt, *boards, *replicate
+	if harnessBoards < 1 {
+		harnessBoards = 1
+	}
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
 	GoDarkAfterRound, GoDarkSeat = *goDark, *goDarkSeat
@@ -440,6 +453,16 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	return nil
 }
 
+// Duplicate-scheduling state for harness runs. harnessReplicate is this pairing's match index
+// WITHIN the pairing — the run advances it per match, and it must never be a global counter or
+// two pairings stop sharing boards, which silently turns the paired analysis back into an
+// unpaired one.
+var (
+	SpecSalt         string
+	harnessBoards    = 8
+	harnessReplicate int
+)
+
 func seatsFor(game string) int {
 	switch strings.ToLower(game) {
 	case "goofspiel":
@@ -671,12 +694,24 @@ func runHarnessTable(a *api, lg *log.Logger, agents []*labAgent, game string) er
 	// ONE call seats both. The lobby's create-then-join is a developer flow: it opens a
 	// waiting table and lets someone else take the other seat, which is the wrong shape here
 	// — there is no one else, and a half-seated benchmark table is a match that never runs.
-	matchID, err := a.createHarnessTable(PlatformToken, host.AgentID, guest.AgentID)
+	// DUPLICATE scheduling. The board comes from this pairing's REPLICATE index, never from a
+	// global match counter, so the n-th match of every pairing in the run is played on the same
+	// deal and pairings can be compared within a board. A random deal per match is exactly the
+	// confounder that made the 2026-08-20 run unreadable.
+	//
+	// Empty salt keeps the old random behaviour, so a casual single table is unaffected.
+	board := exploit.BoardFor(harnessReplicate, harnessBoards)
+	matchID, err := a.createHarnessTable(PlatformToken, host.AgentID, guest.AgentID,
+		SpecSalt, board)
 	if err != nil {
 		return fmt.Errorf("seat %s vs %s: %w", host.Persona.Name, guest.Persona.Name, err)
 	}
-	lg.Printf("BENCHMARK TABLE  %s  %s vs %s  (no stake)",
-		matchID, host.Persona.Name, guest.Persona.Name)
+	sched := "random deal"
+	if SpecSalt != "" {
+		sched = fmt.Sprintf("board %d/%d, salt %q", board, harnessBoards, SpecSalt)
+	}
+	lg.Printf("BENCHMARK TABLE  %s  %s vs %s  (no stake, %s)",
+		matchID, host.Persona.Name, guest.Persona.Name, sched)
 	lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
 	return nil
 }

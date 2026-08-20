@@ -10,6 +10,7 @@ import (
 
 	"github.com/agent-arena/arena/internal/auth"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
+	"github.com/agent-arena/arena/internal/exploit"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
 )
@@ -142,6 +143,16 @@ func (h *Handler) createHarnessTable(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		AgentA string `json:"agent_a"`
 		AgentB string `json:"agent_b"`
+		// Board and SpecSalt request DUPLICATE scheduling: a deal derived from the salt and
+		// board index rather than drawn at random, so that every pairing in a benchmark run
+		// plays byte-identical boards and their scores can be compared within a board.
+		//
+		// SpecSalt must be supplied explicitly for this to engage. Defaulting it would mean a
+		// caller could get a predictable deal by omission, and predictability is the one
+		// property that makes a fixed board dangerous anywhere money is involved. Omit it and
+		// the table randomises exactly as before.
+		Board    int    `json:"board"`
+		SpecSalt string `json:"spec_salt"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
@@ -151,12 +162,21 @@ func (h *Handler) createHarnessTable(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.NewError(400, "invalid_request", "agent_a and agent_b are required"))
 		return
 	}
+	if in.Board < 0 {
+		httpx.Error(w, httpx.NewError(400, "invalid_request", "board must not be negative"))
+		return
+	}
+	// nil unless a salt was named: no salt, no determinism.
+	var seed []byte
+	if in.SpecSalt != "" {
+		seed = exploit.BoardSeed(in.SpecSalt, in.Board)
+	}
 	// Both seats are owned by the platform identity — that is what a harness agent IS, and
-	// the service verifies the kind before seating either of them.
-	// nil seed: the HTTP route always randomises. Duplicate scheduling is driven by the
-	// certification harness, which calls the service directly with a derived seed.
+	// the service verifies the kind before seating either of them. The service also refuses a
+	// seed on any path that is not this one, so an admin credential cannot use it to fix the
+	// deal on a table where somebody could profit from knowing it.
 	id, err := h.svc.CreateHarnessPaired(r.Context(), in.AgentA, identity.SystemOwnerPublicID,
-		in.AgentB, identity.SystemOwnerPublicID, nil)
+		in.AgentB, identity.SystemOwnerPublicID, seed)
 	if err != nil {
 		httpx.Error(w, err)
 		return
