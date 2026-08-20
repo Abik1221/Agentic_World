@@ -1937,7 +1937,22 @@ func (s *Service) rakePct() int {
 // The match is unrated, so it reaches no developer board, no rating and no P-Index. That is
 // the same separation the harness kind gets everywhere else; it is repeated here because a
 // table created outside the normal flow is exactly where such a property gets forgotten.
-func (s *Service) CreateHarnessPaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string) (string, error) {
+// boardSeed, when non-nil, fixes the prize order instead of drawing one at random.
+//
+// This exists for duplicate scheduling (internal/exploit): every pairing must play byte-identical
+// deals or their scores cannot be compared within a board, and a random seed per match is exactly
+// the confounder that made the 2026-08-20 run unreadable.
+//
+// It is accepted HERE and nowhere else, and that is not stylistic. A fixed prize order is a
+// PREDICTABLE one, and a Goofspiel board whose prize sequence is known in advance is a different,
+// far easier game — it can be solved offline. On a staked table that is a fairness hole and a way
+// to take a developer's money. This path is zero-stake, zero-rake, unrated, and restricted to
+// platform benchmark agents whose kind is checked below, so there is nothing here to win by
+// knowing the deal.
+//
+// The provable-fairness commit is unaffected: it proves the seed was fixed before play, which it
+// was. What a commit cannot do is make a reused seed safe where somebody can profit from it.
+func (s *Service) CreateHarnessPaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, boardSeed []byte) (string, error) {
 	if aAgent == bAgent {
 		// A model cannot be compared with itself, and a table with one agent in both seats
 		// would produce a comparison that always ties.
@@ -1955,7 +1970,15 @@ func (s *Service) CreateHarnessPaired(ctx context.Context, aAgent, aOwner, bAgen
 	}
 
 	seed := make([]byte, 32)
-	if _, err := rand.Read(seed); err != nil {
+	if len(boardSeed) > 0 {
+		// Length is enforced rather than padded. A short seed silently zero-extended would make
+		// two runs that meant different boards produce the same one, and that collision would
+		// look like a real result.
+		if len(boardSeed) != 32 {
+			return "", httpx.NewError(400, "invalid_request", "a board seed must be exactly 32 bytes")
+		}
+		copy(seed, boardSeed)
+	} else if _, err := rand.Read(seed); err != nil {
 		return "", err
 	}
 	cfg := gs.DefaultConfig()

@@ -153,8 +153,10 @@ func (h *Handler) createHarnessTable(w http.ResponseWriter, r *http.Request) {
 	}
 	// Both seats are owned by the platform identity — that is what a harness agent IS, and
 	// the service verifies the kind before seating either of them.
+	// nil seed: the HTTP route always randomises. Duplicate scheduling is driven by the
+	// certification harness, which calls the service directly with a derived seed.
 	id, err := h.svc.CreateHarnessPaired(r.Context(), in.AgentA, identity.SystemOwnerPublicID,
-		in.AgentB, identity.SystemOwnerPublicID)
+		in.AgentB, identity.SystemOwnerPublicID, nil)
 	if err != nil {
 		httpx.Error(w, err)
 		return

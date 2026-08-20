@@ -44,7 +44,7 @@ func TestHarnessTableRefusesNonHarnessSeats(t *testing.T) {
 		{"unknown agent", "ag_bench_a", "ag_nope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.CreateHarnessPaired(context.Background(), tc.a, "usr_system", tc.b, "usr_system")
+			_, err := s.CreateHarnessPaired(context.Background(), tc.a, "usr_system", tc.b, "usr_system", nil)
 			if err == nil {
 				t.Fatal("a non-harness agent was seated at a zero-stake table")
 			}
@@ -64,7 +64,7 @@ func TestHarnessTableRefusesNonHarnessSeats(t *testing.T) {
 // every rating toward the middle.
 func TestHarnessTableRefusesOneAgentInBothSeats(t *testing.T) {
 	s := &Service{repo: kindRepo{kinds: map[string]string{"ag_bench_a": "harness"}}}
-	_, err := s.CreateHarnessPaired(context.Background(), "ag_bench_a", "usr_system", "ag_bench_a", "usr_system")
+	_, err := s.CreateHarnessPaired(context.Background(), "ag_bench_a", "usr_system", "ag_bench_a", "usr_system", nil)
 	if err == nil {
 		t.Fatal("the same agent was seated in both seats")
 	}
