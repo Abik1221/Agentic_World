@@ -27,6 +27,17 @@ x-backend-env: &backend-env
   OBJECT_STORE_SSL: "false"
   INGEST_API_KEY: ${INGEST_API_KEY:-local-pyyol-lens-key}
   PYYOL_LENS_ADMIN_KEY: ${PYYOL_LENS_ADMIN_KEY:-}
+  # query-api REFUSES TO BOOT without this, and correctly so: it trusts the caller's
+  # x-organization-id header, so the shared secret is the only thing standing between a
+  # request and another organisation's traces. Failing closed is the right behaviour.
+  #
+  # It was missing from this list entirely, which made that control unsatisfiable rather
+  # than merely strict: PYYOL_LENS_ENV defaults to production above, production demands the
+  # key, and no value was plumbed into any container — so query-api crash-looped on the
+  # default configuration and setting QUERY_API_KEY in .env would not have reached it.
+  # Deliberately left with an EMPTY default rather than a placeholder, so a deployment that
+  # forgets it still fails loudly instead of running on a guessable shared secret.
+  QUERY_API_KEY: ${QUERY_API_KEY:-}
 
 services:
   clickhouse:
@@ -72,9 +83,17 @@ services:
     image: nats:2.10-alpine
     container_name: pyyol-lens-nats
     command: ["-js", "-m", "8222"]
+    # HOST ports are parameterised; the defaults are the values this file always used, so a
+    # deployment that sets nothing behaves exactly as before.
+    #
+    # They have to be parameterised here rather than overridden in docker-compose.override.yml
+    # because Compose APPENDS port sequences on merge instead of replacing them: an override
+    # that remapped 4222 produced BOTH bindings and `up` still failed with "address already in
+    # use". Nothing internal is affected either way — every Lens service reaches NATS by its
+    # compose network alias, and these bindings exist only for a developer connecting directly.
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      - "${LENS_NATS_PORT:-4222}:4222"
+      - "${LENS_NATS_MONITOR_PORT:-8222}:8222"
     volumes:
       - nats_data:/data
     healthcheck:
@@ -90,9 +109,10 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+    # Parameterised for the same reason as NATS above; defaults unchanged.
     ports:
-      - "9001:9000"
-      - "9002:9002"
+      - "${LENS_MINIO_PORT:-9001}:9000"
+      - "${LENS_MINIO_CONSOLE_PORT:-9002}:9002"
     volumes:
       - minio_data:/data
     healthcheck:

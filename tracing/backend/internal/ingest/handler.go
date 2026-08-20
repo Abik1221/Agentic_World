@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
 	"github.com/agent-arena/pyyol-lens/backend/internal/config"
 	"github.com/agent-arena/pyyol-lens/backend/internal/schema"
 	"github.com/agent-arena/pyyol-lens/backend/internal/store"
 	"github.com/agent-arena/pyyol-lens/backend/internal/stream"
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 )
 
 type Handler struct {

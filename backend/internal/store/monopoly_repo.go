@@ -29,12 +29,12 @@ func (r *MonopolyRepo) Create(ctx context.Context, in monopoly.CreateMatchInput)
 		err := tx.QueryRow(ctx,
 			`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode, state,
-			     round_deadline, round_deadline_base, started_at, creator_owner_user_id)
-			 VALUES ($1,'monopoly','active',$2,$3,$4,$5,$6,$7,'deterministic',$8::jsonb,$9,$9,now(),
+			     round_deadline, round_deadline_base, started_at, starts_at, creator_owner_user_id)
+			 VALUES ($1,'monopoly','active',$2,$3,$4,$5,$6,$7,'deterministic',$8::jsonb,$9,$9,now(),$11,
 			         (SELECT id FROM users WHERE public_id=$10))
 			 RETURNING id`,
 			in.PublicID, in.EntryFee, in.RakePct, mono.DefaultMaxTurns, mono.Version,
-			in.Commit, in.Seed, mustJSON(in.State), in.Deadline, in.Creator.OwnerPublicID).
+			in.Commit, in.Seed, mustJSON(in.State), in.Deadline, in.Creator.OwnerPublicID, in.StartsAt).
 			Scan(&matchID)
 		if err != nil {
 			return err

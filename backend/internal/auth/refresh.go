@@ -72,7 +72,7 @@ type RefreshService struct {
 	// reuseGrace is how long after rotation a repeat presentation is treated as a benign
 	// concurrent request rather than as theft. Seconds, not minutes: see the note above.
 	reuseGrace time.Duration
-	now  func() time.Time
+	now        func() time.Time
 }
 
 // DefaultReuseGrace is the window in which a re-presented refresh token is a race rather

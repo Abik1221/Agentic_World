@@ -28,6 +28,14 @@ type Repo interface {
 	// the two agents since `since` (for action-correlation), oriented so CardA is
 	// always agentA's card regardless of which seat it held in each match.
 	PairMoves(ctx context.Context, agentA, agentB string, since time.Time) ([]MoveSample, error)
+	// PairVotes returns the Mafia rounds in which BOTH agents voted, oriented so TargetA is
+	// always agentA's vote. Rounds where either seat was silent are excluded: two seats both
+	// abstaining is not evidence of coordination.
+	PairVotes(ctx context.Context, agentA, agentB string, since time.Time) ([]VotePair, error)
+	// PairTrades returns EXECUTED Monopoly trades between the two agents, valued from A's
+	// side. Proposals and rejections move nothing, and counting them would let one agent
+	// frame another by spamming offers it knows will be declined.
+	PairTrades(ctx context.Context, agentA, agentB string, since time.Time) ([]Trade, error)
 
 	// ── audit (append-only) ──
 	Audit(ctx context.Context, actor, action, target string, detail []byte) error

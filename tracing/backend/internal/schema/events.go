@@ -69,24 +69,24 @@ type TelemetryEvent struct {
 	BudgetTokensUsed     int64    `json:"budget_tokens_used"`
 	BudgetTokensCap      int64    `json:"budget_tokens_cap"`
 
-	LatencyMS        int64          `json:"latency_ms"`
-	InputBytes       int64          `json:"input_bytes"`
-	OutputBytes      int64          `json:"output_bytes"`
-	PromptTokens     int64          `json:"prompt_tokens"`
-	CompletionTokens int64          `json:"completion_tokens"`
-	CachedTokens     int64          `json:"cached_tokens"`
-	ReasoningTokens  int64          `json:"reasoning_tokens"`
-	TotalTokens      int64          `json:"total_tokens"`
-	EstimatedCost    float64        `json:"estimated_cost"`
-	ReconciledCost   float64        `json:"reconciled_cost"`
-	Currency         string         `json:"currency"`
-	PricingVersion   string         `json:"pricing_version"`
-	MeterSource      string         `json:"meter_source"`
+	LatencyMS        int64   `json:"latency_ms"`
+	InputBytes       int64   `json:"input_bytes"`
+	OutputBytes      int64   `json:"output_bytes"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	CachedTokens     int64   `json:"cached_tokens"`
+	ReasoningTokens  int64   `json:"reasoning_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	EstimatedCost    float64 `json:"estimated_cost"`
+	ReconciledCost   float64 `json:"reconciled_cost"`
+	Currency         string  `json:"currency"`
+	PricingVersion   string  `json:"pricing_version"`
+	MeterSource      string  `json:"meter_source"`
 	// AgentKind is whose traffic this span is: "external" (a developer's agent) or
 	// "harness" (a Pyyol platform benchmark seat). Empty means UNKNOWN — including every
 	// row written before ClickHouse migration 007 — and must never be read as "external",
 	// which would fold platform benchmark calls back into a developer's telemetry.
-	AgentKind string `json:"agent_kind"`
+	AgentKind        string         `json:"agent_kind"`
 	ErrorType        string         `json:"error_type"`
 	ErrorCode        string         `json:"error_code"`
 	ErrorMessage     string         `json:"error_message"`

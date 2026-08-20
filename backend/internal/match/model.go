@@ -7,6 +7,7 @@ package match
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/integrity"
 	"sort"
 	"time"
 
@@ -20,9 +21,9 @@ const (
 	// table anyone may join and is indexed as exactly that — a paired table has no free seat.
 	StatusReadyCheck = "ready_check"
 	StatusWaiting    = "waiting"
-	StatusActive   = "active"
-	StatusFinished = "finished"
-	StatusAborted  = "aborted"
+	StatusActive     = "active"
+	StatusFinished   = "finished"
+	StatusAborted    = "aborted"
 )
 
 // Mode values for a match row. Competitive is the real, paid, ranked economy.
@@ -125,10 +126,10 @@ type Match struct {
 	// Absolute, not a duration, and that is the entire point: a terminal and a browser each
 	// counting down from ten drift apart within seconds and visibly disagree. Both counting
 	// TO the same instant cannot. Every surface renders from this one value.
-	StartsAt *time.Time
-	Players           []Player
-	WinnerAgent       string // agent public id of the winner; "" for tie/none
-	ReplayHash        string
+	StartsAt    *time.Time
+	Players     []Player
+	WinnerAgent string // agent public id of the winner; "" for tie/none
+	ReplayHash  string
 }
 
 func (m *Match) playerBySeat(seat int) *Player {
@@ -221,6 +222,9 @@ type RatingResult struct {
 	Game          string
 	WinnerSeat    int
 	Players       []RatingPlayer
+	// Integrity is the settlement verdict, carried through so the rater can void a
+	// rating for the same reason it voided the money. Zero value is inert.
+	Integrity integrity.Verdict
 }
 
 // RatingPlayer is one seat's contribution to the rating update. Placement is the

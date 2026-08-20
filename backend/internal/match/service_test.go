@@ -13,6 +13,7 @@ import (
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/readycheck"
 )
 
 // fakeMover stands in for the socket gateway: both agents are "connected" and each
@@ -117,7 +118,7 @@ func (r *fakeRepo) Get(_ context.Context, id string) (match.Match, error) {
 	return m, nil
 }
 
-func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, state gs.State, deadline time.Time, events []gs.Event) error {
+func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, state gs.State, startsAt, deadline time.Time, events []gs.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m := r.matches[id]
@@ -129,6 +130,8 @@ func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, s
 	m.State = state
 	d := deadline
 	m.RoundDeadline = &d
+	sa := startsAt
+	m.StartsAt = &sa
 	r.matches[id] = m
 	r.events[id] = append(r.events[id], events...)
 	return nil
@@ -443,7 +446,12 @@ func TestSweepForcesTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Neither agent acts; advance past the move window and sweep.
-	clk.advance(21 * time.Second)
+	//
+	// Past the COUNTDOWN as well as the window: since Join sets a start countdown (like mafia
+	// and monopoly), the first round's deadline is startsAt+window, not now+window. Advancing
+	// only the window leaves the deadline in the future and the sweep correctly finds nothing —
+	// which used to read as "the sweeper is broken" rather than "the clock has not reached it".
+	clk.advance(readycheck.DefaultPolicy("goofspiel").Countdown + 21*time.Second)
 	n, err := svc.SweepExpired(ctx, 10)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -484,7 +492,8 @@ func TestSweepForcesTimeoutLocklessWhenRedisDown(t *testing.T) {
 	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
 		t.Fatal(err)
 	}
-	clk.advance(21 * time.Second)
+	// Past the start countdown as well as the window — see TestSweepForcesTimeout.
+	clk.advance(readycheck.DefaultPolicy("goofspiel").Countdown + 21*time.Second)
 
 	down := mk(errLocker{})
 	if _, err := down.SweepExpired(ctx, 10); err != nil {
@@ -619,3 +628,46 @@ func TestRoundStartIsStampedOnlyWhenARoundOpens(t *testing.T) {
 // paths, and a stub that claimed "harness" would let a zero-stake benchmark table be created
 // in tests that are not about it — hiding the very check CreateHarnessPaired exists for.
 func (f *fakeRepo) AgentKind(context.Context, string) (string, error) { return "external", nil }
+
+// TestJoinSetsStartCountdown pins that a goofspiel lobby table gets the same start countdown
+// mafia and monopoly already persist.
+//
+// This was a real, measurable gap rather than a theoretical one: across three days of lab
+// traffic every mafia row had a starts_at and every goofspiel row had NULL, because Join
+// activated the table in the same instant it seated the joiner. Two consequences, and the
+// second is the one that cost agents rounds:
+//
+//   - no surface had an absolute instant to count to, so no countdown could be rendered;
+//   - the first round's deadline was measured from the join, so an agent still starting up
+//     was already losing its first window.
+//
+// The assertions are on RELATIONSHIPS (starts_at strictly after the join, deadline strictly
+// after starts_at), not on the literal 10s, so retuning the policy does not fail this test
+// while removing the countdown still does.
+func TestJoinSetsStartCountdown(t *testing.T) {
+	svc, repo := newSvcWithRepo()
+	ctx := context.Background()
+	id, _ := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatal(err)
+	}
+
+	repo.mu.Lock()
+	m := repo.matches[id]
+	repo.mu.Unlock()
+
+	// The service runs on a fixed clock, so "now" is that instant, not wall time.
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if m.StartsAt == nil {
+		t.Fatal("joined table has no starts_at — the start countdown was not set, so no surface " +
+			"can count to a shared instant (this is exactly the goofspiel gap)")
+	}
+	if !m.StartsAt.After(now) {
+		t.Fatalf("starts_at %v is not after the join instant %v — a countdown that has already "+
+			"elapsed is the same as no countdown", m.StartsAt, now)
+	}
+	if m.RoundDeadline == nil || !m.RoundDeadline.After(*m.StartsAt) {
+		t.Fatalf("round deadline %v must be strictly after starts_at %v, otherwise the countdown "+
+			"eats the first round's thinking time", m.RoundDeadline, m.StartsAt)
+	}
+}

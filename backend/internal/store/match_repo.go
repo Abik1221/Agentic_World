@@ -153,16 +153,16 @@ func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	return out, rows.Err()
 }
 
-func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner match.Player, state gs.State, deadline time.Time, events []gs.Event) error {
+func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner match.Player, state gs.State, startsAt, deadline time.Time, events []gs.Event) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		var game string
 		var bid int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3,
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, starts_at=$4,
 			     round_started_at=now(), started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' RETURNING id, game, bid`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID, &game, &bid)
+			matchPublicID, mustJSON(state), deadline, startsAt).Scan(&matchID, &game, &bid)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return match.ErrNotWaiting
 		}

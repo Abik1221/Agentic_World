@@ -107,6 +107,24 @@ type results struct {
 		Streamed          bool    `json:"streamed"`
 		CreatedAt         *string `json:"created_at"`
 	} `json:"model_calls"`
+	// Events is the match log itself — what makes the benchmark watchable rather than
+	// merely readable. Payload stays raw JSON: it is a different shape per game and per
+	// event kind, and re-marshalling it through a typed struct would silently drop
+	// fields the replay needs.
+	Events []struct {
+		MatchID   string          `json:"match_id"`
+		Seq       int             `json:"seq"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload"`
+		CreatedAt *string         `json:"created_at"`
+	} `json:"events"`
+	// Players is the seating, without which a replay cannot attribute a turn.
+	Players []struct {
+		MatchID    string `json:"match_id"`
+		Agent      string `json:"agent"`
+		Seat       int    `json:"seat"`
+		FinalScore *int   `json:"final_score"`
+	} `json:"players"`
 	Decisions []struct {
 		MatchID          string   `json:"match_id"`
 		Agent            string   `json:"agent"`
@@ -165,6 +183,26 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 	var r results
 	if err := json.Unmarshal(resultsJSON, &r); err != nil {
 		return false, fmt.Errorf("harnessseed: parse embedded results: %w", err)
+	}
+
+	// Reconcile BEFORE any write. This package inserts proof-shaped rows — bound,
+	// bind_receipt, completion_hash, verified_cost — into the tables the verification gate
+	// reads, so an export whose three accounts of the same match disagree must not become
+	// evidence. See reconcile.go for what is checked and why.
+	//
+	// A fatal finding imports NOTHING and returns an error. It deliberately does not stop
+	// the server: Seed is best-effort by contract, and the caller logs and continues.
+	rep := reconcile(&r)
+	for _, f := range rep.Findings {
+		if f.Severity == Fatal {
+			log.Error("harnessseed: reconciliation", "finding", f.String())
+		} else {
+			log.Warn("harnessseed: reconciliation", "finding", f.String())
+		}
+	}
+	if rep.Fatal {
+		return false, fmt.Errorf("harnessseed: refusing to seed, export contradicts its own "+
+			"evidence: %s", rep.Summary())
 	}
 
 	// Which matches are already here. Everything else keys off this: a match present means
@@ -329,6 +367,51 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 		backfilled++
 	}
 
+	// EVENTS AND SEATING: also ungated, for the reason the block above spells out.
+	//
+	// This is the same trap, and it had already sprung: production seeded these matches
+	// before the export carried their logs, so every match row was `present`, the skip
+	// fired, and /replay answered `events: 0` forever. The benchmark's numbers were
+	// public while the games behind them were not, which is the opposite of the point.
+	//
+	// Both tables have natural keys — match_events (match_id, seq) and match_players
+	// (match_id, agent_id) — so ON CONFLICT DO NOTHING makes re-running them free, and
+	// there is no counter to double.
+	//
+	// created_at is preserved rather than defaulted to now(): it is the pacing a replay
+	// plays back. Defaulting it would collapse a twenty-minute match into one instant
+	// and leave the clock showing nothing.
+	events := 0
+	for _, e := range r.Events {
+		payload := e.Payload
+		if len(payload) == 0 {
+			payload = json.RawMessage(`{}`)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO match_events (match_id, seq, type, payload, created_at)
+			 SELECT m.id, $1, $2, $3::jsonb, COALESCE($4::timestamptz, now())
+			   FROM matches m WHERE m.public_id = $5
+			 ON CONFLICT (match_id, seq) DO NOTHING`,
+			e.Seq, e.Type, string(payload), e.CreatedAt, e.MatchID); err != nil {
+			return false, fmt.Errorf("harnessseed: event %s#%d: %w", e.MatchID, e.Seq, err)
+		}
+		events++
+	}
+
+	players := 0
+	for _, p := range r.Players {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO match_players (match_id, agent_id, owner_user_id, seat, final_score)
+			 SELECT m.id, a.id, a.owner_user_id, $1, $2
+			   FROM matches m, agents a
+			  WHERE m.public_id = $3 AND a.public_id = $4
+			 ON CONFLICT (match_id, agent_id) DO NOTHING`,
+			p.Seat, p.FinalScore, p.MatchID, p.Agent); err != nil {
+			return false, fmt.Errorf("harnessseed: player %s/%s: %w", p.MatchID, p.Agent, err)
+		}
+		players++
+	}
+
 	for _, bd := range r.BoundDecisions {
 		if present[bd.MatchID] {
 			continue
@@ -349,11 +432,12 @@ func Seed(ctx context.Context, db *pgxpool.Pool, log *slog.Logger) (bool, error)
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
-	if allPresent && backfilled == 0 {
+	if allPresent && backfilled == 0 && events == 0 && players == 0 {
 		log.Info("harness results already seeded", "matches", len(r.Matches), "source", r.Source)
 		return false, nil
 	}
 	log.Info("harness results seeded",
+		"events", events, "players", players,
 		"matches", seeded, "agents", len(r.Agents), "model_calls", len(r.ModelCalls),
 		"verified_attributions", backfilled,
 		"source", r.Source, "exported_at", r.ExportedAt)

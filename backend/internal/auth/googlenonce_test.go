@@ -52,14 +52,14 @@ func TestForgedNonceIsRejected(t *testing.T) {
 	body := good[:i]
 
 	for name, bad := range map[string]string{
-		"empty":            "",
-		"no separator":     "justastring",
-		"body only":        body,
-		"unsigned":         body + ".",
-		"wrong signature":  body + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-		"not base64":       body + ".!!!!",
-		"tampered body":    strings.Replace(body, body[:4], "zzzz", 1) + good[i:],
-		"another secret":   mustIssue(t, NewNonceIssuer("a-completely-different-signing-key-value")),
+		"empty":           "",
+		"no separator":    "justastring",
+		"body only":       body,
+		"unsigned":        body + ".",
+		"wrong signature": body + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"not base64":      body + ".!!!!",
+		"tampered body":   strings.Replace(body, body[:4], "zzzz", 1) + good[i:],
+		"another secret":  mustIssue(t, NewNonceIssuer("a-completely-different-signing-key-value")),
 	} {
 		if err := n.Verify(bad); err == nil {
 			t.Errorf("Verify(%s) accepted a nonce it should have rejected", name)

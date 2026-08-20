@@ -93,9 +93,9 @@ func (a *labAgent) playMonopoly(w http.ResponseWriter, r *http.Request, raw []by
 	var why string
 	if BindGatewayBase != "" {
 		me := v.State.Players[v.YourSeat]
-		prompt := fmt.Sprintf(
-			"You are seat %d in Monopoly, phase %s, turn %d. You hold $%d.",
-			v.YourSeat, v.Phase, v.Round, me.Cash)
+		prompt := viewPrompt(raw, fmt.Sprintf(
+			"You are playing Monopoly in the Pyyol arena as seat %d, phase %s, turn %d. You hold $%d.",
+			v.YourSeat, v.Phase, v.Round, me.Cash))
 		b, err := a.decideGameThroughGateway("monopoly", v.MatchID, v.Round, v.YourSeat,
 			v.TurnProof, v.Legal, prompt)
 		if err != nil {

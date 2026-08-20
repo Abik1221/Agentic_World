@@ -579,6 +579,26 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 	// never get this wrong.
 	call.CostUSD = pricing.EstimateCostFor(call.Provider, call.Model, call.PromptTokens,
 		call.CompletionTokens, call.CachedReadTokens, call.CachedWriteTokens, call.ReasoningTokens)
+
+	// AND SAY SO WHEN THE RATE WAS A GUESS.
+	//
+	// A model with no entry in the price table is charged a plausible mid-range rate rather
+	// than zero — deliberately, because zero is a way to win a cost-efficiency board. But an
+	// estimate that nothing announces is only better than zero by degree: it still ends up
+	// printed as "$0.004 per win" beside figures derived from real published rates, and
+	// nothing on the row says which is which.
+	//
+	// Once per model, not per call: a benchmark makes thousands of calls per model and a line
+	// each would bury exactly the signal this is for. WARN rather than Info because the window
+	// to act is before the results are published, and the operator is reading this log during
+	// the run — see pricing.UnpricedModels for the full list at any point.
+	if pricing.PriceBasis(call.Model) == "estimated" && pricing.NoteUnpricedModel(call.Model) {
+		g.log.Warn("llmgw: no price table entry for this model — its cost is an ESTIMATE and "+
+			"any cost-efficiency ranking including it is an estimate too",
+			"provider", call.Provider, "model", call.Model,
+			"fix", "add the model's published rates to internal/pricing before publishing a benchmark")
+	}
+
 	if copyErr != nil {
 		g.log.Debug("llmgw: response copy ended early", "agent", agentPublicID, "error", copyErr)
 	}
@@ -1004,7 +1024,7 @@ func (g *Gateway) emit(c Call) {
 		// telemetry and a developer's cost view contains calls that were never theirs.
 		AgentKind: agentKind,
 		LatencyMS: int64(c.LatencyMS),
-		Priority:         telemetry.PriorityHigh,
+		Priority:  telemetry.PriorityHigh,
 		PayloadJSON: map[string]any{
 			"turn": c.Round,
 			// Whether this call is provably the one made for that turn. The ranked integrity

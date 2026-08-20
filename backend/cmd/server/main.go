@@ -692,8 +692,26 @@ func run() error {
 	harnessBoardHandler.SetHistoryReader(modelBoardRepo)
 	harnessBoardHandler.SetBoard("harness")
 
+	// The two boards refresh on DIFFERENT intervals, sized to what each one costs.
+	//
+	// The harness board reads the platform's own benchmark seats — a few dozen in the
+	// window — and its refresh is scoped to them, so it costs ~113 MB and under a second.
+	// Ten minutes is comfortable.
+	//
+	// The developer board reads every developer seat in a 90-day window, which is ~320,000
+	// of them, and one refresh measured 16.7 MINUTES and ~20 GB of reads. On a ten-minute
+	// interval a tick was always already waiting, so it refreshed back to back forever:
+	// four refreshes accounted for 208 GB of reads, and the board was effectively a
+	// permanent table scan wearing a schedule.
+	//
+	// An hour is the honest interval for it. A leaderboard computed over ninety days does
+	// not change meaningfully in ten minutes, so the shorter period bought nothing a viewer
+	// could perceive and cost the disk continuously. This is a mitigation and not the cure —
+	// the query returns 600k rows to be aggregated in Go, and that is the thing to fix — so
+	// the worker now WARNS when a refresh outlasts its interval rather than letting the next
+	// regression hide the same way.
 	launch("harnessboard", modelboard.NewWorker(harnessBoardSvc, 10*time.Minute, log).Run)
-	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
+	launch("modelboard", modelboard.NewWorker(modelBoardSvc, time.Hour, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
 	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
 	// about one afternoon. An imbalance is SILENT — per-wallet balances still add up, the UI still
@@ -767,6 +785,10 @@ func run() error {
 	// Profile completion is derived from account state, and one of its steps is "have
 	// you connected a wallet" — so the checklist needs to be able to read that.
 	devProfileSvc.SetWalletReader(devProfileRepo)
+	// Serve username availability from memory instead of a lookup per keystroke. The
+	// route is public, unauthenticated and unthrottled; see CheckUsername for why a
+	// Bloom filter is the safe shape for it and what the staleness costs.
+	go devProfileSvc.RunUsernameFilter(ctx, cfg.UsernameFilterRefresh, log)
 	devProfileHandler := devprofile.NewHandler(devProfileSvc, authn)
 
 	// User-uploaded media (avatars) on S3/MinIO. The prod stack has shipped the bucket
@@ -962,6 +984,13 @@ func run() error {
 		clock,
 		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MonopolyMoveWindow, LockTTL: 15 * time.Second},
 	)
+	// House-agent think time at PRACTICE tables only (see monopoly.ThinkTime).
+	// Staked play is never paced.
+	monopolySvc.WithThinkTime(monopoly.ThinkTime{
+		PerMove: time.Duration(cfg.PracticeThinkMs) * time.Millisecond,
+		Jitter:  time.Duration(cfg.PracticeThinkMs) * time.Millisecond / 2,
+		Budget:  time.Duration(cfg.PracticeThinkBudgetMs) * time.Millisecond,
+	})
 	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
 	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))
 	monopolySvc.SetLimits(walletSvc)
@@ -1807,12 +1836,32 @@ func run() error {
 		// are refreshed because the seeded matches are unrated and harness-kind: the harness
 		// board should gain them and the developer board must NOT, and refreshing both is
 		// how that stays observable in one place rather than assumed.
-		if rerr := harnessBoardSvc.Refresh(ctx); rerr != nil {
-			log.Warn("harness board: refresh after seed failed", "err", rerr)
-		}
-		if rerr := modelBoardSvc.Refresh(ctx); rerr != nil {
-			log.Warn("model board: refresh after seed failed", "err", rerr)
-		}
+		//
+		// OFF THE BOOT PATH, and this is not a style preference — it was an outage.
+		//
+		// Run inline, these two refreshes sat between the seeder and httpx.Run, and a board
+		// refresh scans every seat of every match in the window. With the benchmark's own
+		// events freshly imported the scan grew past the point where it finished promptly,
+		// and the process came up, started every worker, logged "harness results seeded" and
+		// then never reached ListenAndServe. Nothing crashed; the port simply never opened,
+		// which is the worst shape of failure — healthy-looking container, no service.
+		//
+		// So the rule the comment above already stated has to be obeyed by the code: a page
+		// with less on it beats a server that will not start. The refresh is a cache warm-up
+		// and warm-ups belong behind the listener, where being slow costs staleness rather
+		// than availability. Bounded as well, so a pathological scan expires instead of
+		// leaning on the boards' own workers to paper over a stuck refresh.
+		go func() {
+			rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			if rerr := harnessBoardSvc.Refresh(rctx); rerr != nil {
+				log.Warn("harness board: refresh after seed failed", "err", rerr)
+			}
+			if rerr := modelBoardSvc.Refresh(rctx); rerr != nil {
+				log.Warn("model board: refresh after seed failed", "err", rerr)
+			}
+			log.Info("boards refreshed after harness seed")
+		}()
 	}
 
 	// THE OPERATOR'S OWN LOGIN, provisioned at boot.
@@ -2567,7 +2616,11 @@ func (g goofspielRater) Elo(ctx context.Context, agentPublicID string) (int, err
 type raterAdapter struct{ r *rating.Service }
 
 func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
-	res := rating.MatchResult{MatchPublicID: rr.MatchPublicID, Game: rr.Game}
+	// Integrity travels with the result. Dropping it here would silently restore the bug
+	// this adapter sits in the middle of: money voided, rating applied anyway.
+	res := rating.MatchResult{
+		MatchPublicID: rr.MatchPublicID, Game: rr.Game, Integrity: rr.Integrity,
+	}
 	for _, p := range rr.Players {
 		placement := p.Placement
 		if placement == 0 {

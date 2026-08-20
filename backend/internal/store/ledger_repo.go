@@ -414,6 +414,39 @@ func (r *LedgerRepo) AuditLedger(ctx context.Context) (ledger.AuditReport, error
 		})
 	}
 
+	// ESCROW THAT BELONGS TO NO MATCH ROW AT ALL.
+	//
+	// Everything above reconciles through `unsettled`, which INNER JOINs stakes to
+	// `matches`. That join is the blind spot: a stake whose match row is absent —
+	// never persisted, or removed later — is dropped by the join and then counted
+	// nowhere. Not open, not held, not unexplained. The audit would report those
+	// coins as "clean" while nothing on earth could release them.
+	//
+	// This is not hypothetical. On the lab database the escrow wallet held
+	// 1,521,400 coins against 7,900 explained, and the audit logged "ledger audit
+	// clean" on every run, because the 1,513,500 difference sat entirely outside
+	// the join.
+	//
+	// The check is a subtraction the report already had the operands for: the REAL
+	// wallet balance minus everything the reconciliation managed to attribute. By
+	// this file's own definition — "money the platform has taken and has no story
+	// for" — whatever is left over is exactly the defect.
+	//
+	// Signed deliberately. A NEGATIVE residual is also wrong: it means more was
+	// attributed than the wallet actually holds, i.e. the stake arithmetic
+	// over-counts, and silently clamping that to zero would hide it.
+	if residual := rep.EscrowBalance - (rep.EscrowHeld + rep.EscrowOpen + unexplained); residual != 0 {
+		rep.Healthy = false
+		rep.Findings = append(rep.Findings, ledger.AuditFinding{
+			Check: "escrow_unattributed", Count: residual, Severity: ledger.SeverityCritical,
+			Detail: fmt.Sprintf("escrow wallet holds %d but only %d is attributable to a match "+
+				"(held %d + open %d + unexplained %d); the %d difference belongs to no match row "+
+				"and nothing can release it",
+				rep.EscrowBalance, rep.EscrowHeld+rep.EscrowOpen+unexplained,
+				rep.EscrowHeld, rep.EscrowOpen, unexplained, residual),
+		})
+	}
+
 	for _, c := range checks {
 		var n int64
 		var detail string

@@ -37,7 +37,18 @@ func (r *DevProfileRepo) ResolveHandle(ctx context.Context, handle string) (devp
 		                   ORDER BY a.id ASC LIMIT 1), ''),
 		        COALESCE(u.avatar_url, ''), COALESCE(u.country, ''), u.segment, u.created_at
 		 FROM users u
-		 WHERE u.public_id = $1 OR u.username = $1
+		 -- username is CITEXT and its UNIQUE index is too, so uniqueness is enforced
+		 -- case-INSENSITIVELY: with devA124656 taken, the database rejects DEVA124656.
+		 --
+		 -- The cast is what makes this lookup agree with that. A bound parameter arrives
+		 -- typed text, and citext-compared-to-text resolves to the case-SENSITIVE operator
+		 -- — so this query reported DEVA124656 as free, the field showed a green tick, and
+		 -- the save then failed with username_taken. Exactly the "two implementations of
+		 -- is-this-allowed" split the validator comment warns about, and an impersonation
+		 -- vector besides: @Alice reading as available next to @alice.
+		 --
+		 -- public_id stays uncast: it is plain text and its comparison must remain exact.
+		 WHERE u.public_id = $1 OR u.username = $1::citext
 		 ORDER BY (u.public_id = $1) DESC
 		 LIMIT 1`, handle).
 		Scan(&id.UserPublicID, &id.Username, &id.DisplayName, &id.Bio, &id.AvatarURL, &id.Country, &id.Segment, &id.DeveloperSince)
@@ -968,4 +979,30 @@ func (r *DevProfileRepo) TopModel(ctx context.Context, season int) (devprofile.S
 	// Sourced from the verified rung by construction — the query reads no other.
 	m.Verified = true
 	return m, true, nil
+}
+
+// AllUsernames lists every claimed username, lowercased, for the availability filter.
+//
+// One sequential scan of a narrow column, run on a timer — deliberately traded against
+// the alternative it replaces: an indexed lookup on EVERY KEYSTROKE of an unauthenticated
+// public endpoint. The scan is bounded by the number of accounts and happens a handful of
+// times an hour; the lookups it removes are unbounded and driven by whoever is typing.
+func (r *DevProfileRepo) AllUsernames(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT lower(username::text) FROM users WHERE username IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		if u != "" {
+			out = append(out, u)
+		}
+	}
+	return out, rows.Err()
 }

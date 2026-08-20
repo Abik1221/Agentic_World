@@ -168,6 +168,31 @@ SELECT json_build_object(
       FROM agent_match_verified_cost v
       JOIN h_agents a ON a.id = v.agent_id
       JOIN h_matches m ON m.public_id = v.match_id),
+  -- THE MATCH ITSELF, so the benchmark can be watched and not merely read.
+  --
+  -- Omitting these was a real defect. The numbers were published without the games
+  -- that produced them: prod held the match rows with ZERO events, so /replay
+  -- answered `events: 0` and nothing could reconstruct a board, a transcript or a
+  -- clock. A benchmark nobody can watch is a claim, not evidence — and this is the
+  -- surface whose whole purpose is that a reader can check the platform's own
+  -- results.
+  --
+  -- `created_at` is carried per event because it IS the pacing: a replay that
+  -- reconstructs the countdown-to-finish rhythm needs the original instants, not a
+  -- synthetic tick. Ordered by seq so an importer can insert without sorting.
+  'events', (SELECT coalesce(json_agg(json_build_object(
+        'match_id', m.public_id, 'seq', e.seq, 'type', e.type,
+        'payload', e.payload, 'created_at', e.created_at
+      ) ORDER BY m.public_id, e.seq), '[]'::json)
+      FROM match_events e JOIN h_matches m ON m.id = e.match_id),
+  -- The seating, without which a replay cannot say WHO took a turn. Agents are
+  -- exported as public ids and re-resolved on import, like everything else here.
+  'players', (SELECT coalesce(json_agg(json_build_object(
+        'match_id', m.public_id, 'agent', a.public_id, 'seat', p.seat,
+        'final_score', p.final_score)), '[]'::json)
+      FROM match_players p
+      JOIN h_matches m ON m.id = p.match_id
+      JOIN h_agents a ON a.id = p.agent_id),
   'bound_decisions', (SELECT coalesce(json_agg(json_build_object(
         'match_id', bd.match_id, 'agent', a.public_id, 'round', bd.round,
         'extracted_move', bd.extracted_move, 'completion_hash', bd.completion_hash,

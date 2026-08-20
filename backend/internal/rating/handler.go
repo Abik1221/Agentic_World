@@ -37,6 +37,8 @@ func (h *Handler) Register(r chi.Router) {
 	// parameter on the line above, because the public route surface is pinned by a scan for
 	// literal route strings and a computed one would be invisible to it.
 	r.Get("/v1/benchmark/harness/models", h.harnessBenchmark)
+	// The matches BEHIND the numbers, for the public clips page.
+	r.Get("/v1/benchmark/harness/matches", h.harnessMatches)
 	r.Get("/v1/benchmark/model", h.modelDetail)
 	r.Get("/v1/benchmark/developers", h.developerBoard)
 	r.Get("/v1/rankings/standing", h.standing)
@@ -120,6 +122,32 @@ func (h *Handler) harnessBenchmark(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "public, max-age=30")
 	httpx.JSON(w, http.StatusOK, page)
+}
+
+// harnessMatches lists published platform-harness matches that can be replayed.
+//
+// Cached for five minutes rather than thirty seconds: this list changes only when the
+// platform runs new harness matches, and the page it feeds is a browse surface. A short
+// TTL here would put a database scan behind every visitor for data that is effectively
+// static between benchmark runs.
+func (h *Handler) harnessMatches(w http.ResponseWriter, r *http.Request) {
+	game := r.URL.Query().Get("game")
+	if game == "" {
+		game = ArenaAll
+	}
+	if !IsArena(game) {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "unknown_arena",
+			"game must be one of: all, "+strings.Join(Arenas, ", ")))
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	matches, err := h.svc.HarnessMatches(r.Context(), game, limit)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	httpx.JSON(w, http.StatusOK, map[string]any{"matches": matches, "game": game})
 }
 
 // modelDetail is one model's page: its full season record, the per-arena split, and

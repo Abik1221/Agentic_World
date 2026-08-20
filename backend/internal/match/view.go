@@ -10,18 +10,18 @@ import (
 // AgentView is the redacted, per-viewer state returned to an agent. It never
 // exposes the opponent's sealed card before reveal, nor the future prize order.
 type AgentView struct {
-	MatchID          string      `json:"match_id"`
-	Game             string      `json:"game"`
-	Status           string      `json:"status"`
-	Mode             string      `json:"mode"` // "competitive" | "sandbox"
-	Round            int         `json:"round"`
-	TotalRounds      int         `json:"total_rounds"`
-	CurrentPrize     int         `json:"current_prize"`
-	PrizePool        int         `json:"prize_pool"`
-	YourTurn         bool        `json:"your_turn"`
-	Deadline         *time.Time  `json:"deadline,omitempty"`
-	MoveWindowMs     int64       `json:"move_window_ms"`        // total per-move budget (the shot clock)
-	DeadlineMs       int64       `json:"deadline_ms,omitempty"` // ms remaining until the deadline (0 once elapsed / not your turn)
+	MatchID      string     `json:"match_id"`
+	Game         string     `json:"game"`
+	Status       string     `json:"status"`
+	Mode         string     `json:"mode"` // "competitive" | "sandbox"
+	Round        int        `json:"round"`
+	TotalRounds  int        `json:"total_rounds"`
+	CurrentPrize int        `json:"current_prize"`
+	PrizePool    int        `json:"prize_pool"`
+	YourTurn     bool       `json:"your_turn"`
+	Deadline     *time.Time `json:"deadline,omitempty"`
+	MoveWindowMs int64      `json:"move_window_ms"`        // total per-move budget (the shot clock)
+	DeadlineMs   int64      `json:"deadline_ms,omitempty"` // ms remaining until the deadline (0 once elapsed / not your turn)
 	// StartsAt is when the first turn begins, as an ABSOLUTE instant. Present only for a
 	// match that went through a ready check.
 	//
@@ -50,7 +50,7 @@ type AgentView struct {
 	WarnAt *time.Time `json:"warn_at,omitempty"`
 	// WarnInMs is the same instant as ms remaining, for a caller that would otherwise do the
 	// subtraction itself. 0 once elapsed, or when there is no warning.
-	WarnInMs int64 `json:"warn_in_ms,omitempty"`
+	WarnInMs         int64       `json:"warn_in_ms,omitempty"`
 	You              sideView    `json:"you"`
 	Opponent         oppView     `json:"opponent"`
 	LegalActions     legalView   `json:"legal_actions"`

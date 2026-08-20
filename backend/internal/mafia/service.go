@@ -947,6 +947,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	}
 
 	// A zero-fee practice table staked nothing, so there is nothing to settle.
+	// Hoisted so the RATING path below reads the SAME verdict this settlement used.
+	// Evaluating twice could reach two different answers for one table, leaving a seat
+	// unpaid but rated, or paid but unrated. Zero value is inert, so a table that never
+	// reaches the evaluation below rates exactly as it did before.
+	var verdict integrity.Verdict
+
 	if m.EntryFee > 0 {
 		// Money is at stake, so a seat that cannot show a single LLM-backed decision is
 		// not paid from it — provided some OTHER seat at this table could. The table
@@ -974,8 +980,8 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 					absent[p.AgentPublicID] = true
 				}
 			}
-			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
-			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
+			verdict = integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
+			payouts, _ = integrity.FilterPayable(payouts, verdict, m.PublicID, slog.Default())
 		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, platformFee, payouts); err != nil {
 			return err
@@ -1001,7 +1007,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	// rater is also what keeps such a table out of P-Index entirely, since P-Index reads
 	// match_rating_changes and none are written.
 	if s.rater != nil && m.EntryFee > 0 && !HasHouseSeat(m.Players) {
-		res := rating.MatchResult{MatchPublicID: m.PublicID, Game: rating.GameMafia}
+		// The same verdict that withheld payouts also withholds rating. On a twelve-seat
+		// table only the unproven seats are dropped and the rest are rated, matching
+		// FilterPayable rather than voiding everyone's game.
+		res := rating.MatchResult{
+			MatchPublicID: m.PublicID, Game: rating.GameMafia, Integrity: verdict,
+		}
 		for _, p := range players {
 			placement := 2
 			if p.Team == state.Winner {

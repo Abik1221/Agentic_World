@@ -30,7 +30,15 @@ type goofspielView struct {
 	CurrentPrize int    `json:"current_prize"`
 	PrizePool    int    `json:"prize_pool"`
 	YourHand     []int  `json:"your_hand"`
+	// Two view shapes carry the score under different names, and the harness used to read
+	// only one of them. The STAKED pushed view (internal/match/drive.go) sends
+	// your_score/opponent_score; the sandbox/remoteplay view sends a scores[2] array
+	// indexed by seat. Decoding only `scores` meant every staked match looked 0-0 for all
+	// 13 rounds — the log said so, and worse, the fallback heuristic and every line of
+	// table talk reasoned about a score that never moved. Decode BOTH; resolve in score().
 	Scores       [2]int `json:"scores"`
+	YourScore    int    `json:"your_score"`
+	OppScore     int    `json:"opponent_score"`
 	LegalActions []int  `json:"legal_actions"`
 	History      []struct {
 		Round     int    `json:"round"`
@@ -41,6 +49,17 @@ type goofspielView struct {
 		Winner    any    `json:"winner"` // int seat in remoteplay, string in the driver view
 		Scores    [2]int `json:"scores"`
 	} `json:"history"`
+}
+
+// score returns this seat's score and its opponent's, from whichever view shape arrived.
+// your_score/opponent_score wins when present because it is what the staked path sends;
+// the scores[2] array is the sandbox fallback. Both agree at 0-0, so a genuine opening
+// round resolves the same either way.
+func (v goofspielView) score() (me, opp int) {
+	if v.YourScore != 0 || v.OppScore != 0 {
+		return v.YourScore, v.OppScore
+	}
+	return v.Scores[v.Seat], v.Scores[1-v.Seat]
 }
 
 func (a *labAgent) handlePlay(w http.ResponseWriter, r *http.Request) {
@@ -105,8 +124,9 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 	}
 
 	think := a.Persona.thinkTime(v.MatchID, v.Round, v.Seat)
+	logMe, logOpp := v.score()
 	a.log.Printf("round %2d  prize %2d (pool %2d)  scores %d-%d  hand %v  thinking %.1fs…",
-		v.Round, v.CurrentPrize, v.PrizePool, v.Scores[0], v.Scores[1], v.YourHand, think.Seconds())
+		v.Round, v.CurrentPrize, v.PrizePool, logMe, logOpp, v.YourHand, think.Seconds())
 	time.Sleep(think)
 
 	card, why := goofspielCard(a.Persona, v, legal)
@@ -175,7 +195,7 @@ func (a *labAgent) playGoofspiel(w http.ResponseWriter, r *http.Request, raw []b
 		if isSpanAnchor(v.Round) {
 			span = buildSpan(v.Round, card, legal, BindBatchRounds)
 		}
-		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, span, v.TurnProof, legal, v.CurrentPrize)
+		res, err := a.decideThroughGateway(v.MatchID, v.Round, card, span, v.TurnProof, legal, v.CurrentPrize, raw)
 		if err != nil {
 			// LOUD and fatal to the turn. A run that fell back to playing unbound would report
 			// a completed match and prove nothing about binding, which is worse than failing.
@@ -227,7 +247,7 @@ func goofspielCard(p persona, v goofspielView, legal []int) (int, string) {
 	if pool == 0 {
 		pool = v.CurrentPrize
 	}
-	me, opp := v.Scores[v.Seat], v.Scores[1-v.Seat]
+	me, opp := v.score()
 
 	// How aggressively the opponent has been bidding, from resolved rounds. This is real
 	// opponent modelling on real data — it just happens to be arithmetic, not a model.
@@ -306,7 +326,7 @@ func goofspielChatLine(p persona, v goofspielView, card int) string {
 	if u > 0.72 {
 		return ""
 	}
-	me, opp := v.Scores[v.Seat], v.Scores[1-v.Seat]
+	me, opp := v.score()
 	pool := v.PrizePool
 	lines := []string{
 		fmt.Sprintf("%d on the table. I'm not paying full price for it.", pool),

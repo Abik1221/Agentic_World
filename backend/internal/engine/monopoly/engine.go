@@ -1371,11 +1371,18 @@ func (e *Engine) rentFor(ns *State, pos, diceTotal int) int {
 	case KindRailroad:
 		return railroadRentTable[ns.railroadsOwned(h.Owner)]
 	case KindUtility:
-		mult := 4
-		if ns.utilitiesOwned(h.Owner) == 2 {
-			mult = 10
+		// Read from the shared table so the rent the console publishes and the rent
+		// charged here are the same number by construction.
+		// Clamped at both ends: an out-of-range count here would panic mid-match,
+		// which is a far worse failure than charging the nearest defined tier.
+		owned := ns.utilitiesOwned(h.Owner)
+		if owned < 1 {
+			owned = 1 // a rent is being charged, so the owner holds at least this one
 		}
-		return mult * diceTotal
+		if owned > len(utilityMultiples)-1 {
+			owned = len(utilityMultiples) - 1
+		}
+		return utilityMultiples[owned] * diceTotal
 	}
 	return 0
 }

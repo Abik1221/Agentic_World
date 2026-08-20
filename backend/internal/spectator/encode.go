@@ -8,6 +8,7 @@ import (
 
 	"github.com/agent-arena/arena/internal/commentary"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
+	"github.com/agent-arena/arena/internal/redact"
 )
 
 // wireEvent is the JSON shape of a broadcast event. It carries the engine's
@@ -62,6 +63,17 @@ func (h *Hub) roundFor(payload any) (commentary.Round, bool) {
 	}, true
 }
 
+// spectatorSafe reports whether an event may be sent to a LIVE spectator on the
+// generic /v1/match/{id}/watch stream.
+//
+// The rule itself lives in internal/redact, because the public replay endpoint
+// needs exactly the same one and two copies of a security predicate drift — the
+// copy nobody updated keeps answering "safe". See that package for the leak this
+// closed.
+func spectatorSafe(ev gs.Event) bool {
+	return redact.SafeForLive(string(ev.Type), ev.Payload)
+}
+
 // backlog returns the encoded frames for events after lastSeq, used to fulfil a
 // Last-Event-ID resume before the live stream takes over.
 func (h *Hub) backlog(ctx context.Context, matchPublicID string, lastSeq int) ([]frame, error) {
@@ -72,6 +84,12 @@ func (h *Hub) backlog(ctx context.Context, matchPublicID string, lastSeq int) ([
 	var out []frame
 	for _, ev := range evs {
 		if ev.Seq <= lastSeq {
+			continue
+		}
+		// The history replay leaks just as readily as the live tail — a fresh
+		// viewer gets the WHOLE log here, so this is the path that handed over
+		// every night action at once.
+		if !spectatorSafe(ev) {
 			continue
 		}
 		out = append(out, h.encodeEvent(ev))

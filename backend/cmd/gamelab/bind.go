@@ -111,6 +111,21 @@ var BindBatchRounds = 0
 // Deterministic on (match, round, seat) rather than random so a run is reproducible and two
 // seats do not fail in lockstep. Math/rand would make the measured distribution unrepeatable,
 // which for a number that decides whether real matches get voided is not good enough.
+// bindMaxTokens is the output budget for a bound decision.
+//
+// It was 256, which is generous for a tool call and FATAL for a reasoning model. Measured on
+// the real endpoints: claude-opus-4.8 and claude-sonnet-5 answer in 32 output tokens, but
+// deepseek-v4-pro spent 751 reasoning tokens and hit a 1024-token cap without ever emitting the
+// tool call — a turn that costs money, binds nothing, and is recorded as the model failing to
+// decide. At 4096 the same prompt completes in 2104 tokens (1669 of them reasoning) and returns
+// a valid card.
+//
+// A cap that silently converts "this model thinks before answering" into "this model cannot
+// play" would not be a neutral default in a benchmark — it would be a thumb on the scale
+// against exactly the models the benchmark exists to compare. Models that answer briefly are
+// billed for what they use, so the higher ceiling costs them nothing.
+const bindMaxTokens = 4096
+
 func bindLuck(matchID string, round, seat int) int {
 	h := 2166136261
 	for _, c := range []byte(matchID) {
@@ -233,7 +248,7 @@ func (a *labAgent) modelFor() string {
 	return BindModels[a.Index%len(BindModels)]
 }
 
-func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string, legal []int, prize int) (bindResult, error) {
+func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string, legal []int, prize int, view []byte) (bindResult, error) {
 	if BindGatewayBase == "" {
 		return bindResult{}, fmt.Errorf("gateway base URL not set")
 	}
@@ -252,7 +267,7 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// sends, so the run exercises the same bytes.
 	reqBody := map[string]any{
 		"model":      "claude-opus-4",
-		"max_tokens": 256,
+		"max_tokens": bindMaxTokens,
 		"stream":     BindStream,
 		"tools": []map[string]any{{
 			"name":         movebind.ToolGoofspiel,
@@ -261,8 +276,10 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 		}},
 		"tool_choice": map[string]any{"type": "tool", "name": movebind.ToolGoofspiel},
 		"messages": []map[string]any{{
-			"role":    "user",
-			"content": fmt.Sprintf("Round %d. Choose a card and report it with the tool.", round),
+			"role": "user",
+			"content": viewPrompt(view, fmt.Sprintf(
+				"You are playing Goofspiel in the Pyyol arena. Round %d. Your legal cards are %v "+
+					"and this round's prize is worth %d.", round, legal, prize)),
 		}},
 	}
 	// OPENAI WIRE for anything that is not Anthropic. Groq, and every other OpenAI-compatible
@@ -271,7 +288,7 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	if a.providerFor() != "" && a.providerFor() != "anthropic" {
 		reqBody = map[string]any{
 			"model":      a.modelFor(),
-			"max_tokens": 256,
+			"max_tokens": bindMaxTokens,
 			"stream":     BindStream,
 			"tools": []map[string]any{{
 				"type": "function",
@@ -287,10 +304,10 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 			},
 			"messages": []map[string]any{{
 				"role": "user",
-				"content": fmt.Sprintf(
-					"Goofspiel round %d. Your legal cards are %v. The prize is worth %d. "+
-						"Call play_card with exactly one card from that list.",
-					round, legal, prize),
+				"content": viewPrompt(view, fmt.Sprintf(
+					"You are playing Goofspiel in the Pyyol arena. Round %d. Your legal cards are %v "+
+						"and this round's prize is worth %d. Call play_card with exactly one card "+
+						"from that list.", round, legal, prize)),
 			}},
 		}
 	}
@@ -335,7 +352,12 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 		req.Header.Set("X-Lab-Plan", spanHeader(span))
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// 30s was too short to measure a reasoning model fairly. deepseek-v4-pro averages ~13s and
+	// reaches ~24s on this prompt because it emits ~1.7k reasoning tokens before the tool call;
+	// under a 30s ceiling its slowest turns timed out and were recorded as "not playing", which
+	// in a published comparison reads as the model failing rather than as our client giving up.
+	// A benchmark must not encode its own impatience as a property of the model.
+	client := &http.Client{Timeout: 180 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return bindResult{}, err

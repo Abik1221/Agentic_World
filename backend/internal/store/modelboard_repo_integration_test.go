@@ -39,7 +39,7 @@ func TestModelBoardSeatsIntegration(t *testing.T) {
 	start := time.Now().AddDate(-5, 0, 0)
 	end := time.Now().AddDate(1, 0, 0)
 
-	seats, err := repo.Seats(ctx, "", start, end, realHosts())
+	seats, _, err := repo.Seats(ctx, "", start, end, realHosts())
 	if err != nil {
 		t.Fatalf("Seats: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestOnlyAnsweredCallsAttributeAModel(t *testing.T) {
 	repo := NewModelBoardRepo(pool)
 	start := time.Now().AddDate(-5, 0, 0)
 	end := time.Now().AddDate(1, 0, 0)
-	seats, err := repo.Seats(ctx, "", start, end, realHosts())
+	seats, _, err := repo.Seats(ctx, "", start, end, realHosts())
 	if err != nil {
 		t.Fatalf("Seats: %v", err)
 	}

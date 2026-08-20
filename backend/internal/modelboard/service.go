@@ -71,7 +71,14 @@ func (s *Service) SetPublishableHosts(hosts []string) { s.publishableHosts = hos
 // threaded through rather than read inside the repo so the rule is visible at the boundary:
 // what the board is willing to publish is a policy decision, not a storage detail.
 type SeatSource interface {
-	Seats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]Seat, error)
+	// Seats returns the seats in the window that are worth comparing, plus the exclusions the
+	// SOURCE itself resolved, keyed as BuildComparisons keys them.
+	//
+	// The second return exists because the query now filters: it drops seats from games with no
+	// pairwise outcome, which on the developer board is 98.8% of them. seats_excluded is
+	// published, so those have to be counted somewhere, and the only place that knows how many
+	// there were is the layer that removed them. A source that filters nothing returns nil.
+	Seats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]Seat, map[string]int, error)
 }
 
 // HistoryWriter persists one day's fitted board so a rating can be shown as a series.
@@ -149,11 +156,11 @@ func (s *Service) Snapshot() *Snapshot {
 func (s *Service) Refresh(ctx context.Context) error {
 	start := time.Now()
 	from := start.Add(-s.window)
-	seats, err := s.seats.Seats(ctx, "", from, start.Add(time.Hour), s.publishableHosts)
+	seats, preExcluded, err := s.seats.Seats(ctx, "", from, start.Add(time.Hour), s.publishableHosts)
 	if err != nil {
 		return err
 	}
-	board := Build(seats, s.build, s.fit)
+	board := BuildWithExclusions(seats, preExcluded, s.build, s.fit)
 	snap := &Snapshot{
 		Board:      board,
 		ComputedAt: start,
@@ -202,7 +209,32 @@ func (w *Worker) Run(ctx context.Context) {
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	for {
-		if err := w.svc.Refresh(ctx); err != nil {
+		started := time.Now()
+		err := w.svc.Refresh(ctx)
+		took := time.Since(started)
+
+		// A REFRESH THAT OUTLASTS ITS INTERVAL IS NOT A SCHEDULED JOB ANY MORE.
+		//
+		// This loop is sequential, so it cannot overlap itself — but the ticker always
+		// has a tick waiting when the work takes longer than the period, and the effect
+		// is a job that runs continuously while still describing itself as "every 10
+		// minutes". That is precisely how it hid: the developer board's refresh had grown
+		// to ~16.7 minutes against a 10-minute interval and was scanning permanently,
+		// 208 GB of reads across four refreshes, and nothing in the logs said so.
+		//
+		// Reported rather than corrected, deliberately. Silently stretching the interval
+		// would hide the growth that caused it, and skipping refreshes would make the
+		// board quietly stale; the operator needs to know the window has outgrown its
+		// schedule so the query or the interval can be fixed on purpose.
+		if took > w.interval {
+			w.log.Warn("model board refresh took longer than its interval — it is now running "+
+				"continuously rather than on a schedule",
+				"took", took.Round(time.Second).String(),
+				"interval", w.interval.String())
+		} else {
+			w.log.Info("model board refreshed", "took", took.Round(time.Millisecond).String())
+		}
+		if err != nil {
 			// Logged, not fatal: the previous snapshot is still being served, and a board that
 			// keeps working through a database blip is the point of having a snapshot at all.
 			w.log.Error("model board refresh failed", "error", err)

@@ -94,6 +94,28 @@ func (v *Verifier) Verify(data []byte, sig string) bool {
 // Enabled reports whether this verifier will actually check signatures.
 func (v *Verifier) Enabled() bool { return v != nil }
 
+// PublicFromSeed derives the public key that pairs with a private seed.
+//
+// Exists so a caller holding only the signing seed can publish the matching public key
+// without carrying a second secret that has to be kept in step. Two independently-configured
+// values that MUST agree is a configuration bug waiting to happen: the failure mode is
+// signatures that verify nowhere, discovered by a reader rather than by us.
+func PublicFromSeed(seedB64 string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(seedB64)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) != ed25519.SeedSize {
+		return "", errors.New("platformsign: seed must be 32 bytes")
+	}
+	priv := ed25519.NewKeyFromSeed(raw)
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return "", errors.New("platformsign: unexpected public key type")
+	}
+	return base64.StdEncoding.EncodeToString(pub), nil
+}
+
 // GenerateKeypair returns a fresh (seedB64, publicB64) pair for provisioning. The
 // seed goes to the signing service's private-key env; the public to the peer.
 func GenerateKeypair() (seedB64, publicB64 string, err error) {

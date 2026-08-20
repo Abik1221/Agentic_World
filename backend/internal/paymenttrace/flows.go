@@ -53,11 +53,11 @@ const (
 
 // Withdrawal stages, in order.
 const (
-	StageRequested   = "requested"
-	StageCoinsHeld   = "coins_held"
-	StageApproved    = "approved"
-	StageBroadcast   = "broadcast"
-	StagePaid        = "paid"
+	StageRequested        = "requested"
+	StageCoinsHeld        = "coins_held"
+	StageApproved         = "approved"
+	StageBroadcast        = "broadcast"
+	StagePaid             = "paid"
 	StageWithdrawNotified = "withdraw_notified"
 	// Terminal failures.
 	StageRejected        = "rejected"

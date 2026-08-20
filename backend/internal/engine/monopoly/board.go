@@ -134,3 +134,19 @@ var groupMembers = func() map[string][]int {
 
 // railroadRentTable maps "railroads owned" -> rent.
 var railroadRentTable = [5]int{0, 25, 50, 100, 200}
+
+// RailroadRentTable exposes the railroad rent ladder, indexed by how many of the
+// four the owner holds. Returned by value so a caller cannot edit the engine's copy.
+//
+// Published for the in-match console: railroad rent is not in Space.Rent, so a UI
+// without this has nothing true to show on those four squares.
+func RailroadRentTable() [5]int { return railroadRentTable }
+
+// utilityMultiples is the dice multiplier applied to utility rent, indexed by how
+// many of the two the owner holds. resolveProperty reads it, so the published
+// figure and the charged figure cannot disagree.
+var utilityMultiples = [3]int{0, 4, 10}
+
+// UtilityMultiples exposes that multiplier — {_, 4×, 10×}. A console showing a flat
+// figure for a utility would be wrong on every roll, so the rule is published instead.
+func UtilityMultiples() [3]int { return utilityMultiples }

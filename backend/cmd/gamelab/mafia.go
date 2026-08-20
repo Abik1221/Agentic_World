@@ -80,8 +80,9 @@ func (a *labAgent) playMafia(w http.ResponseWriter, r *http.Request, raw []byte)
 	var act map[string]any
 	var why string
 	if BindGatewayBase != "" {
-		prompt := fmt.Sprintf("You are seat %d (%s) in Mafia, day %d, phase %s.",
-			v.YourSeat, v.YourRole, v.Day, v.Phase)
+		prompt := viewPrompt(raw, fmt.Sprintf(
+			"You are playing Mafia in the Pyyol arena as seat %d (%s), day %d, phase %s.",
+			v.YourSeat, v.YourRole, v.Day, v.Phase))
 		b, err := a.decideGameThroughGateway("mafia", v.MatchID, v.Round, v.YourSeat,
 			v.TurnProof, v.Legal, prompt)
 		if err != nil {

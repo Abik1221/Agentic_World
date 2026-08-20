@@ -332,7 +332,11 @@ func (s *Service) startAfterReady(ctx context.Context, m Match, seats []ReadySea
 	if err != nil || !won {
 		// Lost the race to another sweeper, or the write failed after the money moved.
 		// Refund either way: the stakes must never outlive the attempt that took them.
-		_ = s.wallet.RefundStakes(ctx, m.PublicID, a, b, m.Bid)
+		if rerr := s.wallet.RefundStakes(ctx, m.PublicID, a, b, m.Bid); rerr != nil {
+			slog.Error("STAKE NOT REFUNDED after failed ready-check activation — coins are held",
+				"match", m.PublicID, "agent_a", a, "agent_b", b, "bid", m.Bid,
+				"activate_error", err, "refund_error", rerr)
+		}
 		return err == nil, err
 	}
 	// Publishing and driving move HERE from CreatePaired, and both had to move together.

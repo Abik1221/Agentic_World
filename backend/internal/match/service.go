@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/agent-arena/arena/internal/integrity"
 	"log/slog"
 	"net/http"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
+	"github.com/agent-arena/arena/internal/readycheck"
+	"github.com/agent-arena/arena/internal/redact"
 	"github.com/agent-arena/arena/internal/replay"
 )
 
@@ -833,7 +836,19 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 		in.Deadline = s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
 		if err := s.repo.CreatePairedActive(ctx, in); err != nil {
 			// Persisting failed after staking — return both bids so no coins are stuck.
-			_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
+			//
+			// The refund is idempotent (it shares disburse:{match} with settle, so a
+			// settle can never land on top of it), which is what makes it safe to shout
+			// about and retry rather than swallow. A DISCARDED error here was a silent
+			// coin loss: stake taken, table never created, refund failed, and the only
+			// evidence was an escrow balance that no longer added up. There is not even
+			// a match row for the audit to hang it on — which is precisely the residue
+			// the escrow_unattributed check now reports.
+			if rerr := s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid); rerr != nil {
+				slog.Error("STAKE NOT REFUNDED after failed activation — coins are held with no match",
+					"match", publicID, "agent_a", aAgent, "agent_b", bAgent, "bid", bid,
+					"activation_error", err, "refund_error", rerr)
+			}
 			return "", err
 		}
 		s.publish(publicID, state, events)
@@ -967,11 +982,28 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		return AgentView{}, err
 	}
 
-	deadline := s.clock.Now().Add(s.moveWindow(ctx, agentPublicID))
+	// The start countdown, and the reason the first move window opens at startsAt rather than
+	// now. Mafia's startMatch and monopoly's startTable have both done this for a while;
+	// goofspiel's lobby join did not, which is why every goofspiel row had a NULL starts_at
+	// while mafia's had one. A table went from lobby to running with no moment in between, so
+	// an agent still finishing startup lost the front of its first round to a match already
+	// under way, and no surface had an absolute instant to count to.
+	//
+	// ONE clock reading feeds both values: taking now() twice would let the deadline be
+	// computed from a moment before the countdown it is supposed to follow. Play is NOT gated
+	// on startsAt — the match is active immediately, exactly as startAfterReady leaves it; what
+	// the countdown buys is that the first window opens when play does.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy("goofspiel").Countdown)
+	deadline := startsAt.Add(s.moveWindow(ctx, agentPublicID))
 	joiner := Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: gs.SeatB}
-	if err := s.repo.Activate(ctx, matchPublicID, joiner, state, deadline, events); err != nil {
+	if err := s.repo.Activate(ctx, matchPublicID, joiner, state, startsAt, deadline, events); err != nil {
 		// Activation failed after staking — return both bids so no coins are stuck.
-		_ = s.wallet.RefundStakes(ctx, matchPublicID, creator, agentPublicID, m.Bid)
+		if rerr := s.wallet.RefundStakes(ctx, matchPublicID, creator, agentPublicID, m.Bid); rerr != nil {
+			slog.Error("STAKE NOT REFUNDED after failed join activation — coins are held with no live match",
+				"match", matchPublicID, "creator", creator, "joiner", agentPublicID,
+				"bid", m.Bid, "refund_error", rerr)
+		}
 		return AgentView{}, err
 	}
 	s.publish(matchPublicID, state, events)
@@ -1453,6 +1485,13 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	// SweepExpired) re-drives it and re-finalizes — Settle no-ops, Finish completes.
 	// Do NOT reorder to Finish-first: that would strand escrow (winner never paid,
 	// and Act/HandleTimeout early-return on a finished match, so nothing re-drives).
+	// Hoisted out of the settlement block so the RATING path below can see the same
+	// verdict. Before this, a match voided here for proving nothing was still rated a few
+	// lines down, so a scripted agent was refunded every time and climbed for free.
+	// Evaluated once and read twice: a second evaluation of the same table could disagree
+	// with the first and leave a seat refunded but rated.
+	integrityFailed, integrityAgent := false, ""
+
 	if m.Mode != ModeSandbox {
 		// A ranked match that cannot show it was played by an LLM is VOIDED rather
 		// than settled: both stakes go back and nobody is paid. Refund and Settle
@@ -1468,7 +1507,8 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		// A seat that went DARK is the other case entirely and must not reach the void:
 		// it forfeits and the opponent is paid. state.Timeouts carries how many rounds
 		// the platform had to play for each seat, which is what separates the two.
-		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History), state.Timeouts); failed {
+		integrityFailed, integrityAgent = s.rankedIntegrityFailed(ctx, m, len(state.History), state.Timeouts)
+		if agent := integrityAgent; integrityFailed {
 			slog.Warn("match: VOIDED — seat could not prove its decisions were LLM-backed",
 				"match", m.PublicID, "agent", agent, "decisions", len(state.History),
 				"min_pct", s.integrityMinPct)
@@ -1535,6 +1575,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		rr := RatingResult{MatchPublicID: m.PublicID, Game: m.Game, WinnerSeat: state.Winner}
 		for _, p := range players {
 			rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
+		}
+		// A match voided for integrity must not move a rating either. The rater applies
+		// integrity.FilterRatable to this verdict; for a 1v1 one blocked seat leaves no
+		// comparison, so nothing is rated — matching the money rule exactly.
+		if integrityFailed && integrityAgent != "" {
+			rr.Integrity = integrity.Verdict{Armed: true, Unproven: map[string]bool{integrityAgent: true}}
 		}
 		if err := rateWithRetry(ctx, s.rater, rr, 3, 50*time.Millisecond); err != nil {
 			return nil, err
@@ -1755,6 +1801,27 @@ func (s *Service) Replay(ctx context.Context, matchPublicID string) (ReplayDoc, 
 	if err != nil {
 		return ReplayDoc{}, err
 	}
+	// WITHHOLD SECRETS UNTIL THE MATCH IS OVER.
+	//
+	// This document is public and unauthenticated, and it serves every match id —
+	// including Mafia's, whose night actions sit in this same event log. Served
+	// raw, a single GET on a LIVE match returned every role and every night target
+	// ({"actor":"Mafia","seat":9,"secret":"Target → seat 4"}), which is the whole
+	// game. The seed below is already gated on StatusFinished for the same reason;
+	// the events needed the identical gate and never had it.
+	//
+	// Once finished, the full log is served as-is: that is the post-match reveal
+	// the replay exists for, and the replay hash is computed over the complete log.
+	if m.Status != StatusFinished {
+		safe := make([]gs.Event, 0, len(events))
+		for _, ev := range events {
+			if redact.SafeForLive(string(ev.Type), ev.Payload) {
+				safe = append(safe, ev)
+			}
+		}
+		events = safe
+	}
+
 	doc := ReplayDoc{
 		MatchID:       m.PublicID,
 		EngineVersion: m.EngineVersion,

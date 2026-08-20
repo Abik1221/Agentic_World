@@ -924,3 +924,72 @@ func (r *RatingRepo) DeveloperModelSplit(ctx context.Context, season int, game s
 	}
 	return out, rows.Err()
 }
+
+// HarnessMatches lists published platform-harness matches that can be replayed.
+//
+// # Why the gate is on agent kind and on event count
+//
+// KIND: only agents the platform runs (`kind = 'harness'`) qualify. This list feeds a
+// public page that replays a match in full — every move, every line of table talk. A
+// developer's match is theirs; it belongs in their own dashboard and must never appear
+// on a public reel because it happened to be recent. Filtering on kind rather than on a
+// naming convention is what makes that guarantee hold when someone names an agent
+// "harness-something".
+//
+// EVENTS: a match with no log cannot be played back, and offering it in a picker would
+// hand the viewer an empty film. This is not hypothetical — the harness export shipped
+// for weeks WITHOUT match_events, so production held these matches with the numbers
+// published and the games missing. Counting events here means the picker can only ever
+// offer a match that will actually play.
+func (r *RatingRepo) HarnessMatches(ctx context.Context, game string, limit int) ([]rating.HarnessMatch, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	rows, err := r.db.Query(ctx, `
+		WITH hm AS (
+		  SELECT DISTINCT m.id, m.public_id, m.game, m.finished_at
+		    FROM matches m
+		    JOIN match_players mp ON mp.match_id = m.id
+		    JOIN agents a        ON a.id = mp.agent_id
+		   WHERE a.kind = 'harness'
+		     AND m.status = 'finished'
+		     AND m.finished_at IS NOT NULL
+		     AND ($1 = '' OR m.game = $1))
+		SELECT hm.public_id, hm.game, hm.finished_at,
+		       (SELECT count(*) FROM match_events e WHERE e.match_id = hm.id)  AS events,
+		       (SELECT count(*) FROM match_players p WHERE p.match_id = hm.id) AS seats,
+		       COALESCE((SELECT array_agg(DISTINCT v.model)
+		                   FROM agent_match_verified_cost v
+		                  WHERE v.match_id = hm.public_id AND NULLIF(v.model,'') IS NOT NULL),
+		                '{}') AS models
+		  FROM hm
+		 WHERE EXISTS (SELECT 1 FROM match_events e WHERE e.match_id = hm.id)
+		 -- Richest clip first, not merely newest.
+		 --
+		 -- Ordering by recency alone put a match with no verified model and no table talk
+		 -- at the top of the picker, so the page opened on its least informative clip and
+		 -- read as empty. A viewer arriving to check the benchmark should land on a game
+		 -- that shows what the benchmark is: an attributed pairing, with the agents'
+		 -- reasoning in it. Nothing is hidden — the unattributed matches are still listed,
+		 -- just not first.
+		 ORDER BY (SELECT count(*) FROM agent_match_verified_cost v
+		            WHERE v.match_id = hm.public_id AND NULLIF(v.model,'') IS NOT NULL) DESC,
+		          (SELECT count(*) FROM match_events e2
+		            WHERE e2.match_id = hm.id AND e2.type = 'agent_says') DESC,
+		          hm.finished_at DESC
+		 LIMIT $2`, game, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []rating.HarnessMatch{}
+	for rows.Next() {
+		var m rating.HarnessMatch
+		if err := rows.Scan(&m.MatchID, &m.Game, &m.FinishedAt, &m.Events, &m.Seats, &m.Models); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}

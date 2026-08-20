@@ -93,7 +93,7 @@ type Config struct {
 	GitHubClientID     string
 	GitHubClientSecret string
 	HCaptchaSecret     string // optional; empty => dev pass-through captcha
-	XBearerToken   string // optional; empty => dev claim verifier (auto-verify)
+	XBearerToken       string // optional; empty => dev claim verifier (auto-verify)
 
 	// Solana USDC deposits (Beta wallet pipeline P2). Deposits are enabled only
 	// when the RPC URL + platform owner + platform ATA are all set (see
@@ -227,6 +227,25 @@ type Config struct {
 	// than a card bid — reading a board, pricing a trade — so it gets its own dial
 	// rather than inheriting Goofspiel's.
 	MonopolyMoveWindow time.Duration
+	// UsernameFilterRefresh is how often the username-availability Bloom filter is
+	// rebuilt from the database. It bounds how stale a MULTI-INSTANCE deployment can be:
+	// a handle claimed on another replica is invisible to this one until the next
+	// rebuild, and the cost of that is a rejected submit the UNIQUE constraint catches.
+	// Writes on this instance are reflected immediately, so a single-instance deployment
+	// is exact regardless.
+	UsernameFilterRefresh time.Duration
+	// PracticeThinkMs is how long the platform's own agents pause before each move at
+	// a PRACTICE table, so a sandbox reads as agents deciding rather than a board that
+	// resolves the instant you click. Zero disables the pacing entirely.
+	//
+	// Practice only, and bounded: the pause happens inside the player's own request,
+	// and a staked table must never be slowed — burning an opponent's move window to
+	// look lifelike would be a real cost paid for a cosmetic one.
+	PracticeThinkMs int
+	// PracticeThinkBudgetMs caps the TOTAL pause inside one action. A Monopoly turn is
+	// several engine steps; without a ceiling one click could stall for as long as the
+	// bots had moves to make.
+	PracticeThinkBudgetMs int
 	// MafiaPhaseWindow FORCES every Mafia phase to one length. ZERO (the default) is
 	// what you want: it selects the engine's per-phase clock — night short, discussion
 	// long, voting tight — which is the pacing a moderated game actually has.
@@ -357,7 +376,7 @@ type Config struct {
 	//                                       does not make every payout look infinite
 
 	// Trust & anti-fraud (Stage 9)
-	AdminUserIDs      []string      // user public ids allowed to use admin endpoints
+	AdminUserIDs []string // user public ids allowed to use admin endpoints
 	// Operator-account seeding, applied once at boot. Both empty ⇒ disabled.
 	//
 	// This exists because admin rights are granted by ADMIN_USER_IDS (above), which cannot
@@ -369,7 +388,7 @@ type Config struct {
 	// The password is a real credential: pass it as a CI secret, never a literal in a repo.
 	SeedAdminEmail    string
 	SeedAdminPassword string
-	SeedAdminUserID   string // "" ⇒ seedadmin.DefaultUserID
+	SeedAdminUserID   string        // "" ⇒ seedadmin.DefaultUserID
 	DetectInterval    time.Duration // anti-fraud detection sweep cadence
 	CollusionLookback time.Duration // how far back the collusion sweep looks
 	CollusionMinGames int           // minimum head-to-head games before flagging
@@ -577,20 +596,26 @@ func Load() (*Config, error) {
 		HotWalletMinSOLLamports:  int64(l.intVal("HOT_WALLET_MIN_SOL_LAMPORTS", 0)),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
-		MoveWindow:           time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
-		MonopolyMoveWindow:   time.Duration(l.intVal("MONOPOLY_MOVE_WINDOW_SECONDS", 60)) * time.Second,
-		MafiaPhaseWindow:     time.Duration(l.intVal("MAFIA_PHASE_WINDOW_SECONDS", 0)) * time.Second,
-		MafiaMinSeats:        l.intVal("MAFIA_MIN_SEATS", 4),
-		GroupShortFormAfter:  time.Duration(l.intVal("GROUP_SHORT_FORM_AFTER_SECONDS", 90)) * time.Second,
-		RakePct:              l.intVal("RAKE_PCT", 5),
-		DefaultRounds:        l.intVal("DEFAULT_ROUNDS", 13),
-		SSEMaxConns:          l.intVal("SSE_MAX_CONNS", 20000),
-		AutoMigrate:          l.boolVal("AUTO_MIGRATE", true),
-		SandboxEnabled:       l.boolVal("SANDBOX_ENABLED", true),
-		RankedAutoDrive:      l.boolVal("RANKED_AUTODRIVE", false),
-		AutoplayEnabled:      l.boolVal("AUTOPLAY_ENABLED", false),
-		EmailDeliveryEnabled: l.boolVal("EMAIL_DELIVERY_ENABLED", false),
-		AutoplayInterval:     l.dur("AUTOPLAY_INTERVAL", 10*time.Second),
+		MoveWindow:         time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
+		MonopolyMoveWindow: time.Duration(l.intVal("MONOPOLY_MOVE_WINDOW_SECONDS", 60)) * time.Second,
+		// Defaults chosen to read as deliberation without stalling a click: roughly
+		// three quarters of a second per house move, and never more than three
+		// seconds of pause inside a single action.
+		UsernameFilterRefresh: time.Duration(l.intVal("USERNAME_FILTER_REFRESH_SECONDS", 300)) * time.Second,
+		PracticeThinkMs:       l.intVal("PRACTICE_THINK_MS", 750),
+		PracticeThinkBudgetMs: l.intVal("PRACTICE_THINK_BUDGET_MS", 3000),
+		MafiaPhaseWindow:      time.Duration(l.intVal("MAFIA_PHASE_WINDOW_SECONDS", 0)) * time.Second,
+		MafiaMinSeats:         l.intVal("MAFIA_MIN_SEATS", 4),
+		GroupShortFormAfter:   time.Duration(l.intVal("GROUP_SHORT_FORM_AFTER_SECONDS", 90)) * time.Second,
+		RakePct:               l.intVal("RAKE_PCT", 5),
+		DefaultRounds:         l.intVal("DEFAULT_ROUNDS", 13),
+		SSEMaxConns:           l.intVal("SSE_MAX_CONNS", 20000),
+		AutoMigrate:           l.boolVal("AUTO_MIGRATE", true),
+		SandboxEnabled:        l.boolVal("SANDBOX_ENABLED", true),
+		RankedAutoDrive:       l.boolVal("RANKED_AUTODRIVE", false),
+		AutoplayEnabled:       l.boolVal("AUTOPLAY_ENABLED", false),
+		EmailDeliveryEnabled:  l.boolVal("EMAIL_DELIVERY_ENABLED", false),
+		AutoplayInterval:      l.dur("AUTOPLAY_INTERVAL", 10*time.Second),
 
 		AgentVerifyAllowPrivate:  l.boolVal("AGENT_VERIFY_ALLOW_PRIVATE", false),
 		AgentVerifyAllowInsecure: l.boolVal("AGENT_VERIFY_ALLOW_INSECURE", false),
@@ -631,7 +656,7 @@ func Load() (*Config, error) {
 		PayoutBreakerBaselineN:   l.intVal("PAYOUT_BREAKER_BASELINE_WINDOWS", 24),
 		PayoutBreakerMinBaseline: int64(l.intVal("PAYOUT_BREAKER_MIN_BASELINE_CENTS", 20_000)),
 
-		AdminUserIDs:      l.csv("ADMIN_USER_IDS", ""),
+		AdminUserIDs: l.csv("ADMIN_USER_IDS", ""),
 		// Operator account seeding. Both empty ⇒ nothing is seeded (the default), so a
 		// deployment that does not want this is unaffected. See internal/seedadmin.
 		SeedAdminEmail:    l.str("SEED_ADMIN_EMAIL", ""),

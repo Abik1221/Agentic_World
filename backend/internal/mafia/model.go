@@ -133,10 +133,10 @@ type Match struct {
 	// browser each counting down from ten drift apart within seconds, and two surfaces
 	// disagreeing about when a staked match begins is worse than showing no countdown at all.
 	// Every surface counts TO this.
-	StartsAt *time.Time
-	Players  []Player
-	WinnerTeam    string
-	ReplayHash    string
+	StartsAt   *time.Time
+	Players    []Player
+	WinnerTeam string
+	ReplayHash string
 }
 
 func (m *Match) playerByAgent(agent string) *Player {

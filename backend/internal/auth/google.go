@@ -42,12 +42,12 @@ type GoogleVerifier struct {
 	clientID string
 	// nonces enforces OIDC §3.1.3.7 replay protection. Nil leaves it off, which is only
 	// correct for a deployment that has not been reconfigured yet — see Verify.
-	nonces *NonceIssuer
-	client   *http.Client
-	mu       sync.Mutex
-	keys     map[string]*rsa.PublicKey
-	fetched  time.Time
-	ttl      time.Duration
+	nonces  *NonceIssuer
+	client  *http.Client
+	mu      sync.Mutex
+	keys    map[string]*rsa.PublicKey
+	fetched time.Time
+	ttl     time.Duration
 }
 
 func NewGoogleVerifier(clientID string) *GoogleVerifier {
