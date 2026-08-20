@@ -405,13 +405,31 @@ fact AS (
                 -- credit a model for beating engine bots.
                 AND m.rated
   LEFT JOIN agent_match_verified_cost v ON v.match_id = b.match_id AND v.agent_id = b.agent_id
+  -- Both coverage aggregates are WINDOWED, and the window is not cosmetic.
+  --
+  -- Written without the inner join to matches these are unbounded GROUP BYs over the whole
+  -- decision history. Postgres cannot push the outer window predicate through an aggregate,
+  -- so it materialised every decision ever recorded on every request: measured at 10.2M rows
+  -- and 23 GB on the lab database, which made /v1/benchmark/harness/models and
+  -- /v1/benchmark/developers hang until the client gave up and return 500. Both are public.
+  --
+  -- Joining matches inside the subquery restricts the scan to the window first, and the
+  -- (match_id, agent_id, seq) primary key then serves the grouping.
   LEFT JOIN (
-    SELECT match_id, agent_id, COUNT(DISTINCT round)::bigint AS bound_decisions
-      FROM agent_match_bound_decisions GROUP BY match_id, agent_id
+    SELECT d.match_id, d.agent_id, COUNT(DISTINCT d.round)::bigint AS bound_decisions
+      FROM agent_match_bound_decisions d
+      JOIN matches mb ON mb.public_id = d.match_id
+                     AND mb.finished_at IS NOT NULL
+                     AND mb.finished_at >= $2 AND mb.finished_at < $3
+     GROUP BY d.match_id, d.agent_id
   ) bd ON bd.match_id = b.match_id AND bd.agent_id = b.agent_id
   LEFT JOIN (
-    SELECT match_id, agent_id, COUNT(*)::bigint AS logged_decisions
-      FROM agent_match_decisions GROUP BY match_id, agent_id
+    SELECT d.match_id, d.agent_id, COUNT(*)::bigint AS logged_decisions
+      FROM agent_match_decisions d
+      JOIN matches md ON md.public_id = d.match_id
+                     AND md.finished_at IS NOT NULL
+                     AND md.finished_at >= $2 AND md.finished_at < $3
+     GROUP BY d.match_id, d.agent_id
   ) dl ON dl.match_id = b.match_id AND dl.agent_id = b.agent_id
   LEFT JOIN decl dc ON dc.agent_public_id = a.public_id
   WHERE ($1 = '' OR b.game = $1)
