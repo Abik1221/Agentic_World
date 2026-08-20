@@ -100,9 +100,29 @@ alone.
 
 ### 3b. Absolute, pool-independent exploitability per model — BUILT, UNSHIPPED
 
-`abs:"NashConv"` returns **exactly one paper in all of arXiv**, and it has nothing to do with
-LLMs. `abs:"exploitability" AND LLM` returns 40 hits that are overwhelmingly CVEs and prompt
-injection; **zero** compute a best-response gap against an LLM policy.
+Confirmed twice, by two agents using different methods. The hard negatives:
+
+- The canonical survey **Game Theory Meets LLMs** ([2502.09053](https://arxiv.org/abs/2502.09053)) contains **zero** occurrences of
+  "exploitability" or "NashConv" in its full text.
+- `abs:"NashConv"` returns **exactly one paper in all of arXiv** — non-LLM.
+- **GTBench full text verified: zero occurrences** of "exploitab", "nashconv" or "best
+  response". Its "Regret Value" is a crude one-shot hindsight deviation against the opponent's
+  *realised* action (auction: `b1−(b2+1)`). It is not ε.
+- All four cs.CL papers with "exploitability" in the abstract use it in the **security** sense.
+- **PokerSkill** ([2605.30094](https://arxiv.org/abs/2605.30094), May 2026) runs LLMs against GTOWizard and Slumbot and reports
+  only mbb/hand (GPT-5.5 XHigh −57±21, Claude Opus 4.6 −80±29). LLM poker, no exploitability,
+  no LBR.
+
+**Closest published quantity, and it is DeepMind's:** *Steering Language Models with
+Game-Theoretic Solvers* ([2402.01704](https://arxiv.org/abs/2402.01704), Gemp, Lanctot et al.) prints NashConv in a results
+table — but that is the *CFR solver's* residual, a convergence diagnostic. Its **"CFR Gain"**
+(0.106, 1.596) measures how much a player gains by switching to CFR against a population of
+baseline LLM agents, which is effectively a lower bound on the unsteered LLM's exploitability.
+Single model, no ranking. They are one step away and have been since January 2024.
+
+Also near: *Safe Equilibrium Policy Optimization* ([2605.30854](https://arxiv.org/abs/2605.30854), EMNLP 2026) penalises
+exploitability in GRPO — but over a **fixed exploiter pool**, and the authors explicitly call
+it "exploit-pool advantage rather than true worst-case exploitability."
 
 Why the incumbents do not cover it:
 - `polarix` solves an equilibrium **over a population** → pool-relative. Change the pool,
@@ -148,6 +168,51 @@ beats a model — beatable only by a solver-driven best response is a very diffe
 risk from beatable by a fixed swap rule anyone can write in an afternoon.
 
 ---
+
+### 3f. Duplicate design / common random numbers — free, unclaimed, and fixes our actual problem
+
+The single most practically valuable finding in the sweep.
+
+**Common random numbers as a named, imported technique is absent from LLM evaluation.** Three
+separate papers — Miller's *Adding Error Bars to Evals* (Anthropic, Nov 2024), Sharma
+([2512.24145](https://arxiv.org/abs/2512.24145)), Dong et al. ([2602.03061](https://arxiv.org/abs/2602.03061)) — each independently **rederive** the paired /
+control-variate estimator from first principles **without citing the sixty-year-old
+simulation and operations-research literature**. Miller never writes "common random numbers,"
+"control variates," or "antithetic variates."
+
+And the canonical games version is untouched: a full-text search for
+`duplicate AND variance AND LLM AND game` returns **zero results**. **Duplicate bridge** —
+where the same deal is played by both sides and only the difference is scored — is the
+original CRN design, it is a century old, and nobody has imported it to an LLM game benchmark.
+
+**Even AV-AIVAT leaves this open.** Our nearest competitor evaluates over "71,439 **paired**
+HUNL hands" but **treats the pairing mechanism as assumed rather than specified**, and does not
+cite the CRN / duplicate-poker tradition at all. The variance reduction is claimed; the design
+that produces it is unexamined.
+
+For us this is not a paper idea first, it is a **fix**. `METHODS.md` §3 admits deal luck is
+uncontrolled, and that is the confounder that produced separability 0.00 and four reversals.
+Replaying the identical prize sequence with seats swapped removes it — at no extra API cost
+beyond the mirrored leg, which we were already paying for seat counterbalancing.
+
+Contrast with the scaffold-variance question (§3g), which is contested: there we would be
+arguing we did it *better*; here we would be arguing we did it *first*.
+
+### 3g. Scaffold-vs-model variance — contested, and the field contradicts itself
+
+Worth knowing but not worth leading with. Three careful papers give answers three orders of
+magnitude apart on how much the scaffold matters: **7.80×** the model ([2605.23950](https://arxiv.org/abs/2605.23950), Tulane,
+but a 3×3 fixed-effects toy), **0.4%** of variance ([2603.10044](https://arxiv.org/abs/2603.10044), pre-registered,
+assessor-blinded, N=62,808 — the most rigorous single study found), and **1.5%** ([2604.18805](https://arxiv.org/abs/2604.18805),
+2PL IRT + Bayesian GLM).
+
+Nobody has reconciled them, and **everyone who looked carefully agrees the model×scaffold
+interaction dominates the main effects** — agent×task interaction runs 4–13× the agent main
+effect ([2608.11323](https://arxiv.org/abs/2608.11323), proper G-theory, but no scaffold facet).
+
+Correction for the record: HAL does **not** say scaffold impact is "unexamined." Its actual
+phrasing is *"comparisons across scaffolds are rare."* HAL also does **zero inferential
+statistics** — 21,730 rollouts, single run per configuration, descriptive frontiers only.
 
 ## 4. Do this first, because it is free
 

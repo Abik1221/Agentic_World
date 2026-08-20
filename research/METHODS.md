@@ -55,7 +55,7 @@ detectable effect size before spending.
 | confounder | control |
 |---|---|
 | Seat/first-mover advantage | Pairings replayed with seats swapped. Only partially applied — 6 of 10 pairings in the last run. |
-| Deal luck | **Not controlled.** Each match draws its own prize order, so score variance includes deal noise. Common random numbers across seat-swapped legs would remove most of it and is not yet implemented. |
+| Deal luck | **Not controlled — this is the dominant confounder.** Each match draws its own prize order, so score variance includes deal noise. The fix is a *duplicate design*: replay the identical prize sequence with seats swapped and score only the difference, exactly as duplicate bridge has done for a century. It costs no extra API calls beyond the mirrored leg. Not yet implemented, and it is the first thing that should be. |
 | Scaffold differences | Eliminated by construction: one agent implementation, one prompt builder, one tool schema. Only the model identifier varies. |
 | Prompt starvation | The seat's **entire view** is sent — history, running scores, opponent's remaining hand, legal actions, shot clock. An earlier version sent a one-line summary, which made questions about memory and long-horizon play unanswerable by construction. |
 | Output-budget bias | `max_tokens` is 4096 for every model. At 256 a reasoning model spends its budget thinking and never emits the tool call, which records as the model failing to decide. A cap that converts "thinks first" into "cannot play" is a thumb on the scale. |
@@ -169,7 +169,8 @@ not the field's.
   apart across harnesses. We have never run the same models through a second harness.
 - **No item-response-theory indices.**
 - **Single game configuration** in the last run.
-- **Deal luck uncontrolled** (§3).
+- **Deal luck uncontrolled** (§3) — and it is not a minor gap: it is the most likely single
+  cause of the reversals documented in the 2026-08-20 run.
 
 ---
 
