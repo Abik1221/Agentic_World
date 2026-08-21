@@ -710,6 +710,10 @@ func run() error {
 	// the query returns 600k rows to be aggregated in Go, and that is the thing to fix — so
 	// the worker now WARNS when a refresh outlasts its interval rather than letting the next
 	// regression hide the same way.
+	// Coverage rollup. Frequent ticks, small batches: the public benchmark endpoints read this
+	// instead of aggregating the decision history per request, which is what made them hang.
+	launch("coverage-rollup",
+		store.NewCoverageWorker(store.NewCoverageRepo(st.DB), time.Minute, 24*time.Hour, log).Run)
 	launch("harnessboard", modelboard.NewWorker(harnessBoardSvc, 10*time.Minute, log).Run)
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, time.Hour, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
