@@ -29,6 +29,16 @@ type Source interface {
 	SaveScores(ctx context.Context, scores []Scored) error
 }
 
+// MafiaSource supplies whole mafia matches. Separate from Source because Mafia's statistic is
+// defined on a match-seat rather than on a decision — see mafiamatch.go. Optional: a Source
+// that does not implement it simply leaves Mafia unscored, which is the behaviour that shipped
+// for as long as nobody noticed, so making it required would break every existing test for a
+// capability they do not exercise.
+type MafiaSource interface {
+	NextUnscoredMafiaMatches(ctx context.Context, version, limit int) ([]MafiaMatchInput, error)
+	SaveMafiaMatchScores(ctx context.Context, matchID string, version int, scores []MafiaSeatScore) error
+}
+
 // Unscored is one decision awaiting a verdict.
 type Unscored struct {
 	MatchID string
@@ -96,6 +106,11 @@ func NewWorker(src Source, cfg WorkerConfig, log *slog.Logger) *Worker {
 func (w *Worker) Run(ctx context.Context) {
 	for {
 		n, err := w.Once(ctx)
+		if m, merr := w.OnceMafia(ctx); merr != nil {
+			w.log.Warn("skill: mafia scoring pass failed; retrying", "error", merr)
+		} else {
+			n += m
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -195,3 +210,35 @@ type badAction struct{}
 func (badAction) Error() string { return "skill: unparseable action" }
 
 var errBadAction = badAction{}
+
+// OnceMafia scores a batch of whole mafia matches and returns how many seats it scored.
+//
+// A no-op when the source cannot supply matches, so the per-decision loop is unaffected by
+// whether this capability is wired.
+func (w *Worker) OnceMafia(ctx context.Context) (int, error) {
+	src, ok := w.src.(MafiaSource)
+	if !ok {
+		return 0, nil
+	}
+	// Deliberately smaller than the decision batch: one match carries a whole event log, and
+	// a seat's verdict fans out to every vote it cast.
+	matches, err := src.NextUnscoredMafiaMatches(ctx, ScorerVersion, mafiaMatchBatch)
+	if err != nil {
+		return 0, err
+	}
+	seats := 0
+	for _, m := range matches {
+		scores := ScoreMafiaMatch(m)
+		if err := src.SaveMafiaMatchScores(ctx, m.MatchID, ScorerVersion, scores); err != nil {
+			return seats, err
+		}
+		seats += len(scores)
+	}
+	if len(matches) > 0 {
+		w.log.Info("skill: scored mafia matches", "matches", len(matches), "seats", seats,
+			"version", ScorerVersion)
+	}
+	return seats, nil
+}
+
+const mafiaMatchBatch = 25

@@ -186,14 +186,14 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
 			     state, round_deadline, round_deadline_base, round_started_at, started_at, creator_owner_user_id,
-			     rated)
+			     rated, starts_at)
 			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),now(),
-			     (SELECT id FROM users WHERE public_id=$12), NOT $15)
+			     (SELECT id FROM users WHERE public_id=$12), NOT $15, $16)
 			 RETURNING id`,
 			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
 			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
 			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy,
-			in.Unrated).Scan(&matchID)
+			in.Unrated, nullableTime(in.StartsAt)).Scan(&matchID)
 		if err != nil {
 			return err
 		}
@@ -208,6 +208,19 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 		}
 		return emitMatchStarted(ctx, tx, in.PublicID, in.Game, in.Bid)
 	})
+}
+
+// nullableTime writes the zero time as SQL NULL rather than year 1.
+//
+// Callers that predate a timestamp column leave it unset, and storing a zero value as a real
+// timestamp is worse than storing nothing: a countdown that expired two millennia ago renders as
+// a countdown, so every surface would show one and none of them would be right. NULL is the
+// honest encoding of "this match has no start instant".
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
 }
 
 func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error {

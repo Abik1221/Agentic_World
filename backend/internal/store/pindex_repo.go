@@ -558,16 +558,18 @@ func (r *PIndexRepo) Save(ctx context.Context, userPublicID string, season int, 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO developer_pindex
 		   (user_id, season, p_index, arena_c, consistency_c, difficulty_c, activity_c, intelligence_c,
-		    highest_pindex, best_rank, config_version, computed_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$3,0,$9,$10)
+		    skill_c, highest_pindex, best_rank, config_version, computed_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$11,$3,0,$9,$10)
 		 ON CONFLICT (user_id, season) DO UPDATE SET
 		   p_index = EXCLUDED.p_index, arena_c = EXCLUDED.arena_c,
 		   consistency_c = EXCLUDED.consistency_c, difficulty_c = EXCLUDED.difficulty_c,
 		   activity_c = EXCLUDED.activity_c, intelligence_c = EXCLUDED.intelligence_c,
+		   skill_c = EXCLUDED.skill_c,
 		   highest_pindex = GREATEST(developer_pindex.highest_pindex, EXCLUDED.p_index),
 		   config_version = EXCLUDED.config_version, computed_at = EXCLUDED.computed_at`,
 		uid, season, res.PIndex, res.Sub("arena"), res.Sub("consistency"),
-		res.Sub("difficulty"), res.Sub("activity"), res.Sub("intelligence"), res.ConfigVersion, asOf); err != nil {
+		res.Sub("difficulty"), res.Sub("activity"), res.Sub("intelligence"), res.ConfigVersion, asOf,
+		res.Sub("skill")); err != nil {
 		return err
 	}
 
