@@ -600,7 +600,14 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 	}
 
 	if copyErr != nil {
-		g.log.Debug("llmgw: response copy ended early", "agent", agentPublicID, "error", copyErr)
+		// WARN, not Debug. A body that ends early is indistinguishable from a short answer to
+		// everything downstream: nothing binds, usage reads as unknown, and the seat is recorded
+		// as not having played. Debug level meant the one event that explains all three was the
+		// one event nobody could see — the same failure mode UsageUnreadable exists to prevent.
+		g.log.Warn("llmgw: the upstream response body ended early — this call binds nothing and "+
+			"is costed at zero, and the agent will be recorded as not having played",
+			"agent", agentPublicID, "provider", call.Provider, "model", call.Model,
+			"captured_bytes", captured.buf.Len(), "error", copyErr)
 	}
 	g.record(call)
 }

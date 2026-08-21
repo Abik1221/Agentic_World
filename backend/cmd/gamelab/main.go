@@ -37,6 +37,14 @@ import (
 const labEndpointSecret = "lab-endpoint-secret" // #nosec G101 -- local lab harness only
 
 func main() {
+	// Provider transport reliability is a result, not plumbing. Reported unconditionally at exit
+	// so a run that quietly leaned on retries cannot be read as one that did not need them.
+	defer func() {
+		if calls, retried, gaveUp := TransportStats(); calls > 0 && (retried > 0 || gaveUp > 0) {
+			fmt.Printf("TRANSPORT  %d model calls  ·  %d retried after an incomplete response  ·  %d abandoned\n",
+				calls, retried, gaveUp)
+		}
+	}()
 	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
 	specSalt := flag.String("spec-salt", "", "with -harness: engage DUPLICATE scheduling under this salt, "+
 		"so every pairing plays byte-identical boards and scores can be compared within a board. "+

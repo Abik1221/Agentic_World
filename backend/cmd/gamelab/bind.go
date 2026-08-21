@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agent-arena/arena/internal/movebind"
@@ -357,18 +358,12 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// under a 30s ceiling its slowest turns timed out and were recorded as "not playing", which
 	// in a published comparison reads as the model failing rather than as our client giving up.
 	// A benchmark must not encode its own impatience as a property of the model.
-	client := &http.Client{Timeout: 180 * time.Second}
-	resp, err := client.Do(req)
+	body, status, err := postWithTransportRetry(req, raw)
 	if err != nil {
 		return bindResult{}, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return bindResult{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return bindResult{}, fmt.Errorf("gateway returned %d: %s", resp.StatusCode,
+	if status < 200 || status > 299 {
+		return bindResult{}, fmt.Errorf("gateway returned %d: %s", status,
 			truncate(string(body), 300))
 	}
 
@@ -415,6 +410,93 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 			len(covered), round, covered)
 	}
 	return out, nil
+}
+
+// # Provider transport failures, and the one retry this benchmark is allowed to make
+//
+// Observed on x-ai/grok-4.6 through OpenRouter: on long non-streaming reasoning turns the
+// upstream declares a Content-Length and then closes the body early — 451 bytes delivered
+// against a declared 2987. The gateway forwards that truncation faithfully, so the client sees
+// an unexpected EOF, nothing binds, and the seat does not play. The arena then plays a FALLBACK
+// move for it.
+//
+// That last step is what makes this a correctness problem rather than an annoyance. A fallback
+// is the platform's move, not the model's, and it lands in the transcript beside real decisions.
+// Left alone it does not merely add noise — it systematically penalises whichever model happens
+// to have the flakier transport, which is not the quantity this benchmark claims to measure.
+//
+// So the call is retried. The boundary matters more than the retry:
+//
+//   - RETRIED: the request never completed — a dial error, a reset, or a body that ended before
+//     its declared length. No model output was obtained, so asking again cannot select anything.
+//   - NOT RETRIED: any completed response. A non-2xx, a completion with no tool call, a tool call
+//     naming a card we did not want — all stand. Re-rolling a completed response until it says
+//     something nicer would be sampling the model until it agrees with us, which is precisely the
+//     way a benchmark lies. That is a different act from re-establishing a connection, and the
+//     two must never be collapsed into one "retry on error".
+//
+// Every retry is counted and reported at the end of a run, because provider transport reliability
+// is itself a finding a reader deserves — it belongs in the published table, not hidden by the
+// mechanism that worked around it.
+var (
+	transportMu      sync.Mutex
+	transportRetried int
+	transportGaveUp  int
+	transportCalls   int
+)
+
+const transportAttempts = 3
+
+// TransportStats reports call, retry and give-up counts for the run.
+func TransportStats() (calls, retried, gaveUp int) {
+	transportMu.Lock()
+	defer transportMu.Unlock()
+	return transportCalls, transportRetried, transportGaveUp
+}
+
+// postWithTransportRetry sends req, re-sending it only when no response was obtained at all.
+//
+// rawBody is needed because a *http.Request body is consumed by the first attempt; re-sending
+// requires a fresh reader rather than the drained one.
+func postWithTransportRetry(req *http.Request, rawBody []byte) ([]byte, int, error) {
+	client := &http.Client{Timeout: 180 * time.Second}
+	transportMu.Lock()
+	transportCalls++
+	transportMu.Unlock()
+
+	var lastErr error
+	for attempt := 1; attempt <= transportAttempts; attempt++ {
+		if attempt > 1 {
+			// A fresh body and a fresh context-free clone: the previous attempt drained one and
+			// may have marked the request as used.
+			r2 := req.Clone(req.Context())
+			r2.Body = io.NopCloser(bytes.NewReader(rawBody))
+			r2.ContentLength = int64(len(rawBody))
+			req = r2
+			time.Sleep(time.Duration(attempt-1) * 2 * time.Second)
+			transportMu.Lock()
+			transportRetried++
+			transportMu.Unlock()
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if rerr != nil {
+			// A body that ended before its declared length. The status line arrived, so this is
+			// not a refusal — it is a response we never fully received.
+			lastErr = fmt.Errorf("upstream body ended early after %d bytes: %w", len(body), rerr)
+			continue
+		}
+		return body, resp.StatusCode, nil
+	}
+	transportMu.Lock()
+	transportGaveUp++
+	transportMu.Unlock()
+	return nil, 0, fmt.Errorf("no response after %d attempts: %w", transportAttempts, lastErr)
 }
 
 func truncate(s string, n int) string {
