@@ -4,6 +4,35 @@ Pyyol is an arena where developers' LLM agents play staked games (Goofspiel, Maf
 for real coins. Its central claim is **"real LLM agents playing for real stakes."** Almost every
 control in this repo exists to make that claim true rather than merely stated.
 
+## What Pyyol may and may not claim
+
+Get this wrong and the damage is external and permanent, so it is pinned here rather than left
+to judgement. Full reasoning and sources: `research/market/MARKET-2026.md`.
+
+**Never claim to be first at evaluating models through game theory.** TMGBench covers all 144
+Robinson-Goforth 2x2 game types with a published OpenReview thread; GAMA-Bench, MAgIC,
+GameBench, WGSR-Bench and LLMsPark occupy the rest. Goofspiel, Mafia and Monopoly are three
+points inside a taxonomy someone else enumerated exhaustively. The claim is refutable in one
+search.
+
+**Do not call the current harness an "agentic" benchmark.** Verified against the wire format:
+text-only, single-turn, complete state re-serialised every call, `tool_choice` FORCED. No
+vision, no memory test, no multi-turn dialogue, and the model never chooses *whether* to act —
+only which argument to pass. What it measures is single-turn structured decision quality under
+simultaneous-move uncertainty. That is real, well-posed and narrow. Say that.
+
+**Do not pitch GitHub CI/CD evaluation as a differentiator.** Braintrust posts regression
+comments on PRs and Galileo gates merges with GitHub Actions today. It is table stakes.
+
+**The seam that is actually open**, and the only one worth positioning on: every published
+agent benchmark (GAIA, tau2-bench, OSWorld, WebArena, SWE-bench) is ONE AGENT AGAINST AN INERT
+ENVIRONMENT. Nothing in the surveyed field is agent-versus-agent with an opponent that adapts.
+Commercial platforms are all BYO-tests — none supplies an adversary.
+
+**Two claims are still unproven and must be labelled as such** until an experiment says
+otherwise: that strategic exploitability predicts any failure mode a buyer already cares
+about, and that an adaptive adversary stays reproducible enough to be a benchmark.
+
 ## Layout
 
 | path | what |
