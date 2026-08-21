@@ -162,8 +162,15 @@ type CreatePairedInput struct {
 	// Unrated writes matches.rated = false AT INSERT, not by a follow-up UPDATE. A match
 	// that is briefly rated is a match a concurrent board refresh can read as rated, and
 	// the platform benchmark's whole separation rests on this flag plus the agent kind.
-	Unrated  bool
-	State    gs.State
+	Unrated bool
+	State   gs.State
+	// StartsAt is the ABSOLUTE instant play begins — the start countdown, persisted so every
+	// surface counts to one moment rather than each running its own timer. Harness tables were
+	// the last path without it: mafia, monopoly and the goofspiel lobby all set one, and 6 of 6
+	// finished benchmark tables had starts_at NULL, so no surface could render a countdown for
+	// the platform's own runs. Zero is written as NULL, which is what a caller predating the
+	// countdown means.
+	StartsAt time.Time
 	Deadline time.Time
 	Events   []gs.Event
 }

@@ -144,13 +144,19 @@ func (r *fakeRepo) CreatePairedActive(_ context.Context, in match.CreatePairedIn
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := in.Deadline
-	r.matches[in.PublicID] = match.Match{
+	m := match.Match{
 		PublicID: in.PublicID, Game: in.Game, Status: match.StatusActive,
 		Mode: in.Mode, BotPolicy: in.BotPolicy, Bid: in.Bid,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
 		Commit: in.Commit, FairnessMode: in.FairnessMode, Seed: in.Seed,
 		Players: []match.Player{in.SeatA, in.SeatB}, State: in.State, RoundDeadline: &d,
 	}
+	// Mirror the store: a zero StartsAt stays nil rather than becoming year 1.
+	if !in.StartsAt.IsZero() {
+		sa := in.StartsAt
+		m.StartsAt = &sa
+	}
+	r.matches[in.PublicID] = m
 	r.events[in.PublicID] = append(r.events[in.PublicID], in.Events...)
 	return nil
 }
@@ -753,5 +759,40 @@ func TestHarnessRejectsShortBoardSeed(t *testing.T) {
 	if _, err := svc.CreateHarnessPaired(context.Background(),
 		"ag_h1", "usr_sys", "ag_h2", "usr_sys", []byte{1, 2, 3}); err == nil {
 		t.Fatal("a 3-byte board seed was accepted; it must be rejected, not padded")
+	}
+}
+
+// TestHarnessTableGetsStartCountdown closes the last path without one.
+//
+// Mafia, monopoly and the goofspiel lobby all persist starts_at; harness tables did not, and 6 of
+// 6 finished benchmark tables carried NULL — so the console could render no countdown for the
+// platform's own runs, which are precisely the ones an operator watches.
+func TestHarnessTableGetsStartCountdown(t *testing.T) {
+	ctx := context.Background()
+	for _, id := range []string{"ag_hc1", "ag_hc2"} {
+		harnessKinds[id] = true
+		defer delete(harnessKinds, id)
+	}
+	svc, repo := newSvcWithRepo()
+	id, err := svc.CreateHarnessPaired(ctx, "ag_hc1", "usr_sys", "ag_hc2", "usr_sys", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	m := repo.matches[id]
+	repo.mu.Unlock()
+
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if m.StartsAt == nil {
+		t.Fatal("a harness table was created with no starts_at — no surface can count to a " +
+			"shared instant for the platform's own benchmark runs")
+	}
+	if !m.StartsAt.After(now) {
+		t.Fatalf("starts_at %v is not after the creation instant %v; a countdown that has "+
+			"already elapsed is the same as none", m.StartsAt, now)
+	}
+	if m.RoundDeadline == nil || !m.RoundDeadline.After(*m.StartsAt) {
+		t.Fatalf("round deadline %v must follow starts_at %v, or the countdown eats the first "+
+			"round's thinking time", m.RoundDeadline, m.StartsAt)
 	}
 }

@@ -2001,7 +2001,11 @@ func (s *Service) CreateHarnessPaired(ctx context.Context, aAgent, aOwner, bAgen
 	}
 	// No escrow, no refund path, no ready check: there are no coins to protect and both seats
 	// are processes the platform started itself.
-	in.Deadline = s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
+	// The same start countdown every other path sets. ONE clock reading feeds both values, so
+	// the first move window cannot open before the countdown it is meant to follow.
+	now := s.clock.Now()
+	in.StartsAt = readycheck.StartsAt(now, readycheck.DefaultPolicy("goofspiel").Countdown)
+	in.Deadline = in.StartsAt.Add(s.moveWindow(ctx, aAgent, bAgent))
 	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
 		return "", err
 	}
