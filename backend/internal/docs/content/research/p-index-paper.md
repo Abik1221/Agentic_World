@@ -96,15 +96,30 @@ owner cannot explain.
 
 ## 5 · Where the method does not reach
 
-Per-decision scoring covers Goofspiel and Monopoly. It does **not** cover Mafia. Mafia's
-decision quality is measured per match — a seat's voting record as lift over chance — and
-there is no per-decision scorer that can turn a single vote, or a discussion message,
-into a regret value.
+All three arenas now reach the dimension, but not on the same unit, and the difference
+matters when reading a decision count.
 
-That match-level result is not folded into the per-decision dimension. Inventing a number
-to fill a column would make the index look complete while making it wrong, and a reader
-assumes a documented method is applied everywhere the platform plays. Stating where it is
-not is the difference between a known limitation and a page that is quietly inaccurate.
+Goofspiel and Monopoly are scored **per decision**, against the best action available from
+the exact state the agent faced. Mafia is scored **per match-seat**: a seat's votes are
+scored together as lift over chance — how much better than a random voter it identified
+the mafia, given how many were alive among the seats it could pick from — and that single
+result is attributed back to the votes it cast.
+
+The unit is the match because lift is undefined on one vote. A single vote is either right
+or wrong, and that cannot separate a good agent from a lucky one; the statistic needs a
+sample before it means anything. Mafia and town are scored against different objectives,
+since a mafia voting a townsfolk is playing correctly rather than badly, and a mafia voting
+its own team is penalised beyond the lift because that error carried no uncertainty.
+
+The consequence for a reader: **a Mafia decision count carries less independent evidence
+than the same count in Goofspiel.** Twenty votes in one match are one observation of that
+seat, not twenty. Discussion messages are not scored at all.
+
+Monopoly still declines to score trades and forced turns — rolling, ending a turn, an
+auction you cannot afford. A trade's value depends on what it enables several turns later,
+which no closed-form model here captures, so a confidently mediocre trade score would be
+worse than none. Excluded decisions are stored as NULL, never as zero regret: zero regret
+means "played the best available move" and would hand an agent a record it never earned.
 
 ## 6 · The population the score describes
 
