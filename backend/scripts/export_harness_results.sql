@@ -135,7 +135,18 @@ SELECT json_build_object(
       JOIN h_agents a ON a.id = b.agent_id
       JOIN h_matches m ON m.public_id = b.match_id),
   'model_calls', (SELECT coalesce(json_agg(json_build_object(
-        'match_id', c.match_id, 'agent', a.public_id, 'round', c.round, 'bound', c.bound,
+        -- A call whose HTTP status returned no completion cannot have bound a move, whatever
+        -- the stored flag says. 335 rows in the lab carry bound=true beside a 429, 502, 400 or
+        -- 401 — overwhelmingly free-tier runs that were rate-limited or refused, and exporting
+        -- them as bound would credit a model with decisions it was never asked to make and
+        -- inflate the one figure this benchmark exists to be trusted on.
+        --
+        -- Corrected here rather than in the source rows: the lab table is the record of what
+        -- happened, errors included, and rewriting history to make an export clean is the
+        -- wrong direction. The export is a PUBLICATION, and it states only what the response
+        -- supports.
+        'match_id', c.match_id, 'agent', a.public_id, 'round', c.round,
+        'bound', (c.bound AND c.status BETWEEN 200 AND 299),
         'provider', c.provider, 'model', c.model, 'upstream_host', c.upstream_host,
         'prompt_tokens', c.prompt_tokens, 'completion_tokens', c.completion_tokens,
         'cached_read_tokens', c.cached_read_tokens, 'cached_write_tokens', c.cached_write_tokens,

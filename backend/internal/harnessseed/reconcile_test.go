@@ -8,11 +8,33 @@ import (
 
 // TestEmbeddedExportIsReconciled runs the real shipped file through the real check.
 //
-// This test documents the CURRENT state of data/lab-2026-08.json rather than asserting it is
-// clean, because it is not: the export attributes 642 decisions to frontier models whose
-// calls the gateway never saw. When the export is regenerated honestly this test should be
-// inverted to assert cleanliness — and until then it pins exactly which rules fire, so a
-// regeneration that fixes one and breaks another cannot pass unnoticed.
+// It documents the CURRENT state of data/lab-2026-08.json rather than asserting it is clean,
+// and pins exactly which rules fire so a regeneration that fixes one and breaks another cannot
+// pass unnoticed. That is precisely what it caught when the export was regenerated to carry the
+// paid trials: two counts moved and the test refused to go green on either.
+//
+// One rule has since been retired from the expected set. bound_call_must_be_2xx fired on 67
+// calls flagged bound beside a 429, 502, 400 or 401 — a response that returned no completion
+// cannot have bound a move, so the export now derives the flag as (bound AND status 2xx) and
+// the rule reports zero. Corrected in the export rather than in the lab rows: the table is the
+// record of what happened, errors included, and rewriting history to make a publication clean
+// is the wrong direction.
+//
+// Two remain, and both are honest about the same underlying fact rather than a defect in the
+// data path:
+//
+//	bound_call_must_have_tokens        113 calls bound with no token count. These are the
+//	                                   UsageUnreadable case — a provider shape the normaliser
+//	                                   could not read, which is loudly logged and costed at
+//	                                   zero. The binding itself is real; only the usage is
+//	                                   missing, so dropping the call would lose a decision
+//	                                   that genuinely happened.
+//	decision_model_must_match_gateway  Lab personas declared a display model ("claude-opus-4")
+//	                                   while the gateway called the stand-in. Harmless where
+//	                                   it matters: every published surface resolves attribution
+//	                                   gateway-verified FIRST and falls back to self-reported
+//	                                   only when no verified call exists, so these rows publish
+//	                                   under the model that actually answered.
 func TestEmbeddedExportIsReconciled(t *testing.T) {
 	var r results
 	if err := json.Unmarshal(resultsJSON, &r); err != nil {
@@ -30,7 +52,6 @@ func TestEmbeddedExportIsReconciled(t *testing.T) {
 		fired[f.Rule] = f.Count
 	}
 	for _, rule := range []string{
-		"bound_call_must_be_2xx",
 		"bound_call_must_have_tokens",
 		"decision_model_must_match_gateway",
 	} {
@@ -38,11 +59,14 @@ func TestEmbeddedExportIsReconciled(t *testing.T) {
 			t.Errorf("expected rule %q to fire on the shipped export, it did not", rule)
 		}
 	}
-	if got := fired["bound_call_must_be_2xx"]; got != 67 {
-		t.Errorf("non-2xx bound calls = %d, want 67", got)
+	// Fixed, and it must STAY fixed: a call the provider refused cannot carry a bound move,
+	// and letting this creep back would credit models with decisions never made.
+	if got := fired["bound_call_must_be_2xx"]; got != 0 {
+		t.Errorf("non-2xx bound calls = %d, want 0 — the export is flagging refused calls as "+
+			"bound again, which inflates the one figure this benchmark is trusted on", got)
 	}
-	if got := fired["bound_call_must_have_tokens"]; got != 131 {
-		t.Errorf("zero-token bound calls = %d, want 131", got)
+	if got := fired["bound_call_must_have_tokens"]; got != 113 {
+		t.Errorf("zero-token bound calls = %d, want 113", got)
 	}
 }
 
