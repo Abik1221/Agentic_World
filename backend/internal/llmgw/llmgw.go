@@ -532,6 +532,9 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 			w.Header().Add(k, v)
 		}
 	}
+	// The upstream wait is over and the first byte is about to go out; the deadline the router
+	// armed at request arrival may already have passed.
+	armWrite(w)
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream through, TEEING both shapes into a bounded buffer.
@@ -784,6 +787,34 @@ func applyUsageShape(c *Call, s usageShape) {
 // — with many concurrent calls the product of the two is what matters, not one response.
 const maxCapturedBytes = 4 << 20 // 4 MiB
 
+// # Why the proxy re-arms the connection's write deadline
+//
+// The router gives every ordinary request a FIXED write deadline, set once when the request
+// arrives, because the server itself runs WriteTimeout=0 so that SSE can work. For a normal
+// handler that is right. For this one it is a bug, and a subtle one: a proxied model call spends
+// almost all of its life waiting on the upstream, and only then starts writing. A reasoning model
+// that thinks for 30 seconds therefore reaches its first write with the deadline ALREADY expired,
+// the write fails instantly after a few hundred bytes, and the client receives a truncated body.
+//
+// The damage was not a clean error. Downstream it surfaced as three unrelated-looking faults —
+// nothing bound, usage unreadable so the call costed zero, and the agent recorded as not having
+// played, which the arena covers with a fallback move. The effect scaled with how long a model
+// thinks, so it fell hardest on exactly the reasoning models a benchmark most wants to measure,
+// and it looked like those models were failing to answer.
+//
+// The long-lived paths already solved this with a ROLLING deadline re-armed before each write,
+// and that is the correct shape here too: it bounds any single stalled write, so a black-hole
+// client still cannot wedge a goroutine, while placing no ceiling at all on how long the upstream
+// may think. A larger fixed deadline would have been the wrong fix — it only moves the cliff.
+const proxyWriteGrace = 60 * time.Second
+
+// armWrite (re)arms the rolling per-write deadline. Best-effort by design: a ResponseWriter that
+// cannot expose a deadline is left unbounded rather than failing the call, matching rule 1 — the
+// gateway must never be the reason a match fails.
+func armWrite(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(proxyWriteGrace))
+}
+
 // capBuffer accumulates up to limit bytes and then stops, remembering that it did.
 //
 // The truncated flag is the point. A silently short buffer would be parsed as if complete:
@@ -948,6 +979,9 @@ func copyFlushing(dst io.Writer, src io.Reader, w http.ResponseWriter) (int64, e
 	for {
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			// Rolling: each write gets the full grace, so a slow-but-progressing stream is
+			// never reaped while a stalled one still is.
+			armWrite(w)
 			written, werr := dst.Write(buf[:n])
 			total += int64(written)
 			if canFlush {
