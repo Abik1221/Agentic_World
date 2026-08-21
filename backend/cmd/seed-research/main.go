@@ -38,9 +38,12 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/agent-arena/arena/internal/exploit"
 )
 
 type seat struct {
@@ -93,6 +96,7 @@ func main() {
 	// four-seat table are both real outcomes, but neither is a pairwise comparison, so
 	// folding them in would mean inventing one.
 	var results []pair
+	var margins []exploit.MarginResult
 	skipped, contaminated := 0, 0
 	for _, m := range all {
 		if m.Game != *game || len(m.Seats) != 2 {
@@ -112,6 +116,13 @@ func main() {
 			continue
 		}
 		x, y := m.Seats[0], m.Seats[1]
+		// Margin is collected for EVERY decisive or drawn match, including the draws
+		// Bradley-Terry has to discard. A 0-margin draw is a real observation about two
+		// models being close; dropping it because BT cannot use it would throw away
+		// evidence the margin estimator can.
+		margins = append(margins, exploit.MarginResult{
+			A: x.Model, B: y.Model, Margin: float64(x.FinalScore - y.FinalScore),
+		})
 		switch {
 		case x.FinalScore > y.FinalScore:
 			results = append(results, pair{x.Model, y.Model})
@@ -193,6 +204,36 @@ func main() {
 	for _, r := range rows {
 		fmt.Printf("%-30s %6.0f %8.0f %8.0f %5d %4d %4d\n", r.model, r.elo, r.low, r.high, r.n, r.w, r.l)
 	}
+	// The margin fit, printed BESIDE Bradley-Terry rather than instead of it.
+	//
+	// They answer different questions: BT asks who wins, this asks by how much. Where the two
+	// orderings agree, the result is not an artefact of either estimator. Where they disagree,
+	// the disagreement IS the finding — the scoreline and the win/loss record are telling
+	// different stories — and surfacing it beats quietly publishing whichever looked better.
+	if mr, mErr := exploit.FitMargins(margins, 2000, 1); mErr != nil {
+		fmt.Printf("\nmargin fit unavailable: %v\n", mErr)
+	} else {
+		fmt.Printf("\n%-30s %9s %9s %9s   (points of margin)\n", "model", "theta", "low", "high")
+		for _, r := range mr {
+			fmt.Printf("%-30s %9.2f %9.2f %9.2f\n", SHORTEN(r.Name), r.Theta, r.Low, r.High)
+		}
+		btOrder := make([]string, 0, len(rows))
+		for _, r := range rows {
+			btOrder = append(btOrder, r.model)
+		}
+		mgOrder := make([]string, 0, len(mr))
+		for _, r := range mr {
+			mgOrder = append(mgOrder, r.Name)
+		}
+		if !sameOrder(btOrder, mgOrder) {
+			fmt.Printf("\nNOTE: Bradley-Terry and the margin fit DISAGREE on the ordering.\n"+
+				"  win/loss: %v\n  margin:   %v\n"+
+				"Neither is authoritative. The disagreement means the scoreline and the\n"+
+				"win/loss record measure different things on this data, and any published\n"+
+				"ranking must say which one it used.\n", btOrder, mgOrder)
+		}
+	}
+
 	if sep == 0 {
 		fmt.Println("\nNOTE: separability 0.00 — no pair of models is distinguishable at 95%.\n" +
 			"The board will render an ordering; the evidence does not support one.")
@@ -244,6 +285,27 @@ func main() {
 		log.Fatalf("commit: %v", err)
 	}
 	fmt.Printf("\nseeded %d models onto board %q for %s\n", len(rows), *board, boardDay)
+}
+
+// SHORTEN trims the provider prefix for display only.
+func SHORTEN(s string) string {
+	if i := strings.LastIndex(s, "/"); i >= 0 && i+1 < len(s) {
+		return s[i+1:]
+	}
+	return s
+}
+
+// sameOrder reports whether two rankings list the same names in the same positions.
+func sameOrder(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func modelsIn(rs []pair) []string {
