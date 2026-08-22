@@ -1076,9 +1076,17 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	}
 
 	state, events, err := s.eng.ForceTimeout(m.State, m.Seed)
-	if err != nil || len(events) == 0 {
+	if err != nil {
 		return err
 	}
+	// Deliberately NOT gated on len(events) > 0. Monopoly carried the identical guard and it
+	// wedged five staked tables for up to two days: its engine advanced the state while
+	// emitting nothing observable, the service read "no events" as "nothing happened", and
+	// the advance was discarded on every sweep. No Mafia table has been found stuck this
+	// way, so this is preventive rather than a reproduced defect — but the failure mode is
+	// silent, holds escrow, and the guard buys nothing, since persist() is OCC and re-arms
+	// the deadline.
+
 	if err := s.persist(ctx, m, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
 		return err
 	}

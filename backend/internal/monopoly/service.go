@@ -1166,10 +1166,22 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	// every other match it still has to check.
 	state, botEvents := s.drive(ctx, eng, state, m.Seed, m.botSeats(), false)
 	events = append(events, botEvents...)
-	if len(events) == 0 {
-		return nil
-	}
-	// A racing live move advanced the match first — the forced timeout is moot.
+
+	// An advanced state with NO events is not "nothing happened", and treating it that way
+	// wedged real tables. stepTradeWindow pops the trade queue and enters play while
+	// emitting nothing observable, and Step always records attendance through noteAsked, so
+	// a forced timeout on a live match ALWAYS moves the state — sometimes silently.
+	//
+	// The early return that used to sit here discarded exactly that advance. The sweeper
+	// selected the table every second, the engine fixed it every second, and the fix was
+	// thrown away every second: five staked tables sat in phase=trade for up to two days
+	// with 2,500 coins locked in escrow that nothing would ever release. It logged nothing,
+	// because "no events" was counted as success.
+	//
+	// Persisting unconditionally is safe. The race this looked like it guarded is handled
+	// where it belongs — persist() is OCC, so a live move that advanced the match first
+	// comes back as ErrConcurrentUpdate and is ignored below. And persist re-arms the
+	// deadline, so a table cannot be re-selected on the next tick and cannot churn.
 	if err := s.persist(ctx, m, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
 		return err
 	}
