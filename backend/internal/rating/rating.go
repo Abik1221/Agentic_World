@@ -79,6 +79,10 @@ type Service struct {
 	clock platform.Clock
 	cfg   Config
 	m     *metrics
+	// Boards that scan the whole benchmark table, cached briefly. See cache.go for why an
+	// index is not the answer here.
+	modelCache *resultCache[BenchmarkPage]
+	devCache   *resultCache[DeveloperBoard]
 }
 
 // New builds the rating service.
@@ -86,7 +90,13 @@ func New(repo Repo, clock platform.Clock, cfg Config, reg *prometheus.Registry) 
 	if cfg.SeasonLength <= 0 {
 		cfg.SeasonLength = 30 * 24 * time.Hour
 	}
-	return &Service{repo: repo, clock: clock, cfg: cfg, m: newMetrics(reg)}
+	return &Service{
+		repo: repo, clock: clock, cfg: cfg, m: newMetrics(reg),
+		// 30s matches the Cache-Control these endpoints already advertise, so the origin now
+		// keeps the same promise it was making to clients.
+		modelCache: newResultCache[BenchmarkPage](30 * time.Second),
+		devCache:   newResultCache[DeveloperBoard](30 * time.Second),
+	}
 }
 
 // CurrentSeason is the season number for now (date-derived; a new window starts a
@@ -424,7 +434,25 @@ func (s *Service) HarnessMatches(ctx context.Context, game string, limit int) ([
 	return s.repo.HarnessMatches(ctx, game, limit)
 }
 
+// ModelBenchmark serves the public model board, cached for a few seconds.
+//
+// The cache sits here rather than in the handler so every caller benefits — the public
+// endpoint, the admin proxy and DeveloperBoard, which reuses this for its baselines and
+// would otherwise trigger the same full scan a second time on one request.
 func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	if s.modelCache == nil { // a Service built without New (tests) stays uncached
+		return s.modelBenchmarkUncached(ctx, game, minGames)
+	}
+	return s.modelCache.get(cacheKey(game, minGames), func(c context.Context) (BenchmarkPage, error) {
+		return s.modelBenchmarkUncached(c, game, minGames)
+	})
+}
+
+func cacheKey(game string, minGames int) string {
+	return game + "|" + strconv.Itoa(minGames)
+}
+
+func (s *Service) modelBenchmarkUncached(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
 	return s.benchmarkPage(ctx, game, minGames, false)
 }
 
@@ -561,6 +589,15 @@ type DeveloperBoard struct {
 // the exact per-model win rate the public model board publishes — the two boards are
 // two views of one dataset, and a reader can check any edge by hand from them.
 func (s *Service) DeveloperBoard(ctx context.Context, game string, minGames int) (DeveloperBoard, error) {
+	if s.devCache == nil {
+		return s.developerBoardUncached(ctx, game, minGames)
+	}
+	return s.devCache.get(cacheKey(game, minGames), func(c context.Context) (DeveloperBoard, error) {
+		return s.developerBoardUncached(c, game, minGames)
+	})
+}
+
+func (s *Service) developerBoardUncached(ctx context.Context, game string, minGames int) (DeveloperBoard, error) {
 	if game == ArenaAll {
 		game = ""
 	}
