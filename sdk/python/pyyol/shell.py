@@ -103,7 +103,7 @@ def _wordmark(color: bool) -> str:
 # once. The groups are an ORDER, not a LIST — anything they do not claim still appears under
 # "More", so a command added to the parser can never go missing because nobody updated this.
 _GROUPS: list[tuple[str, list[str]]] = [
-    ("Play", ["play", "dev", "games", "watch", "queue"]),
+    ("Play", ["play", "dev", "games", "watch", "queue", "room"]),
     ("Ship", ["init", "publish", "serve", "autoplay"]),
     ("Inspect", ["status", "doctor", "usage", "replay", "logs"]),
     ("Standing", ["leaderboard", "profile", "wallet", "arenas"]),

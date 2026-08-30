@@ -122,6 +122,17 @@ type CreateMatchInput struct {
 	FairnessMode  string
 	Seed          []byte
 	Creator       Player // seat 0
+
+	// Private hides the waiting match from the open lobby, making it reachable only
+	// by somebody holding its public id.
+	//
+	// A room is otherwise an ordinary open match: same stake path, same join checks,
+	// same ErrSameOwner refusal. The only difference is that ListWaiting skips it, so
+	// the seat cannot be taken by a stranger browsing the lobby between the moment the
+	// code is shared and the moment the invited player uses it.
+	//
+	// Defaults to false, so every existing caller keeps producing public lobby entries.
+	Private bool
 }
 
 // CreatePairedInput is the data needed to open an already-active, two-seat match

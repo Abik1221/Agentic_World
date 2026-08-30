@@ -62,6 +62,15 @@ func (h *Handler) Register(r chi.Router) {
 			Post("/v1/admin/harness/table", h.createHarnessTable)
 		r.With(agent).Post("/v1/lobby/join", h.join)
 		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
+		// Rooms: a private table you share by id, for two developers who want to play
+		// each other rather than whoever the queue supplies.
+		//
+		// Separate routes rather than a flag on /v1/lobby/create, because the lobby
+		// routes are live and something else may depend on their exact shape. Joining
+		// and cancelling deliberately REUSE the lobby handlers: a room is an ordinary
+		// waiting match, and a second join path would be a second place for the escrow
+		// and same-owner checks to drift.
+		r.With(agent).Post("/v1/room/create", h.createRoom)
 		r.With(agent).Get("/v1/match/{id}/state", h.state)
 		r.With(agent).Post("/v1/match/{id}/action", h.action)
 		// Table talk. Separate from /action on purpose: speaking is not a move, is
@@ -182,6 +191,41 @@ func (h *Handler) createHarnessTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id})
+}
+
+// createRoom opens a private table and returns the code to share.
+//
+// The response names the field  as well as . They are the same value:
+// a room IS a match, and inventing a second identifier would mean two ids for one thing
+// and a mapping to keep correct. The alias exists because the person reading it is about
+// to paste it into a chat window, and "room" is what they will call it.
+func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Tier string `json:"tier"`
+		Bid  int64  `json:"bid"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	bid := in.Bid
+	if h.stakes != nil {
+		b, err := h.stakes.ResolveStake(r.Context(), "goofspiel", in.Tier, in.Bid)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		bid = b
+	}
+	id, err := h.svc.CreateRoom(r.Context(), p.AgentPublicID, p.UserPublicID, bid)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"room_id": id, "match_id": id, "game": "goofspiel", "bid": bid,
+	})
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {

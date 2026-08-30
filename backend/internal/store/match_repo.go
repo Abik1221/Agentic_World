@@ -34,11 +34,14 @@ func (r *MatchRepo) CreateWaitingMatch(ctx context.Context, in match.CreateMatch
 	var matchID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
-		     engine_version, prize_seed_commit, prize_seed, fairness_mode, creator_owner_user_id)
-		 VALUES ($1,$2,'waiting',$3,$4,$5,$6,$7,$8,$9,(SELECT id FROM users WHERE public_id=$10))
+		     engine_version, prize_seed_commit, prize_seed, fairness_mode, creator_owner_user_id,
+		     private)
+		 VALUES ($1,$2,'waiting',$3,$4,$5,$6,$7,$8,$9,(SELECT id FROM users WHERE public_id=$10),
+		     $11)
 		 RETURNING id`,
 		in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
-		in.EngineVersion, in.Commit, in.Seed, in.FairnessMode, in.Creator.OwnerPublicID).Scan(&matchID)
+		in.EngineVersion, in.Commit, in.Seed, in.FairnessMode, in.Creator.OwnerPublicID,
+		in.Private).Scan(&matchID)
 	if err != nil {
 		return match.Match{}, err
 	}
@@ -63,6 +66,10 @@ func (r *MatchRepo) ListWaiting(ctx context.Context, game string, bid int64, exc
 		 JOIN match_players mp ON mp.match_id = m.id AND mp.seat = 0
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 WHERE m.status = 'waiting' AND m.game = $1
+		   -- Rooms are reachable by their id and never by browsing. Without this a
+		   -- stranger refreshing the lobby can take the seat between the moment a code
+		   -- is shared and the moment the invited player uses it.
+		   AND NOT m.private
 		   AND ($2 <= 0 OR m.bid = $2)
 		   AND m.creator_owner_user_id <> COALESCE((SELECT id FROM users WHERE public_id = $3), 0)
 		 ORDER BY m.created_at DESC
