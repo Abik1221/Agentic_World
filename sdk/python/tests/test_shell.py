@@ -316,3 +316,97 @@ def test_every_command_is_grouped_or_falls_through_to_more():
                     f"group entry {n!r} is not a real command — the menu would show a dead row"
                 )
     assert claimed, "the groups must claim something"
+
+
+# ── the live strip must not eat a running command's output ──────────────────────
+
+
+class _FakeStream:
+    """A stream that records writes and claims to be a TTY."""
+
+    def __init__(self) -> None:
+        self.chunks: list[str] = []
+
+    def write(self, s: str) -> int:
+        self.chunks.append(s)
+        return len(s)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return True
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chunks)
+
+
+def _strip(stream):
+    s = shell._Style(color=True)
+    return shell._LiveStrip("http://example.invalid", s, stream)
+
+
+def test_the_strip_erases_the_line_above_it_when_idle():
+    """The baseline the next test is measured against.
+
+    _redraw is SUPPOSED to step up a line and clear it — that is how the ticker stays in
+    place above the prompt instead of scrolling away.
+    """
+    out = _FakeStream()
+    strip = _strip(out)
+    strip._redraw()
+    assert "\x1b[1A" in out.text, "the strip should move up one line"
+    assert "\x1b[2K" in out.text, "the strip should clear that line"
+
+
+def test_the_strip_stays_silent_while_a_command_owns_the_terminal():
+    """A running command's output must never be erased by the ticker.
+
+    `pyyol play` streams a decision feed from the match thread while the strip thread
+    fires every five seconds. Unmuted, _redraw steps up one line and clears it — and that
+    line is whatever the match just printed, not the strip.
+
+    The symptom is worse than losing a line: a log reading `turn 93` then `turn 95` looks
+    like a DROPPED TURN, which reads as a forfeit and sends somebody hunting a reconnect
+    bug in the arena that does not exist. The turn was played; the ticker wiped the line.
+    """
+    out = _FakeStream()
+    strip = _strip(out)
+    with strip.quiet():
+        strip._redraw()
+    assert out.text == "", (
+        "the strip repainted while a command was running; it would have erased the line "
+        f"the command had just printed (wrote {out.text!r})"
+    )
+
+
+def test_muting_is_released_even_if_the_command_raises():
+    """A command that blows up must not leave the ticker dead for the rest of the session."""
+    out = _FakeStream()
+    strip = _strip(out)
+    try:
+        with strip.quiet():
+            raise RuntimeError("command failed")
+    except RuntimeError:
+        pass
+    strip._redraw()
+    assert "\x1b[2K" in out.text, "the strip never resumed after a failing command"
+
+
+def test_the_shell_mutes_the_strip_around_dispatch():
+    """The guard has to be WIRED, not merely available.
+
+    Checked against the source because driving the REPL needs a live stdin: the point is
+    that no dispatch path runs with the ticker still painting.
+    """
+    import inspect
+
+    src = inspect.getsource(shell._loop)
+    dispatches = src.count("_dispatch(")
+    muted = src.count("strip.quiet()")
+    assert dispatches > 0, "the loop should dispatch something"
+    assert muted >= dispatches, (
+        f"{dispatches} dispatch call(s) but only {muted} muted — a command that prints "
+        "while the ticker is live will have its output erased"
+    )
