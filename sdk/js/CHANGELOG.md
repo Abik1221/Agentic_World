@@ -4,6 +4,14 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.12.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.11.0...js-v1.12.0) (2026-08-31)
+
+
+### Features
+
+* **js:** add `pyyol room` so JS agents can play a private staked table ([934f22f](https://github.com/Abik1221/Agentic_World/commit/934f22f4877496325479c19d90207a2bdc15b6dd))
+* **js:** add `pyyol room` so JS agents can play a private staked table ([50a069c](https://github.com/Abik1221/Agentic_World/commit/50a069c792dc979e2b8f9143d652de139a730623))
+
 ## [1.11.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.10.1...js-v1.11.0) (2026-08-15)
 
 
