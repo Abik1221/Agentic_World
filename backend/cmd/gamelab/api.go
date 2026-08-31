@@ -327,10 +327,3 @@ func (a *api) setAutoplay(agentKey string, enabled bool, mode string, bid int64,
 
 // createFreeTable opens a ZERO-STAKE table and returns its id.
 //
-// Same lobby endpoint a developer uses, with no tier and no bid. gamestakes.ResolveStake
-// already reads that as "no tier, no fee → no-stakes practice" and resolves the entry fee to
-// 0, so this needs no new route and no exemption: it is the ordinary path, asked for the
-// ordinary free case.
-func (a *api) enqueueFree(agentKey, game string) (int, string, error) {
-	return a.do(http.MethodPost, "/v1/group-queue", agentKey, map[string]any{"game": game}, nil)
-}

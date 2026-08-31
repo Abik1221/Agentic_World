@@ -44,14 +44,9 @@ func main() {
 		}
 	}()
 	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
-	specSalt := flag.String("spec-salt", "", "with -harness: engage DUPLICATE scheduling under this salt, "+
-		"so every pairing plays byte-identical boards and scores can be compared within a board. "+
-		"Empty = a random deal per table, which is what made earlier runs unreadable")
-	boards := flag.Int("boards", 8, "with -spec-salt: how many distinct boards the run cycles through")
-	replicate := flag.Int("replicate", 0, "with -spec-salt: this pairing's match index WITHIN the pairing "+
-		"(0 for its first match). Never a global counter — two pairings must share boards")
-	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
 	tier := flag.String("tier", "", "stake tier for a REAL staked table: low|mid|high (empty = free practice)")
+	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
+	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
 	basePort := flag.Int("base-port", 9101, "first local port for the agent endpoints")
 	runLabel := flag.String("label", "", "suffix for agent names, so repeat runs are distinguishable")
 	latencyScale := flag.Float64("latency-scale", 1, "multiply every simulated decision latency (8 pushes a reasoning persona past a 60s shot clock)")
@@ -93,15 +88,9 @@ func main() {
 	bindModel := flag.String("bind-model", "llama-3.1-8b-instant", "model id to ask that provider for. COMMA-SEPARATED seats a different model per agent, e.g. \"a:free,b:free\" — that is what makes a run a model-vs-model comparison")
 	matches := flag.Int("matches", 0, "play this many matches one after another in THIS process, then exit (0 = play one and keep serving). Batching in one process avoids re-onboarding and the port races that killing the process between runs causes")
 	perMatch := flag.Duration("per-match-timeout", 8*time.Minute, "with -matches, give up waiting on a single match after this long and move to the next")
-	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
-	// The PLATFORM's own benchmark, rather than a simulated developer. Changes exactly one
 	// step of onboarding (see harness.go) and nothing about how the agents then play.
 	flag.Parse()
 
-	SpecSalt, harnessBoards, harnessReplicate = *specSalt, *boards, *replicate
-	if harnessBoards < 1 {
-		harnessBoards = 1
-	}
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
 	GoDarkAfterRound, GoDarkSeat = *goDark, *goDarkSeat
@@ -435,15 +424,6 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	return nil
 }
 
-// Duplicate-scheduling state for harness runs. harnessReplicate is this pairing's match index
-// WITHIN the pairing — the run advances it per match, and it must never be a global counter or
-// two pairings stop sharing boards, which silently turns the paired analysis back into an
-// unpaired one.
-var (
-	SpecSalt         string
-	harnessBoards    = 8
-	harnessReplicate int
-)
 
 func seatsFor(game string) int {
 	switch strings.ToLower(game) {
