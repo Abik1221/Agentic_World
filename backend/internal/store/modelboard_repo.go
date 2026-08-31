@@ -42,13 +42,15 @@ func NewModelBoardRepo(db *pgxpool.Pool) *ModelBoardRepo { return &ModelBoardRep
 // arithmetic are literally the same SQL, because the two boards are meant to produce
 // numbers that mean the same thing.
 //
-// The eligibility difference is not cosmetic and is worth stating. The developer board
-// requires `m.rated`, which is how it excludes tables a house bot had to fill: crediting a
-// model for beating an engine bot would put a fictional opponent into the likelihood.
-// Harness matches are UNRATED BY DESIGN — that is what keeps them out of user ratings — so
-// the same filter would return nothing. The equivalent guard there is structural: every seat
-// at the table must itself be a harness agent, which rules out the same fictional opponent
-// by construction rather than by a flag.
+// The eligibility rule is not cosmetic and is worth stating. `m.rated` is how this excludes
+// tables a house bot had to fill: crediting a model for beating an engine bot would put a
+// fictional opponent into the likelihood.
+//
+// This was one of two boards. The platform harness board ran the same estimator over the
+// platform's own agents and has been removed along with the rest of the lab benchmark; its
+// eligibility guard was structural (every seat had to be a harness agent) because its matches
+// were unrated by design and could not use the filter above. This board keeps the stronger
+// guard, and is now the only one.
 const modelBoardSeatDeveloperCTE = `
 WITH seat AS (
   SELECT b.match_id, b.game, b.result, b.agent_id,
@@ -64,28 +66,6 @@ WITH seat AS (
                   -- beating engine bots would put a fictional opponent in the likelihood.
                   AND m.rated
    WHERE ($1 = '' OR b.game = $1)
-),`
-
-const modelBoardSeatHarnessCTE = `
-WITH seat AS (
-  SELECT b.match_id, b.game, b.result, b.agent_id,
-         a.public_id AS agent_public_id,
-         u.public_id AS developer_public_id
-    FROM agent_match_benchmark b
-    JOIN agents a  ON a.id = b.agent_id AND a.kind = 'harness'
-    JOIN users  u  ON u.id = a.owner_user_id
-    JOIN matches m ON m.public_id = b.match_id
-                  AND m.finished_at IS NOT NULL
-                  AND m.finished_at >= $2 AND m.finished_at < $3
-   WHERE ($1 = '' OR b.game = $1)
-     -- Every seat at the table must be a harness agent. A benchmark match that a house bot
-     -- or a real developer partly filled is not a controlled comparison, and one such seat
-     -- is enough to make the whole match's likelihood describe something else.
-     AND NOT EXISTS (
-       SELECT 1 FROM agent_match_benchmark ob
-         JOIN agents oa ON oa.id = ob.agent_id
-        WHERE ob.match_id = b.match_id AND oa.kind <> 'harness'
-     )
 ),`
 
 const modelBoardSeatsTailSQL = `
@@ -273,17 +253,6 @@ func (r *ModelBoardRepo) Seats(ctx context.Context, game string, start, end time
 	return r.seatsFor(ctx, modelBoardSeatDeveloperCTE, false, game, start, end, publishableHosts)
 }
 
-// HarnessSeats reads the same shape of input for the PLATFORM's own benchmark matches.
-//
-// Same estimator, same attribution rule, same coverage arithmetic — only the eligibility CTE
-// differs, so a rating on one board means what a rating on the other means. That is the
-// whole reason the two share this file instead of the harness getting its own query that
-// would drift from this one within a release.
-func (r *ModelBoardRepo) HarnessSeats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]modelboard.Seat, map[string]int, error) {
-	// SCOPED: ~44 seats in this window, and scoping is 163x less disk. See seatsTailSQL.
-	return r.seatsFor(ctx, modelBoardSeatHarnessCTE, true, game, start, end, publishableHosts)
-}
-
 func (r *ModelBoardRepo) seatsFor(ctx context.Context, seatCTE string, scoped bool, game string, start, end time.Time, publishableHosts []string) ([]modelboard.Seat, map[string]int, error) {
 	// THE GAME FILTER RUNS IN POSTGRES, and it is the difference between reading a window and
 	// reading the whole table's worth of it.
@@ -391,8 +360,3 @@ func renderSeatsSQL(seatCTE string, scoped, filtered bool) string {
 // modelboard has to hold "which board am I" in their head while reading the fit, and one of
 // them eventually would not. Here the choice is made once, at construction, and the fit code
 // never learns there is more than one board.
-type HarnessSeatSource struct{ Repo *ModelBoardRepo }
-
-func (h HarnessSeatSource) Seats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]modelboard.Seat, map[string]int, error) {
-	return h.Repo.HarnessSeats(ctx, game, start, end, publishableHosts)
-}
