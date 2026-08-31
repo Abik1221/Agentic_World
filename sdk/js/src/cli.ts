@@ -827,6 +827,106 @@ async function cmdQueue(a: Args): Promise<number> {
   return 0;
 }
 
+/** `pyyol room create|join [id] [--tier low|mid|high | --bid N]` — a PRIVATE staked table.
+ *
+ * The queue supplies whoever is waiting. A room is for the other case: two developers who
+ * want THEIR two agents to play each other. One creates it, sends the id, the other joins.
+ *
+ * Deliberately the same match as everywhere else: same stake path, same escrow, same
+ * certification gate, same refusal to seat both sides on one account. The only thing a room
+ * changes is that it is not listed in the open lobby, so the seat cannot be taken by a
+ * stranger between the moment the id is shared and the moment it is used.
+ */
+async function cmdRoom(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  if (!base) {
+    console.error(`${BAD} no arena to talk to — run \`pyyol login\`, or pass --api.`);
+    return 2;
+  }
+  const action = a.positionals[0] ?? "";
+  if (action !== "create" && action !== "join") {
+    console.error(`${BAD} usage: pyyol room create [--tier low|mid|high | --bid N]`);
+    console.error(`         pyyol room join <room-id>`);
+    return 2;
+  }
+  // A room is staked on both sides, so it needs a session exactly like `queue` does.
+  let token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (!token) {
+    const got = await ensureLogin(a);
+    if (!got) return 2;
+    token = got.accessToken || got.apiKey || "";
+  }
+
+  if (action === "join") {
+    const id = a.positionals[1] ?? "";
+    if (!id) {
+      console.error(`${BAD} which room? \`pyyol room join <room-id>\``);
+      return 2;
+    }
+    const [st, resp] = await apiPost(`${base}/v1/lobby/join`, token, { match_id: id });
+    if (st !== 200) return roomError(st, resp, "join");
+    console.log(`${OK} joined room ${id}`);
+    console.log("    keep your agent connected (`pyyol run`) — it plays automatically.");
+    console.log(`    watch it:  pyyol watch ${id}`);
+    return 0;
+  }
+
+  const body: Record<string, unknown> = {};
+  if (str(a, "tier")) body.tier = str(a, "tier");
+  else if (num(a, "bid", 0) > 0) body.bid = num(a, "bid", 0);
+  else {
+    console.error(
+      `${BAD} a room is staked: pass --tier <low|mid|high> ` +
+        `(see \`pyyol queue goofspiel --list\`) or --bid <coins>.`,
+    );
+    return 2;
+  }
+  const [st, resp] = await apiPost(`${base}/v1/room/create`, token, body);
+  if (st !== 200 && st !== 201) return roomError(st, resp, "create");
+
+  const roomId = String(resp.room_id ?? resp.match_id ?? "");
+  console.log(`${OK} room created`);
+  if (resp.bid) console.log(`    stake: ${resp.bid} coins each`);
+  // The id gets its own line with nothing around it, because the next thing anyone does is
+  // drag-select it to paste into a chat, and a line with prose on it selects badly.
+  console.log();
+  console.log(`    ${roomId}`);
+  console.log();
+  console.log("    send that to the other player. they run:");
+  console.log(`        pyyol room join ${roomId}`);
+  console.log("    keep your agent connected (`pyyol run`) — it plays as soon as they join.");
+  return 0;
+}
+
+/** Turn the arena's refusal codes into something a developer can act on.
+ *
+ * Every branch here is a real first-try failure. The raw JSON says what was refused and
+ * never what to do about it, which on a staked action is the difference between a retry and
+ * giving up.
+ */
+function roomError(st: number, resp: Record<string, unknown>, what: string): number {
+  const code = String(resp.code ?? resp.error ?? "");
+  const msg = resp.message ?? "";
+  if (code.includes("same_owner")) {
+    console.error(
+      `${BAD} that is your own room — a match needs two different accounts. ` +
+        `Send the id to the other player.`,
+    );
+  } else if (code.includes("certified")) {
+    console.error(`${BAD} agent not certified — run \`pyyol publish\` to verify your endpoint first.`);
+  } else if (code.includes("balance") || code.includes("insufficient")) {
+    console.error(`${BAD} not enough coins to stake this room.`);
+  } else if (code.includes("not_found")) {
+    console.error(`${BAD} no such room — check the id, or it may have been cancelled.`);
+  } else if (code.includes("not_waiting")) {
+    console.error(`${BAD} that room is no longer open (already started or cancelled).`);
+  } else {
+    console.error(`${BAD} could not ${what} room (${st}): ${msg || JSON.stringify(resp)}`);
+  }
+  return 1;
+}
+
 async function cmdLeaderboard(a: Args): Promise<number> {
   const base = httpBase(a, creds.load());
   if (!base) {
@@ -1753,6 +1853,8 @@ Commands:
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
   publish --manifest <file>         certify your agent for ranked
   queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
+  room create [--tier low|mid|high | --bid N]      open a PRIVATE staked table
+  room join <room-id>               play a specific opponent by their room id
   wallet [--json]                   your coin balance + per-agent wallets
   replay <match_id> [--game] [--json]
   profile [handle]
@@ -1804,6 +1906,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdWallet(a);
     case "queue":
       return cmdQueue(a);
+    case "room":
+      return cmdRoom(a);
     case "replay":
       return cmdReplay(a);
     case "status":
