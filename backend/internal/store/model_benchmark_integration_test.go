@@ -119,6 +119,35 @@ func writeBenchFixture(t *testing.T, pool *pgxpool.Pool, f benchFixture) {
 			f.matchID, f.verifiedProvider, f.verifiedModel, f.agentPub); err != nil {
 			t.Fatalf("insert bound model call %s: %v", f.matchID, err)
 		}
+		// The COVERAGE ROLLUP, which is what the board actually reads.
+		//
+		// The two writes above are the raw decision log. The benchmark query stopped grouping
+		// that log per request when it reached 10.2M rows and started hanging the public routes;
+		// it now LEFT JOINs agent_match_coverage, refreshed off match finish time by
+		// CoverageWorker (cmd/server/main.go, every minute). No worker runs in a test, so the
+		// rollup stayed empty, coverage read as unknown, and every fixture seat came back
+		// "observed"/"self-reported" however many decisions it had proved.
+		//
+		// Written by the same aggregation CoverageRepo.Refresh uses — COUNT(*) logged against
+		// COUNT(DISTINCT round) bound — but scoped to this seat rather than to a time window.
+		// Calling the worker's Refresh here would make the result depend on a shared watermark
+		// that earlier tests in the same database have already advanced past these matches.
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO agent_match_coverage (match_id, agent_id, logged_decisions, bound_decisions, computed_at)
+			 SELECT $1, a.id,
+			        (SELECT COUNT(*) FROM agent_match_decisions d
+			          WHERE d.match_id = $1 AND d.agent_id = a.id),
+			        (SELECT COUNT(DISTINCT bd.round) FROM agent_match_bound_decisions bd
+			          WHERE bd.match_id = $1 AND bd.agent_id = a.id),
+			        now()
+			   FROM agents a WHERE a.public_id = $2
+			 ON CONFLICT (match_id, agent_id) DO UPDATE SET
+			      logged_decisions = EXCLUDED.logged_decisions,
+			      bound_decisions  = EXCLUDED.bound_decisions,
+			      computed_at      = now()`,
+			f.matchID, f.agentPub); err != nil {
+			t.Fatalf("roll up coverage %s: %v", f.matchID, err)
+		}
 	}
 }
 
