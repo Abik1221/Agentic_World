@@ -422,6 +422,79 @@ test("queue without a game is a usage error", async () => {
   assert.match(err, /usage: pyyol queue <game>/);
 });
 
+test("room create posts the stake and prints the shareable id", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room-"));
+  seedCreds(home);
+  let posted: any = null;
+  let url = "";
+  const fetchImpl = (async (u: string, init?: RequestInit) => {
+    url = String(u);
+    posted = JSON.parse(String(init?.body ?? "{}"));
+    return json({ room_id: "mt_room1", match_id: "mt_room1", bid: 500 }, 201);
+  }) as unknown as typeof fetch;
+  const { code, out } = await run(["room", "create", "--tier", "mid"], { home, fetch: fetchImpl });
+  assert.equal(code, 0);
+  assert.match(url, /\/v1\/room\/create$/);
+  assert.deepEqual(posted, { tier: "mid" });
+  // The id must appear alone on its line — the next thing anyone does is select it to paste.
+  assert.ok(out.split("\n").some((l) => l.trim() === "mt_room1"), out);
+  assert.match(out, /pyyol room join mt_room1/);
+});
+
+test("room create refuses to open a FREE table", async () => {
+  // A room is staked on both sides. Defaulting to zero would quietly hand someone an
+  // unstaked table while the command's whole purpose is a staked one.
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room2-"));
+  seedCreds(home);
+  const { code, err } = await run(["room", "create"], { home });
+  assert.equal(code, 2);
+  assert.match(err, /a room is staked/);
+});
+
+test("room join needs an id", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room3-"));
+  seedCreds(home);
+  const { code, err } = await run(["room", "join"], { home });
+  assert.equal(code, 2);
+  assert.match(err, /which room\?/);
+});
+
+test("room join posts the match id", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room4-"));
+  seedCreds(home);
+  let posted: any = null;
+  let url = "";
+  const fetchImpl = (async (u: string, init?: RequestInit) => {
+    url = String(u);
+    posted = JSON.parse(String(init?.body ?? "{}"));
+    return json({ ok: true });
+  }) as unknown as typeof fetch;
+  const { code, out } = await run(["room", "join", "mt_room1"], { home, fetch: fetchImpl });
+  assert.equal(code, 0);
+  assert.match(url, /\/v1\/lobby\/join$/);
+  assert.deepEqual(posted, { match_id: "mt_room1" });
+  assert.match(out, /joined room mt_room1/);
+});
+
+test("room reports the arena's refusal in terms a developer can act on", async () => {
+  // same_owner is the FIRST failure most people hit: they create a room and then try to
+  // join it themselves. The raw JSON says what was refused and never what to do about it.
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room5-"));
+  seedCreds(home);
+  const fetchImpl = (async () => json({ code: "same_owner" }, 409)) as unknown as typeof fetch;
+  const { code, err } = await run(["room", "join", "mt_room1"], { home, fetch: fetchImpl });
+  assert.equal(code, 1);
+  assert.match(err, /your own room/);
+});
+
+test("room rejects an unknown action", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room6-"));
+  seedCreds(home);
+  const { code, err } = await run(["room", "destroy"], { home });
+  assert.equal(code, 2);
+  assert.match(err, /usage: pyyol room create/);
+});
+
 test("queue posts the tier and reports the match", async () => {
   const home = mkdtempSync(join(tmpdir(), "pyyol-queue3-"));
   seedCreds(home);
