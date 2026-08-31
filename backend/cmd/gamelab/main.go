@@ -27,8 +27,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/agent-arena/arena/internal/exploit"
 )
 
 // labEndpointSecret is the endpoint token the harness shares with the simulated agents it
@@ -98,7 +96,6 @@ func main() {
 	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
 	// The PLATFORM's own benchmark, rather than a simulated developer. Changes exactly one
 	// step of onboarding (see harness.go) and nothing about how the agents then play.
-	harness := flag.Bool("harness", false, "onboard the agents as kind='harness' through the ADMIN create route, so the run feeds /harness instead of the public developer leaderboard")
 	flag.Parse()
 
 	SpecSalt, harnessBoards, harnessReplicate = *specSalt, *boards, *replicate
@@ -170,16 +167,6 @@ func main() {
 	// signup, the agents come out kind='external', and the run lands on the public developer
 	// leaderboard while /harness stays empty. Nothing in the log says so, and the matches are
 	// real, so the only way to notice is to read the board afterwards and wonder.
-	HarnessMode = *harness || harnessEnabledFromEnv()
-	if HarnessMode {
-		tok, err := mintPlatformToken()
-		if err != nil {
-			lg.Fatalf("FATAL: -harness needs a Platform credential: %v", err)
-		}
-		PlatformToken = tok
-		lg.Printf("HARNESS MODE — agents will be created as kind='harness' via the admin route; "+
-			"this run feeds %s/harness and is invisible to the public developer board", webBase())
-	}
 
 	label := *runLabel
 	if label == "" {
@@ -335,22 +322,13 @@ func main() {
 				// Same rule createHarnessAccount already applies to signup: a harness run that
 				// cannot do the right thing stops, rather than quietly doing a different thing
 				// that reads as success.
-				if HarnessMode {
-					return fmt.Errorf("harness: staked table could not start: %w — NOT falling "+
-						"back to free push-play, which would seat house bots and produce a "+
-						"match with no opponent to compare against", err)
-				}
+
 				lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
 				startFreePushPlay(a, lg, agents, *game)
 			}
 			return nil
 		}
-		// The PLATFORM benchmark seats its agents against EACH OTHER at zero stake, through
-		// the admin route. Free push-play would open one table per agent against house bots,
-		// which yields a single attributed seat and therefore no comparison to fit.
-		if HarnessMode {
-			return runHarnessTable(a, lg, agents, *game)
-		}
+
 		startFreePushPlay(a, lg, agents, *game)
 		return nil
 	}
@@ -402,11 +380,7 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	// it is kind='harness' from its first row; everything below this point — manifest,
 	// endpoint verification, agent key, funding, lobby/queue, completion binding — is the
 	// identical developer flow, which is what makes the two boards measure the same object.
-	if HarnessMode {
-		if err := a.createHarnessAccount(PlatformToken, account, &signup); err != nil {
-			return err
-		}
-	} else if err := a.mustDo("signup", http.MethodPost, "/v1/auth/signup", "", account,
+	if err := a.mustDo("signup", http.MethodPost, "/v1/auth/signup", "", account,
 		&signup, http.StatusCreated, http.StatusOK); err != nil {
 		return err
 	}
@@ -653,73 +627,4 @@ func splitSeatURLs(raw string, n int) []string {
 		out[i] = strings.TrimRight(strings.TrimSpace(part), "/")
 	}
 	return out
-}
-
-// runHarnessTable seats the PLATFORM's benchmark agents against EACH OTHER, at zero stake.
-//
-// The third path, and the one the benchmark actually needs. The other two each get half of
-// it right:
-//
-//	runStakedTable      pairs two agents — and funds and stakes them. A research harness
-//	                    must not stake: "the house never stakes" is an invariant of this
-//	                    platform, and a benchmark seat winning coins would be fraud.
-//	startFreePushPlay   stakes nothing — and opens ONE table per agent against house bots.
-//	                    A house bot writes no benchmark row, so each table yields a single
-//	                    attributed seat, and a paired comparison needs two IN THE SAME
-//	                    MATCH. Measured: a 4-match batch produced 8 tables, 43 real model
-//	                    calls and ZERO comparisons.
-//
-// So: the ordinary lobby, with no tier. gamestakes.ResolveStake already resolves that to a
-// zero entry fee, which is why this needs no new endpoint and no exemption cut into a fee
-// check — the free case was always expressible, and nothing was asking for it.
-//
-// Deliberately leaves the developer paths untouched. Both remain exactly as they were; this
-// is only reached when -harness is set and no tier was given, which is the shape
-// run_pairing.sh already invokes.
-func runHarnessTable(a *api, lg *log.Logger, agents []*labAgent, game string) error {
-	need := seatsFor(game)
-	if len(agents) < need {
-		return fmt.Errorf("need %d agents for a %s benchmark table, have %d", need, game, len(agents))
-	}
-
-	// N-player games matchmake through the group queue; the 1v1 lobby is Goofspiel's. Using
-	// the wrong one is what previously made `-game mafia` produce a Goofspiel table.
-	if isGroupGame(game) {
-		for _, ag := range agents {
-			code, body, err := a.enqueueFree(ag.AgentKey, game)
-			if err != nil {
-				return fmt.Errorf("enqueue %s: %w", ag.Persona.Name, err)
-			}
-			if code < 200 || code > 299 {
-				return fmt.Errorf("enqueue %s: HTTP %d — %s", ag.Persona.Name, code, body)
-			}
-			lg.Printf("QUEUED  %-14s  %s (benchmark, no stake)", ag.Persona.Name, game)
-		}
-		return nil
-	}
-
-	host, guest := agents[0], agents[1]
-	// ONE call seats both. The lobby's create-then-join is a developer flow: it opens a
-	// waiting table and lets someone else take the other seat, which is the wrong shape here
-	// — there is no one else, and a half-seated benchmark table is a match that never runs.
-	// DUPLICATE scheduling. The board comes from this pairing's REPLICATE index, never from a
-	// global match counter, so the n-th match of every pairing in the run is played on the same
-	// deal and pairings can be compared within a board. A random deal per match is exactly the
-	// confounder that made the 2026-08-20 run unreadable.
-	//
-	// Empty salt keeps the old random behaviour, so a casual single table is unaffected.
-	board := exploit.BoardFor(harnessReplicate, harnessBoards)
-	matchID, err := a.createHarnessTable(PlatformToken, host.AgentID, guest.AgentID,
-		SpecSalt, board)
-	if err != nil {
-		return fmt.Errorf("seat %s vs %s: %w", host.Persona.Name, guest.Persona.Name, err)
-	}
-	sched := "random deal"
-	if SpecSalt != "" {
-		sched = fmt.Sprintf("board %d/%d, salt %q", board, harnessBoards, SpecSalt)
-	}
-	lg.Printf("BENCHMARK TABLE  %s  %s vs %s  (no stake, %s)",
-		matchID, host.Persona.Name, guest.Persona.Name, sched)
-	lg.Printf("   watch: %s/watch   ·   trace: %s/traces/%s", webBase(), webBase(), matchID)
-	return nil
 }

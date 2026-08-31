@@ -41,7 +41,6 @@ import (
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/groupmatch"
-	"github.com/agent-arena/arena/internal/harnessseed"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
@@ -674,23 +673,16 @@ func run() error {
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
 	modelBoardHandler.SetBoard("developer")
 
-	// THE PLATFORM HARNESS BOARD — the same service type, instantiated a second time.
+	// The platform harness board is gone, and the developer board above is the survivor.
 	//
-	// Same Build, same Bradley-Terry estimator, same intervals, same attribution rule; a
-	// different seat source and its own snapshot. modelboard.Service keeps all of its state
-	// per-instance, so the two cannot influence each other, and identical arithmetic is what
-	// makes a harness rating comparable to a developer rating rather than merely adjacent to
-	// one.
+	// It was always the stronger of the two. The developer board requires `m.rated`, which
+	// excludes any table a house bot had to fill; the harness board could not use that filter
+	// — its own matches are unrated by design — and approximated it structurally instead.
 	//
-	// Its own board name keeps the two history series apart — see migration 0093, where a
-	// shared key meant the second writer silently overwrote the first.
-	harnessBoardSvc := modelboard.NewService(store.HarnessSeatSource{Repo: modelBoardRepo}, 90*24*time.Hour, log)
-	harnessBoardSvc.SetHistoryWriter(modelBoardRepo)
-	harnessBoardSvc.SetPublishableHosts(publishableHosts())
-	harnessBoardSvc.SetBoard("harness")
-	harnessBoardHandler := modelboard.NewHandler(harnessBoardSvc)
-	harnessBoardHandler.SetHistoryReader(modelBoardRepo)
-	harnessBoardHandler.SetBoard("harness")
+	// Nothing about the measurement was lost with it. Both ran the same Build, the same
+	// Bradley-Terry estimator, the same bootstrap intervals and the same attribution rule.
+	// The harness board was that machinery pointed at platform-run agents, so removing it
+	// removes a data source, not a method.
 
 	// The two boards refresh on DIFFERENT intervals, sized to what each one costs.
 	//
@@ -714,7 +706,6 @@ func run() error {
 	// instead of aggregating the decision history per request, which is what made them hang.
 	launch("coverage-rollup",
 		store.NewCoverageWorker(store.NewCoverageRepo(st.DB), time.Minute, 24*time.Hour, log).Run)
-	launch("harnessboard", modelboard.NewWorker(harnessBoardSvc, 10*time.Minute, log).Run)
 	launch("modelboard", modelboard.NewWorker(modelBoardSvc, time.Hour, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
 	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
@@ -1516,7 +1507,6 @@ func run() error {
 	}
 
 	matchHandler := match.NewHandler(matchSvc, authn)
-	matchHandler.SetAdmins(cfg.AdminUserIDs)
 	// Honour the admin-configured stake tiers on direct table creation too. Without
 	// this, /v1/lobby/create accepted an arbitrary bid while /v1/queue and
 	// /v1/group-queue rejected free-form stakes for the same game — so tier config was
@@ -1828,46 +1818,6 @@ func run() error {
 		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
 	}
 
-	// The platform benchmark's published results. Idempotent at the match level, so a
-	// restart re-imports nothing; best-effort, because a benchmark that failed to load is a
-	// page with less on it while a server that will not start is an outage.
-	if seeded, herr := harnessseed.Seed(ctx, st.DB, log); herr != nil {
-		log.Warn("harness results: seed failed", "err", herr)
-	} else if seeded {
-		// Refit immediately. The board workers' first refresh already ran, above, BEFORE
-		// these rows existed — so without this the freshly-seeded benchmark is invisible for
-		// a full refresh interval and reads as a seed that silently did nothing. Both boards
-		// are refreshed because the seeded matches are unrated and harness-kind: the harness
-		// board should gain them and the developer board must NOT, and refreshing both is
-		// how that stays observable in one place rather than assumed.
-		//
-		// OFF THE BOOT PATH, and this is not a style preference — it was an outage.
-		//
-		// Run inline, these two refreshes sat between the seeder and httpx.Run, and a board
-		// refresh scans every seat of every match in the window. With the benchmark's own
-		// events freshly imported the scan grew past the point where it finished promptly,
-		// and the process came up, started every worker, logged "harness results seeded" and
-		// then never reached ListenAndServe. Nothing crashed; the port simply never opened,
-		// which is the worst shape of failure — healthy-looking container, no service.
-		//
-		// So the rule the comment above already stated has to be obeyed by the code: a page
-		// with less on it beats a server that will not start. The refresh is a cache warm-up
-		// and warm-ups belong behind the listener, where being slow costs staleness rather
-		// than availability. Bounded as well, so a pathological scan expires instead of
-		// leaning on the boards' own workers to paper over a stuck refresh.
-		go func() {
-			rctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			defer cancel()
-			if rerr := harnessBoardSvc.Refresh(rctx); rerr != nil {
-				log.Warn("harness board: refresh after seed failed", "err", rerr)
-			}
-			if rerr := modelBoardSvc.Refresh(rctx); rerr != nil {
-				log.Warn("model board: refresh after seed failed", "err", rerr)
-			}
-			log.Info("boards refreshed after harness seed")
-		}()
-	}
-
 	// THE OPERATOR'S OWN LOGIN, provisioned at boot.
 	//
 	// Admin rights come from ADMIN_USER_IDS, which cannot name an account that does not exist
@@ -1976,7 +1926,6 @@ func run() error {
 		ratingHandler.Register,
 		pindexHandler.Register,
 		modelBoardHandler.Register,
-		harnessBoardHandler.RegisterHarness, // public GET /v1/benchmark/harness (platform-run benchmark)
 		llmGatewayHandler.Register,
 		profilesHandler.Register,
 		devProfileHandler.Register,

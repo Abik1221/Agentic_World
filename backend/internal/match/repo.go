@@ -15,12 +15,6 @@ type Repo interface {
 	// CreateWaitingMatch inserts a waiting match plus its seat-A (creator) player.
 	CreateWaitingMatch(ctx context.Context, in CreateMatchInput) (Match, error)
 
-	// AgentKind reports an agent's kind ('external' | 'house' | 'harness'). Used to refuse
-	// seating anything but a platform benchmark agent at a zero-stake table — checked from
-	// the database rather than trusted from the caller, because the caller asking is an
-	// admin and "an admin asked" is not evidence about what the agent IS.
-	AgentKind(ctx context.Context, agentPublicID string) (string, error)
-
 	// ListWaiting returns open matches for (game,bid), excluding the joiner's own
 	// matches (same-owner pairing block), most recent first.
 	ListWaiting(ctx context.Context, game string, bid int64, excludeOwnerPublicID string, limit int) ([]LobbyItem, error)

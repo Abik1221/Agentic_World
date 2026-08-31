@@ -60,7 +60,7 @@ func TestNoScopingPlaceholdersReachPostgres(t *testing.T) {
 	// the renderer shipped a placeholder to the database.
 	placeholder := regexp.MustCompile(`\{\{[A-Z_]+\}\}`)
 	for _, seat := range []struct{ name, cte string }{
-		{"developer", modelBoardSeatDeveloperCTE}, {"harness", modelBoardSeatHarnessCTE},
+		{"developer", modelBoardSeatDeveloperCTE},
 	} {
 		for _, scoped := range []bool{false, true} {
 			for _, filtered := range []bool{false, true} {
@@ -90,7 +90,7 @@ func TestBothRenderingsComposeWithBothSeatCTEs(t *testing.T) {
 	for _, seat := range []struct {
 		name string
 		cte  string
-	}{{"developer", modelBoardSeatDeveloperCTE}, {"harness", modelBoardSeatHarnessCTE}} {
+	}{{"developer", modelBoardSeatDeveloperCTE}} {
 		for _, scoped := range []bool{false, true} {
 			sql := seat.cte + seatsTailSQL(scoped)
 			if !strings.Contains(sql, "WITH seat AS (") {
