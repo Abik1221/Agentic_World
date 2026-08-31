@@ -4,6 +4,13 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.11.1](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.0...py-v1.11.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* migration 0091 collided and the server could not start ([a7d43e0](https://github.com/Abik1221/Agentic_World/commit/a7d43e00bcd6064730a5c272697cb740771ed65c))
+
 ## [1.11.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.10.1...py-v1.11.0) (2026-08-15)
 
 
