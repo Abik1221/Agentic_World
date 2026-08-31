@@ -67,7 +67,6 @@ func TestControlVariateIsUnbiased(t *testing.T) {
 	const trials = 6000
 	var rawSum, corSum float64
 	raws := make([]float64, 0, trials)
-	cors := make([]float64, 0, trials)
 	memo := map[gops.Node]float64{}
 
 	for i := 0; i < trials; i++ {
@@ -83,7 +82,6 @@ func TestControlVariateIsUnbiased(t *testing.T) {
 		rawSum += diff
 		corSum += cor
 		raws = append(raws, diff)
-		cors = append(cors, cor)
 	}
 	rawMean, corMean := rawSum/trials, corSum/trials
 	// Standard error of the raw mean sets the tolerance; the corrected estimator is tighter, so
