@@ -3113,13 +3113,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Rooms. Two subcommands under one noun rather than `room-create`/`room-join`, so the
     # pair reads as one feature in `pyyol --help` instead of two unrelated verbs.
-    prm = sub.add_parser(
-        "room", help="create or join a private staked table shared by its id"
-    )
+    prm = sub.add_parser("room", help="create or join a private staked table shared by its id")
     prm.add_argument("action", choices=["create", "join"])
     prm.add_argument("id", nargs="?", default="", help="the room id, when joining")
     _add_api(prm)
-    prm.add_argument("--tier", default="", help="stake tier key (see `pyyol queue goofspiel --list`)")
+    prm.add_argument(
+        "--tier", default="", help="stake tier key (see `pyyol queue goofspiel --list`)"
+    )
     prm.add_argument("--bid", type=int, default=0, help="explicit coin stake")
     prm.add_argument("--token", default="")
     prm.set_defaults(func=cmd_room)
