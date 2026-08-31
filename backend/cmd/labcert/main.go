@@ -268,7 +268,12 @@ func run(ctx context.Context, log *slog.Logger, o opts) error {
 		fmt.Println(string(enc))
 		return nil
 	}
-	if err := os.WriteFile(o.out, enc, 0o644); err != nil {
+	// 0600 rather than 0644. The bundle is meant to be published, but publishing it is a
+	// deliberate act — copying it somewhere, not leaving it world-readable in whatever
+	// directory the tool happened to run in. An unsigned bundle in particular is a document
+	// nobody can attribute, so it should not be readable by every account on the host by
+	// default.
+	if err := os.WriteFile(o.out, enc, 0o600); err != nil {
 		return err
 	}
 	log.Info("wrote bundle", "path", o.out, "bytes", len(enc))

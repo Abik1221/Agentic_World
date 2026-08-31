@@ -44,12 +44,6 @@ func main() {
 		}
 	}()
 	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
-	specSalt := flag.String("spec-salt", "", "with -harness: engage DUPLICATE scheduling under this salt, "+
-		"so every pairing plays byte-identical boards and scores can be compared within a board. "+
-		"Empty = a random deal per table, which is what made earlier runs unreadable")
-	boards := flag.Int("boards", 8, "with -spec-salt: how many distinct boards the run cycles through")
-	replicate := flag.Int("replicate", 0, "with -spec-salt: this pairing's match index WITHIN the pairing "+
-		"(0 for its first match). Never a global counter — two pairings must share boards")
 	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
 	tier := flag.String("tier", "", "stake tier for a REAL staked table: low|mid|high (empty = free practice)")
 	basePort := flag.Int("base-port", 9101, "first local port for the agent endpoints")
@@ -98,10 +92,6 @@ func main() {
 	// step of onboarding (see harness.go) and nothing about how the agents then play.
 	flag.Parse()
 
-	SpecSalt, harnessBoards, harnessReplicate = *specSalt, *boards, *replicate
-	if harnessBoards < 1 {
-		harnessBoards = 1
-	}
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
 	GoDarkAfterRound, GoDarkSeat = *goDark, *goDarkSeat
@@ -435,15 +425,6 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	return nil
 }
 
-// Duplicate-scheduling state for harness runs. harnessReplicate is this pairing's match index
-// WITHIN the pairing — the run advances it per match, and it must never be a global counter or
-// two pairings stop sharing boards, which silently turns the paired analysis back into an
-// unpaired one.
-var (
-	SpecSalt         string
-	harnessBoards    = 8
-	harnessReplicate int
-)
 
 func seatsFor(game string) int {
 	switch strings.ToLower(game) {
