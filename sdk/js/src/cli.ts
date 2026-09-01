@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { asAgent } from "./adapter.js";
+import { installInterruptHandler, ignoreBrokenPipe, reportCrash } from "./crash.js";
 import * as config from "./config.js";
 import * as creds from "./credentials.js";
 import { enableGateway } from "./instrument.js";
@@ -18,6 +19,7 @@ import { maybeInstallPing } from "./install-ping.js";
 import { deriveConnectUrl, deviceLabel, runLoginFlow } from "./login.js";
 import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
+import { askWatch, watchUrl, WATCH_BROWSER, WATCH_TERMINAL, type WatchChoice } from "./watch.js";
 import {
   REQUEST_ID_HEADER,
   SIGNATURE_HEADER,
@@ -68,6 +70,16 @@ const REPLAY_PATH: Record<string, string> = {
 export interface Args {
   positionals: string[];
   flags: Record<string, string | boolean>;
+}
+
+/**
+ * The `--watch` value: where to follow a match. "ask" (default) shows the pop-up when
+ * both ends are a TTY; "browser" and "terminal" answer it up front, which is what makes
+ * a scripted run safe — a known answer means nothing reads stdin at all.
+ */
+function watchFlagOf(a: Args): string {
+  const v = String(a.flags.watch ?? "ask");
+  return v === WATCH_BROWSER || v === WATCH_TERMINAL || v === "never" ? v : "ask";
 }
 
 function parse(argv: string[]): Args {
@@ -411,6 +423,22 @@ class ${cls} extends Adapter {
     //   import pyyol from "pyyol"; await pyyol.instrument();   // once, at the top
     //   const client = pyyol.route(new OpenAI());  // in ranked, routes via the gateway
     // then call \`client\` here. See docs -> "Verified LLM agents".
+    //
+    // TALK IS FREE IF IT RIDES ON THE MOVE. Set \`rationale\` and your opponent reads it,
+    // spectators watch it, and the replay keeps it — no extra model call, because it travels
+    // with the move you are already returning:
+    //
+    //     return { round: view.round, card: 7, rationale: "saving the 13 for the big pool" };
+    //
+    // Calling say() instead costs a WHOLE extra call per round — 26 for a 13-round match
+    // instead of 13. On a free tier of 50 requests/day that is about two matches versus four.
+    // Use say() to speak WITHOUT playing (reacting mid-round); it just should not be how you
+    // narrate a move you are already making. Mafia does the same with \`text\`.
+    //
+    // ONE CALL PER DECISION, not per event. This view is complete — every past round and the
+    // whole chat — so you never need to reason on \`/event\` notifications as they arrive. An
+    // agent that calls its model on each event multiplies its bill by the number of messages
+    // in the phase and hits a free tier's limit long before the match ends.
     const legal = view.legal_actions ?? [];
     ${arena === "goofspiel" ? "return { round: view.round, card: Math.min(...legal) };" : "return legal.length ? { action: legal[0] } : {};"}
   }
@@ -438,33 +466,40 @@ export const agent = new ${cls}();
   return 0;
 }
 
-// Where a running match is watched in the browser, per game. Mirrors the Python SDK.
-// Verified against the client's routes: Goofspiel and Monopoly take ?match= at the
-// top level; Mafia's viewer lives under /arena. A wrong path is worse than no link —
-// it lands the developer on a DIFFERENT live match.
-const WATCH_ROUTE: Record<string, string> = {
-  goofspiel: "/goofspiel",
-  mafia: "/arena/mafia",
-  monopoly: "/monopoly",
-};
-
-function watchUrl(arena: string, matchId: string): string {
-  const route = WATCH_ROUTE[arena];
-  if (!route || !matchId) return "";
-  // encodeURIComponent (not encodeURI) so a slash is escaped too, and cannot alter
-  // the path instead of the query.
-  return `${DEFAULT_DASHBOARD}${route}?match=${encodeURIComponent(matchId)}`;
-}
-
 // Only the first match of a run opens a tab — sandbox iteration means dozens per
 // session, and a tab each is something you learn to dread. The link is always printed.
 let openedOnce = false;
 
-function announceMatch(arena: string, matchId: string, label: string): void {
+// Where the developer said they want to watch, asked ONCE per run and remembered.
+// Being asked before every match of a sandbox loop is the thing you learn to dread.
+let watchChoice: WatchChoice | null = null;
+
+async function resolveWatch(watchFlag: string, url: string, label: string): Promise<WatchChoice> {
+  // A flag means the answer is already known, so nothing reads stdin at all — which is
+  // what makes this safe to put in a script.
+  if (watchFlag === WATCH_BROWSER || watchFlag === WATCH_TERMINAL) return watchFlag;
+  if (watchChoice === null) watchChoice = await askWatch(label, url);
+  return watchChoice;
+}
+
+async function announceMatch(
+  arena: string,
+  matchId: string,
+  label: string,
+  watchFlag = "ask",
+): Promise<void> {
   console.log(`  ${OK} started ${arena} match ${matchId} ${label}`.trimEnd());
   const url = watchUrl(arena, matchId);
   if (!url) return;
+  if (watchFlag === "never") {
+    console.log(`  ${OK} watch it live: ${url}`);
+    return;
+  }
+  // Ask before taking over the screen. The link is printed either way, so a developer
+  // who picks the terminal still has the URL when they change their mind.
+  const choice = await resolveWatch(watchFlag, url, `${arena} · ${matchId}`);
   console.log(`  ${OK} watch it live: ${url}`);
+  if (choice !== WATCH_BROWSER) return;
   if (openedOnce || !process.stdout.isTTY) return;
   openedOnce = true;
   try {
@@ -477,13 +512,19 @@ function announceMatch(arena: string, matchId: string, label: string): void {
   }
 }
 
-async function startSandbox(base: string, token: string, arena: string, label: string): Promise<void> {
+async function startSandbox(
+  base: string,
+  token: string,
+  arena: string,
+  label: string,
+  watchFlag = "ask",
+): Promise<void> {
   const path = PLAY_PATH[arena] ?? PLAY_PATH.goofspiel;
   for (let i = 0; i < 6; i++) {
     const [st, resp] = await apiPost(`${base}${path}`, token, {});
     if (st === 200 || st === 201) {
       const mid = String(resp.match_id ?? resp.id ?? "");
-      announceMatch(arena, mid, label);
+      await announceMatch(arena, mid, label, watchFlag);
       return;
     }
     const code = String(resp.code ?? resp.error ?? "");
@@ -581,7 +622,7 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
       return;
     }
     for (let i = 0; i < matches; i++) {
-      await startSandbox(base, token, arena, `${i + 1}/${matches}`);
+      await startSandbox(base, token, arena, `${i + 1}/${matches}`, watchFlagOf(a));
       await new Promise((r) => setTimeout(r, 2000));
     }
   }, 1500);
@@ -784,6 +825,106 @@ async function cmdQueue(a: Args): Promise<number> {
   console.log(`  ${OK} queued for ${game}${body.tier ? ` (tier ${body.tier})` : ""} — keep your agent connected; it plays when matched.`);
   if (resp.match_id) console.log(`  ${OK} matched → ${resp.match_id}\n      watch it:  pyyol watch ${resp.match_id}`);
   return 0;
+}
+
+/** `pyyol room create|join [id] [--tier low|mid|high | --bid N]` — a PRIVATE staked table.
+ *
+ * The queue supplies whoever is waiting. A room is for the other case: two developers who
+ * want THEIR two agents to play each other. One creates it, sends the id, the other joins.
+ *
+ * Deliberately the same match as everywhere else: same stake path, same escrow, same
+ * certification gate, same refusal to seat both sides on one account. The only thing a room
+ * changes is that it is not listed in the open lobby, so the seat cannot be taken by a
+ * stranger between the moment the id is shared and the moment it is used.
+ */
+async function cmdRoom(a: Args): Promise<number> {
+  const c = creds.load();
+  const base = httpBase(a, c);
+  if (!base) {
+    console.error(`${BAD} no arena to talk to — run \`pyyol login\`, or pass --api.`);
+    return 2;
+  }
+  const action = a.positionals[0] ?? "";
+  if (action !== "create" && action !== "join") {
+    console.error(`${BAD} usage: pyyol room create [--tier low|mid|high | --bid N]`);
+    console.error(`         pyyol room join <room-id>`);
+    return 2;
+  }
+  // A room is staked on both sides, so it needs a session exactly like `queue` does.
+  let token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  if (!token) {
+    const got = await ensureLogin(a);
+    if (!got) return 2;
+    token = got.accessToken || got.apiKey || "";
+  }
+
+  if (action === "join") {
+    const id = a.positionals[1] ?? "";
+    if (!id) {
+      console.error(`${BAD} which room? \`pyyol room join <room-id>\``);
+      return 2;
+    }
+    const [st, resp] = await apiPost(`${base}/v1/lobby/join`, token, { match_id: id });
+    if (st !== 200) return roomError(st, resp, "join");
+    console.log(`${OK} joined room ${id}`);
+    console.log("    keep your agent connected (`pyyol run`) — it plays automatically.");
+    console.log(`    watch it:  pyyol watch ${id}`);
+    return 0;
+  }
+
+  const body: Record<string, unknown> = {};
+  if (str(a, "tier")) body.tier = str(a, "tier");
+  else if (num(a, "bid", 0) > 0) body.bid = num(a, "bid", 0);
+  else {
+    console.error(
+      `${BAD} a room is staked: pass --tier <low|mid|high> ` +
+        `(see \`pyyol queue goofspiel --list\`) or --bid <coins>.`,
+    );
+    return 2;
+  }
+  const [st, resp] = await apiPost(`${base}/v1/room/create`, token, body);
+  if (st !== 200 && st !== 201) return roomError(st, resp, "create");
+
+  const roomId = String(resp.room_id ?? resp.match_id ?? "");
+  console.log(`${OK} room created`);
+  if (resp.bid) console.log(`    stake: ${resp.bid} coins each`);
+  // The id gets its own line with nothing around it, because the next thing anyone does is
+  // drag-select it to paste into a chat, and a line with prose on it selects badly.
+  console.log();
+  console.log(`    ${roomId}`);
+  console.log();
+  console.log("    send that to the other player. they run:");
+  console.log(`        pyyol room join ${roomId}`);
+  console.log("    keep your agent connected (`pyyol run`) — it plays as soon as they join.");
+  return 0;
+}
+
+/** Turn the arena's refusal codes into something a developer can act on.
+ *
+ * Every branch here is a real first-try failure. The raw JSON says what was refused and
+ * never what to do about it, which on a staked action is the difference between a retry and
+ * giving up.
+ */
+function roomError(st: number, resp: Record<string, unknown>, what: string): number {
+  const code = String(resp.code ?? resp.error ?? "");
+  const msg = resp.message ?? "";
+  if (code.includes("same_owner")) {
+    console.error(
+      `${BAD} that is your own room — a match needs two different accounts. ` +
+        `Send the id to the other player.`,
+    );
+  } else if (code.includes("certified")) {
+    console.error(`${BAD} agent not certified — run \`pyyol publish\` to verify your endpoint first.`);
+  } else if (code.includes("balance") || code.includes("insufficient")) {
+    console.error(`${BAD} not enough coins to stake this room.`);
+  } else if (code.includes("not_found")) {
+    console.error(`${BAD} no such room — check the id, or it may have been cancelled.`);
+  } else if (code.includes("not_waiting")) {
+    console.error(`${BAD} that room is no longer open (already started or cancelled).`);
+  } else {
+    console.error(`${BAD} could not ${what} room (${st}): ${msg || JSON.stringify(resp)}`);
+  }
+  return 1;
 }
 
 async function cmdLeaderboard(a: Args): Promise<number> {
@@ -1712,6 +1853,8 @@ Commands:
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
   publish --manifest <file>         certify your agent for ranked
   queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
+  room create [--tier low|mid|high | --bid N]      open a PRIVATE staked table
+  room join <room-id>               play a specific opponent by their room id
   wallet [--json]                   your coin balance + per-agent wallets
   replay <match_id> [--game] [--json]
   profile [handle]
@@ -1763,6 +1906,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdWallet(a);
     case "queue":
       return cmdQueue(a);
+    case "room":
+      return cmdRoom(a);
     case "replay":
       return cmdReplay(a);
     case "status":
@@ -1815,6 +1960,11 @@ try {
   invoked = false;
 }
 if (invoked) {
+  // THE ERROR BOUNDARY. This catch used to print `e.message` and exit 1, so an internal fault
+  // read exactly like something the DEVELOPER had done wrong, and no script could tell a
+  // reported failure from a broken tool. See crash.ts.
+  installInterruptHandler();
+  ignoreBrokenPipe();
   // Set exitCode and let the event loop drain — process.exit() can truncate a
   // large piped stdout (e.g. `pyyol replay … --json | jq`) mid-write.
   main()
@@ -1822,7 +1972,6 @@ if (invoked) {
       process.exitCode = code;
     })
     .catch((e) => {
-      console.error(`${BAD} ${e instanceof Error ? e.message : String(e)}`);
-      process.exitCode = 1;
+      process.exitCode = reportCrash(e, process.argv[2] ?? "", SDK_VERSION);
     });
 }

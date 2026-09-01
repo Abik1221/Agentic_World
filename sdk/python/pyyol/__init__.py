@@ -16,7 +16,7 @@ your decision logic. It contains no AI/strategy and no provider lock-in.
     agent.serve(port=9099)
 """
 
-__version__ = "1.10.1"  # x-release-please-version
+__version__ = "1.11.1"  # x-release-please-version
 
 # Everything below is imported LAZILY (PEP 562). Importing `pyyol` — which the CLI
 # does on every invocation for `__version__` — must stay cheap: no `http.server`
@@ -107,6 +107,8 @@ __all__ = [
     "GoofspielMove",
     "MonopolyView",
     "MonopolyMove",
+    "MonopolyTrade",
+    "OPEN_TO_TABLE",
     "MafiaView",
     "MafiaMove",
     "parse_view",
@@ -187,6 +189,8 @@ _LAZY = {
     "GoofspielMove": "models",
     "MonopolyView": "models",
     "MonopolyMove": "models",
+    "MonopolyTrade": "models",
+    "OPEN_TO_TABLE": "models",
     "MafiaView": "models",
     "MafiaMove": "models",
     "parse_view": "models",

@@ -260,6 +260,48 @@ func (s *Service) RunDetection(ctx context.Context) error {
 			map[string]any{"mi": mi, "games": p.Games, "rounds": len(samples)})
 	}
 
+	// Multi-seat collusion: Mafia vote agreement and Monopoly value transfer.
+	//
+	// Goofspiel is 1v1, so a colluding pair must beat one opponent and the coin-flow test
+	// eventually sees it. Mafia and Monopoly are N-player pots — a ring does not need to win,
+	// only to move value between seats at a table of honest developers paying for it. Neither
+	// game had ANY process-level detection before this: ActionMI's MoveSample is Goofspiel's
+	// shape and only Goofspiel's.
+	//
+	// Gated on the same suspicious band as the action test, so the per-round queries run only
+	// for pairs the outcome analysis already finds odd. Review-only, like every flag here —
+	// these thresholds have never seen a real table, and an auto-ban on an uncalibrated
+	// threshold takes money from honest developers.
+	for _, p := range pairs {
+		if !actionSuspect(p, actionMinSamples) {
+			continue
+		}
+		if votes, err := s.repo.PairVotes(ctx, p.A, p.B, since); err != nil {
+			s.log.Error("antifraud: pair votes lookup failed", "a", p.A, "b", p.B, "error", err)
+		} else if VoteSuspect(votes) {
+			k := VoteAgreement(votes)
+			_, _ = s.repo.RecordFlag(ctx, p.A, "", "collusion_votes", "coordinated Mafia voting")
+			_, _ = s.repo.RecordFlag(ctx, p.B, "", "collusion_votes", "coordinated Mafia voting")
+			s.m.flags.WithLabelValues("collusion_votes").Inc()
+			s.audit(ctx, "system", "flag_collusion_votes", p.A+"|"+p.B,
+				map[string]any{"kappa": k, "rounds": len(votes)})
+		}
+		if trades, err := s.repo.PairTrades(ctx, p.A, p.B, since); err != nil {
+			s.log.Error("antifraud: pair trades lookup failed", "a", p.A, "b", p.B, "error", err)
+		} else if TradeSuspect(trades) {
+			score, toB := TransferAsymmetry(trades)
+			giver, taker := p.A, p.B
+			if !toB {
+				giver, taker = p.B, p.A
+			}
+			_, _ = s.repo.RecordFlag(ctx, giver, "", "collusion_transfer", "one-directional Monopoly value transfer")
+			_, _ = s.repo.RecordFlag(ctx, taker, "", "collusion_transfer", "one-directional Monopoly value transfer")
+			s.m.flags.WithLabelValues("collusion_transfer").Inc()
+			s.audit(ctx, "system", "flag_collusion_transfer", giver+"|"+taker,
+				map[string]any{"asymmetry": score, "trades": len(trades), "giver": giver})
+		}
+	}
+
 	agents, err := s.repo.AgentsWithSamples(ctx, minTimingSamples)
 	if err != nil {
 		return err

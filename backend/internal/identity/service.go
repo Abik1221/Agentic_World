@@ -142,7 +142,35 @@ type SignUpResult struct {
 // SignUp creates an owner from an email + password plus their first agent, in one
 // atomic call, and returns a fresh dashboard session and one-time API key. This
 // is the "normal" account-creation path that sits beside X-claim onboarding.
+//
+// Public and unauthenticated, so it always creates KindExternal. The kind is not a field a
+// caller may set here at any privilege level — see SignUpAs.
 func (s *Service) SignUp(ctx context.Context, email, password, agentName, description string) (SignUpResult, error) {
+	return s.signUp(ctx, email, password, agentName, description, KindExternal)
+}
+
+// SignUpAs creates an account whose agent carries an explicit kind, and is otherwise the
+// SAME account creation the public sign-up performs — same validation, same atomic
+// CreateAccount, same one-time key, same dashboard session. A harness agent then onboards
+// through the ordinary developer surface (manifest, endpoint verification, agent key,
+// lobby/queue) because it is meant to be the same object a developer's agent is; the only
+// thing that differs is who is allowed to say what it IS.
+//
+// ADMIN-ONLY, and its single route is guarded by auth.RequirePlatformOrAdmin. The kind
+// decides which surfaces an agent's matches reach, so a caller who can set it can decide
+// whether their results are rated on the public developer board or invisible to it. That
+// is a platform decision, never a self-service one — which is also why there is no second
+// credential check in here: the guard is the route's, in the one place guards live.
+func (s *Service) SignUpAs(ctx context.Context, email, password, agentName, description, kind string) (SignUpResult, error) {
+	if err := ValidateCreatableKind(kind); err != nil {
+		return SignUpResult{}, err
+	}
+	return s.signUp(ctx, email, password, agentName, description, kind)
+}
+
+// signUp is the one implementation both paths run, so the admin path cannot drift from the
+// public one in validation, hashing, or what it creates.
+func (s *Service) signUp(ctx context.Context, email, password, agentName, description, kind string) (SignUpResult, error) {
 	normEmail, ok := normalizeEmail(email)
 	if !ok {
 		return SignUpResult{}, errInvalid("a valid email is required")
@@ -174,7 +202,11 @@ func (s *Service) SignUp(ctx context.Context, email, password, agentName, descri
 		Description:   strings.TrimSpace(description),
 		KeyPrefix:     key.Prefix,
 		KeyHash:       key.Hash,
-		Limits:        DefaultLimits(),
+		Kind:          kind,
+		// Guardrails follow the kind. A harness agent differs in exactly one of them
+		// (throughput) and is otherwise created under the developer defaults — see
+		// LimitsForKind.
+		Limits: LimitsForKind(kind),
 	})
 	if err != nil {
 		return SignUpResult{}, err
@@ -264,6 +296,17 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 // (`pyyol login`, /cli-login, the dashboard button), so the documented deployment
 // flow signed the developer's own laptop out as a side effect and nothing said so.
 // See migration 0071 for the full account.
+// IssueDashboardToken mints a user-scope access JWT for an ALREADY-AUTHENTICATED owner.
+//
+// Used by the CLI handoff, which needs a real credential to hand a terminal. It mints rather
+// than forwarding the browser's own token on purpose: the browser's JWT is short-lived and its
+// refresh token rotates, so passing either to the CLI would either expire within the hour or
+// have the two clients fighting over one rotating token — whichever refreshed first would log
+// the other out.
+func (s *Service) IssueDashboardToken(ownerPublicID string) (string, error) {
+	return s.jwt.Issue(ownerPublicID)
+}
+
 func (s *Service) IssueKey(ctx context.Context, ownerPublicID, agentPublicID, label string) (string, error) {
 	if _, err := s.repo.AgentByOwner(ctx, agentPublicID, ownerPublicID); err != nil {
 		return "", ErrForbiddenOwner
@@ -467,4 +510,72 @@ func newClaimToken() string {
 		return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)[:4]
 	}
 	return "AA-" + seg() + "-" + seg()
+}
+
+// SystemOwnerPublicID is the platform's own identity — the owner the house bots have used
+// since migration 0017. Platform agents hang off it so the users table only ever contains
+// people.
+const SystemOwnerPublicID = "usr_system"
+
+// CreatePlatformAgent creates one of the PLATFORM's agents: owned by the system identity,
+// with no user account, no email and no password.
+//
+// The benchmark is the platform measuring itself, so its seats are not developers and must
+// not be represented as them. Creating them through SignUpAs did exactly that — a throwaway
+// account per seat, which is how `lab+78611-0@pyyol.test` ended up in the users table beside
+// real people, and how 397 bound model calls ended up attributed to the DEVELOPER board.
+//
+// Refuses KindExternal. A developer's agent has a person behind it; routing one through here
+// would bury it under the system account where its actual owner could never reach it.
+func (s *Service) CreatePlatformAgent(ctx context.Context, agentName, description, kind string) (SignUpResult, error) {
+	if err := ValidateCreatableKind(kind); err != nil {
+		return SignUpResult{}, err
+	}
+	if kind == KindExternal {
+		return SignUpResult{}, errInvalid("external agents belong to a person; create them through sign-up")
+	}
+	agentName = strings.TrimSpace(agentName)
+	if !validAgentName(agentName) {
+		return SignUpResult{}, errInvalid("agent name must be 3–32 characters: letters, digits, _ or -")
+	}
+	key, err := generateKey(s.pepper)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	agent, err := s.repo.CreatePlatformAgent(ctx, PlatformAgentInput{
+		OwnerPublicID: SystemOwnerPublicID,
+		AgentPublicID: platform.NewID(platform.PrefixAgent),
+		AgentName:     agentName,
+		AgentSlug:     slugify(agentName),
+		Description:   strings.TrimSpace(description),
+		KeyPrefix:     key.Prefix,
+		KeyHash:       key.Hash,
+		Kind:          kind,
+		Limits:        LimitsForKind(kind),
+	})
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	// A session for the PLATFORM identity, not for a new account.
+	//
+	// The agent still has to be funded and still has to submit a manifest, and both routes
+	// are owner-scoped — RequireScope(ScopeUser) rejects a Platform-scope principal outright,
+	// so without a user-scope token onboarding dies before the first match. Widening those
+	// routes to accept Platform scope was the alternative and it is worse: it would loosen
+	// wallet and manifest authorization platform-wide to fix one caller.
+	//
+	// What was actually wrong was minting an ACCOUNT PER SEAT. One shared platform identity
+	// owning every benchmark agent is the thing being asked for, and `usr_system` has been
+	// exactly that since migration 0017.
+	dash, err := s.jwt.Issue(SystemOwnerPublicID)
+	if err != nil {
+		return SignUpResult{}, err
+	}
+	return SignUpResult{
+		APIKey:         key.Raw,
+		AgentID:        agent.PublicID,
+		AgentName:      agent.Name,
+		UserPublicID:   SystemOwnerPublicID,
+		DashboardToken: dash,
+	}, nil
 }

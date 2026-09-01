@@ -84,20 +84,22 @@ func (r *MafiaRepo) Get(ctx context.Context, matchPublicID string) (mafia.Match,
 	var m mafia.Match
 	var stateBytes []byte
 	var deadline *time.Time
+	var startsAt *time.Time
 	var seed []byte
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.status, m.bid, m.rake_pct, m.engine_version,
 		        m.prize_seed_commit, m.prize_seed, COALESCE(m.state, '{}'::jsonb),
-		        m.round_deadline, COALESCE(m.replay_hash, '')
+		        m.round_deadline, m.starts_at, COALESCE(m.replay_hash, '')
 		 FROM matches m WHERE m.public_id = $1 AND m.game = 'mafia'`, matchPublicID).
 		Scan(&m.PublicID, &m.Status, &m.EntryFee, &m.RakePct, &m.EngineVersion,
-			&m.Commit, &seed, &stateBytes, &deadline, &m.ReplayHash)
+			&m.Commit, &seed, &stateBytes, &deadline, &startsAt, &m.ReplayHash)
 	if err != nil {
 		return mafia.Match{}, err
 	}
 	m.Title = "Mafia AI Arena"
 	m.Seed = seed
 	m.RoundDeadline = deadline
+	m.StartsAt = startsAt
 	if len(stateBytes) > 0 {
 		// Authoritative state: a decode error must fail loudly, not silently load a
 		// zero-value (phantom empty) match that Act/view would then operate on.
@@ -161,13 +163,16 @@ func (r *MafiaRepo) JoinSeat(ctx context.Context, matchPublicID string, p mafia.
 	})
 }
 
-func (r *MafiaRepo) Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, deadline time.Time, events []mf.Event) error {
+// Start activates a full table. startsAt is the ABSOLUTE instant play begins and is persisted
+// so every surface counts to the same moment; the caller opens the first phase window at it,
+// not at now, so the countdown does not eat the first phase's thinking time.
+func (r *MafiaRepo) Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, startsAt, deadline time.Time, events []mf.Event) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, starts_at=$4, started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' AND game='mafia' RETURNING id`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
+			matchPublicID, mustJSON(state), deadline, startsAt).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return mafia.ErrNotWaiting
 		}

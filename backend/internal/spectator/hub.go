@@ -124,6 +124,9 @@ func (h *Hub) Broadcast(matchPublicID string, events []gs.Event) {
 	}
 	frames := make([]frame, 0, len(events))
 	for _, ev := range events {
+		if !spectatorSafe(ev) {
+			continue // never fan a secret-bearing event out to live watchers
+		}
 		frames = append(frames, h.encodeEvent(ev))
 	}
 	h.m.broadcastEvents.Add(float64(len(frames)))

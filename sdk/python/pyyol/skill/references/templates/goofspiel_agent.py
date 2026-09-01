@@ -7,7 +7,6 @@ Read references/games/goofspiel.md first. Replace `decide_card`; leave the rest.
 
 from __future__ import annotations
 
-
 from _shared import MatchMemory
 from pyyol import Adapter
 from pyyol.models import GoofspielMove, GoofspielView

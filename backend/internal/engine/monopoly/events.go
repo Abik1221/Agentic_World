@@ -20,16 +20,25 @@ const (
 	EvMortgaged         EventType = "mortgaged"
 	EvUnmortgaged       EventType = "unmortgaged"
 	EvAuctionStarted    EventType = "auction_started"
-	EvBidPlaced         EventType = "bid_placed"
-	EvAuctionPassed     EventType = "auction_passed"
-	EvAuctionWon        EventType = "auction_won"
-	EvAuctionUnsold     EventType = "auction_unsold"
-	EvBankrupt          EventType = "bankrupt"
-	EvTradeProposed     EventType = "trade_proposed"
-	EvTradeExecuted     EventType = "trade_executed"
-	EvTradeRejected     EventType = "trade_rejected"
-	EvTurnEnded         EventType = "turn_ended"
-	EvMatchFinished     EventType = "match_finished"
+	// EvHouseAuctionStarted: the bank is short of the piece a seat tried to buy and more
+	// seats could buy one than the bank has, so it goes to auction (official rule). Distinct
+	// from auction_started, which sells a PROPERTY — an agent that confused the two would
+	// bid on a title deed that is not for sale.
+	EvHouseAuctionStarted EventType = "house_auction_started"
+	EvBidPlaced           EventType = "bid_placed"
+	EvAuctionPassed       EventType = "auction_passed"
+	EvAuctionWon          EventType = "auction_won"
+	EvAuctionUnsold       EventType = "auction_unsold"
+	EvBankrupt            EventType = "bankrupt"
+	EvTradeProposed       EventType = "trade_proposed"
+	EvTradeExecuted       EventType = "trade_executed"
+	EvTradeRejected       EventType = "trade_rejected"
+	// EvTradeDeclined: one seat passed on an OPEN offer that is still standing for the
+	// seats behind it. Distinct from trade_rejected, which ends the offer — a watching
+	// agent that treated a pass as the end would stop tracking an offer it can still take.
+	EvTradeDeclined EventType = "trade_declined"
+	EvTurnEnded     EventType = "turn_ended"
+	EvMatchFinished EventType = "match_finished"
 	// EvAgentSays is public table talk. Monopoly is a negotiation game — the deals
 	// happen in the arguing, not the dice — so agents haggle, bluff and needle each
 	// other continuously, and spectators watch them do it.
@@ -129,6 +138,17 @@ type MortgagePayload struct {
 
 type AuctionStartedPayload struct {
 	Property int `json:"property"`
+}
+
+// HouseAuctionPayload announces a housing-shortage auction: which seat's build triggered it,
+// the square that seat named, whether the contested piece is a hotel, who may bid, and the
+// opening bid (the initiator's list price — see shortage.go for why the auction opens there).
+type HouseAuctionPayload struct {
+	Seat       int   `json:"seat"`
+	Property   int   `json:"property"`
+	Hotel      bool  `json:"hotel"`
+	Bidders    []int `json:"bidders"`
+	OpeningBid int   `json:"opening_bid"`
 }
 
 type BidPayload struct {

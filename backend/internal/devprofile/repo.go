@@ -144,6 +144,17 @@ type DirectoryRow struct {
 type Repo interface {
 	// ResolveHandle finds a developer by username OR user public id.
 	ResolveHandle(ctx context.Context, handle string) (Identity, bool, error)
+	// AllUsernames lists every claimed username, LOWERCASED, for the availability
+	// Bloom filter.
+	//
+	// Usernames only, not public ids: validateUsernameShape already rejects anything
+	// starting usr_/agt_, so a candidate that reaches the uniqueness lookup can never
+	// be a public id. Including them would only inflate the filter.
+	//
+	// Lowercased because users.username is CITEXT — `username = $1` matches
+	// case-insensitively, so the filter has to normalise the same way or it would
+	// report "Alice" absent while the database considers it taken.
+	AllUsernames(ctx context.Context) ([]string, error)
 	Stats(ctx context.Context, userPublicID string, season int) (Stats, []ArenaStat, error)
 	// SandboxActivity returns unrated practice counts. Never mixed into Stats.
 	SandboxActivity(ctx context.Context, userPublicID string) (SandboxStats, error)

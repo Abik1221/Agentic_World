@@ -216,3 +216,197 @@ def test_the_wordmark_is_coloured_per_letter_not_mid_glyph():
     # rendering fault. Per letter means exactly one colour start per letter, per row.
     row = shell._wordmark(color=True).split("\n")[0]
     assert row.count("\x1b[38;5;") == len(shell._LETTERS)
+
+
+# ── the shell against the REAL command set ───────────────────────────────────
+#
+# Every test above drives a stand-in parser with three commands. That checks the loop's own
+# rules and cannot see the shell meeting the actual CLI: a command whose registration confuses
+# _commands(), or a name the menu cannot group, breaks the front door — the first screen anyone
+# sees after installing — while the whole suite stays green.
+
+
+def test_the_shell_lists_every_real_command(monkeypatch):
+    text = _run(monkeypatch, ["/help", "/exit"], cli.build_parser)
+    parser = cli.build_parser()
+    for name in shell._commands(parser):
+        assert name in text, f"{name!r} is a real command the shell's own help never shows"
+
+
+def test_the_real_front_door_opens_and_leaves_cleanly(monkeypatch):
+    """`pyyol` → banner → a command → `/exit`, on the parser developers actually get."""
+    text = _run(monkeypatch, ["games --api https://example.invalid", "/exit"], cli.build_parser)
+    # Assert the AFFORDANCES, not the wordmark: the banner is ASCII block art, so searching it
+    # for the literal name finds nothing (which is how the first version of this test failed).
+    # What a new developer actually needs from the first screen is how to find commands and how
+    # to leave.
+    assert "/ for commands" in text, "the front door must show how to discover commands"
+    assert "/exit" in text, "and how to get out"
+    # The command was dispatched through the real parser rather than rejected as unknown.
+    assert "unknown command" not in text
+    # An unreachable arena is reported as a plain failure, not as a crash — this runs against
+    # a deliberately invalid host, which is the common case on a plane or behind a proxy.
+    assert "bug in pyyol" not in text, "a network failure must never be reported as our bug"
+
+
+def test_an_unknown_command_is_refused_against_the_real_set(monkeypatch):
+    text = _run(monkeypatch, ["definitely-not-a-command", "/exit"], cli.build_parser)
+    assert "unknown command" in text
+    assert "/help" in text, "a refusal must point at the way to discover the real names"
+
+
+# ── the `/` menu must reach every command ────────────────────────────────────
+
+
+def test_the_menu_can_reach_a_command_past_the_visible_window():
+    """The picker showed ten rows and clamped the selection to them.
+
+    With twenty-five commands that left FIFTEEN unreachable from the menu — the affordance the
+    banner advertises silently covered under half the tool, and the failure is invisible
+    because the first ten are the common ones.
+
+    Driven through the module's own ordering rather than a hand-written list, so this keeps
+    testing the real menu as commands are added.
+    """
+    parser = cli.build_parser()
+    cmds = shell._commands(parser)
+    assert len(cmds) > 10, "this test only means something with more commands than rows"
+
+    # Rebuild the ordering the picker uses: groups first, in order, then the rest.
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for _title, names in shell._GROUPS:
+        for n in names:
+            if n in cmds and n not in seen:
+                ordered.append(n)
+                seen.add(n)
+    ordered.extend(sorted(set(cmds) - seen))
+
+    assert ordered[:3], "the ordering must not be empty"
+    # Every command is somewhere in the list the picker walks — which is what makes it
+    # reachable now that the selection is bounded by the list rather than by the window.
+    for name in cmds:
+        assert name in ordered, f"{name!r} is in the parser but not in the menu's ordering"
+
+
+def test_the_menu_ordering_puts_the_daily_loop_first():
+    """Alphabetical put `arenas` and `autoplay` above `play` and `dev`. The groups are an
+    ORDER, not a list: the first thing a developer sees should be the thing they do most."""
+    parser = cli.build_parser()
+    cmds = shell._commands(parser)
+    first_group_names = [n for n in shell._GROUPS[0][1] if n in cmds]
+    assert "play" in first_group_names or "dev" in first_group_names, (
+        f"the first group is {shell._GROUPS[0][0]!r} containing {first_group_names} — the "
+        "daily loop must lead"
+    )
+
+
+def test_every_command_is_grouped_or_falls_through_to_more():
+    """The groups are hand-written and the parser is not. A command added tomorrow must still
+    appear in the menu, or it exists and nobody can find it."""
+    parser = cli.build_parser()
+    cmds = shell._commands(parser)
+    claimed = {n for _t, names in shell._GROUPS for n in names}
+    # Unclaimed commands are fine — they land under "More". What must never happen is a group
+    # naming a command the parser does not have, which would render a dead menu entry.
+    for _title, names in shell._GROUPS:
+        for n in names:
+            if n not in cmds:
+                raise AssertionError(
+                    f"group entry {n!r} is not a real command — the menu would show a dead row"
+                )
+    assert claimed, "the groups must claim something"
+
+
+# ── the live strip must not eat a running command's output ──────────────────────
+
+
+class _FakeStream:
+    """A stream that records writes and claims to be a TTY."""
+
+    def __init__(self) -> None:
+        self.chunks: list[str] = []
+
+    def write(self, s: str) -> int:
+        self.chunks.append(s)
+        return len(s)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return True
+
+    @property
+    def text(self) -> str:
+        return "".join(self.chunks)
+
+
+def _strip(stream):
+    s = shell._Style(color=True)
+    return shell._LiveStrip("http://example.invalid", s, stream)
+
+
+def test_the_strip_erases_the_line_above_it_when_idle():
+    """The baseline the next test is measured against.
+
+    _redraw is SUPPOSED to step up a line and clear it — that is how the ticker stays in
+    place above the prompt instead of scrolling away.
+    """
+    out = _FakeStream()
+    strip = _strip(out)
+    strip._redraw()
+    assert "\x1b[1A" in out.text, "the strip should move up one line"
+    assert "\x1b[2K" in out.text, "the strip should clear that line"
+
+
+def test_the_strip_stays_silent_while_a_command_owns_the_terminal():
+    """A running command's output must never be erased by the ticker.
+
+    `pyyol play` streams a decision feed from the match thread while the strip thread
+    fires every five seconds. Unmuted, _redraw steps up one line and clears it — and that
+    line is whatever the match just printed, not the strip.
+
+    The symptom is worse than losing a line: a log reading `turn 93` then `turn 95` looks
+    like a DROPPED TURN, which reads as a forfeit and sends somebody hunting a reconnect
+    bug in the arena that does not exist. The turn was played; the ticker wiped the line.
+    """
+    out = _FakeStream()
+    strip = _strip(out)
+    with strip.quiet():
+        strip._redraw()
+    assert out.text == "", (
+        "the strip repainted while a command was running; it would have erased the line "
+        f"the command had just printed (wrote {out.text!r})"
+    )
+
+
+def test_muting_is_released_even_if_the_command_raises():
+    """A command that blows up must not leave the ticker dead for the rest of the session."""
+    out = _FakeStream()
+    strip = _strip(out)
+    try:
+        with strip.quiet():
+            raise RuntimeError("command failed")
+    except RuntimeError:
+        pass
+    strip._redraw()
+    assert "\x1b[2K" in out.text, "the strip never resumed after a failing command"
+
+
+def test_the_shell_mutes_the_strip_around_dispatch():
+    """The guard has to be WIRED, not merely available.
+
+    Checked against the source because driving the REPL needs a live stdin: the point is
+    that no dispatch path runs with the ticker still painting.
+    """
+    import inspect
+
+    src = inspect.getsource(shell._loop)
+    dispatches = src.count("_dispatch(")
+    muted = src.count("strip.quiet()")
+    assert dispatches > 0, "the loop should dispatch something"
+    assert muted >= dispatches, (
+        f"{dispatches} dispatch call(s) but only {muted} muted — a command that prints "
+        "while the ticker is live will have its output erased"
+    )

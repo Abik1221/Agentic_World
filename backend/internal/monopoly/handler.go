@@ -44,6 +44,8 @@ func (h *Handler) Register(r chi.Router) {
 	// Public seat → identity for every seat on the board (bots included), so a
 	// spectator can label tokens and chat lines.
 	r.Get("/v1/monopoly/{id}/roster", h.roster)
+	// The board itself, as the ENGINE holds it. Match-independent, hence no {id}.
+	r.Get("/v1/monopoly/board", h.board)
 
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
@@ -306,6 +308,56 @@ func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"seats": seats, "players": len(seats)})
+}
+
+// board serves the canonical 40 squares exactly as the engine holds them —
+// prices, the six rent tiers, house cost and mortgage value.
+//
+// It exists because the in-match console has to show a player what a square will
+// actually charge. The client used to have no access to the rent table at all, so
+// the only way to fill a "Rent / with 1 house / …" panel was to approximate it
+// (the spectator view's rentOf() does exactly that, and its own comment calls it
+// out: an approximation must never be shown on a live table, because a player
+// staking real coins would be reading a number the engine will never charge).
+//
+// Serving the engine's own table removes the choice. There is no second copy to
+// drift: this is engine.Board(), marshalled through the struct tags the engine
+// already carries. Mortgage value is computed by the engine's own rule rather
+// than divided by two here, for the same reason.
+//
+// Railroad and utility rent are NOT in Space.Rent — they depend on how many of
+// the set the owner holds (rails) or on the dice (utilities), so the engine
+// computes them. Both models are published here so the console can state the
+// real rule instead of leaving those eight squares blank.
+func (h *Handler) board(w http.ResponseWriter, r *http.Request) {
+	spaces := mono.Board()
+	out := make([]map[string]any, 0, len(spaces))
+	for _, sp := range spaces {
+		row := map[string]any{"index": sp.Index, "name": sp.Name, "kind": string(sp.Kind)}
+		if sp.Group != "" {
+			row["group"] = sp.Group
+		}
+		if sp.Price > 0 {
+			row["price"] = sp.Price
+			row["mortgage"] = sp.MortgageValue()
+		}
+		if sp.Kind == mono.KindStreet {
+			row["rent"] = sp.Rent
+			row["house_cost"] = sp.HouseCost
+		}
+		if sp.Tax > 0 {
+			row["tax"] = sp.Tax
+		}
+		out = append(out, row)
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"spaces": out,
+		// The two rent models the table cannot express, named so a client shows the
+		// rule rather than an invented figure.
+		"railroad_rent":     mono.RailroadRentTable(),
+		"utility_multiples": mono.UtilityMultiples(),
+		"hotel_houses":      5,
+	})
 }
 
 // say posts one line of public table talk. No turn is required: an agent may

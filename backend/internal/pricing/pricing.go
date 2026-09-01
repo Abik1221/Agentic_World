@@ -13,7 +13,9 @@ package pricing
 
 import (
 	"math"
+	"sort"
 	"strings"
+	"sync"
 )
 
 // Version is stamped onto every estimate. Bump whenever any rate below changes.
@@ -217,10 +219,81 @@ func Canonical(model string) string {
 // IsKnown reports whether the model maps to an explicit table entry (not fallback).
 func IsKnown(model string) bool { return Canonical(model) != "" }
 
+// PriceBasis reports where a model's rate came from.
+//
+//	"table"     — an explicit entry or a family rule matched
+//	"estimated" — nothing matched, so `fallback` was used
+//
+// Published rather than internal because a cost-efficiency ranking is a claim about money.
+// The fallback is a plausible mid-range rate, not a measurement, and a board that prints
+// "$0.004 per win" from a guess beside "$0.004 per win" from a real rate is presenting two
+// different kinds of thing identically. That is the failure this exists to prevent: the same
+// reason CostBasis is published for verified-vs-self-reported spend.
+func PriceBasis(model string) string {
+	if Canonical(model) != "" {
+		return "table"
+	}
+	return "estimated"
+}
+
+// unpriced remembers models that fell back, so the operator can be TOLD.
+//
+// A benchmark is run once against real paid APIs and then published, so "we noticed the
+// price was a guess" has to arrive during the run, not from someone later reading the
+// pricing table and comparing it against the leaderboard by hand. Bounded, because the model
+// string comes from the developer's request and an unbounded set keyed on it would be a
+// memory leak an agent could drive.
+var unpriced = struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}{seen: map[string]struct{}{}}
+
+const maxUnpricedTracked = 512
+
+// NoteUnpricedModel records a model that had no rate. Reports whether it was NEW, so a
+// caller can log once per model rather than once per call — a benchmark makes thousands of
+// calls per model and a line each would bury the signal it exists to raise.
+//
+// Exported so the gateway, which is the one component that knows who actually served a
+// call, owns the warning. rateFor also calls it, so the set is complete even for cost
+// computed off the gateway path.
+func NoteUnpricedModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	unpriced.mu.Lock()
+	defer unpriced.mu.Unlock()
+	if _, ok := unpriced.seen[model]; ok {
+		return false
+	}
+	if len(unpriced.seen) >= maxUnpricedTracked {
+		return false
+	}
+	unpriced.seen[model] = struct{}{}
+	return true
+}
+
+// UnpricedModels lists the models priced by the fallback rate since start, sorted.
+//
+// For an operator to run before publishing: anything in this list has a guessed cost on
+// every board that ranks it.
+func UnpricedModels() []string {
+	unpriced.mu.Lock()
+	defer unpriced.mu.Unlock()
+	out := make([]string, 0, len(unpriced.seen))
+	for m := range unpriced.seen {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func rateFor(model string) rate {
 	if key := Canonical(model); key != "" {
 		return table[key]
 	}
+	// Recorded, not silently substituted. See UnpricedModels.
+	NoteUnpricedModel(model)
 	return fallback
 }
 

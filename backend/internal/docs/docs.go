@@ -84,6 +84,11 @@ var sectionOrder = map[string]int{
 	"Ranked":          3,
 	"Concepts":        4,
 	"Protocol":        5,
+	// Last on purpose. Research is what a reader consults to decide whether to BELIEVE the
+	// platform's numbers, not something they need on the way to a first match — and an
+	// unranked section silently sorts to 100 alongside anything mistyped, which is not a
+	// position anybody chose.
+	"Research": 6,
 }
 
 func (p Page) sectionRank() int { return SectionRank(p.Section) }

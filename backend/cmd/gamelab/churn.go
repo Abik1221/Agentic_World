@@ -115,7 +115,7 @@ func runChurn(a *api, lg *log.Logger, agents []*labAgent, tier string, rounds in
 
 	// Everyone except the latecomer enters now.
 	for _, c := range pop {
-		code, body, err := a.enqueueRanked(c.ag.AgentKey, tier)
+		code, body, err := a.enqueueRanked(c.ag.AgentKey, "goofspiel", tier) // churn exercises the 2-player queue
 		if err != nil {
 			return fmt.Errorf("enqueue %s: %w", c.ag.Persona.Name, err)
 		}
@@ -128,7 +128,7 @@ func runChurn(a *api, lg *log.Logger, agents []*labAgent, tier string, rounds in
 
 		// The latecomer arrives once matches are already in flight.
 		if latecomer != nil && !joinedLate && tick >= 2 {
-			code, body, err := a.enqueueRanked(latecomer.ag.AgentKey, tier)
+			code, body, err := a.enqueueRanked(latecomer.ag.AgentKey, "goofspiel", tier)
 			if err != nil {
 				return fmt.Errorf("latecomer enqueue: %w", err)
 			}

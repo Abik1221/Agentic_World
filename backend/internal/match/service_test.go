@@ -13,6 +13,7 @@ import (
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/platform"
+	"github.com/agent-arena/arena/internal/readycheck"
 )
 
 // fakeMover stands in for the socket gateway: both agents are "connected" and each
@@ -75,6 +76,10 @@ type fakeRepo struct {
 	finishedEvent []byte // last match.finished payload passed to Finish (nil = none)
 	finishCalls   int
 	signingKeys   map[string]string // agentPublicID → registered Ed25519 pubkey ("" = none)
+	advances      []advanceCall     // every Advance, in order — see the round-start guard
+	// lastCreate is the most recent CreateWaitingMatch input, so a test can assert on
+	// fields match.Match does not carry back — Private in particular.
+	lastCreate match.CreateMatchInput
 }
 
 func newFakeRepo() *fakeRepo {
@@ -84,6 +89,7 @@ func newFakeRepo() *fakeRepo {
 func (r *fakeRepo) CreateWaitingMatch(_ context.Context, in match.CreateMatchInput) (match.Match, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lastCreate = in
 	m := match.Match{
 		PublicID: in.PublicID, Game: in.Game, Status: match.StatusWaiting, Bid: in.Bid,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
@@ -116,7 +122,7 @@ func (r *fakeRepo) Get(_ context.Context, id string) (match.Match, error) {
 	return m, nil
 }
 
-func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, state gs.State, deadline time.Time, events []gs.Event) error {
+func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, state gs.State, startsAt, deadline time.Time, events []gs.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m := r.matches[id]
@@ -128,6 +134,8 @@ func (r *fakeRepo) Activate(_ context.Context, id string, joiner match.Player, s
 	m.State = state
 	d := deadline
 	m.RoundDeadline = &d
+	sa := startsAt
+	m.StartsAt = &sa
 	r.matches[id] = m
 	r.events[id] = append(r.events[id], events...)
 	return nil
@@ -137,26 +145,43 @@ func (r *fakeRepo) CreatePairedActive(_ context.Context, in match.CreatePairedIn
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d := in.Deadline
-	r.matches[in.PublicID] = match.Match{
+	m := match.Match{
 		PublicID: in.PublicID, Game: in.Game, Status: match.StatusActive,
 		Mode: in.Mode, BotPolicy: in.BotPolicy, Bid: in.Bid,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
 		Commit: in.Commit, FairnessMode: in.FairnessMode, Seed: in.Seed,
 		Players: []match.Player{in.SeatA, in.SeatB}, State: in.State, RoundDeadline: &d,
 	}
+	// Mirror the store: a zero StartsAt stays nil rather than becoming year 1.
+	if !in.StartsAt.IsZero() {
+		sa := in.StartsAt
+		m.StartsAt = &sa
+	}
+	r.matches[in.PublicID] = m
 	r.events[in.PublicID] = append(r.events[in.PublicID], in.Events...)
 	return nil
 }
 
-func (r *fakeRepo) Advance(_ context.Context, id string, state gs.State, deadline *time.Time, events []gs.Event) error {
+// advanceCall records one Advance for the round-start guard below. roundStarted is the
+// field that matters: it must be nil on every write that does not open a new round.
+type advanceCall struct {
+	deadline     *time.Time
+	roundStarted *time.Time
+}
+
+func (r *fakeRepo) Advance(_ context.Context, id string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.advances = append(r.advances, advanceCall{deadline: deadline, roundStarted: roundStarted})
 	m := r.matches[id]
 	if m.Status != match.StatusActive {
 		return match.ErrNotActive
 	}
 	m.State = state
 	m.RoundDeadline = deadline
+	if roundStarted != nil {
+		m.RoundStartedAt = roundStarted
+	}
 	r.matches[id] = m
 	r.events[id] = append(r.events[id], events...)
 	return nil
@@ -431,7 +456,12 @@ func TestSweepForcesTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Neither agent acts; advance past the move window and sweep.
-	clk.advance(21 * time.Second)
+	//
+	// Past the COUNTDOWN as well as the window: since Join sets a start countdown (like mafia
+	// and monopoly), the first round's deadline is startsAt+window, not now+window. Advancing
+	// only the window leaves the deadline in the future and the sweep correctly finds nothing —
+	// which used to read as "the sweeper is broken" rather than "the clock has not reached it".
+	clk.advance(readycheck.DefaultPolicy("goofspiel").Countdown + 21*time.Second)
 	n, err := svc.SweepExpired(ctx, 10)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -472,7 +502,8 @@ func TestSweepForcesTimeoutLocklessWhenRedisDown(t *testing.T) {
 	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
 		t.Fatal(err)
 	}
-	clk.advance(21 * time.Second)
+	// Past the start countdown as well as the window — see TestSweepForcesTimeout.
+	clk.advance(readycheck.DefaultPolicy("goofspiel").Countdown + 21*time.Second)
 
 	down := mk(errLocker{})
 	if _, err := down.SweepExpired(ctx, 10); err != nil {
@@ -511,4 +542,137 @@ func (f *fakeRepo) ExtendDeadline(_ context.Context, matchPublicID string, deadl
 		f.matches[matchPublicID] = m
 	}
 	return nil
+}
+
+// TestRoundStartIsStampedOnlyWhenARoundOpens is the guard for a bug the database caught
+// after the unit tests and a mutation check had both passed.
+//
+// commit() calls Advance THREE times for different reasons: one seat sealed (same round),
+// the round finished (same round), and the next round opened. The round-start column was
+// stamped with now() unconditionally inside the Advance SQL, so the first seat's seal — and
+// every chat message, because trySay commits too — reset the origin that think-time is
+// measured from. Observed live: round_started_at moved three times inside one round while
+// the round number and deadline stayed fixed, and recorded think-times collapsed from the
+// real 6-10s to 19-915ms.
+//
+// That number feeds verification.Record, which decides whether a HUMAN is playing by hand.
+// Near-zero response times are the strongest possible "not a human" signal, so the
+// corruption ran straight into a fraud control.
+//
+// Asserted on the CALLS rather than on the stored value: what went wrong was which writes
+// carried a timestamp, and only the call log shows that.
+func TestRoundStartIsStampedOnlyWhenARoundOpens(t *testing.T) {
+	svc, repo := newSvcWithRepo()
+	ctx := context.Background()
+
+	id, err := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if err != nil {
+		t.Fatalf("CreateOpen: %v", err)
+	}
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatalf("Join: %v", err)
+	}
+
+	// Seal ONE seat, then speak. Neither opens a round, so neither may carry a start.
+	first, _ := svc.State(ctx, id, "ag_a", false, 0)
+	if len(first.You.Hand) == 0 {
+		t.Fatal("no hand dealt")
+	}
+	repo.mu.Lock()
+	repo.advances = nil
+	repo.mu.Unlock()
+
+	if _, err := svc.Act(ctx, "ag_a", id, first.Round, first.You.Hand[0], ""); err != nil {
+		t.Fatalf("Act(seat a): %v", err)
+	}
+	// Speaking is the case that made this obvious in production: an agent that talks
+	// during a round must not move the round's origin.
+	_, _ = svc.Say(ctx, "ag_a", id, "thinking out loud", "table")
+
+	repo.mu.Lock()
+	sameRound := append([]advanceCall(nil), repo.advances...)
+	repo.mu.Unlock()
+
+	if len(sameRound) == 0 {
+		t.Fatal("no Advance recorded for a seal — the guard is testing nothing")
+	}
+	for i, c := range sameRound {
+		if c.roundStarted != nil {
+			t.Errorf("same-round Advance #%d stamped a round start (%v) — the origin moves mid-round",
+				i, c.roundStarted)
+		}
+	}
+
+	// Now complete the round. Exactly one Advance may carry a start, and it must equal the
+	// moment the round opened — not the deadline, which is that moment plus the window.
+	repo.mu.Lock()
+	repo.advances = nil
+	repo.mu.Unlock()
+
+	second, _ := svc.State(ctx, id, "ag_b", false, 0)
+	if _, err := svc.Act(ctx, "ag_b", id, second.Round, second.You.Hand[0], ""); err != nil {
+		t.Fatalf("Act(seat b): %v", err)
+	}
+
+	repo.mu.Lock()
+	opened := append([]advanceCall(nil), repo.advances...)
+	repo.mu.Unlock()
+
+	stamped := 0
+	for _, c := range opened {
+		if c.roundStarted == nil {
+			continue
+		}
+		stamped++
+		if c.deadline != nil && !c.roundStarted.Before(*c.deadline) {
+			t.Errorf("round start %v is not before the deadline %v — the start was set to the "+
+				"deadline instead of the moment the round opened", c.roundStarted, c.deadline)
+		}
+	}
+	if stamped != 1 {
+		t.Errorf("%d Advance calls stamped a round start when the round resolved; want exactly 1", stamped)
+	}
+}
+
+// TestJoinSetsStartCountdown pins that a goofspiel lobby table gets the same start countdown
+// mafia and monopoly already persist.
+//
+// This was a real, measurable gap rather than a theoretical one: across three days of lab
+// traffic every mafia row had a starts_at and every goofspiel row had NULL, because Join
+// activated the table in the same instant it seated the joiner. Two consequences, and the
+// second is the one that cost agents rounds:
+//
+//   - no surface had an absolute instant to count to, so no countdown could be rendered;
+//   - the first round's deadline was measured from the join, so an agent still starting up
+//     was already losing its first window.
+//
+// The assertions are on RELATIONSHIPS (starts_at strictly after the join, deadline strictly
+// after starts_at), not on the literal 10s, so retuning the policy does not fail this test
+// while removing the countdown still does.
+func TestJoinSetsStartCountdown(t *testing.T) {
+	svc, repo := newSvcWithRepo()
+	ctx := context.Background()
+	id, _ := svc.CreateOpen(ctx, "ag_a", "usr_a", 50)
+	if _, err := svc.Join(ctx, "ag_b", "usr_b", id); err != nil {
+		t.Fatal(err)
+	}
+
+	repo.mu.Lock()
+	m := repo.matches[id]
+	repo.mu.Unlock()
+
+	// The service runs on a fixed clock, so "now" is that instant, not wall time.
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if m.StartsAt == nil {
+		t.Fatal("joined table has no starts_at — the start countdown was not set, so no surface " +
+			"can count to a shared instant (this is exactly the goofspiel gap)")
+	}
+	if !m.StartsAt.After(now) {
+		t.Fatalf("starts_at %v is not after the join instant %v — a countdown that has already "+
+			"elapsed is the same as no countdown", m.StartsAt, now)
+	}
+	if m.RoundDeadline == nil || !m.RoundDeadline.After(*m.StartsAt) {
+		t.Fatalf("round deadline %v must be strictly after starts_at %v, otherwise the countdown "+
+			"eats the first round's thinking time", m.RoundDeadline, m.StartsAt)
+	}
 }

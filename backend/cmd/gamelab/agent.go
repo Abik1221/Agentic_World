@@ -125,6 +125,44 @@ var GoDarkAfterRound = 0
 // GoDarkSeat selects which seat goes dark. -1 means every seat.
 var GoDarkSeat = -1
 
+// scaffold returns this agent's HARNESS fingerprint: a stable id for "the system prompt,
+// tools and sampling settings this agent decides with", with the MODEL deliberately excluded.
+//
+// It is the single thing that makes a benchmark a paired comparison rather than a
+// confounded one. The board fits models by holding the scaffold constant and swapping the
+// model; a seat with no fingerprint cannot be paired with anything and is dropped before the
+// fit ever sees it.
+//
+// gamelab did not send one, and the consequence was invisible until measured: of 20 real
+// model-backed seats in the lab, 18 carried no fingerprint, so a board built from real
+// OpenRouter and Groq calls fitted 0 models from 0 comparisons. The calls were real, the
+// matches were real, and none of it could be ranked.
+//
+// Excludes the model on purpose. With the model in the hash every model would get its own
+// scaffold id, nothing would ever pair, and the fingerprint would silently defeat the
+// comparison it exists to enable.
+func (a *labAgent) scaffold() string {
+	// Persona style and latency profile ARE the harness here: they are what differs between
+	// these agents once the model is taken out. Hashed rather than sent raw so the id has the
+	// same shape as an SDK-produced one.
+	return fmt.Sprintf("lab-%016x", hashSeed("scaffold-v1", a.Persona.Style,
+		a.Persona.ThinkMedianMS, a.Persona.ThinkSpreadMS))
+}
+
+// usage is the per-decision report this agent attaches to a move: the persona's token
+// figures PLUS the harness fingerprint.
+//
+// The fingerprint goes inside `usage` because that is where the server reads it from
+// (internal/store/actdecisions.go reads u.Scaffold off the parsed usage object). A first
+// attempt put it at the top level of the move payload, which serialised fine, was accepted
+// fine, and was silently dropped — 43,667 decisions later the scaffold column was still
+// empty. A field the wire format does not read is indistinguishable from one never sent.
+func (a *labAgent) usage(viewBytes int, think time.Duration) map[string]any {
+	u := a.Persona.tokens(viewBytes, think)
+	u["scaffold"] = a.scaffold()
+	return u
+}
+
 // tokens fabricates a plausible usage report: prompt grows with how much history the
 // view carried, completion tracks how long the agent "thought".
 func (p persona) tokens(viewBytes int, think time.Duration) map[string]any {
@@ -147,7 +185,11 @@ func (p persona) tokens(viewBytes int, think time.Duration) map[string]any {
 // labAgent is one simulated agent: an HTTP endpoint the platform pushes turns to, plus
 // the credentials it needs to talk back (chat).
 type labAgent struct {
-	Persona   persona
+	Persona persona
+	// Index is this agent's position in the lab roster (0-based). Used to seat a DIFFERENT
+	// model per agent when -bind-model carries a comma-separated list, which is what makes a
+	// run a model-vs-model comparison rather than one model playing itself.
+	Index     int
 	AgentID   string
 	OwnerID   string
 	Email     string
@@ -232,6 +274,26 @@ func (a *labAgent) serve() error {
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if p == "/game-end" {
 				a.log.Printf("GAME END received: %s", compactJSON(body))
+				// The ONLY signal the lab gets that a match is over. -matches counts
+				// distinct match ids here rather than game-end calls, because every
+				// seat receives one: a 4-seat table would otherwise count as four
+				// matches and a batch of 10 would stop after three.
+				noteMatchFinished(stringField(body, "match_id"))
+			}
+			// /initialize answers {"ready": true}, because that is what a REAL agent answers.
+			// Both SDKs return it — the Python server sends {"ready": true, "display_name": …}
+			// and the JS one the same — and the ready check reads exactly that field to decide
+			// whether a seat may be staked.
+			//
+			// This harness answered {"ok": true}. Measured consequence, not a hypothetical: with
+			// the ready check enabled, every lab table was asked twice, dropped and aborted,
+			// because the simulated agents were silently failing a check every real agent passes.
+			// A lab that models an agent WRONGLY is worse than no lab — it reports a platform
+			// failure that only exists in the harness.
+			if p == "/initialize" {
+				a.log.Printf("READY — acknowledging %s", compactJSON(body))
+				writeJSON(w, map[string]any{"ready": true, "display_name": a.Persona.Name})
+				return
 			}
 			writeJSON(w, map[string]any{"ok": true})
 		})

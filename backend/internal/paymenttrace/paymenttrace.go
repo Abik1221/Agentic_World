@@ -113,9 +113,9 @@ type TimelineStage struct {
 
 // Timeline is one payment attempt, rendered against its expected path.
 type Timeline struct {
-	Flow      string          `json:"flow"`
-	FlowLabel string          `json:"flow_label"`
-	Ref       string          `json:"ref"`
+	Flow      string `json:"flow"`
+	FlowLabel string `json:"flow_label"`
+	Ref       string `json:"ref"`
 	// State is the flow's overall verdict:
 	//   completed — every expected stage reached ok
 	//   in_progress — progressing, nothing wrong

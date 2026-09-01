@@ -64,7 +64,7 @@ func (r *WebhookRepo) ClaimDue(ctx context.Context, limit, maxAttempts int, leas
 		     LIMIT $1
 		     FOR UPDATE SKIP LOCKED
 		 )
-		 RETURNING public_id, agent_public_id, kind, game, match_public_id, seq, event_type, payload, attempts`,
+		 RETURNING public_id, agent_public_id, kind, game, match_public_id, seq, event_type, payload, attempts, created_at`,
 		limit, maxAttempts, lease.String())
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func (r *WebhookRepo) ClaimDue(ctx context.Context, limit, maxAttempts int, leas
 	for rows.Next() {
 		var d webhook.Delivery
 		if err := rows.Scan(&d.PublicID, &d.AgentPublicID, &d.Kind, &d.Game,
-			&d.MatchID, &d.Seq, &d.EventType, &d.Payload, &d.Attempts); err != nil {
+			&d.MatchID, &d.Seq, &d.EventType, &d.Payload, &d.Attempts, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)

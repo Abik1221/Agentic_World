@@ -7,6 +7,7 @@ package match
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/integrity"
 	"sort"
 	"time"
 
@@ -15,10 +16,14 @@ import (
 
 // Status values for a match row.
 const (
-	StatusWaiting  = "waiting"
-	StatusActive   = "active"
-	StatusFinished = "finished"
-	StatusAborted  = "aborted"
+	// StatusReadyCheck is a PAIRED table whose seats have not yet confirmed they are there,
+	// and whose stakes have NOT been escrowed. Distinct from waiting, which means an open
+	// table anyone may join and is indexed as exactly that — a paired table has no free seat.
+	StatusReadyCheck = "ready_check"
+	StatusWaiting    = "waiting"
+	StatusActive     = "active"
+	StatusFinished   = "finished"
+	StatusAborted    = "aborted"
 )
 
 // Mode values for a match row. Competitive is the real, paid, ranked economy.
@@ -102,9 +107,29 @@ type Match struct {
 	// time-on-round can be measured. Nil on a row that predates the column, in which case
 	// readers fall back to RoundDeadline and behave exactly as before.
 	RoundDeadlineBase *time.Time
-	Players           []Player
-	WinnerAgent       string // agent public id of the winner; "" for tie/none
-	ReplayHash        string
+	// RoundStartedAt is when the current round actually began, written at the moment the
+	// round opens rather than inferred from anything.
+	//
+	// Think-time used to be reconstructed as RoundDeadline minus the configured window, and
+	// both halves of that were wrong: RoundDeadline moves when an extension is granted, and
+	// the configured constant is not the window in force once deadlines are adaptive. The
+	// resulting number feeds verification.Record, which decides whether a HUMAN is playing
+	// by hand — so it was a fraud control reading a derived value that could be wrong in
+	// either direction.
+	//
+	// Nil on a round that was already in flight when the column shipped; readers fall back
+	// to the old reconstruction, which is worse but is exactly the previous behaviour.
+	RoundStartedAt *time.Time
+	// StartsAt is the ABSOLUTE instant the first turn begins, set when a ready check
+	// activates the table. Nil on a match that never went through one.
+	//
+	// Absolute, not a duration, and that is the entire point: a terminal and a browser each
+	// counting down from ten drift apart within seconds and visibly disagree. Both counting
+	// TO the same instant cannot. Every surface renders from this one value.
+	StartsAt    *time.Time
+	Players     []Player
+	WinnerAgent string // agent public id of the winner; "" for tie/none
+	ReplayHash  string
 }
 
 func (m *Match) playerBySeat(seat int) *Player {
@@ -197,6 +222,9 @@ type RatingResult struct {
 	Game          string
 	WinnerSeat    int
 	Players       []RatingPlayer
+	// Integrity is the settlement verdict, carried through so the rater can void a
+	// rating for the same reason it voided the money. Zero value is inert.
+	Integrity integrity.Verdict
 }
 
 // RatingPlayer is one seat's contribution to the rating update. Placement is the

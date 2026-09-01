@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,20 @@ func newAPI(base string) *api {
 // Returns the status code, and an error only for transport/decode problems — a non-2xx
 // is reported through the code plus a body excerpt so callers can decide.
 func (a *api) do(method, path, bearer string, body, out any) (int, string, error) {
+	auth := ""
+	if bearer != "" {
+		auth = "Bearer " + bearer
+	}
+	return a.doWithAuth(method, path, auth, body, out)
+}
+
+// doWithAuth is do() with the Authorization header supplied verbatim.
+//
+// Exists for the one credential in this lab that is not a Bearer token: the Super Admin's
+// Platform token, which the server reads as "Authorization: Platform <token>" and verifies
+// as an Ed25519 signature rather than looking it up. Everything else about the request is
+// the same code path, so the admin call cannot drift from the developer calls beside it.
+func (a *api) doWithAuth(method, path, authorization string, body, out any) (int, string, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -42,8 +57,8 @@ func (a *api) do(method, path, bearer string, body, out any) (int, string, error
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
 	}
 	res, err := a.http.Do(req)
 	if err != nil {
@@ -102,13 +117,28 @@ func (a *api) createAgentKey(dashToken, agentID string) (string, error) {
 // startSandboxPushPlay opens a free push-play table and asks the platform to drive this
 // agent's seat from its endpoint. No coins move, so it needs no funding — it is the
 // fastest way to watch real decisions, real latency, and the live chat feed.
-func (a *api) startSandboxPushPlay(agentKey, difficulty string) (string, error) {
+// startSandboxPushPlay opens a free practice table for `game` and drives this agent's seat.
+//
+// EACH GAME HAS ITS OWN PUSH-PLAY ROUTE, and this used to call only the goofspiel one.
+// /v1/sandbox/pushplay is Goofspiel's; Mafia and Monopoly have /v1/mafia/pushplay and
+// /v1/monopoly/pushplay, which seat house bots around the developer and drive the real phase
+// machine. Ignoring them meant `-game monopoly` onboarded four monopoly personas, logged
+// "game=monopoly", and then started GOOFSPIEL matches — so every practice-mode verification of
+// those two games was verifying goofspiel.
+func (a *api) startSandboxPushPlay(agentKey, game, difficulty string) (string, error) {
 	var out struct {
 		MatchID string `json:"match_id"`
 		ID      string `json:"id"`
 	}
-	if err := a.mustDo("sandbox pushplay", http.MethodPost, "/v1/sandbox/pushplay", agentKey,
-		map[string]any{"difficulty": difficulty}, &out,
+	path, body := "/v1/sandbox/pushplay", map[string]any{"difficulty": difficulty}
+	switch strings.ToLower(game) {
+	case "mafia":
+		// The per-game routes take no difficulty: the roster is house bots by construction.
+		path, body = "/v1/mafia/pushplay", map[string]any{}
+	case "monopoly":
+		path, body = "/v1/monopoly/pushplay", map[string]any{}
+	}
+	if err := a.mustDo("sandbox pushplay", http.MethodPost, path, agentKey, body, &out,
 		http.StatusCreated, http.StatusOK, http.StatusAccepted); err != nil {
 		return "", err
 	}
@@ -214,9 +244,35 @@ func (a *api) joinStakedTable(agentKey, matchID string) error {
 
 // ── ranked queue, for the churn test ──────────────────────────────────────────
 
-// enqueueRanked puts an agent into the ranked queue at a tier.
-func (a *api) enqueueRanked(agentKey, tier string) (int, string, error) {
+// enqueueRanked puts an agent into the ranked queue for `game` at a tier.
+//
+// THE QUEUE DEPENDS ON THE GAME, and this used to ignore it: it always posted to /v1/queue,
+// which is the TWO-PLAYER goofspiel queue. So `-game mafia -tier low` silently produced a
+// goofspiel match — the harness accepted the flag, logged "game=mafia", sized seats for mafia,
+// and then verified something else entirely.
+//
+// That is worse than an unsupported flag. Two Mafia "verifications" in this session were
+// actually goofspiel matches, and the only reason it surfaced was reading the round/prize/hand
+// fields in the output rather than trusting the header. A verification tool that silently
+// tests the wrong thing is worse than one that refuses.
+//
+// N-player games (mafia, monopoly) use /v1/group-queue and MUST send the game; goofspiel uses
+// /v1/queue, which infers it. See GROUP_GAMES in the backend.
+func (a *api) enqueueRanked(agentKey, game, tier string) (int, string, error) {
+	if isGroupGame(game) {
+		return a.do(http.MethodPost, "/v1/group-queue", agentKey,
+			map[string]any{"game": game, "tier": tier}, nil)
+	}
 	return a.do(http.MethodPost, "/v1/queue", agentKey, map[string]any{"tier": tier}, nil)
+}
+
+// isGroupGame reports whether `game` matchmakes through the N-player group queue.
+func isGroupGame(game string) bool {
+	switch strings.ToLower(game) {
+	case "mafia", "monopoly":
+		return true
+	}
+	return false
 }
 
 // queueStatus reports whether an agent is currently queued, and its state.
@@ -268,3 +324,4 @@ func (a *api) setAutoplay(agentKey string, enabled bool, mode string, bid int64,
 		"enabled": enabled, "mode": mode, "bid": bid, "games": games,
 	}, nil)
 }
+

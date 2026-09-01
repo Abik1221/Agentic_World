@@ -210,3 +210,57 @@ var MaxCeiling = func() time.Duration {
 	}
 	return max
 }()
+
+// WarnFraction is how much of the window remains when the "time is nearly up" notice
+// fires. A FRACTION rather than a fixed lead because the window itself is adaptive:
+// policies here run from a 10s floor to a 3m ceiling, so a fixed ten seconds would be the
+// entire budget for a fast agent on a short window and a rounding error on a long one.
+const WarnFraction = 0.2
+
+// MinWarnLead and MaxWarnLead bound the fraction at both ends.
+//
+// The floor stops the notice landing so close to the deadline that it cannot be acted on —
+// under a couple of seconds an agent cannot finish a sentence, let alone a decision, and a
+// warning nobody can use is just noise on the wire. The ceiling stops a 3m window from
+// announcing "nearly up" with 36s left, which reads as wrong and trains agents to ignore it.
+const (
+	MinWarnLead = 3 * time.Second
+	MaxWarnLead = 20 * time.Second
+)
+
+// WarnLead returns how long BEFORE the deadline the warning should fire, or 0 for "do not
+// warn at all".
+//
+// Zero on a short window is deliberate. Below MinWarnLead*2 the warning and the deadline
+// are indistinguishable: an agent told "3 seconds left" 3 seconds into a 6 second window
+// learns nothing it did not already know, and the notice costs a round trip it can less
+// afford than usual. Callers MUST treat 0 as "skip", not as "warn immediately" — inverting
+// that turns the quietest case into the loudest one.
+//
+// Never more than half the window, so a warning cannot arrive in the first half of a turn
+// and be read as the deadline itself.
+func WarnLead(window time.Duration) time.Duration {
+	if window < 2*MinWarnLead {
+		return 0
+	}
+	lead := time.Duration(float64(window) * WarnFraction)
+	lead = clamp(lead, MinWarnLead, MaxWarnLead)
+	if half := window / 2; lead > half {
+		lead = half
+	}
+	return lead
+}
+
+// WarnAt returns the instant the warning fires for a turn that began at start with the
+// given window, and whether there is one.
+//
+// Derived from the same start+window the deadline itself uses, rather than taken as its own
+// timestamp, so the two cannot drift apart: a warning computed from a separate clock reading
+// can land after the deadline it is warning about.
+func WarnAt(start time.Time, window time.Duration) (time.Time, bool) {
+	lead := WarnLead(window)
+	if lead <= 0 {
+		return time.Time{}, false
+	}
+	return start.Add(window - lead), true
+}

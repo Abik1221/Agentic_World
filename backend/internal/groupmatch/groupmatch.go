@@ -14,8 +14,8 @@
 package groupmatch
 
 import (
-	"fmt"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"

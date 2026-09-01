@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/agent-arena/arena/internal/events"
@@ -51,9 +52,16 @@ var _ rating.Repo = (*RatingRepo)(nil)
 // the prior question of whether the agent routes at all.
 //
 // alias is the agents-table alias in the calling query.
+// The status guard is here for the same reason it is on the model board's `verified` CTE, and
+// it has to be on BOTH or the two definitions drift — which the paragraph above promises they
+// do not. `bound` is set from the turn proof before the upstream is called, so on its own it
+// admits a call the provider refused: 108 harness calls to openrouter.ai in the lab were 429s
+// and 401s with zero tokens and bound=true. "Routes at all" has to mean a provider answered,
+// not that we successfully sent something and were turned away.
 func publishedAgent(alias string) string {
 	return `EXISTS (SELECT 1 FROM agent_model_calls mc
-	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND COALESCE(mc.model,'') <> '')`
+	                 WHERE mc.agent_id = ` + alias + `.id AND mc.bound AND mc.status BETWEEN 200 AND 299 AND COALESCE(mc.model,'') <> ''
+	                   AND mc.status BETWEEN 200 AND 299)`
 }
 
 // publishedDeveloper is the same rule one level up: a developer is published once ANY of
@@ -80,7 +88,7 @@ func publishedAgent(alias string) string {
 // alias is the users-table alias in the calling query.
 func publishedDeveloper(alias string) string {
 	return `EXISTS (SELECT 1 FROM agents a_pub
-	                 WHERE a_pub.owner_user_id = ` + alias + `.id AND a_pub.kind <> 'house'
+	                 WHERE a_pub.owner_user_id = ` + alias + `.id AND a_pub.kind = 'external'
 	                   AND ` + publishedAgent("a_pub") + `)`
 }
 
@@ -259,7 +267,7 @@ func (r *RatingRepo) Leaderboard(ctx context.Context, game string, season, offse
 		          r.coins_earned, r.current_streak, r.agent_id, r.game, r.season,
 		          RANK() OVER (ORDER BY r.elo DESC, r.agent_id ASC) AS rnk
 		   FROM ratings r JOIN agents a ON a.id = r.agent_id
-		   WHERE r.game = $1 AND r.season = $2 AND a.kind <> 'house'
+		   WHERE r.game = $1 AND r.season = $2 AND a.kind = 'external'
 		     AND `+publishedAgent("a")+`
 		 ) cur
 		 LEFT JOIN LATERAL (
@@ -302,7 +310,7 @@ func (r *RatingRepo) SnapshotRanks(ctx context.Context, takenOn time.Time) (int,
 		        RANK() OVER (PARTITION BY r.game, r.season ORDER BY r.elo DESC, r.agent_id ASC),
 		        $1::date
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
-		 WHERE a.kind <> 'house' AND `+publishedAgent("a")+`
+		 WHERE a.kind = 'external' AND `+publishedAgent("a")+`
 		 ON CONFLICT (game, season, agent_id, taken_on) DO NOTHING`, takenOn)
 	if err != nil {
 		return 0, err
@@ -376,35 +384,39 @@ fact AS (
          -- DISTINCT decisions, not calls: an agent may make forty calls for one decision (a
          -- best-of-N sample, a tool loop), and counting calls would let volume manufacture
          -- coverage.
-         COALESCE(bd.bound_decisions,0) AS bound_decisions,
-         COALESCE(dl.logged_decisions,0) AS logged_decisions,
+         COALESCE(cov.bound_decisions,0) AS bound_decisions,
+         COALESCE(cov.logged_decisions,0) AS logged_decisions,
          -- Real match wall-clock. NULL (not 0) when the clock is unusable, so a stuck
          -- or aborted match drops out of the DURATION average without also discarding
          -- the tokens it genuinely burned.
          CASE WHEN m.started_at IS NOT NULL AND m.finished_at > m.started_at
               THEN EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) END AS match_seconds
   FROM agent_match_benchmark b
-  JOIN agents  a ON a.id = b.agent_id AND a.kind <> 'house'
+  JOIN agents  a ON a.id = b.agent_id AND a.kind = 'external'
   -- Only FINISHED matches inside the season window count. The window is applied here,
   -- on the fact's own match, so an agent's totals cannot leak across a season boundary.
   JOIN matches m ON m.public_id = b.match_id
                 AND m.finished_at IS NOT NULL
                 AND m.finished_at >= $2 AND m.finished_at < $3
                 -- Exclude tables that house bots had to fill to reach their roster
-                -- (matches.rated = false, migration 0076). The a.kind <> 'house' join
+                -- (matches.rated = false, migration 0076). The a.kind = 'external' join
                 -- above only drops the BOTS' own rows; the human seats at such a table
                 -- are real agents making real LLM calls, so without this the board would
                 -- credit a model for beating engine bots.
                 AND m.rated
   LEFT JOIN agent_match_verified_cost v ON v.match_id = b.match_id AND v.agent_id = b.agent_id
-  LEFT JOIN (
-    SELECT match_id, agent_id, COUNT(DISTINCT round)::bigint AS bound_decisions
-      FROM agent_match_bound_decisions GROUP BY match_id, agent_id
-  ) bd ON bd.match_id = b.match_id AND bd.agent_id = b.agent_id
-  LEFT JOIN (
-    SELECT match_id, agent_id, COUNT(*)::bigint AS logged_decisions
-      FROM agent_match_decisions GROUP BY match_id, agent_id
-  ) dl ON dl.match_id = b.match_id AND dl.agent_id = b.agent_id
+  -- Coverage comes from the ROLLUP, not from a live aggregate.
+  --
+  -- Computing it here meant grouping agent_match_decisions on every request. Unfiltered that is
+  -- the whole decision history — 10.2M rows and 23 GB when this was found — and it made
+  -- /v1/benchmark/harness/models and /v1/benchmark/developers hang until the caller's context was
+  -- cancelled, then return 500. Both are public routes.
+  --
+  -- agent_match_coverage holds the same two counts per seat, refreshed incrementally off match
+  -- finish time (internal/store/coverage_repo.go). A LEFT JOIN keeps the semantics identical for
+  -- a seat the rollup has not reached yet: NULL, which the scanner already treats as unknown
+  -- rather than as zero.
+  LEFT JOIN agent_match_coverage cov ON cov.match_id = b.match_id AND cov.agent_id = b.agent_id
   LEFT JOIN decl dc ON dc.agent_public_id = a.public_id
   WHERE ($1 = '' OR b.game = $1)
 )`
@@ -416,6 +428,63 @@ fact AS (
 // Shape: one row per (provider, model) TOTAL plus one row per (provider, model, game),
 // produced in a single pass with GROUPING SETS rather than by two round trips over the
 // same facts. is_total=1 marks the aggregate row.
+// modelFactCTEHarness is modelFactCTE with ONE change: which seats are eligible.
+//
+// Derived by substitution rather than copied, deliberately. Every other line — the token
+// and latency aggregation, the cost join, the verification coverage, the attribution
+// tiering — is the SAME source, so the harness stats mean exactly what the developer stats
+// mean and cannot drift from them in a later edit. A hand-copied second query would be
+// identical for about one release.
+//
+// Two conditions differ, and both have to:
+//
+//	kind: 'harness' instead of 'external'. Obvious.
+//	rated: dropped. The developer query uses m.rated to exclude tables house bots filled,
+//	  because crediting a model for beating an engine bot is fiction. Harness matches are
+//	  UNRATED BY DESIGN — that is what keeps them out of user ratings — so keeping the
+//	  filter would return nothing at all. The equivalent guard is enforced on the harness
+//	  board's own seat query: every seat at the table must itself be a harness agent.
+var modelFactCTEHarness = func() string {
+	s := strings.Replace(modelFactCTE,
+		"JOIN agents  a ON a.id = b.agent_id AND a.kind = 'external'",
+		"JOIN agents  a ON a.id = b.agent_id AND a.kind = 'harness'", 1)
+	if s == modelFactCTE {
+		panic("rating: harness fact CTE substitution missed the kind join — the source moved")
+	}
+	out := strings.Replace(s, "\n                AND m.rated\n", "\n", 1)
+	if out == s {
+		panic("rating: harness fact CTE substitution missed the rated filter — the source moved")
+	}
+	// GATEWAY ATTRIBUTION ONLY. The developer fact falls back to the SDK-reported model and
+	// then the manifest-declared one, which is right for a developer board: a developer who
+	// has not routed through the gateway still played, and saying so with a lower attribution
+	// rank is more useful than dropping them.
+	//
+	// It is wrong here. A PLATFORM benchmark exists to publish what a provider was observed to
+	// return; a name the agent asserted about itself is precisely what it is not. Seeded
+	// without the verified rows, the fallback made the page advertise `claude-opus-4` and
+	// `gpt-5.2` — the lab personas' DECLARED models, for calls no such model answered.
+	attr := strings.Replace(out,
+		`COALESCE(NULLIF(v.model,''),    NULLIF(b.observed_model,''),
+                  NULLIF(b.declared_model,''),    NULLIF(dc.model,''),    '') AS model`,
+		`NULLIF(v.model,'') AS model`, 1)
+	if attr == out {
+		panic("rating: harness fact CTE substitution missed the model fallback — the source moved")
+	}
+	out = strings.Replace(attr,
+		`COALESCE(NULLIF(v.provider,''), NULLIF(b.observed_provider,''),
+                  NULLIF(b.declared_provider,''), NULLIF(dc.provider,''), '') AS provider`,
+		`NULLIF(v.provider,'') AS provider`, 1)
+	if out == attr {
+		panic("rating: harness fact CTE substitution missed the provider fallback — the source moved")
+	}
+	return out
+}()
+
+// modelBenchmarkHarnessSQL serves the platform harness board's per-model operational stats:
+// decisions, thinking time, reasoning tokens and cost.
+var modelBenchmarkHarnessSQL = modelFactCTEHarness + strings.TrimPrefix(modelBenchmarkSQL, modelFactCTE)
+
 const modelBenchmarkSQL = modelFactCTE + `,
 agg AS (
   SELECT provider, model, game, GROUPING(game) AS is_total,
@@ -492,7 +561,20 @@ ORDER BY a.provider, a.model, a.is_total DESC, a.game`
 // ModelBenchmark aggregates a season's benchmark facts per model, for one arena or
 // (game == "") every arena with a per-arena breakdown attached. See modelBenchmarkSQL.
 func (r *RatingRepo) ModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
-	rows, err := r.db.Query(ctx, modelBenchmarkSQL, game, start, end, season)
+	return r.modelStats(ctx, modelBenchmarkSQL, season, game, start, end)
+}
+
+// HarnessModelBenchmark is the same aggregation over the PLATFORM's own benchmark matches.
+//
+// Same columns, same arithmetic, same meaning — a latency or a cost here is directly
+// comparable with one on the developer board, which is the entire reason the two share a
+// query body.
+func (r *RatingRepo) HarnessModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
+	return r.modelStats(ctx, modelBenchmarkHarnessSQL, season, game, start, end)
+}
+
+func (r *RatingRepo) modelStats(ctx context.Context, sql string, season int, game string, start, end time.Time) ([]rating.ModelStat, error) {
+	rows, err := r.db.Query(ctx, sql, game, start, end, season)
 	if err != nil {
 		return nil, err
 	}
@@ -632,11 +714,11 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		   -- here would tell a developer they are 40th of 75 while the ladder they are
 		   -- comparing against has 20 rows.
 		   (SELECT COUNT(*)+1 FROM ratings r2 JOIN agents a2 ON a2.id = r2.agent_id
-		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind <> 'house'
+		      WHERE r2.game = r.game AND r2.season = $1 AND a2.kind = 'external'
 		        AND `+publishedAgent("a2")+`
 		        AND (r2.elo > r.elo OR (r2.elo = r.elo AND r2.agent_id < r.agent_id))) AS rank,
 		   (SELECT COUNT(*) FROM ratings r3 JOIN agents a3 ON a3.id = r3.agent_id
-		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind <> 'house'
+		      WHERE r3.game = r.game AND r3.season = $1 AND a3.kind = 'external'
 		        AND `+publishedAgent("a3")+`) AS total,
 		   -- Whether this agent is itself on the board. An unverified agent still has a real
 		   -- rating and real coins; it is simply not published, and saying so plainly is the
@@ -667,7 +749,7 @@ func (r *RatingRepo) AgentStanding(ctx context.Context, season int, game, agentP
 		 -- call proves nothing about which model decided a move, and this is the top tier.
 		 LEFT JOIN LATERAL (
 		   SELECT mc.provider, mc.model FROM agent_model_calls mc
-		    WHERE mc.agent_id = a.id AND mc.bound AND mc.model <> ''
+		    WHERE mc.agent_id = a.id AND mc.bound AND mc.status BETWEEN 200 AND 299 AND mc.model <> ''
 		    ORDER BY mc.id DESC LIMIT 1
 		 ) gw ON true
 		 -- The most recent model the SDK reported for a real match.
@@ -843,6 +925,75 @@ func (r *RatingRepo) DeveloperModelSplit(ctx context.Context, season int, game s
 		}
 		d.Verified = rating.NewCoverage(int(loggedDecisions), int(boundDecisions))
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// HarnessMatches lists published platform-harness matches that can be replayed.
+//
+// # Why the gate is on agent kind and on event count
+//
+// KIND: only agents the platform runs (`kind = 'harness'`) qualify. This list feeds a
+// public page that replays a match in full — every move, every line of table talk. A
+// developer's match is theirs; it belongs in their own dashboard and must never appear
+// on a public reel because it happened to be recent. Filtering on kind rather than on a
+// naming convention is what makes that guarantee hold when someone names an agent
+// "harness-something".
+//
+// EVENTS: a match with no log cannot be played back, and offering it in a picker would
+// hand the viewer an empty film. This is not hypothetical — the harness export shipped
+// for weeks WITHOUT match_events, so production held these matches with the numbers
+// published and the games missing. Counting events here means the picker can only ever
+// offer a match that will actually play.
+func (r *RatingRepo) HarnessMatches(ctx context.Context, game string, limit int) ([]rating.HarnessMatch, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 60
+	}
+	rows, err := r.db.Query(ctx, `
+		WITH hm AS (
+		  SELECT DISTINCT m.id, m.public_id, m.game, m.finished_at
+		    FROM matches m
+		    JOIN match_players mp ON mp.match_id = m.id
+		    JOIN agents a        ON a.id = mp.agent_id
+		   WHERE a.kind = 'harness'
+		     AND m.status = 'finished'
+		     AND m.finished_at IS NOT NULL
+		     AND ($1 = '' OR m.game = $1))
+		SELECT hm.public_id, hm.game, hm.finished_at,
+		       (SELECT count(*) FROM match_events e WHERE e.match_id = hm.id)  AS events,
+		       (SELECT count(*) FROM match_players p WHERE p.match_id = hm.id) AS seats,
+		       COALESCE((SELECT array_agg(DISTINCT v.model)
+		                   FROM agent_match_verified_cost v
+		                  WHERE v.match_id = hm.public_id AND NULLIF(v.model,'') IS NOT NULL),
+		                '{}') AS models
+		  FROM hm
+		 WHERE EXISTS (SELECT 1 FROM match_events e WHERE e.match_id = hm.id)
+		 -- Richest clip first, not merely newest.
+		 --
+		 -- Ordering by recency alone put a match with no verified model and no table talk
+		 -- at the top of the picker, so the page opened on its least informative clip and
+		 -- read as empty. A viewer arriving to check the benchmark should land on a game
+		 -- that shows what the benchmark is: an attributed pairing, with the agents'
+		 -- reasoning in it. Nothing is hidden — the unattributed matches are still listed,
+		 -- just not first.
+		 ORDER BY (SELECT count(*) FROM agent_match_verified_cost v
+		            WHERE v.match_id = hm.public_id AND NULLIF(v.model,'') IS NOT NULL) DESC,
+		          (SELECT count(*) FROM match_events e2
+		            WHERE e2.match_id = hm.id AND e2.type = 'agent_says') DESC,
+		          hm.finished_at DESC
+		 LIMIT $2`, game, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []rating.HarnessMatch{}
+	for rows.Next() {
+		var m rating.HarnessMatch
+		if err := rows.Scan(&m.MatchID, &m.Game, &m.FinishedAt, &m.Events, &m.Seats, &m.Models); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

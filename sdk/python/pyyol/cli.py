@@ -90,6 +90,17 @@ def _net_err(e: Exception) -> str:
     return "network unreachable — check your internet connection"
 
 
+def _status(st: int) -> str:
+    """ " (404)" for a real HTTP status, and NOTHING for 0.
+
+    The HTTP helpers return 0 to mean "no response at all" — offline, refused, DNS. Printing
+    that verbatim gave developers "could not fetch leaderboard (0)", where the one number on
+    the line is fake and the reader's first thought is that zero is a status code they should
+    look up. The cause is already in the message that follows it.
+    """
+    return f" ({st})" if st else ""
+
+
 _insecure_warned = False
 
 
@@ -430,8 +441,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # Refreshed, not read raw: see _owner_token. An expired JWT here is what made
     # `pyyol publish` fail hours after a successful login.
     token = _owner_token(creds, args.token)
+    if _already_reported(creds):
+        return 2
     if not (api and agent and token):
-        print(f"{BAD} need --api, --agent and --token (or `pyyol login` first)", file=sys.stderr)
+        print(
+            f"{BAD} publish needs a signed-in device with an agent. "
+            "Run `pyyol login`, then `pyyol init <dir>` if you have no agent yet.",
+            file=sys.stderr,
+        )
         return 2
     if args.token:
         _warn_argv_secret()
@@ -463,7 +480,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     st, m = api_req("POST", f"/v1/agents/{agent_q}/manifest", manifest)
     if st != 201:
-        print(f"{BAD} submit failed ({st}): {m}", file=sys.stderr)
+        print(f"{BAD} submit failed{_status(st)}: {m}", file=sys.stderr)
         return 1
     mid = urllib.parse.quote(str(m.get("manifest_id", "")), safe="")
     print(f"{OK} manifest submitted: {m.get('manifest_id')}")
@@ -476,14 +493,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
             json.dumps({"token": args.secret}).encode(),
         )
         if st != 200:
-            print(f"{BAD} set endpoint secret failed ({st}): {r}", file=sys.stderr)
+            print(f"{BAD} set endpoint secret failed{_status(st)}: {r}", file=sys.stderr)
             return 1
         print(f"{OK} endpoint secret stored")
 
     st, report = api_req("POST", f"/v1/agents/{agent_q}/manifest/{mid}/verify", b"")
     verified = st == 200 and (report.get("verified") or report.get("status") == "verified")
     mark = OK if verified else BAD
-    print(f"{mark} verify ({st}): {json.dumps(report)}")
+    print(f"{mark} verify{_status(st)}: {json.dumps(report)}")
     return 0 if verified else 1
 
 
@@ -510,6 +527,22 @@ def _login_and_save(api: str, dashboard: str, connect: str = "", provider: str =
             creds.api_key = resp["api_key"]
     credentials.save(creds)
     return creds
+
+
+def _already_reported(creds) -> bool:
+    """True when _ensure_login has ALREADY told the developer what to do.
+
+    It prints a complete, actionable line ("not logged in on this device. Run `pyyol login`…")
+    and returns None. Callers used to print a second line on top of it, in flag language:
+
+        ✗ not logged in on this device. Run `pyyol login` (opens the browser)…
+        ✗ need --api, --agent and --token (or `pyyol login` first)
+
+    Two errors for one problem, and the second one is worse — it describes the plumbing rather
+    than the fix, and reads as a tool that does not know what went wrong. A caller that sees
+    None should exit quietly; the message a developer needs has already been said.
+    """
+    return creds is None
 
 
 def _ensure_login(args: argparse.Namespace):
@@ -629,7 +662,7 @@ def cmd_wallet(args: argparse.Namespace) -> int:
     base = _http_base(args, creds)
     st, w = _api_get(f"{base}/v1/user/wallet", creds.access_token)
     if st != 200:
-        print(f"{BAD} could not fetch wallet ({st}): {w}", file=sys.stderr)
+        print(f"{BAD} could not fetch wallet{_status(st)}: {w}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(w, indent=2))
@@ -668,7 +701,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     api = (args.api or creds.url).rstrip("/")
     agent_id = args.agent or creds.agent_id
     if not api or not agent_id:
-        print(f"{BAD} need an API url and agent id (login or pass --api/--agent)", file=sys.stderr)
+        if _already_reported(creds):
+            return 2
+        print(
+            f"{BAD} no agent on this device yet — run `pyyol init <dir>` to create one.",
+            file=sys.stderr,
+        )
         return 2
     _warn_insecure_transport(api, True)
     req = urllib.request.Request(
@@ -706,7 +744,11 @@ def cmd_logs(args: argparse.Namespace) -> int:
     if not os.path.exists(path):
         print(f"no logs yet at {path} (run `pyyol run` to generate them)")
         return 0
-    with open(path) as f:
+    # errors="replace", not just encoding="utf-8". A log is arbitrary agent output: it can
+    # hold a half-written line from a killed process, or bytes from an agent that logged in
+    # some other encoding. `pyyol logs` exists to show a developer what went wrong, so it is
+    # the one command that must never itself crash — a mojibake character beats a traceback.
+    with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     for line in lines[-args.n :]:
         sys.stdout.write(line)
@@ -756,7 +798,9 @@ def cmd_queue(args: argparse.Namespace) -> int:
     creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
     base = _http_base(args, creds)
     if not base:
-        print(f"{BAD} no API url — pass --api or run `pyyol login`", file=sys.stderr)
+        if _already_reported(creds):
+            return 2
+        print(f"{BAD} no arena to talk to — run `pyyol login`, or pass --api.", file=sys.stderr)
         return 2
     game = args.game
 
@@ -764,7 +808,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     if args.list:
         st, resp = _api_get(f"{base}/v1/games/{game}/stakes")
         if st != 200:
-            print(f"{BAD} could not fetch tiers ({st}): {resp}", file=sys.stderr)
+            print(f"{BAD} could not fetch tiers{_status(st)}: {resp}", file=sys.stderr)
             return 1
         tiers = resp.get("tiers") or []
         if not tiers:
@@ -816,7 +860,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         else:
-            print(f"{BAD} could not queue ({st}): {resp}", file=sys.stderr)
+            print(f"{BAD} could not queue{_status(st)}: {resp}", file=sys.stderr)
         return 1
 
     print(
@@ -834,6 +878,111 @@ def cmd_queue(args: argparse.Namespace) -> int:
         time.sleep(1.5)
     print("still waiting for an opponent — leave `pyyol run` connected; check `pyyol status`.")
     return 0
+
+
+def cmd_room(args: argparse.Namespace) -> int:
+    """Create or join a PRIVATE staked table, shared by its id.
+
+    The queue supplies whoever is waiting. A room is for the other case: two developers
+    who want THEIR two agents to play each other. One creates it, sends the id, the other
+    joins it.
+
+    Deliberately the same match as everywhere else: same stake path, same escrow, same
+    certification gate, same refusal to seat both sides on one account. The only thing a
+    room changes is that it is not listed in the open lobby, so the seat cannot be taken
+    by a stranger between the moment the code is shared and the moment it is used.
+    """
+    from . import credentials
+
+    creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
+    base = _http_base(args, creds)
+    if not base:
+        if _already_reported(creds):
+            return 2
+        print(f"{BAD} no arena to talk to — run `pyyol login`, or pass --api.", file=sys.stderr)
+        return 2
+
+    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
+    if not token:
+        creds = _ensure_login(args)
+        if creds is None:
+            return 2
+        token = creds.access_token or creds.api_key or ""
+
+    if args.action == "join":
+        if not args.id:
+            print(f"{BAD} which room? `pyyol room join <room-id>`", file=sys.stderr)
+            return 2
+        st, resp = _api_post(f"{base}/v1/lobby/join", token, {"match_id": args.id})
+        if st != 200:
+            return _room_error(st, resp, "join")
+        print(f"{OK} joined room {args.id}")
+        print("    keep your agent connected (`pyyol run`) — it plays automatically.")
+        print(f"    watch it:  pyyol watch {args.id}")
+        return 0
+
+    body: dict[str, object] = {}
+    if args.tier:
+        body["tier"] = args.tier
+    elif args.bid > 0:
+        body["bid"] = args.bid
+    else:
+        print(
+            f"{BAD} a room is staked: pass --tier <low|mid|high> "
+            f"(see `pyyol queue goofspiel --list`) or --bid <coins>.",
+            file=sys.stderr,
+        )
+        return 2
+
+    st, resp = _api_post(f"{base}/v1/room/create", token, body)
+    if st not in (200, 201):
+        return _room_error(st, resp, "create")
+
+    room_id = resp.get("room_id") or resp.get("match_id") or ""
+    bid = resp.get("bid")
+    print(f"{OK} room created")
+    if bid:
+        print(f"    stake: {bid} coins each")
+    # The id gets its own line with nothing around it, because the next thing anyone does
+    # is drag-select it to paste into a chat, and a line with prose on it selects badly.
+    print()
+    print(f"    {room_id}")
+    print()
+    print("    send that to the other player. they run:")
+    print(f"        pyyol room join {room_id}")
+    print("    keep your agent connected (`pyyol run`) — it plays as soon as they join.")
+    return 0
+
+
+def _room_error(st: int, resp: dict, what: str) -> int:
+    """Turn the arena's refusal codes into something a developer can act on.
+
+    Every branch here is a real first-try failure. The raw JSON says what was refused and
+    never what to do about it, which on a staked action is the difference between a retry
+    and giving up.
+    """
+    code = str(resp.get("code") or resp.get("error") or "")
+    msg = resp.get("message") or ""
+    if "same_owner" in code:
+        print(
+            f"{BAD} that is your own room — a match needs two different accounts. "
+            "Send the id to the other player.",
+            file=sys.stderr,
+        )
+    elif "certified" in code:
+        print(
+            f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+            file=sys.stderr,
+        )
+    elif "balance" in code or "insufficient" in code:
+        print(f"{BAD} not enough coins to stake this room.", file=sys.stderr)
+    elif "not_found" in code:
+        print(f"{BAD} no such room — check the id, or it may have been cancelled.", file=sys.stderr)
+    elif "not_waiting" in code:
+        print(f"{BAD} that room is no longer open (already started or cancelled).", file=sys.stderr)
+    else:
+        print(f"{BAD} could not {what} room{_status(st)}: {msg or resp}", file=sys.stderr)
+    return 1
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -1046,7 +1195,11 @@ def _log_file_handler():
 
     d = os.path.join(credentials.config_dir(), "logs")
     os.makedirs(d, exist_ok=True)
-    handler = logging.FileHandler(os.path.join(d, "agent.log"))
+    # UTF-8 explicitly: an agent logs whatever its model produced, so a log line can hold
+    # any character. Without this the handler encodes in the locale's encoding, and a
+    # single accented player name raises inside logging itself — which surfaces as
+    # "--- Logging error ---" on stderr and a silently truncated log.
+    handler = logging.FileHandler(os.path.join(d, "agent.log"), encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger = logging.getLogger("pyyol")
     logger.setLevel(logging.INFO)
@@ -1216,6 +1369,24 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)",
             file=sys.stderr,
         )
+        return 2
+
+    # Normalize whatever the developer exported into an Agent, exactly as
+    # `_load_agent_from_config` does for `pyyol dev` / `pyyol play`.
+    #
+    # `pyyol init` scaffolds an Adapter SUBCLASS, and an Adapter has no .run() — so the
+    # scaffold produced by our own quickstart crashed the moment it was handed to
+    # `pyyol run`, with an AttributeError that reads like the developer's mistake. Every
+    # other load path already normalized; this one alone did a raw getattr.
+    #
+    # TypeError carries the message naming `entry`, so a genuinely wrong export still gets
+    # the friendly explanation rather than a stack trace.
+    from .server import as_agent
+
+    try:
+        agent = as_agent(agent)
+    except TypeError as e:
+        print(f"{BAD} {e}", file=sys.stderr)
         return 2
 
     from .console import build_console
@@ -1504,6 +1675,24 @@ class {cls}(Adapter):
         #   import pyyol; pyyol.instrument()   # once at the top of this file
         #   client = pyyol.route(OpenAI())     # in ranked, routes via the gateway (verified)
         # then call `client` here. See docs -> "Verified LLM agents".
+        #
+        # TALK IS FREE IF IT RIDES ON THE MOVE. Set `rationale` and your opponent reads it,
+        # spectators watch it, and the replay keeps it — no extra model call, because it
+        # travels with the move you are already returning:
+        #
+        #     return GoofspielMove(card=..., round=..., rationale="I need the 13 later")
+        #
+        # Calling self.say() instead costs a WHOLE extra call per round — 26 for a 13-round
+        # match instead of 13. On a free tier of 50 requests/day that is the difference
+        # between about two matches and about four. Use say() when you want to speak
+        # WITHOUT playing (reacting mid-round); it just should not be how you narrate a move
+        # you are already making.
+        #
+        # ONE CALL PER DECISION, not per event. The SDK hands you a complete view here —
+        # every past round, the whole chat — so you never need to reason on `/event`
+        # notifications as they arrive. An agent that calls its model on each event instead
+        # multiplies its bill by the number of messages in the phase and will hit a free
+        # tier's limit long before the match ends.
         return GoofspielMove(card=min(view.legal_actions), round=view.round)
 
     def shutdown(self, result):
@@ -1609,7 +1798,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         tmpl = _PY_STARTER_GOOFSPIEL if arena == "goofspiel" else _PY_STARTER_GENERIC
         code = tmpl.format(name=name, cls=cls, arena=arena)
         entry = "agent.py:agent"
-    with open(path, "w") as f:
+    # UTF-8, not the locale's encoding. The starter templates contain an em dash, so on any
+    # machine whose preferred encoding is not UTF-8 this raised UnicodeEncodeError and
+    # `pyyol init` — the very first command a developer runs — died. Verified failing under
+    # LC_ALL=C with coercion off, and under a latin-1 locale, on Linux as well as Windows.
+    with open(path, "w", encoding="utf-8") as f:
         f.write(code)
 
     # A manifest scaffold, because ranked REQUIRES one and there was no way to get a
@@ -1629,7 +1822,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # they never intended to run. Add a real URL only when you want always-on play.
     manifest.pop("endpoint", None)
     manifest_path = os.path.join(d, "manifest.json")
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
 
@@ -1889,29 +2082,21 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     return 0
 
 
-# Where a running match is watched in the browser, per game.
-#
-# These are the real routes, verified against the client: Goofspiel and Monopoly take
-# ?match= at the top level, Mafia's viewer lives under /arena. A wrong path here is
-# worse than no link — it drops the developer on a DIFFERENT live match and everything
-# they see is someone else's game.
-_WATCH_ROUTE = {
-    "goofspiel": "/goofspiel",
-    "mafia": "/arena/mafia",
-    "monopoly": "/monopoly",
-}
+# The route table moved to console._WATCH_ROUTE — the runtime needs the same routes and
+# cannot import this module. Two copies would surface as the platform sending an honest
+# developer to somebody else's live match.
 
 
 def _watch_url(dashboard: str, arena: str, match_id: str) -> str:
-    """Browser URL for a specific live match. Empty when we cannot name it exactly —
-    a link to 'some match' would be a lie dressed as a convenience."""
-    route = _WATCH_ROUTE.get(arena)
-    if not (dashboard and route and match_id):
-        return ""
-    # safe="" so a slash is escaped too. quote() defaults to safe="/", which would let
-    # a match id containing one alter the PATH rather than the query — the link would
-    # then point somewhere else entirely.
-    return f"{dashboard.rstrip('/')}{route}?match={urllib.parse.quote(match_id, safe='')}"
+    """Browser URL for a specific live match, or "" when it cannot be named exactly.
+
+    Delegates to console.watch_url, which is the single copy — the runtime needs the same
+    routes and cannot import this module. Kept as a thin wrapper because the CLI passes
+    the dashboard positionally and first.
+    """
+    from .console import watch_url
+
+    return watch_url(arena, match_id, dashboard)
 
 
 # Only the FIRST match of a run opens a tab. Sandbox iteration means dozens of matches
@@ -1919,6 +2104,30 @@ def _watch_url(dashboard: str, arena: str, match_id: str) -> str:
 # learn to dread. After the first, the link is printed and the developer clicks when
 # they want it. `--open` forces every match; `--no-open` suppresses entirely.
 _opened_once = {"done": False}
+
+# Where the developer said they want to watch, asked ONCE per run and remembered.
+#
+# Once, for two reasons. The obvious one: being asked the same question before every
+# match of a sandbox loop is the thing you learn to dread. The load-bearing one: a
+# prompt that timed out has left a reader on stdin, so asking again would find its
+# answer swallowed by the previous question. See console.ask_watch.
+_watch_choice: dict[str, str] = {}
+
+
+def _resolve_watch(console, args, url: str, label: str) -> str:
+    """The developer's watch choice for this run — asked at most once.
+
+    `--watch` short-circuits the question entirely, which is what makes this safe in a
+    script: a flag means the answer is already known, so nothing reads stdin at all.
+    """
+    flag = getattr(args, "watch", "ask") or "ask"
+    if flag != "ask":
+        return flag
+    if "value" not in _watch_choice:
+        from .console import ask_watch  # lazy, like every other console import here
+
+        _watch_choice["value"] = ask_watch(label, url)
+    return _watch_choice["value"]
 
 
 def _announce_match(console, args, arena: str, match_id: str, label: str = "") -> None:
@@ -1936,11 +2145,19 @@ def _announce_match(console, args, arena: str, match_id: str, label: str = "") -
         return
 
     mode = getattr(args, "open_browser", "auto")
-    console.emit("match", f"watch it live: {url}")
-
     if mode == "never":
+        console.emit("match", f"watch it live: {url}")
         return
-    should_open = mode == "always" or (mode == "auto" and not _opened_once["done"])
+
+    # Ask before taking over the screen. The link is printed either way, so a developer
+    # who picks the terminal still has the URL when they change their mind — the choice
+    # is about what happens WITHOUT them clicking, not about what they are told.
+    choice = _resolve_watch(console, args, url, f"{arena} · {match_id}")
+    console.emit("match", f"watch it live: {url}")
+    if choice != "browser":
+        return
+
+    should_open = mode == "always" or not _opened_once["done"]
     if not should_open:
         return
     # Never in CI/headless: a browser that cannot open would print a stack trace over
@@ -1999,7 +2216,7 @@ def _start_ranked(base, token, arena, args, console) -> None:
             "agent not certified for ranked — run `pyyol publish` first (ranked needs a verified endpoint).",
         )
     else:
-        console.emit("error", f"could not queue ranked ({st}): {resp}")
+        console.emit("error", f"could not queue ranked{_status(st)}: {resp}")
 
 
 # --- v2: informational commands (whoami / arenas / leaderboard / profile / replay) ---
@@ -2038,7 +2255,10 @@ def cmd_arenas(args: argparse.Namespace) -> int:
         return 2
     st, resp = _api_get(f"{base}/v1/arenas")
     if st != 200:
-        print(f"{BAD} could not fetch arenas ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch arenas{_status(st)}: {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     arenas = resp.get("arenas") or []
     print(f"{'ARENA':<12}{'PLAYERS':<10}{'SANDBOX':<9}{'RANKED':<8}STATUS")
@@ -2063,7 +2283,10 @@ def cmd_games(args: argparse.Namespace) -> int:
         return 2
     st, resp = _api_get(f"{base}/v1/games")
     if st != 200:
-        print(f"{BAD} could not fetch games ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch games{_status(st)}: {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     games = resp.get("games") or []
     if not games:
@@ -2124,7 +2347,7 @@ def cmd_leaderboard(args: argparse.Namespace) -> int:
     st, resp = _api_get(url)
     if st != 200:
         print(
-            f"{BAD} could not fetch leaderboard ({st}): {resp.get('error') or resp}",
+            f"{BAD} could not fetch leaderboard{_status(st)}: {resp.get('error') or resp}",
             file=sys.stderr,
         )
         return 1
@@ -2148,14 +2371,31 @@ def cmd_profile(args: argparse.Namespace) -> int:
         return 2
     handle = args.handle
     if not handle:  # self
-        _, me = _api_get(f"{base}/v1/me", creds.access_token if creds else "")
+        # BEING LOGGED OUT IS THE COMMON CAUSE, AND IT USED TO BE INVISIBLE.
+        #
+        # `pyyol profile` is documented as "self if omitted". Logged out, /v1/me returns
+        # nothing and the old message was "pass a handle" — technically true, and it hides the
+        # actual fix. A developer reads it as "this command needs an argument" and never
+        # learns that logging in is what they wanted.
+        if not (creds and creds.access_token):
+            print(
+                f"{BAD} not logged in, so there is no 'self' to show — run `pyyol login`,"
+                f" or name someone: `pyyol profile <@handle>`",
+                file=sys.stderr,
+            )
+            return 2
+        _, me = _api_get(f"{base}/v1/me", creds.access_token)
         handle = me.get("user_id") or ""
         if not handle:
-            print(f"{BAD} pass a handle: `pyyol profile <@handle>`", file=sys.stderr)
+            print(
+                f"{BAD} logged in, but the platform did not return your handle."
+                f" Try `pyyol whoami`, or name someone: `pyyol profile <@handle>`",
+                file=sys.stderr,
+            )
             return 2
     st, p = _api_get(f"{base}/v1/developers/{urllib.parse.quote(handle)}")
     if st != 200:
-        print(f"{BAD} no such developer {handle!r} ({st}).", file=sys.stderr)
+        print(f"{BAD} no such developer {handle!r}{_status(st)}.", file=sys.stderr)
         return 1
     dev = p.get("developer", {})
     pidx = p.get("p_index") or {}
@@ -2213,7 +2453,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
     )
     st, resp = _api_get(f"{base}{path}")
     if st != 200:
-        print(f"{BAD} could not fetch replay ({st}): {resp.get('error') or resp}", file=sys.stderr)
+        print(
+            f"{BAD} could not fetch replay{_status(st)}: {resp.get('error') or resp}",
+            file=sys.stderr,
+        )
         return 1
     if args.json:
         print(json.dumps(resp, indent=2))
@@ -2462,7 +2705,12 @@ def cmd_usage(args: argparse.Namespace) -> int:
     api = (args.api or creds.url).rstrip("/")
     agent = args.agent or creds.agent_id
     if not (api and agent):
-        print(f"{BAD} need an API url and agent id (login, or pass --api/--agent)", file=sys.stderr)
+        if _already_reported(creds):
+            return 2
+        print(
+            f"{BAD} no agent on this device yet — run `pyyol init <dir>` to create one.",
+            file=sys.stderr,
+        )
         return 2
 
     st, body = _api_get(
@@ -2471,7 +2719,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
         creds.access_token,
     )
     if st != 200:
-        print(f"{BAD} could not read usage ({st}): {body}", file=sys.stderr)
+        print(f"{BAD} could not read usage{_status(st)}: {body}", file=sys.stderr)
         return 1
     if getattr(args, "json", False):
         print(json.dumps(body, indent=2))
@@ -2529,16 +2777,60 @@ def cmd_play(args: argparse.Namespace) -> int:
 
 
 def _add_api(sp):
-    sp.add_argument("--api", default="", help="platform API base (defaults to the logged-in one)")
+    """Attach --api to a subcommand.
+
+    default=SUPPRESS, not "". `pyyol --api URL leaderboard` parses the top level first and the
+    subcommand second INTO THE SAME NAMESPACE, so an ordinary default would overwrite the
+    global value with an empty string the moment the subcommand was reached — the flag would
+    parse, and then be silently discarded. SUPPRESS makes argparse leave the attribute alone
+    when the flag is absent, so whichever position the developer used is the one that survives.
+    """
+    sp.add_argument(
+        "--api",
+        default=argparse.SUPPRESS,
+        help="platform API base (defaults to the logged-in one)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # The wordmark on --help too, not only inside the shell.
+    #
+    # `pyyol --help` is what a developer sees in CI, in a Dockerfile, and any time the tool is
+    # piped — and it was bare argparse with no sign of what this is. Colour is decided by the
+    # STREAM, so a pipe or a redirect gets clean ASCII and a terminal gets the brand; a
+    # wordmark full of escape codes in a CI log is worse than none.
+    #
+    # RawDescriptionHelpFormatter because argparse otherwise re-wraps the description and
+    # turns the art into rubble.
+    banner = ""
+    try:
+        from .shell import wordmark_for
+
+        art = wordmark_for(sys.stdout)
+        banner = art + "\n\n" if art else ""
+    except Exception:  # noqa: BLE001 — a decoration must never stop the tool from running
+        banner = ""
     p = argparse.ArgumentParser(
         prog="pyyol",
-        description="Pyyol — build, run, and rank autonomous AI agents. "
-        "Quickstart: pyyol login → pyyol init → pyyol dev.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=banner + "  Pyyol — build, run, and rank autonomous AI agents.\n"
+        "  Quickstart: pyyol login → pyyol init → pyyol dev",
+        epilog="Run `pyyol` with no arguments to open the interactive shell:\n"
+        "  a command menu on `/`, tab completion, and every command below available inside it.",
     )
     p.add_argument("--version", action="version", version=f"pyyol {__version__}")
+    # GLOBAL --api, accepted before the command as well as after it.
+    #
+    # It used to be per-command only, so `pyyol --api https://... leaderboard` — the position
+    # every other tool accepts, and the one people reach for first — died with an argparse
+    # error listing all 25 commands and claiming the URL was an invalid choice of command. The
+    # message named the wrong problem entirely.
+    p.add_argument(
+        "--api",
+        default="",
+        metavar="URL",
+        help="platform API base (defaults to the logged-in one). Accepted here or after the command.",
+    )
     sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
 
     # --- auth ---
@@ -2557,7 +2849,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pl.add_argument(
         "--api",
-        default="",
+        default=argparse.SUPPRESS,
         help="platform API base URL to record (default: https://api.pyyol.com; or $PYYOL_API)",
     )
     pl.add_argument("--connect", default="", help="override the WSS connect URL")
@@ -2602,6 +2894,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="open the live match in your browser: auto (first only) | always | never",
     )
+    # Where to watch, asked once per run when both ends are a TTY.
+    #   ask (default) — the pop-up: browser or terminal, defaulting to terminal
+    #   browser       — always open, never ask
+    #   terminal      — never open, never ask (CI, tmux, remote boxes)
+    # A non-"ask" value means nothing reads stdin, which is what makes it script-safe.
+    pdev.add_argument(
+        "--watch",
+        choices=["ask", "browser", "terminal"],
+        default="ask",
+        help="where to watch a match: ask (default) | browser | terminal",
+    )
     _add_api(pdev)
     pdev.set_defaults(func=cmd_dev)
 
@@ -2645,12 +2948,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="open the live match in your browser: auto (first only) | always | never",
     )
     _add_api(pp)
+    # Where to watch, asked once per run when both ends are a TTY.
+    #   ask (default) — the pop-up: browser or terminal, defaulting to terminal
+    #   browser       — always open, never ask
+    #   terminal      — never open, never ask (CI, tmux, remote boxes)
+    # A non-"ask" value means nothing reads stdin, which is what makes it script-safe.
+    pp.add_argument(
+        "--watch",
+        choices=["ask", "browser", "terminal"],
+        default="ask",
+        help="where to watch a match: ask (default) | browser | terminal",
+    )
     pp.set_defaults(func=cmd_play)
 
     ppub = sub.add_parser(
         "publish", help="certify your agent for RANKED play (verify a hosted endpoint)"
     )
-    ppub.add_argument("--api", default="", help="platform API base (or from login)")
+    ppub.add_argument("--api", default=argparse.SUPPRESS, help="platform API base (or from login)")
     ppub.add_argument("--agent", default="", help="agent public id (or from login)")
     ppub.add_argument("--token", default="", help="dashboard/access token (or from login)")
     ppub.add_argument("--manifest", required=True, help="path to manifest.json (hosted endpoint)")
@@ -2797,6 +3111,19 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--token", default="")
     pq.set_defaults(func=cmd_queue)
 
+    # Rooms. Two subcommands under one noun rather than `room-create`/`room-join`, so the
+    # pair reads as one feature in `pyyol --help` instead of two unrelated verbs.
+    prm = sub.add_parser("room", help="create or join a private staked table shared by its id")
+    prm.add_argument("action", choices=["create", "join"])
+    prm.add_argument("id", nargs="?", default="", help="the room id, when joining")
+    _add_api(prm)
+    prm.add_argument(
+        "--tier", default="", help="stake tier key (see `pyyol queue goofspiel --list`)"
+    )
+    prm.add_argument("--bid", type=int, default=0, help="explicit coin stake")
+    prm.add_argument("--token", default="")
+    prm.set_defaults(func=cmd_room)
+
     pwal = sub.add_parser("wallet", help="show your coin balance + per-agent playing wallets")
     _add_api(pwal)
     pwal.add_argument("--json", action="store_true")
@@ -2805,7 +3132,48 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _make_output_unicode_safe() -> None:
+    """Stop a legacy console from turning output into a crash.
+
+    Windows consoles still default to cp1252 in plenty of setups, and this CLI prints ‚Üí, ‚àí,
+    ‚óè, box-drawing and the wordmark. Writing any of those to a cp1252 stream raises
+    UnicodeEncodeError from inside `print` ‚Äî so `pyyol --help` died with a traceback before
+    printing a single line of help, on the platform least equipped to debug it. Reported from
+    a real Windows session, reproduced here with PYTHONIOENCODING=cp1252.
+
+    Two steps, in order:
+
+      1. Try to switch the stream to UTF-8. Modern Windows Terminal, PowerShell 7 and VS Code
+         all render it correctly, so the right answer is usually "just use UTF-8".
+      2. Failing that, keep the console's encoding but replace what it cannot draw. A "?"
+         where an arrow should be is a cosmetic blemish; a traceback is a broken tool.
+
+    Deliberately best-effort and silent: a stream that does not support reconfigure (a pipe
+    wrapped by a test, an embedded runtime) is left exactly as it was.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc in ("utf8", "utf8mb4"):
+            continue  # already fine; leave it alone
+        try:
+            reconfigure(encoding="utf-8")
+            continue
+        except (ValueError, OSError, LookupError):
+            pass
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError, LookupError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    # FIRST, before anything can print: a cp1252 console must not turn our own output into a
+    # traceback. See _make_output_unicode_safe.
+    _make_output_unicode_safe()
+
     # BARE `pyyol` ON A TTY OPENS THE SHELL.
     #
     # The subcommand is required=True, so typing the tool's own name — the first thing anyone
@@ -2831,7 +3199,14 @@ def main(argv: list[str] | None = None) -> int:
     from . import install_ping
 
     install_ping.maybe_ping(getattr(args, "api", "") or DEFAULT_API_BASE, __version__)
-    return args.func(args)
+    # THE ERROR BOUNDARY. This call used to be bare, so any unexpected exception printed a raw
+    # traceback — our file paths, our line numbers — to a developer who only wanted to know
+    # whether their agent was ranked. Ctrl-C did the same. See pyyol/_crash.py.
+    from ._crash import guard
+
+    return guard(
+        args.func, args, version=__version__, argv=argv if argv is not None else sys.argv[1:]
+    )
 
 
 if __name__ == "__main__":

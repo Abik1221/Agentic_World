@@ -35,6 +35,16 @@ type Service struct {
 
 	history HistoryWriter
 
+	// board names which series this instance owns. Two instances run the SAME algorithm over
+	// different matches — the developer board and the platform harness — and the name is what
+	// keeps their histories from overwriting each other.
+	board string
+
+	// publishableHosts gates model ATTRIBUTION — see llmgw.PublishableUpstreamHosts. Empty
+	// means nothing is attributable, which is the correct failure: a board that cannot
+	// establish where a call went should show unattributed seats rather than guess.
+	publishableHosts []string
+
 	mu       sync.RWMutex
 	snapshot *Snapshot
 }
@@ -42,9 +52,33 @@ type Service struct {
 // SetHistoryWriter attaches per-day history persistence. Optional.
 func (s *Service) SetHistoryWriter(h HistoryWriter) { s.history = h }
 
+// SetBoard names the series this instance writes. Required before history is recorded;
+// see RecordBoardHistory, which refuses an empty name rather than defaulting to one.
+func (s *Service) SetBoard(name string) { s.board = name }
+
+// SetPublishableHosts declares which upstreams may be attributed to a model.
+//
+// A setter rather than a constructor argument so an existing deployment keeps compiling,
+// but note what the zero value means: NO host is publishable, so every seat comes back
+// unattributed and the board is empty. That is deliberate. The alternative default —
+// publish everything — is how a lab stand-in ends up ranked as a model, which is the exact
+// failure this whole path exists to prevent. main wires it from llmgw's default set.
+func (s *Service) SetPublishableHosts(hosts []string) { s.publishableHosts = hosts }
+
 // SeatSource reads the seats a board is fitted from. Satisfied by *store.ModelBoardRepo.
+//
+// publishableHosts names the upstreams whose responses may be attributed to a model. It is
+// threaded through rather than read inside the repo so the rule is visible at the boundary:
+// what the board is willing to publish is a policy decision, not a storage detail.
 type SeatSource interface {
-	Seats(ctx context.Context, game string, start, end time.Time) ([]Seat, error)
+	// Seats returns the seats in the window that are worth comparing, plus the exclusions the
+	// SOURCE itself resolved, keyed as BuildComparisons keys them.
+	//
+	// The second return exists because the query now filters: it drops seats from games with no
+	// pairwise outcome, which on the developer board is 98.8% of them. seats_excluded is
+	// published, so those have to be counted somewhere, and the only place that knows how many
+	// there were is the layer that removed them. A source that filters nothing returns nil.
+	Seats(ctx context.Context, game string, start, end time.Time, publishableHosts []string) ([]Seat, map[string]int, error)
 }
 
 // HistoryWriter persists one day's fitted board so a rating can be shown as a series.
@@ -53,7 +87,7 @@ type SeatSource interface {
 // Separate from SeatSource because reading and writing fail independently — a history write that
 // errors must not cost the reader the board that was just computed.
 type HistoryWriter interface {
-	RecordBoardHistory(ctx context.Context, day time.Time, windowDays int, ratings []Rating) error
+	RecordBoardHistory(ctx context.Context, board string, day time.Time, windowDays int, ratings []Rating) error
 }
 
 // HistoryPoint is one day of one model's series.
@@ -122,11 +156,11 @@ func (s *Service) Snapshot() *Snapshot {
 func (s *Service) Refresh(ctx context.Context) error {
 	start := time.Now()
 	from := start.Add(-s.window)
-	seats, err := s.seats.Seats(ctx, "", from, start.Add(time.Hour))
+	seats, preExcluded, err := s.seats.Seats(ctx, "", from, start.Add(time.Hour), s.publishableHosts)
 	if err != nil {
 		return err
 	}
-	board := Build(seats, s.build, s.fit)
+	board := BuildWithExclusions(seats, preExcluded, s.build, s.fit)
 	snap := &Snapshot{
 		Board:      board,
 		ComputedAt: start,
@@ -142,7 +176,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	// that succeeded. History is also the one thing that cannot be backfilled, so the failure is
 	// logged loudly rather than swallowed.
 	if s.history != nil && len(board.Ratings) > 0 {
-		if err := s.history.RecordBoardHistory(ctx, start, snap.WindowDays, board.Ratings); err != nil {
+		if err := s.history.RecordBoardHistory(ctx, s.board, start, snap.WindowDays, board.Ratings); err != nil {
 			s.log.Error("model board history not recorded — this day of the series cannot be "+
 				"recovered later", "error", err)
 		}
@@ -175,7 +209,32 @@ func (w *Worker) Run(ctx context.Context) {
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	for {
-		if err := w.svc.Refresh(ctx); err != nil {
+		started := time.Now()
+		err := w.svc.Refresh(ctx)
+		took := time.Since(started)
+
+		// A REFRESH THAT OUTLASTS ITS INTERVAL IS NOT A SCHEDULED JOB ANY MORE.
+		//
+		// This loop is sequential, so it cannot overlap itself — but the ticker always
+		// has a tick waiting when the work takes longer than the period, and the effect
+		// is a job that runs continuously while still describing itself as "every 10
+		// minutes". That is precisely how it hid: the developer board's refresh had grown
+		// to ~16.7 minutes against a 10-minute interval and was scanning permanently,
+		// 208 GB of reads across four refreshes, and nothing in the logs said so.
+		//
+		// Reported rather than corrected, deliberately. Silently stretching the interval
+		// would hide the growth that caused it, and skipping refreshes would make the
+		// board quietly stale; the operator needs to know the window has outgrown its
+		// schedule so the query or the interval can be fixed on purpose.
+		if took > w.interval {
+			w.log.Warn("model board refresh took longer than its interval — it is now running "+
+				"continuously rather than on a schedule",
+				"took", took.Round(time.Second).String(),
+				"interval", w.interval.String())
+		} else {
+			w.log.Info("model board refreshed", "took", took.Round(time.Millisecond).String())
+		}
+		if err != nil {
 			// Logged, not fatal: the previous snapshot is still being served, and a board that
 			// keeps working through a database blip is the point of having a snapshot at all.
 			w.log.Error("model board refresh failed", "error", err)

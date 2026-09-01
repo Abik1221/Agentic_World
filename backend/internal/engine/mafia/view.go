@@ -18,10 +18,35 @@ type AgentView struct {
 	Alive  map[int]bool `json:"alive"`
 	Allies []int        `json:"allies,omitempty"` // fellow Mafia seats (Mafia agents only)
 	Legal  []string     `json:"legal"`            // action kinds valid for this seat now
+	// AllyKills is what each fellow MAFIA has selected so far tonight (ally seat → target).
+	// Empty outside the night, and never present for a non-mafia seat.
+	//
+	// In the real game the mafia wake TOGETHER and point at their choice, seeing each other —
+	// that mutual sight is how they converge on one target. Without it here they were choosing
+	// blind, and because a tie in the kill vote means NOBODY DIES, three mafia splitting 1-1-1
+	// silently vetoed their own night. The team could not reliably perform the one action it
+	// exists to perform.
+	AllyKills map[int]int `json:"ally_kills,omitempty"`
+	// CannotProtect is the seat this DOCTOR shielded last night and therefore may not shield
+	// again tonight. -1 when there is no such seat (the first night, or after a night off).
+	//
+	// Published rather than left to be discovered by rejection: the rule is real, and an agent
+	// that has to learn it by having a move refused wastes a decision and a model call to find
+	// out something the engine already knows. Doctors only — nobody else's constraint is
+	// anyone else's business.
+	CannotProtect int `json:"cannot_protect"`
 
 	// Public is the shared transcript (moderator lines, messages, votes,
 	// eliminations, phase changes, victory) every agent may see.
+	//
+	// WINDOWED to the most recent MaxPublicWindow entries — see the note where it is built.
+	// Everything older is summarised in Digest, and every event was already delivered to the
+	// agent in real time as it happened, so this is de-duplication rather than redaction.
 	Public []Event `json:"public"`
+	// Digest states, in counts and seat numbers only, what happened before the window.
+	// Nil when the whole transcript fits. Never contains prose: a summary of what an agent
+	// said is not what it said, and this game is played through speech.
+	Digest *PublicDigest `json:"digest,omitempty"`
 	// Private is this seat's own night results (e.g., an investigation outcome).
 	// Other seats' night secrets are never included.
 	Private []Event `json:"private,omitempty"`
@@ -56,6 +81,15 @@ func BuildView(s State, seat int, log []Event) AgentView {
 		Legal: LegalActions(s, seat),
 	}
 
+	// -1 on every view, then overwritten for a doctor that is actually barred. Defaulting to
+	// -1 rather than leaving the zero value is what keeps 0 meaning "seat 0" everywhere.
+	v.CannotProtect = -1
+	if role == RoleDoctor {
+		if last, ok := s.LastProtect[seat]; ok {
+			v.CannotProtect = last
+		}
+	}
+
 	if role == RoleMafia {
 		var allies []int
 		for other, r := range s.Roles {
@@ -65,8 +99,32 @@ func BuildView(s State, seat int, log []Event) AgentView {
 		}
 		sort.Ints(allies)
 		v.Allies = allies
+		// What the others have picked so far tonight, so the team can converge rather than
+		// split. Only during the night, and only an ALLY's choice: this seat's own pick is
+		// already in Private, and nobody else's night action is any mafia's business.
+		if s.Phase == PhaseNight && len(s.MafiaKill) > 0 {
+			kills := map[int]int{}
+			for _, ally := range allies {
+				if target, ok := s.MafiaKill[ally]; ok && target > 0 {
+					kills[ally] = target
+				}
+			}
+			if len(kills) > 0 {
+				v.AllyKills = kills
+			}
+		}
 	}
 
+	// COMPLETE, deliberately. BuildView feeds three consumers and only one of them wants a
+	// smaller payload:
+	//
+	//   - dispatchPublicEvents, the real-time push stream — windowing here would SILENTLY DROP
+	//     events an agent never received, breaking the guarantee that nobody misses anything
+	//   - the game-end record, documented as the complete match transcript
+	//   - the per-turn payload sent to the model, which is the only one paying per token
+	//
+	// So the trimming lives at the payload boundary (WindowPublic), not here. A view that is
+	// authoritative for the log must stay whole.
 	for _, ev := range log {
 		switch {
 		case isPublic(ev.Type):
@@ -78,6 +136,72 @@ func BuildView(s State, seat int, log []Event) AgentView {
 		}
 	}
 	return v
+}
+
+// WindowPublic trims a view's transcript for the PER-TURN PAYLOAD only.
+//
+// Measured on a real finished match in the lab: 550 public events. At 50-200 tokens each
+// that is 27,000-110,000 tokens in one prompt, against a Groq free tier of 6,000 TOKENS PER
+// MINUTE — one turn exceeding a minute's entire budget by an order of magnitude.
+//
+// It is also redundant: every event was already pushed to the agent in real time as it
+// happened, so re-sending the archive each turn pays for the same information again, per
+// turn, forever. This removes DUPLICATION, never information.
+//
+// Call this where the view is serialised to the model. Never inside BuildView — see the note
+// there for the two consumers that must keep the whole log.
+func WindowPublic(public []Event) ([]Event, *PublicDigest) {
+	if len(public) <= MaxPublicWindow {
+		return public, nil
+	}
+	cut := len(public) - MaxPublicWindow
+	return append([]Event(nil), public[cut:]...), digestOf(public[:cut])
+}
+
+// MaxPublicWindow is how many recent public events travel in a per-turn payload.
+//
+// Sized to cover a full day of a 12-seat table — roughly one phase banner, twelve messages,
+// twelve votes and an elimination, with room to spare — so the current conversation is always
+// present in full. Older days arrive as a Digest, and the complete log stays available from
+// the replay endpoint for anything that wants it.
+const MaxPublicWindow = 60
+
+// PublicDigest states what happened before the window in facts, never in prose.
+type PublicDigest struct {
+	// Events is how many public entries the window left out, so an agent can tell that
+	// history exists rather than inferring the match began where the window starts.
+	Events int `json:"events"`
+	// Messages, Votes and Eliminations are counts of what was dropped.
+	Messages     int `json:"messages"`
+	Votes        int `json:"votes"`
+	Eliminations int `json:"eliminations"`
+	// Eliminated names the seats removed before the window, in order. The single most
+	// load-bearing fact in the omitted history: who is gone. Alive already carries the
+	// current roster, but the ORDER of removals is how a town reconstructs the night.
+	Eliminated []int `json:"eliminated,omitempty"`
+}
+
+// digestOf derives the summary. Counts and seat numbers only — no text is copied or
+// rewritten, so nothing here can misrepresent what a player actually said.
+func digestOf(dropped []Event) *PublicDigest {
+	if len(dropped) == 0 {
+		return nil
+	}
+	d := &PublicDigest{Events: len(dropped)}
+	for _, ev := range dropped {
+		switch ev.Type {
+		case EvMessage:
+			d.Messages++
+		case EvVote:
+			d.Votes++
+		case EvEliminate:
+			d.Eliminations++
+			if p, ok := ev.Payload.(EliminatePayload); ok {
+				d.Eliminated = append(d.Eliminated, p.Target)
+			}
+		}
+	}
+	return d
 }
 
 func cloneAliveMap(m map[int]bool) map[int]bool {

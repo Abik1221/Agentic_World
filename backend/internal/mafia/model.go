@@ -126,9 +126,17 @@ type Match struct {
 	Seed          []byte
 	State         mf.State
 	RoundDeadline *time.Time
-	Players       []Player
-	WinnerTeam    string
-	ReplayHash    string
+	// StartsAt is the ABSOLUTE instant play begins, set when the roster fills and the table
+	// starts. Null on a table that has not started, and on any match that predates it.
+	//
+	// Absolute, never a duration, for the reason internal/readycheck states: a terminal and a
+	// browser each counting down from ten drift apart within seconds, and two surfaces
+	// disagreeing about when a staked match begins is worse than showing no countdown at all.
+	// Every surface counts TO this.
+	StartsAt   *time.Time
+	Players    []Player
+	WinnerTeam string
+	ReplayHash string
 }
 
 func (m *Match) playerByAgent(agent string) *Player {
@@ -177,6 +185,25 @@ type AgentView struct {
 	Public   []mf.Event   `json:"public,omitempty"`  // shared transcript this seat may see
 	Private  []mf.Event   `json:"private,omitempty"` // this seat's own night results only
 	Deadline *time.Time   `json:"deadline,omitempty"`
+	// StartsAt is the ABSOLUTE instant play begins, present once the table has started.
+	// Clients render a countdown from it; see internal/readycheck for why it is an instant
+	// and not a duration.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+	// ServerNow is the platform's clock when this view was built.
+	//
+	// Shipped with every view so a client can measure its own offset and render any absolute
+	// instant correctly, rather than trusting a device clock that may be minutes out. Without
+	// it StartsAt is unusable on a skewed machine, which is most of them.
+	ServerNow time.Time `json:"server_now"`
+	// CannotProtect (doctors) and AllyKills (mafia) come from the engine's own redaction and
+	// must be carried through every layer between it and the agent.
+	//
+	// There are THREE hand-built views on that path — the engine's, this one, and
+	// MafiaPushView — and a field added to the first is invisible to agents until it is
+	// copied into the other two. Both of these were added to the engine and forwarded
+	// nowhere, so the rules they encode existed and no agent was ever told.
+	CannotProtect int         `json:"cannot_protect"`
+	AllyKills     map[int]int `json:"ally_kills,omitempty"`
 	// Live voting state for the current round (present only during the voting
 	// phase) so an agent can reason about bandwagons / saving an ally without
 	// reconstructing it from raw vote events.
@@ -186,6 +213,26 @@ type AgentView struct {
 	// PhaseDurationMs is the FULL length of the current phase, so a client can draw
 	// a countdown ring (elapsed vs remaining) rather than just a shrinking number.
 	PhaseDurationMs int64 `json:"phase_duration_ms,omitempty"`
+	// WarnAt is when "this phase is nearly over" should fire, as an ABSOLUTE instant, or
+	// absent when the phase is too short to warn about (see deadline.WarnLead).
+	//
+	// This is the last-seconds cue for DISCUSSION above all: a table talking its way toward a
+	// vote needs to know when to stop arguing and commit, and an agent that only discovers the
+	// phase ended by having its message refused has effectively been cut off mid-sentence.
+	//
+	// A FRACTION of the phase length, for the same reason as everywhere else: Mafia's phases
+	// differ in length by design, so a fixed lead would be most of a short phase and a
+	// rounding error on a long one.
+	//
+	// RECOMPUTED from phaseWindow here, and that is safe in a way it is NOT for Goofspiel.
+	// Mafia's window is a pure function of the phase — config or mf.PhaseDuration, no latency
+	// samples — so recomputing returns exactly the value that was applied when the deadline
+	// was set. Goofspiel's window is adaptive, so it must be read back as
+	// deadline-minus-round-start instead of recomputed. Same rule, deliberately different
+	// source; do not "unify" these without checking which side is deterministic.
+	WarnAt *time.Time `json:"warn_at,omitempty"`
+	// WarnInMs is the same instant as ms remaining. 0 once elapsed, or when there is none.
+	WarnInMs int64 `json:"warn_in_ms,omitempty"`
 	// CanSpeak states the table-talk rule for the current phase up front: the town
 	// is asleep at night, so nobody may speak. Without this an agent only learns it
 	// by having a message rejected, and the UI cannot grey the composer out.
@@ -219,7 +266,7 @@ type Repo interface {
 	ListWaiting(ctx context.Context, entryFee int64, excludeOwnerPublicID string, limit int) ([]LobbyItem, error)
 	Get(ctx context.Context, matchPublicID string) (Match, error)
 	JoinSeat(ctx context.Context, matchPublicID string, p Player) error
-	Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, deadline time.Time, events []mf.Event) error
+	Start(ctx context.Context, matchPublicID string, roles map[int]string, state mf.State, startsAt, deadline time.Time, events []mf.Event) error
 	// MarkUnrated flags a match as excluded from ranked statistics (matches.rated =
 	// false). Called at start time for a table that house bots had to fill. Idempotent.
 	MarkUnrated(ctx context.Context, matchPublicID string) error

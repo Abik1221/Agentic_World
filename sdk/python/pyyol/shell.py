@@ -23,6 +23,7 @@ hang it in exactly the environments nobody is watching.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import sys
@@ -102,7 +103,7 @@ def _wordmark(color: bool) -> str:
 # once. The groups are an ORDER, not a LIST — anything they do not claim still appears under
 # "More", so a command added to the parser can never go missing because nobody updated this.
 _GROUPS: list[tuple[str, list[str]]] = [
-    ("Play", ["play", "dev", "games", "watch", "queue"]),
+    ("Play", ["play", "dev", "games", "watch", "queue", "room"]),
     ("Ship", ["init", "publish", "serve", "autoplay"]),
     ("Inspect", ["status", "doctor", "usage", "replay", "logs"]),
     ("Standing", ["leaderboard", "profile", "wallet", "arenas"]),
@@ -134,6 +135,8 @@ class _LiveStrip:
         self.text = "  " + s("LIVE", _DIM) + "  " + s("checking…", _DIM)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Set while a command owns the terminal. See `quiet` and `_redraw`.
+        self._muted = threading.Event()
 
     # -- rendering -------------------------------------------------------------
     def _render(self, games: list[dict[str, Any]]) -> str:
@@ -210,9 +213,33 @@ class _LiveStrip:
             if self.text != before:
                 self._redraw()
 
+    @contextlib.contextmanager
+    def quiet(self):
+        """Stop repainting while a command owns the terminal.
+
+        `_redraw` steps up one line and ERASES it, on the assumption that the line above
+        the cursor is the strip. That holds at an idle prompt and is false the moment a
+        command prints anything: `pyyol play` streams a decision and event feed from the
+        match thread while this thread fires every five seconds, so the line being erased
+        was whatever the match had just printed.
+
+        The symptom is worse than a cosmetic one. A match log with `turn 93` followed by
+        `turn 95` reads as a DROPPED TURN — a forfeit — and sent us looking for a
+        reconnect bug in the arena that does not exist. The turn was played and logged;
+        the ticker wiped the line.
+
+        `_typing()` cannot catch this. It inspects the readline input buffer, which says
+        nothing about another thread writing to the same stream.
+        """
+        self._muted.set()
+        try:
+            yield
+        finally:
+            self._muted.clear()
+
     def _redraw(self) -> None:
         """Repaint the strip in place, and only while nothing is half-typed."""
-        if self._typing():
+        if self._typing() or self._muted.is_set():
             return
         # Save cursor, step up onto the strip, clear it, rewrite, come back. The prompt and
         # anything typed on it are untouched.
@@ -231,6 +258,30 @@ class _LiveStrip:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def wordmark_for(stream: TextIO) -> str:
+    """The wordmark, if this stream can actually print it. Empty string otherwise.
+
+    `pyyol --help` is the first thing a developer sees in CI, in a Dockerfile, or when they
+    pipe the tool anywhere, and it showed bare argparse output with no sign of what this is.
+    The shell had all the identity and only people who found the shell ever saw it.
+
+    THE ENCODING CHECK IS NOT OPTIONAL. The glyphs are U+2588 FULL BLOCK. On a legacy Windows
+    console (cp1252) printing them raises UnicodeEncodeError — so decorating --help crashed
+    --help, with a traceback, on the one platform least likely to be able to read the fix. A
+    logo that can break `--help` is not a logo, it is an outage with a brand on it.
+
+    Measured, not assumed: the candidate string is encoded against the stream's own encoding,
+    so a terminal that can render it gets it and one that cannot gets clean text.
+    """
+    art = _wordmark(use_color(stream))
+    enc = getattr(stream, "encoding", None) or "ascii"
+    try:
+        art.encode(enc, errors="strict")
+    except (UnicodeEncodeError, LookupError):
+        return ""
+    return art
 
 
 def _banner(s: _Style, version: str, api: str, who: dict[str, Any] | None) -> str:
@@ -383,46 +434,89 @@ def _pick(
         return None
 
     # Flattened in the SAME order the palette groups use, so the picker and the printed list
-    # never disagree about what comes first.
-    ordered: list[tuple[str, str]] = []
+    # never disagree about what comes first — and carrying each command's GROUP with it, so the
+    # menu can show the same headings the palette does. A flat list of twenty-five verbs is a
+    # wall; the headings are what make it readable at a glance.
+    ordered: list[tuple[str, str, str]] = []  # (name, help, group title)
     seen: set[str] = set()
-    for _title, names in groups:
+    for title, names in groups:
         for n in names:
             if n in cmds and n not in seen:
-                ordered.append((n, cmds[n]))
+                ordered.append((n, cmds[n], title))
                 seen.add(n)
     for n in sorted(set(cmds) - seen):
-        ordered.append((n, cmds[n]))
+        ordered.append((n, cmds[n], "More"))
 
     query = ""
-    idx = 0
+    idx = 0  # index into the FILTERED list
+    top = 0  # first visible row — the scroll window's origin
     rows = min(10, len(ordered))
     drawn = 0
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
 
-    def matches() -> list[tuple[str, str]]:
+    def matches() -> list[tuple[str, str, str]]:
+        """Name first, then description.
+
+        Matching the description too is what lets someone who knows WHAT they want but not what
+        it is called find it: typing "stake" finds `play`, "coins" finds `wallet`. Name matches
+        sort first so an exact verb never loses its place to a word buried in someone's help text.
+        """
         if not query:
             return ordered
         q = query.lower()
-        return [(n, h) for n, h in ordered if q in n.lower()]
+        by_name = [e for e in ordered if q in e[0].lower()]
+        by_help = [e for e in ordered if q not in e[0].lower() and q in e[1].lower()]
+        return by_name + by_help
 
     def draw() -> None:
-        nonlocal drawn
+        nonlocal drawn, top
         if drawn:
             stream.write(f"\x1b[{drawn}A")
         stream.write("\x1b[J")
         hits = matches()
-        head = "  " + s("/" + query, _BOLD) + s("   ↑↓ move · enter run · esc cancel", _DIM)
+
+        # Keep the cursor inside the window. Without this the list showed only the first ten
+        # and the selection clamped there too, so with twenty-five commands FIFTEEN could never
+        # be chosen from the menu at all — the affordance the banner advertises silently
+        # covered under half the tool.
+        if idx < top:
+            top = idx
+        elif idx >= top + rows:
+            top = idx - rows + 1
+        top = max(0, min(top, max(0, len(hits) - rows)))
+
+        more = ""
+        if len(hits) > rows:
+            more = s(f"   {idx + 1}/{len(hits)}", _DIM)
+        head = "  " + s("/" + query, _BOLD) + s("   ↑↓ move · enter run · esc cancel", _DIM) + more
         stream.write(head + "\n")
-        shown = hits[:rows]
-        for i, (name, help_text) in enumerate(shown):
-            mark = s(" ❯ ", _BRAND) if i == idx else "   "
-            label = s(name.ljust(12), _BRAND if i == idx else _DIM)
-            stream.write(f"{mark}{label} {s(help_text[:60], _DIM)}\n")
-        if not shown:
+
+        window = hits[top : top + rows]
+        last_group = ""
+        for i, (name, help_text, group) in enumerate(window):
+            real = top + i
+            # The heading only when it CHANGES, so the list reads as sections rather than a
+            # repeated label. Suppressed entirely while filtering: a filtered list is already
+            # the answer to a question and headings only add noise to it.
+            if not query and group != last_group:
+                stream.write("   " + s(group.upper(), _DIM) + "\n")
+                last_group = group
+            mark = s(" ❯ ", _BRAND) if real == idx else "   "
+            label = s(name.ljust(12), _BRAND if real == idx else _DIM)
+            stream.write(f"{mark}{label} {s(help_text[:58], _DIM)}\n")
+        if not window:
             stream.write("   " + s("no command matches", _DIM) + "\n")
-        drawn = 1 + max(1, len(shown))
+        # Count the headings too, or the redraw rewinds by the wrong number of lines and the
+        # menu smears down the terminal.
+        headings = 0
+        if not query:
+            seen_titles: set[str] = set()
+            for _n, _h, g in window:
+                if g not in seen_titles:
+                    seen_titles.add(g)
+                    headings += 1
+        drawn = 1 + max(1, len(window)) + headings
         stream.flush()
 
     try:
@@ -439,7 +533,9 @@ def _pick(
                 if key == "A":
                     idx = max(0, idx - 1)
                 elif key == "B":
-                    idx = min(max(0, min(rows, len(hits)) - 1), idx + 1)
+                    # Bounded by the FILTERED LIST, not by the visible window. Bounding it by
+                    # the window is what made everything past row ten unreachable.
+                    idx = min(max(0, len(hits) - 1), idx + 1)
                 continue
             if ch in ("\r", "\n"):
                 return hits[idx][0] if hits else None
@@ -447,11 +543,11 @@ def _pick(
                 return None
             if ch in ("\x7f", "\b"):
                 query = query[:-1]
-                idx = 0
+                idx, top = 0, 0
                 continue
             if ch.isprintable():
                 query += ch
-                idx = 0
+                idx, top = 0, 0
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         stream.write("\x1b[J")
@@ -544,7 +640,8 @@ def _loop(
                 _print_help(s, cmds, out)
                 continue
             out.write(s("  /" + chosen, _BRAND) + "\n")
-            _dispatch(parser, [chosen], s, out)
+            with strip.quiet():
+                _dispatch(parser, [chosen], s, out)
             continue
         head = bare.split()[0].lower()
 
@@ -568,7 +665,10 @@ def _loop(
             )
             continue
 
-        _dispatch(parser, argv, s, out)
+        # Muted for the duration: a command owns the terminal while it runs, and the
+        # ticker erasing the line above the cursor would eat its output. See _LiveStrip.quiet.
+        with strip.quiet():
+            _dispatch(parser, argv, s, out)
 
 
 def _dispatch(parser: Any, argv: list[str], s: _Style, out: TextIO) -> None:
@@ -597,4 +697,10 @@ def _dispatch(parser: Any, argv: list[str], s: _Style, out: TextIO) -> None:
         if code:
             out.write(s(f"  exited {code}\n", _WARN))
     except Exception as e:  # noqa: BLE001 — the session must outlive any single command
-        out.write(s(f"  {type(e).__name__}: {e}\n", _ERR))
+        # The SAME report the command line gives, minus the exit: a crash here printed a bare
+        # "IndexError: list index out of range", which tells a developer nothing about whose
+        # bug it is or where the detail went. The session continues either way.
+        from ._crash import report_crash
+        from . import __version__
+
+        report_crash(e, argv[0] if argv else "", __version__, stream=out)

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/agent-arena/arena/internal/matchmaking"
 	"github.com/jackc/pgx/v5"
@@ -12,9 +13,19 @@ import (
 // MatchmakingRepo is the pgx implementation of matchmaking.Repo. One row per agent
 // (PK agent_id); re-queueing upserts. The elo snapshot is written at enqueue so the
 // matcher reads a single table.
-type MatchmakingRepo struct{ db *pgxpool.Pool }
+type MatchmakingRepo struct {
+	db *pgxpool.Pool
+	// events is the append-only queue history. OPTIONAL and nil-checked at every use: the
+	// queue must work identically with no observability attached, so a deployment that has
+	// not wired this cannot lose a pairing over it.
+	events *QueueEventsRepo
+}
 
 func NewMatchmakingRepo(db *pgxpool.Pool) *MatchmakingRepo { return &MatchmakingRepo{db: db} }
+
+// SetQueueEvents attaches the history recorder. Nil leaves the queue silent, which is the
+// pre-existing behaviour rather than a degraded one.
+func (r *MatchmakingRepo) SetQueueEvents(e *QueueEventsRepo) { r.events = e }
 
 var _ matchmaking.Repo = (*MatchmakingRepo)(nil)
 
@@ -28,6 +39,15 @@ func (r *MatchmakingRepo) Upsert(ctx context.Context, e matchmaking.Entry) error
 		   SET bid = EXCLUDED.bid, elo = EXCLUDED.elo, status = 'waiting',
 		       match_id = NULL, enqueued_at = now(), updated_at = now()`,
 		e.AgentPublicID, e.OwnerPublicID, e.Bid, e.Elo)
+	// Best-effort history. Recorded AFTER the write and only on success, so the funnel counts
+	// agents that actually joined rather than attempts that failed — and so a reporting insert
+	// can never be the reason an agent does not get queued.
+	if err == nil && r.events != nil {
+		r.events.Record(ctx, QueueEvent{
+			AgentPublicID: e.AgentPublicID, Game: "goofspiel",
+			Queue: QueueTwoPlayer, Kind: QueueEnqueued, Bid: e.Bid,
+		})
+	}
 	return err
 }
 
@@ -159,6 +179,26 @@ func (r *MatchmakingRepo) MarkMatched(ctx context.Context, agentA, agentB, match
 		 WHERE agent_id IN (SELECT id FROM agents WHERE public_id = ANY($1))
 		   AND status = 'claimed'`,
 		[]string{agentA, agentB}, matchPublicID)
+	if err == nil && r.events != nil {
+		// The wait is read back from enqueued_at rather than passed in: the caller does not
+		// know when these agents joined, and measuring it here is the only place the value is
+		// available without another round trip from every call site.
+		//
+		// Read BEFORE the rows are deleted at finalize — which is exactly why this history
+		// exists, and why the read happens now instead of during reporting.
+		for _, ag := range []string{agentA, agentB} {
+			var waitedMs int64
+			_ = r.db.QueryRow(ctx,
+				`SELECT COALESCE(EXTRACT(EPOCH FROM (now() - q.enqueued_at)) * 1000, 0)::bigint
+				   FROM matchmaking_queue q JOIN agents a ON a.id = q.agent_id
+				  WHERE a.public_id = $1`, ag).Scan(&waitedMs)
+			r.events.Record(ctx, QueueEvent{
+				AgentPublicID: ag, Game: "goofspiel", Queue: QueueTwoPlayer,
+				Kind: QueueMatched, MatchPublicID: matchPublicID,
+				Waited: time.Duration(waitedMs) * time.Millisecond,
+			})
+		}
+	}
 	return err
 }
 

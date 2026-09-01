@@ -176,15 +176,18 @@ func Describe(cfg Config, dims []Dimension) Methodology {
 		Limitations: []Limitation{
 			{
 				Scope: "skill",
-				What: "Mafia contributes NO decision-quality score. Its scorer measures a " +
-					"seat's voting record per match, as lift over chance, and there is no " +
-					"per-decision scorer that turns one vote or one discussion message into " +
-					"a regret value.",
-				Effect: "A developer who plays only Mafia sees an empty Decision Quality " +
-					"dimension. That is missing coverage, not a judgement that they played " +
-					"badly, and the match-level result is deliberately not folded in — a " +
-					"number invented to fill a column is worse than a column that says it " +
-					"is empty.",
+				What: "Mafia is scored per MATCH-SEAT, not per decision. A seat's votes are " +
+					"scored together as lift over chance — how much better than a random " +
+					"voter it identified the mafia, given how many were alive among the " +
+					"seats it could pick from — and that one result is then attributed to " +
+					"the votes it cast. Discussion messages are not scored at all.",
+				Effect: "A Mafia decision-quality figure carries less independent evidence " +
+					"than its decision count suggests: twenty votes in one match are one " +
+					"observation of that seat, not twenty. The unit is the match because " +
+					"lift is undefined on a single vote — one vote is either right or wrong, " +
+					"and that cannot separate a good agent from a lucky one. Mafia and town " +
+					"are scored against different objectives, since a mafia voting a " +
+					"townsfolk is playing correctly rather than badly.",
 			},
 			{
 				Scope: "skill",

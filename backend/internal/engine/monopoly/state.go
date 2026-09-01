@@ -13,7 +13,7 @@ package monopoly
 // Version identifies the rule set. It is embedded in the match_created event and
 // stored on every match so a replay is reproduced with the exact same rules.
 // Bump on ANY behavioral change to the engine.
-const Version = "monopoly-1.2.0"
+const Version = "monopoly-1.5.0"
 
 // Bank is the sentinel "owner" for unowned property and the sentinel creditor for
 // payments that go to / come from the bank. Tie is the sentinel winner for a draw.
@@ -38,8 +38,19 @@ const (
 
 // Trade is a proposed player-to-player exchange of properties and cash. The
 // proposer gives GiveProps + GiveCash and receives WantProps + WantCash.
+// OpenToTable is the Target of an offer made to the WHOLE table rather than to one
+// seat: any player who can satisfy it may take it, first come first served.
+//
+// -1 rather than a separate bool, and never 0, for the reason seat numbering forces
+// everywhere in this codebase: seat 0 is a real player, so a zero value must never be
+// readable as "everyone". An offer whose Target was accidentally left unset is then a
+// concrete offer to seat 0, which the strict validator rejects on its own terms — it
+// can never silently become an offer to the table.
+const OpenToTable = -1
+
 type Trade struct {
-	Proposer  int   `json:"proposer"`
+	Proposer int `json:"proposer"`
+	// Target is the seat being offered to, or OpenToTable for an open offer.
 	Target    int   `json:"target"`
 	GiveProps []int `json:"give_props"`           // proposer -> target
 	GiveCash  int   `json:"give_cash"`            // proposer -> target
@@ -81,6 +92,21 @@ type AuctionState struct {
 	// Estate marks an auction of a bankrupt-to-bank estate: when it (and the rest of
 	// EstateQueue) closes, the debtor's turn ends rather than returning to PhaseManage.
 	Estate bool `json:"estate,omitempty"`
+	// House marks a HOUSING SHORTAGE auction: what is being sold is one scarce house or
+	// hotel, not a property. Property is -1 for these — no title deed changes hands.
+	House bool `json:"house,omitempty"`
+	// Hotel distinguishes which scarce supply is being contested. The two are separate
+	// (32 houses, 12 hotels) and can be short independently.
+	Hotel bool `json:"hotel,omitempty"`
+	// Targets[seat] is the square that seat would put the piece on, named with its bid.
+	// -1 for a seat that has not bid. A house auction sells the PIECE, so the winner still
+	// has to place it somewhere legal, and choosing for them would pick the wrong colour
+	// group for anyone holding two.
+	Targets []int `json:"targets,omitempty"`
+	// Return is the phase to resume when the auction closes. A shortage auction can be
+	// triggered from the owner's manage phase OR from the between-turns window, and
+	// dropping back into the wrong one would either skip a seat's turn or strand the window.
+	Return string `json:"return,omitempty"`
 }
 
 // Debt records an unpaid obligation that exceeds the debtor's cash. While it is
@@ -126,6 +152,27 @@ type State struct {
 	// negotiation should resume once it resolves ("trade" window or "manage").
 	TradeQueue  []int  `json:"trade_queue,omitempty"`
 	TradeReturn string `json:"trade_return,omitempty"`
+	// OpenResponders holds the seats still owed a chance at an OPEN offer
+	// (PendingTrade.Target == OpenToTable), in seat order, head first. Only the head
+	// may act. The queue is built once when the offer opens and contains ONLY seats
+	// that could actually satisfy it, so nobody is asked to answer an offer they
+	// cannot take.
+	//
+	// This is what makes "first come first served" deterministic. Resolving an open
+	// offer by wall-clock arrival would make the same match replay differently
+	// depending on network timing, which would break replay verification — the
+	// engine's whole basis for proving a result. Seat order IS the race here: the
+	// fast agent wins by being ready when its turn to answer comes.
+	OpenResponders []int `json:"open_responders,omitempty"`
+	// WindowActions counts the management actions the seat at the head of TradeQueue has
+	// taken in the CURRENT between-turns window.
+	//
+	// Building between turns must not pop the queue — a player putting up a street takes
+	// several actions and the real game lets them. But then nothing forces the seat to hand
+	// the floor back: a policy that alternates build and sell_house can hold it forever,
+	// since both stay legal and affordable. This bounds that without bounding honest play,
+	// the same shape as the counter-offer cap on trades.
+	WindowActions int `json:"window_actions,omitempty"`
 
 	FreeParkingPot int `json:"free_parking_pot,omitempty"` // only used when the house rule is on
 
@@ -216,6 +263,9 @@ func (s State) clone() State {
 	if s.Auction != nil {
 		a := *s.Auction
 		a.InAuction = append([]bool(nil), s.Auction.InAuction...)
+		// Targets rides along with InAuction. Step returns the ORIGINAL state on any error,
+		// and a shared backing array would let a rejected bid's target survive the rollback.
+		a.Targets = append([]int(nil), s.Auction.Targets...)
 		cp.Auction = &a
 	}
 	if s.Debt != nil {
@@ -229,6 +279,7 @@ func (s State) clone() State {
 		cp.PendingTrade = &tr
 	}
 	cp.TradeQueue = append([]int(nil), s.TradeQueue...)
+	cp.OpenResponders = append([]int(nil), s.OpenResponders...)
 	cp.EstateQueue = append([]int(nil), s.EstateQueue...)
 	return cp
 }

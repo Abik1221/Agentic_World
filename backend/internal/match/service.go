@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/agent-arena/arena/internal/integrity"
 	"log/slog"
 	"net/http"
 	"time"
@@ -18,6 +19,8 @@ import (
 	"github.com/agent-arena/arena/internal/movesig"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
+	"github.com/agent-arena/arena/internal/readycheck"
+	"github.com/agent-arena/arena/internal/redact"
 	"github.com/agent-arena/arena/internal/replay"
 )
 
@@ -98,6 +101,17 @@ type Service struct {
 	// rejections records that a seat's move was refused this round, so tryExtend can tell a
 	// slow agent from one that answered and was turned away. Nil ⇒ extensions unchanged.
 	rejections RejectionLog
+	// Ready-check collaborators. All nil ⇒ no ready gate, which is the pre-existing
+	// behaviour rather than a half-driven state machine.
+	readyRepo    ReadyRepo
+	readyAsker   ReadyAsker
+	readyRequeue ReadyRequeuer
+	// rateLimits reports 429s the gateway watched, so a throttled turn earns the same bounded
+	// grace as a slow one instead of forfeiting a stake. Optional; nil-checked.
+	rateLimits RateLimitObserver
+	// queueEvents records queue/ready-check facts for reporting. Optional; nil-checked.
+	queueEvents  QueueEventRecorder
+	readyStarter ReadyStarter
 }
 
 // SetBoundMoveReader installs completion-binding enforcement (called once at wiring time).
@@ -346,6 +360,63 @@ func (s *Service) moveWindow(ctx context.Context, agents ...string) time.Duratio
 	return longest
 }
 
+// agentIDs is every seated agent's public id, for a decision that concerns the whole table.
+//
+// A round deadline is SHARED, so it is computed from all seats and runs on the slowest —
+// taking one seat's window would cut the other off through no fault of its own.
+func (m Match) agentIDs() []string {
+	ids := make([]string, 0, len(m.Players))
+	for _, p := range m.Players {
+		if p.AgentPublicID != "" {
+			ids = append(ids, p.AgentPublicID)
+		}
+	}
+	return ids
+}
+
+// roundStart is when the current round began, and whether that is known.
+//
+// Prefers the RECORDED start. Falls back to the old reconstruction only for a round that
+// was already in flight when the column shipped, because a row written before then has no
+// start to read and the previous behaviour is better than none.
+//
+// Returns false rather than a zero Time when there is nothing to anchor to: a zero Time
+// would be silently converted into a think-time of decades and poured into the sample set
+// that decides whether an agent is a human.
+func (s *Service) roundStart(m Match) (time.Time, bool) {
+	if m.RoundStartedAt != nil {
+		return *m.RoundStartedAt, true
+	}
+	if m.RoundDeadline == nil {
+		return time.Time{}, false
+	}
+	return m.RoundDeadline.Add(-s.cfg.MoveWindow), true
+}
+
+// RateLimitObserver reports whether the platform WATCHED this seat get rate-limited on this
+// turn.
+//
+// Stronger evidence than any health probe. A liveness probe says "something is listening";
+// a 429 recorded by the gateway says "this agent made a real model call for THIS decision and
+// its provider refused it". The platform saw the attempt happen.
+//
+// This exists because the alternative is indefensible: a developer on a free tier loses a
+// STAKED match — real coins — because their provider throttled them mid-turn. They did not
+// play badly and they did not go dark. Free tiers are tight enough for this to be routine:
+// OpenRouter allows 50 requests a day, Groq 6,000 tokens a minute.
+//
+// OPTIONAL. Nil means deadlines behave exactly as they did.
+type RateLimitObserver interface {
+	// RateLimited answers "did a 429 land for this (agent, match, round) inside `within`".
+	// Scoped to the round on purpose: a 429 from an earlier turn says nothing about whether
+	// this one is being attempted, and treating it as evidence would hand an idle agent an
+	// extension it did not earn.
+	RateLimited(ctx context.Context, agentPublicID, matchPublicID string, round int, within time.Duration) bool
+}
+
+// SetRateLimitObserver enables 429-aware deadline extensions. Nil leaves them off.
+func (s *Service) SetRateLimitObserver(o RateLimitObserver) { s.rateLimits = o }
+
 // LivenessProber reports whether an agent's endpoint is answering right now.
 //
 // Satisfied by a small adapter over agentwire.ConfirmReachability. Optional: unset, a
@@ -440,7 +511,19 @@ func (s *Service) tryExtend(ctx context.Context, m Match, unsealed []string) boo
 	// Only extend for a seat that is actually THERE. One dead seat must not buy the
 	// table more time, or a crashed agent stalls every round to the ceiling.
 	for _, agent := range unsealed {
-		if !s.livecheck.Alive(ctx, agent) {
+		// Alive OR provably throttled. A 429 the gateway recorded for THIS round is proof the
+		// agent is present and trying — it made the call and the provider refused it — so it
+		// earns the same grace a slow-but-answering agent gets.
+		//
+		// The bound is untouched: this only decides WHETHER a seat qualifies. How much time it
+		// gets still comes from deadline.Extend above, with MaxExtensions and Ceiling
+		// unchanged, so a throttled agent cannot hold a table open any longer than a slow one.
+		// The opponent staked coins too.
+		//
+		// Window is the round's own window: evidence from an earlier turn does not show this
+		// turn is being attempted.
+		if !s.livecheck.Alive(ctx, agent) &&
+			!(s.rateLimits != nil && s.rateLimits.RateLimited(ctx, agent, m.PublicID, m.State.Round, window)) {
 			return false
 		}
 	}
@@ -638,7 +721,37 @@ func (s *Service) checkStake(ctx context.Context, bid int64) error {
 	return nil
 }
 
+// CreateRoom opens a PRIVATE waiting match: a room reachable only by its public id.
+//
+// # Why this delegates rather than duplicating
+//
+// A room is an open match with one bit flipped. Every control that matters — the stake
+// floor, the spending limits, the verification gate, the escrow on join, the refusal to
+// join your own match — is identical, and the reason to route through the same function
+// is that this codebase has already been bitten by the alternative: the stake floor was
+// bypassed once because a second caller reached the escrow path around the check. A room
+// that reimplemented these would be a second place for that to happen, and the second
+// place is always the one nobody updates.
+//
+// # What the caller is buying
+//
+// Invisibility, and nothing else. The room does not skip a check, does not escape the
+// rake, and does not get a different settlement path. It is the open lobby minus the
+// listing.
+func (s *Service) CreateRoom(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
+	return s.createWaiting(ctx, agentPublicID, ownerPublicID, bid, true)
+}
+
 func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
+	return s.createWaiting(ctx, agentPublicID, ownerPublicID, bid, false)
+}
+
+// createWaiting is the one implementation behind both the open lobby and rooms.
+//
+// `private` is the ONLY difference between them. Keeping it a parameter rather than a
+// branch inside the body means a future check added here cannot be added to one path and
+// forgotten on the other.
+func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicID string, bid int64, private bool) (string, error) {
 	if err := s.checkStake(ctx, bid); err != nil {
 		return "", err
 	}
@@ -666,6 +779,7 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 		FairnessMode:  gs.FairnessShuffled,
 		Seed:          seed,
 		Creator:       Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: gs.SeatA},
+		Private:       private,
 	})
 	if err != nil {
 		return "", err
@@ -734,28 +848,57 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 	state, events := eng.Init(seed)
 
 	publicID := platform.NewID(platform.PrefixMatch)
-	// Escrow both stakes atomically before persisting the match (mirrors Join).
-	if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
-		return "", err
-	}
-	deadline := s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
 	in := CreatePairedInput{
 		PublicID: publicID, Game: "goofspiel", Bid: bid, RakePct: s.rakePct(),
 		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
 		FairnessMode: gs.FairnessShuffled, Seed: seed,
 		SeatA: Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
 		SeatB: Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
-		State: state, Deadline: deadline, Events: events,
+		State: state, Events: events,
 	}
-	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
-		// Persisting failed after staking — return both bids so no coins are stuck.
-		_ = s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid)
+
+	// NO READY CHECK CONFIGURED ⇒ the original behaviour, unchanged: escrow now and start
+	// now. A deployment that has not wired the sweeper must not create tables nothing can
+	// release, which would look exactly like matchmaking having died.
+	if s.readyRepo == nil {
+		if err := s.wallet.StakeMatch(ctx, publicID, aAgent, bAgent, bid); err != nil {
+			return "", err
+		}
+		in.Deadline = s.clock.Now().Add(s.moveWindow(ctx, aAgent, bAgent))
+		if err := s.repo.CreatePairedActive(ctx, in); err != nil {
+			// Persisting failed after staking — return both bids so no coins are stuck.
+			//
+			// The refund is idempotent (it shares disburse:{match} with settle, so a
+			// settle can never land on top of it), which is what makes it safe to shout
+			// about and retry rather than swallow. A DISCARDED error here was a silent
+			// coin loss: stake taken, table never created, refund failed, and the only
+			// evidence was an escrow balance that no longer added up. There is not even
+			// a match row for the audit to hang it on — which is precisely the residue
+			// the escrow_unattributed check now reports.
+			if rerr := s.wallet.RefundStakes(ctx, publicID, aAgent, bAgent, bid); rerr != nil {
+				slog.Error("STAKE NOT REFUNDED after failed activation — coins are held with no match",
+					"match", publicID, "agent_a", aAgent, "agent_b", bAgent, "bid", bid,
+					"activation_error", err, "refund_error", rerr)
+			}
+			return "", err
+		}
+		s.publish(publicID, state, events)
+		s.maybeDrive(publicID, aAgent, bAgent)
+		return publicID, nil
+	}
+
+	// THE READY PATH. Nothing is escrowed and no deadline is set: the table is dealt but not
+	// started, and the sweeper takes it from here — asking each seat, then escrowing and
+	// activating once both have answered. A developer who typed a command in a terminal now
+	// gets the chance to open the match before any of their coins are committed, and an agent
+	// that was paired mid-startup is dropped rather than staked.
+	//
+	// Deliberately NOT published and NOT driven yet. Publishing would announce a match that
+	// has not begun, and driving would ask for a move on a table whose seats have not agreed
+	// to play. Both happen in startAfterReady.
+	if err := s.readyRepo.CreatePairedReadyCheck(ctx, in); err != nil {
 		return "", err
 	}
-	s.publish(publicID, state, events)
-	// Auto-drive connected agents over their sockets (no-op unless enabled + at
-	// least one seat is connected); a non-connected seat self-drives via HTTP.
-	s.maybeDrive(publicID, aAgent, bAgent)
 	return publicID, nil
 }
 
@@ -870,11 +1013,28 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		return AgentView{}, err
 	}
 
-	deadline := s.clock.Now().Add(s.moveWindow(ctx, agentPublicID))
+	// The start countdown, and the reason the first move window opens at startsAt rather than
+	// now. Mafia's startMatch and monopoly's startTable have both done this for a while;
+	// goofspiel's lobby join did not, which is why every goofspiel row had a NULL starts_at
+	// while mafia's had one. A table went from lobby to running with no moment in between, so
+	// an agent still finishing startup lost the front of its first round to a match already
+	// under way, and no surface had an absolute instant to count to.
+	//
+	// ONE clock reading feeds both values: taking now() twice would let the deadline be
+	// computed from a moment before the countdown it is supposed to follow. Play is NOT gated
+	// on startsAt — the match is active immediately, exactly as startAfterReady leaves it; what
+	// the countdown buys is that the first window opens when play does.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy("goofspiel").Countdown)
+	deadline := startsAt.Add(s.moveWindow(ctx, agentPublicID))
 	joiner := Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: gs.SeatB}
-	if err := s.repo.Activate(ctx, matchPublicID, joiner, state, deadline, events); err != nil {
+	if err := s.repo.Activate(ctx, matchPublicID, joiner, state, startsAt, deadline, events); err != nil {
 		// Activation failed after staking — return both bids so no coins are stuck.
-		_ = s.wallet.RefundStakes(ctx, matchPublicID, creator, agentPublicID, m.Bid)
+		if rerr := s.wallet.RefundStakes(ctx, matchPublicID, creator, agentPublicID, m.Bid); rerr != nil {
+			slog.Error("STAKE NOT REFUNDED after failed join activation — coins are held with no live match",
+				"match", matchPublicID, "creator", creator, "joiner", agentPublicID,
+				"bid", m.Bid, "refund_error", rerr)
+		}
 		return AgentView{}, err
 	}
 	s.publish(matchPublicID, state, events)
@@ -1072,8 +1232,20 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	}
 
 	// Record think-time for verification (best-effort).
-	if m.RoundDeadline != nil {
-		started := m.RoundDeadline.Add(-s.cfg.MoveWindow)
+	//
+	// From the RECORDED round start, not a reconstruction. This number feeds
+	// verification.Record, which builds the timing profile used to decide whether a human
+	// is playing by hand — so a derived value that can be wrong in either direction is not
+	// good enough for it.
+	//
+	// The old reconstruction, RoundDeadline minus the configured window, was wrong twice
+	// over. RoundDeadline MOVES when an extension is granted, so after a grant the inferred
+	// start slid later and the response time came out smaller — a genuinely slow agent
+	// recorded as a fast one, masking exactly what the detector looks for. And the
+	// configured constant is not the window in force once deadlines are adaptive, so for
+	// any agent that had earned a longer window the start was placed too early and its
+	// response times were inflated, pushing an honest slow agent toward being flagged.
+	if started, ok := s.roundStart(m); ok {
 		s.ver.Record(ctx, agentPublicID, &matchPublicID, int(s.clock.Now().Sub(started).Milliseconds()))
 	}
 
@@ -1121,12 +1293,49 @@ func (s *Service) Roster(ctx context.Context, matchPublicID string) ([]RosterSea
 // match) and broadcast to spectators, and it lands in State.Chat, which every
 // agent view carries — that is what lets the other seat actually answer it.
 func (s *Service) Say(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
-	// Same lock + optimistic-concurrency retry as act: two agents talking at once
-	// (or one talking while the other seals) race on the same match row.
-	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
-		if !ok {
+	// TALK WAITS FOR THE LOCK; it does not get turned away by it.
+	//
+	// This used to take the lock once and return ErrBusy — HTTP 409 match_busy — the instant it
+	// was held. Gameplay holds the same lock, so in a driven match there was almost never a gap,
+	// and pushplay swallows the error by design ("a rejected line must never block the move").
+	// The result was invisible: agents tried to speak, were refused, and nobody saw it.
+	//
+	// Measured in the lab: ZERO agent_says events across 11,064 finished Monopoly matches, and
+	// talk in only 3.8%% of Goofspiel matches — while live runs of both games logged
+	// "say failed: 409 match_busy" from agents that were trying.
+	//
+	// It also contradicted the documented rule: speaking is "deliberately NOT turn-gated ...
+	// speaking never consumes a turn or blocks the round". A lock that refuses talk whenever the
+	// table is mid-transition turn-gates it in practice.
+	//
+	// The lock is HELD FOR MILLISECONDS (a state read plus write), never across an agent's
+	// thinking time, so a short bounded wait clears the ordinary collision. Bounded on purpose:
+	// talk is not latency-critical, but a caller must never hang on it, and giving up still
+	// returns ErrBusy so the behaviour is unchanged for a genuinely wedged table.
+	//
+	// The ENGINE still enforces the real speech rules — Mafia's night silence, Monopoly's
+	// bankrupt seats, a finished match. This only stops a concurrency guard from standing in for
+	// a game rule.
+	var release func()
+	for attempt := 0; attempt < 4; attempt++ {
+		r, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
+		if lerr != nil {
+			break // Redis unreachable: proceed lockless, relying on the OCC retry below
+		}
+		if ok {
+			release = r
+			break
+		}
+		if attempt == 3 {
 			return AgentView{}, ErrBusy
 		}
+		select {
+		case <-ctx.Done():
+			return AgentView{}, ctx.Err()
+		case <-time.After(time.Duration(25*(attempt+1)) * time.Millisecond):
+		}
+	}
+	if release != nil {
 		defer release()
 	}
 	const maxAttempts = 4
@@ -1194,7 +1403,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 
 	if state.Sealed[gs.SeatA] == nil || state.Sealed[gs.SeatB] == nil {
 		// Still waiting on the opponent; same round, deadline unchanged.
-		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
+		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, nil, events); err != nil {
 			return Match{}, err
 		}
 		s.publish(m.PublicID, state, events)
@@ -1222,7 +1431,7 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 		// outcome. Money was always protected by settle idempotency; this protects
 		// recorded-result integrity. The seal events are now persisted by this Advance,
 		// so finalize appends only the resolve events (no double-append).
-		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, events); err != nil {
+		if err := s.repo.Advance(ctx, m.PublicID, state, m.RoundDeadline, nil, events); err != nil {
 			return Match{}, err
 		}
 		players, err := s.finalize(ctx, m, resolved, resolveEvents)
@@ -1237,8 +1446,27 @@ func (s *Service) commit(ctx context.Context, m Match, eng *gs.Engine, state gs.
 		return m, nil
 	}
 
-	next := s.clock.Now().Add(s.cfg.MoveWindow)
-	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, all); err != nil {
+	// The ADAPTIVE window, not the configured constant.
+	//
+	// Every other path that opens a round already used it — the first deal (startPaired,
+	// startSandbox, startHuman) and the ready-check activation all call s.moveWindow. This
+	// one did not, so an agent that had earned a longer window got it for round 1 and then
+	// silently dropped back to the 20s default for rounds 2..13. That is precisely the
+	// failure the adaptive window exists to prevent: internal/deadline says the adaptive
+	// term is there "to give a SLOW agent room", and a slow agent was getting that room
+	// exactly once per match.
+	//
+	// It also fed a wrong number back into tryExtend, which reconstructs the round origin
+	// as base.Add(-s.moveWindow(...)) — computed with the adaptive window against a
+	// deadline set with the static one, so elapsed came out too large and extensions were
+	// refused earlier than the policy allows.
+	// One clock reading for both, so the start and the deadline cannot disagree about when
+	// this round opened — the deadline IS the start plus the window, by construction.
+	opened := s.clock.Now()
+	next := opened.Add(s.moveWindow(ctx, m.agentIDs()...))
+	// The only Advance in this function that opens a new round, so the only one that
+	// stamps a round start. The two above pass nil deliberately.
+	if err := s.repo.Advance(ctx, m.PublicID, resolved, &next, &opened, all); err != nil {
 		return Match{}, err
 	}
 	s.publish(m.PublicID, resolved, all)
@@ -1288,6 +1516,13 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	// SweepExpired) re-drives it and re-finalizes — Settle no-ops, Finish completes.
 	// Do NOT reorder to Finish-first: that would strand escrow (winner never paid,
 	// and Act/HandleTimeout early-return on a finished match, so nothing re-drives).
+	// Hoisted out of the settlement block so the RATING path below can see the same
+	// verdict. Before this, a match voided here for proving nothing was still rated a few
+	// lines down, so a scripted agent was refunded every time and climbed for free.
+	// Evaluated once and read twice: a second evaluation of the same table could disagree
+	// with the first and leave a seat refunded but rated.
+	integrityFailed, integrityAgent := false, ""
+
 	if m.Mode != ModeSandbox {
 		// A ranked match that cannot show it was played by an LLM is VOIDED rather
 		// than settled: both stakes go back and nobody is paid. Refund and Settle
@@ -1303,7 +1538,8 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		// A seat that went DARK is the other case entirely and must not reach the void:
 		// it forfeits and the opponent is paid. state.Timeouts carries how many rounds
 		// the platform had to play for each seat, which is what separates the two.
-		if failed, agent := s.rankedIntegrityFailed(ctx, m, len(state.History), state.Timeouts); failed {
+		integrityFailed, integrityAgent = s.rankedIntegrityFailed(ctx, m, len(state.History), state.Timeouts)
+		if agent := integrityAgent; integrityFailed {
 			slog.Warn("match: VOIDED — seat could not prove its decisions were LLM-backed",
 				"match", m.PublicID, "agent", agent, "decisions", len(state.History),
 				"min_pct", s.integrityMinPct)
@@ -1370,6 +1606,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 		rr := RatingResult{MatchPublicID: m.PublicID, Game: m.Game, WinnerSeat: state.Winner}
 		for _, p := range players {
 			rr.Players = append(rr.Players, RatingPlayer{AgentPublicID: p.AgentPublicID, Seat: p.Seat, CoinsDelta: p.CoinsDelta})
+		}
+		// A match voided for integrity must not move a rating either. The rater applies
+		// integrity.FilterRatable to this verdict; for a 1v1 one blocked seat leaves no
+		// comparison, so nothing is rated — matching the money rule exactly.
+		if integrityFailed && integrityAgent != "" {
+			rr.Integrity = integrity.Verdict{Armed: true, Unproven: map[string]bool{integrityAgent: true}}
 		}
 		if err := rateWithRetry(ctx, s.rater, rr, 3, 50*time.Millisecond); err != nil {
 			return nil, err
@@ -1590,6 +1832,27 @@ func (s *Service) Replay(ctx context.Context, matchPublicID string) (ReplayDoc, 
 	if err != nil {
 		return ReplayDoc{}, err
 	}
+	// WITHHOLD SECRETS UNTIL THE MATCH IS OVER.
+	//
+	// This document is public and unauthenticated, and it serves every match id —
+	// including Mafia's, whose night actions sit in this same event log. Served
+	// raw, a single GET on a LIVE match returned every role and every night target
+	// ({"actor":"Mafia","seat":9,"secret":"Target → seat 4"}), which is the whole
+	// game. The seed below is already gated on StatusFinished for the same reason;
+	// the events needed the identical gate and never had it.
+	//
+	// Once finished, the full log is served as-is: that is the post-match reveal
+	// the replay exists for, and the replay hash is computed over the complete log.
+	if m.Status != StatusFinished {
+		safe := make([]gs.Event, 0, len(events))
+		for _, ev := range events {
+			if redact.SafeForLive(string(ev.Type), ev.Payload) {
+				safe = append(safe, ev)
+			}
+		}
+		events = safe
+	}
+
 	doc := ReplayDoc{
 		MatchID:       m.PublicID,
 		EngineVersion: m.EngineVersion,

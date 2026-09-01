@@ -57,14 +57,34 @@ def main() -> int:
     w(f"Generated from `pyyol` v{__version__}. Every command below is real — this page is\n"
       "produced from the parser the CLI dispatches through, so it cannot list a command that\n"
       "does not exist or miss one that does.\n\n")
-    w("## The interactive shell\n\n")
-    w("Typing `pyyol` on a terminal opens a home screen: what is live right now, who you are\n"
-      "signed in as, and a prompt.\n\n")
+    w("## Start here: `pyyol`\n\n")
+    w("Type `pyyol` on a terminal and you get a home screen — what is live right now, who you\n"
+      "are signed in as, and a prompt. **This is the front door.** Everything below can be run\n"
+      "from it, so there is one thing to remember rather than twenty-five.\n\n")
     w("```\npyyol\n```\n\n")
-    w("- `/` opens a picker you arrow through, filter by typing, and choose with Enter.\n"
+    # The pictures are GENERATED from the real CLI by gen_shots.py, which runs it under a PTY
+    # and converts what it prints. A hand-drawn mockup drifts from the tool the moment either
+    # changes and a reader cannot tell; these change when the banner does.
+    w('<p align="center">\n'
+      '  <img src="assets/cli-home.svg" alt="The pyyol home screen: wordmark, version,'
+      ' sign-in state and the affordance line" width="760">\n'
+      "</p>\n\n")
+    w("Press `/` and the command menu opens — grouped by what you actually do, most-used\n"
+      "first, filter by typing, Enter to run:\n\n")
+    w('<p align="center">\n'
+      '  <img src="assets/cli-menu.svg" alt="The pyyol / command menu, grouped into PLAY,'
+      ' SHIP and INSPECT" width="760">\n'
+      "</p>\n\n")
+    w("Both pictures are produced from the REAL CLI by `sdk/docs/gen_shots.py`, so they change\n"
+      "when the tool does.\n\n")
+    w("### Inside the shell\n\n")
+    w("- `/` opens the picker. Arrow to move, type to filter — the filter matches the\n"
+      "  DESCRIPTION as well as the name, so \"stake\" finds `play` and \"coins\" finds\n"
+      "  `wallet`. Enter runs it.\n"
+      "- Long lists scroll and a counter shows your position, so every command is reachable.\n"
       "- Every command below works inside it, with or without the leading slash, and flags\n"
       "  pass straight through: `/play mafia --ranked`.\n"
-      "- `tab` completes, `Ctrl-C` stops a running command, `/exit` leaves.\n\n")
+      "- `tab` completes, `Ctrl-C` stops the running command (not the session), `/exit` leaves.\n\n")
     w("**Not on a terminal, no prompt.** Piped, in CI, in cron or in a Dockerfile `RUN`,\n"
       "`pyyol` prints this help and exits — a prompt waiting on stdin there would hang the\n"
       "pipeline forever.\n\n")

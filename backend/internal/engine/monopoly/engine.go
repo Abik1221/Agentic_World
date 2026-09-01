@@ -34,7 +34,7 @@ var (
 	// at 0 and a bid must exceed it), so this covers an absent field and an explicit zero without
 	// having to claim which one occurred — Amount is a plain int and cannot tell them apart.
 	ErrBidAmountMissing = errors.New("monopoly: bid named no amount; send a positive \"amount\" with the bid")
-	ErrEmptyMessage      = errors.New("monopoly: message text is empty")
+	ErrEmptyMessage     = errors.New("monopoly: message text is empty")
 )
 
 // Action kinds — the verbs an agent submits via Step.
@@ -67,6 +67,11 @@ const JailFine = 50
 // forever between two agents. After this many counters, only accept/reject
 // remain legal.
 const maxTradeCounters = 4
+
+// maxWindowActions bounds the management actions one seat may take in a single
+// between-turns window. Generous enough to build a whole street and mortgage for it,
+// small enough that a looping policy cannot stall the match.
+const maxWindowActions = 12
 
 // Action is one agent submission. Property/Amount are used by the actions that
 // need them; others ignore them.
@@ -187,6 +192,19 @@ func (e *Engine) pendingActor(s State) int {
 		}
 	case PhaseTradeResponse:
 		if s.PendingTrade != nil {
+			// An OPEN offer is answered by the head of the responder queue, not by
+			// Target — which is OpenToTable and is not a seat.
+			if s.PendingTrade.Target == OpenToTable {
+				if len(s.OpenResponders) > 0 {
+					return s.OpenResponders[0]
+				}
+				// An open offer with nobody left to answer is not a state the engine
+				// creates: the offer is closed the moment the queue drains. Falling
+				// through to s.Current rather than returning OpenToTable matters —
+				// handing back -1 would make the match service authorize "seat -1"
+				// and index a slice with it.
+				break
+			}
 			return s.PendingTrade.Target
 		}
 	case PhaseTrade:
@@ -264,18 +282,82 @@ func (e *Engine) LegalActions(s State, seat int) []string {
 		acts = append(acts, ActDecline)
 		return acts
 	case PhaseAuction:
-		return []string{ActBid, ActPass}
+		// RAISING CASH MID-AUCTION. Officially a bidder may sell houses and mortgage to
+		// fund a bid; a bid is still capped at cash in hand, so without this an asset-rich,
+		// cash-poor seat was simply locked out of auctions it should win — including the
+		// auction of its own estate's neighbours.
+		//
+		// Only the CASH-RAISING verbs are offered. build and unmortgage SPEND money, so
+		// they cannot help fund a bid, and offering them would let a seat alternate
+		// build/sell forever without ever bidding or passing. Restricting to mortgage and
+		// sell_house makes the sequence monotonic — each property mortgages once, each
+		// house sells once — so it is bounded by the board itself and needs no allowance.
+		acts := []string{ActBid, ActPass}
+		// sell_house is withheld during a shortage auction: returning pieces to the bank
+		// mid-contest would change the supply under dispute.
+		if s.Auction != nil && !s.Auction.House && anySellable(&s, seat) {
+			acts = append(acts, ActSellHouse)
+		}
+		if anyMortgageable(&s, seat) {
+			acts = append(acts, ActMortgage)
+		}
+		return acts
 	case PhaseResolveDebt:
-		return []string{ActMortgage, ActSellHouse, ActBankrupt}
+		// A player who cannot pay may SELL HOUSES, MORTGAGE, **OR TRADE** to raise the
+		// money, and only declares bankruptcy once none of that is enough (official rule).
+		// Trading was missing, which forced every squeezed agent to liquidate or die and
+		// deleted the most characteristic moment in Monopoly — offering a property to
+		// another player for the cash to survive the rent.
+		//
+		// Unmortgaging is deliberately NOT offered here: it COSTS money, and this phase
+		// exists because the seat has none.
+		acts := make([]string, 0, 4)
+		if anySellable(&s, seat) {
+			acts = append(acts, ActSellHouse)
+		}
+		if anyMortgageable(&s, seat) {
+			acts = append(acts, ActMortgage)
+		}
+		if hasTradePartner(&s, seat) {
+			acts = append(acts, ActProposeTrade)
+		}
+		// Always last, and always present: bankruptcy must remain reachable even when
+		// nothing else is, or a seat with no assets would have no legal move at all.
+		return append(acts, ActBankrupt)
 	case PhaseManage:
-		return []string{ActEndTurn, ActBuild, ActSellHouse, ActMortgage, ActUnmortgage, ActProposeTrade}
+		acts := append([]string{ActEndTurn}, manageActions(&s, seat)...)
+		if hasTradePartner(&s, seat) {
+			acts = append(acts, ActProposeTrade)
+		}
+		return acts
 	case PhaseTradeResponse:
+		// No counter-offer on an OPEN offer. A counter is a bilateral negotiation, and
+		// there is no single counterparty here — countering would silently convert a
+		// standing table-wide offer into a private one and deny the seats behind this
+		// one in the queue the chance they were owed. A responder who wants different
+		// terms rejects and makes its own offer in the trade window.
+		if s.PendingTrade != nil && s.PendingTrade.Target == OpenToTable {
+			return []string{ActAcceptTrade, ActRejectTrade}
+		}
 		if s.TradeCounters < maxTradeCounters {
 			return []string{ActAcceptTrade, ActRejectTrade, ActCounterTrade}
 		}
 		return []string{ActAcceptTrade, ActRejectTrade}
 	case PhaseTrade:
-		return []string{ActProposeTrade, ActSkipTrade}
+		// The between-turns window. Official rules let a player build, sell, mortgage and
+		// unmortgage "on your turn or between other players' turns" — not only when it is
+		// their own turn. Restricting management to PhaseManage deleted the timing plays
+		// the real game turns on: putting houses up just before an opponent's roll, and
+		// buying the bank's last houses to deny a rival the same.
+		//
+		// This costs no extra model calls in the normal case: the window already asked
+		// every other seat for one decision per turn. It only asks again when the agent
+		// itself chooses to keep managing, and windowActions caps that.
+		acts := append([]string{ActSkipTrade}, manageActions(&s, seat)...)
+		if hasTradePartner(&s, seat) {
+			acts = append(acts, ActProposeTrade)
+		}
+		return acts
 	}
 	return nil
 }
@@ -314,7 +396,7 @@ func (e *Engine) Step(s State, seat int, a Action, seed []byte) (State, []Event,
 	case PhaseManage:
 		evs, err = e.stepManage(&ns, a, seed)
 	case PhaseTradeResponse:
-		evs, err = e.stepTradeResponse(&ns, a)
+		evs, err = e.stepTradeResponse(&ns, a, seed)
 	case PhaseTrade:
 		evs, err = e.stepTradeWindow(&ns, a)
 	default:
@@ -543,11 +625,40 @@ func (e *Engine) stepAuction(ns *State, a Action) ([]Event, error) {
 		if a.Amount > ns.Players[seat].Cash {
 			return nil, ErrInsufficientFunds
 		}
+		if au.House {
+			// A shortage auction sells the PIECE, so a bid has to say where the piece would
+			// go. Validated now rather than at close: a bid on a square the seat cannot
+			// build on would otherwise win an auction and then be unplaceable, and the
+			// piece would vanish between the bank and the board.
+			if !canBuildIgnoringSupply(ns, seat, a.Property) {
+				return nil, ErrIllegalAction
+			}
+			// The piece kind must match what is actually scarce. Letting a hotel-builder
+			// win an auction for a contested HOUSE would draw down the wrong supply.
+			if needsHotel(ns, a.Property) != au.Hotel {
+				return nil, ErrIllegalAction
+			}
+			au.Targets[seat] = a.Property
+		}
 		au.HighBid = a.Amount
 		au.HighBidder = seat
 		evs := []Event{e.emit(ns, EvBidPlaced, BidPayload{Seat: seat, Property: au.Property, Amount: a.Amount})}
 		e.advanceAuction(ns, &evs)
 		return evs, nil
+	case ActSellHouse, ActMortgage:
+		// Does NOT advance the auction: the seat is raising money in order to bid, so the
+		// floor stays with it until it actually bids or passes.
+		if a.Kind == ActSellHouse {
+			if au.House {
+				// Selling a house during a HOUSING SHORTAGE auction would return pieces to
+				// the bank mid-contest — changing the very supply being fought over, and
+				// possibly ending the shortage that justified the auction. Mortgaging
+				// raises cash without touching the supply, so it stays available.
+				return nil, ErrIllegalAction
+			}
+			return e.doSellHouse(ns, seat, a.Property)
+		}
+		return e.doMortgage(ns, seat, a.Property)
 	case ActPass:
 		au.InAuction[seat] = false
 		evs := []Event{e.emit(ns, EvAuctionPassed, AuctionPassedPayload{Seat: seat, Property: au.Property})}
@@ -579,6 +690,13 @@ func (e *Engine) advanceAuction(ns *State, evs *[]Event) {
 
 func (e *Engine) closeAuction(ns *State, evs *[]Event) {
 	au := ns.Auction
+	if au.House {
+		// A shortage auction sells a piece, not a title deed, and resumes whatever phase it
+		// interrupted rather than always dropping into PhaseManage — it can be triggered
+		// from the between-turns window too.
+		e.closeHouseAuction(ns, evs)
+		return
+	}
 	if au.HighBidder != Bank {
 		ns.Players[au.HighBidder].Cash -= au.HighBid
 		ns.Holdings[au.Property] = Holding{Owner: au.HighBidder}
@@ -611,17 +729,44 @@ func (e *Engine) stepResolveDebt(ns *State, a Action, seed []byte) ([]Event, err
 	}
 	switch a.Kind {
 	case ActMortgage:
-		evs, err := e.doMortgage(ns, a.Property)
+		evs, err := e.doMortgage(ns, ns.Debt.Debtor, a.Property)
 		if err != nil {
 			return nil, err
 		}
 		return e.afterRaise(ns, evs, seed), nil
 	case ActSellHouse:
-		evs, err := e.doSellHouse(ns, a.Property)
+		evs, err := e.doSellHouse(ns, ns.Debt.Debtor, a.Property)
 		if err != nil {
 			return nil, err
 		}
 		return e.afterRaise(ns, evs, seed), nil
+	case ActProposeTrade:
+		// Raising the money by DEALING rather than by liquidating. The negotiation returns
+		// here when it resolves (TradeReturn), and afterRaise then settles the debt the
+		// moment the seat can cover it — so a trade that brings in enough cash rescues the
+		// player exactly as selling a house would.
+		//
+		// The debtor is the proposer, NOT ns.Current: the seat that owes the money is the
+		// one bargaining, and on a rent debt those are the same seat, but on a card or tax
+		// debt raised mid-turn they need not be.
+		if a.Trade == nil {
+			return nil, ErrIllegalAction
+		}
+		t := *a.Trade
+		t.Proposer = ns.Debt.Debtor
+		if t.Target == OpenToTable {
+			return e.proposeOpenTrade(ns, t, a.Trade, PhaseResolveDebt)
+		}
+		if err := e.validateTrade(ns, t); err != nil {
+			return nil, err
+		}
+		t.GiveProps = append([]int(nil), a.Trade.GiveProps...)
+		t.WantProps = append([]int(nil), a.Trade.WantProps...)
+		ns.PendingTrade = &t
+		ns.Phase = PhaseTradeResponse
+		ns.TradeCounters = 0
+		ns.TradeReturn = PhaseResolveDebt
+		return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
 	case ActBankrupt:
 		return e.declareBankrupt(ns), nil
 	default:
@@ -641,13 +786,13 @@ func (e *Engine) afterRaise(ns *State, evs []Event, seed []byte) []Event {
 func (e *Engine) stepManage(ns *State, a Action, seed []byte) ([]Event, error) {
 	switch a.Kind {
 	case ActBuild:
-		return e.doBuild(ns, a.Property)
+		return e.doBuild(ns, ns.Current, a.Property)
 	case ActSellHouse:
-		return e.doSellHouse(ns, a.Property)
+		return e.doSellHouse(ns, ns.Current, a.Property)
 	case ActMortgage:
-		return e.doMortgage(ns, a.Property)
+		return e.doMortgage(ns, ns.Current, a.Property)
 	case ActUnmortgage:
-		return e.doUnmortgage(ns, a.Property)
+		return e.doUnmortgage(ns, ns.Current, a.Property)
 	case ActProposeTrade:
 		return e.proposeTrade(ns, a.Trade)
 	case ActEndTurn:
@@ -665,6 +810,9 @@ func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
 	}
 	t := *tr // copy; normalize proposer to the current player
 	t.Proposer = ns.Current
+	if t.Target == OpenToTable {
+		return e.proposeOpenTrade(ns, t, tr, PhaseManage)
+	}
 	if err := e.validateTrade(ns, t); err != nil {
 		return nil, err
 	}
@@ -675,6 +823,84 @@ func (e *Engine) proposeTrade(ns *State, tr *Trade) ([]Event, error) {
 	ns.TradeCounters = 0         // fresh negotiation
 	ns.TradeReturn = PhaseManage // proposed from the owner's manage phase
 	return []Event{e.emit(ns, EvTradeProposed, tradePayload(t))}, nil
+}
+
+// proposeOpenTrade opens an offer to the whole table: any seat that can satisfy it may
+// take it, and the first one to say yes gets it.
+//
+// The eligible seats are found by running each candidate through validateTrade — the
+// SAME strict validator that guards a targeted trade — with that seat substituted as
+// the target. Nothing here re-implements the trade rules, so an open offer can never
+// be executable on terms a targeted offer would refuse. It also means a seat is only
+// asked when it could actually accept, rather than being handed a decision it has no
+// legal answer to.
+//
+// An offer nobody can satisfy is NOT an error. The proposer is not told who holds what
+// cash, so "no taker" is an ordinary outcome of bidding for something nobody can sell;
+// it is emitted as proposed-then-rejected so the log reads as what happened.
+func (e *Engine) proposeOpenTrade(ns *State, t Trade, src *Trade, ret string) ([]Event, error) {
+	if err := e.validateOpenOffer(ns, t); err != nil {
+		return nil, err
+	}
+	t.GiveProps = append([]int(nil), src.GiveProps...)
+	t.WantProps = append([]int(nil), src.WantProps...)
+
+	var eligible []int
+	for _, seat := range otherActiveSeats(ns, t.Proposer) {
+		probe := t
+		probe.Target = seat
+		if e.validateTrade(ns, probe) == nil {
+			eligible = append(eligible, seat)
+		}
+	}
+	proposed := e.emit(ns, EvTradeProposed, tradePayload(t))
+	if len(eligible) == 0 {
+		// Nothing pends: the offer is born and dies in the same step. Setting
+		// PhaseTradeResponse with an empty responder queue would leave the match
+		// waiting on a seat that does not exist.
+		//
+		// It still has to RESOLVE, not merely return. From the trade window the
+		// proposer is only popped off TradeQueue when a negotiation ends — so
+		// returning here without resolving would leave the same seat at the head of
+		// the queue and ask it to propose again, and a policy that keeps offering the
+		// same unsatisfiable trade would never advance the turn.
+		ns.TradeReturn = ret
+		e.resumeAfterTrade(ns)
+		return []Event{proposed, e.emit(ns, EvTradeRejected, tradePayload(t))}, nil
+	}
+	ns.PendingTrade = &t
+	ns.OpenResponders = eligible
+	ns.Phase = PhaseTradeResponse
+	ns.TradeCounters = 0
+	ns.TradeReturn = ret
+	return []Event{proposed}, nil
+}
+
+// validateOpenOffer checks the half of an open offer that can be checked when the
+// counterparty is not yet known: the proposer's own side.
+//
+// The want side is deliberately NOT validated here — no single seat has to satisfy it
+// yet. It is validated per candidate through validateTrade, and again at acceptance
+// against the concrete accepting seat. That keeps every ownership and solvency rule in
+// exactly one place; this function only rejects what is wrong regardless of who takes it.
+func (e *Engine) validateOpenOffer(ns *State, t Trade) error {
+	if t.Proposer < 0 || t.Proposer >= len(ns.Players) || ns.Players[t.Proposer].Bankrupt {
+		return ErrIllegalAction
+	}
+	if len(t.GiveProps) == 0 && len(t.WantProps) == 0 && t.GiveCash == 0 && t.WantCash == 0 &&
+		t.GiveCards == 0 && t.WantCards == 0 {
+		return ErrIllegalAction // empty trade
+	}
+	if t.GiveCash < 0 || t.WantCash < 0 || t.GiveCards < 0 || t.WantCards < 0 {
+		return ErrIllegalAction
+	}
+	if err := e.checkTradeSide(ns, t.GiveProps, t.Proposer); err != nil {
+		return err
+	}
+	if ns.Players[t.Proposer].Cash < t.GiveCash || ns.Players[t.Proposer].JailCards < t.GiveCards {
+		return ErrIllegalAction
+	}
+	return nil
 }
 
 // validateTrade enforces the trade rules: distinct solvent parties, real ownership
@@ -731,7 +957,7 @@ func (e *Engine) checkTradeSide(ns *State, props []int, owner int) error {
 	return nil
 }
 
-func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
+func (e *Engine) stepTradeResponse(ns *State, a Action, seed []byte) ([]Event, error) {
 	t := ns.PendingTrade
 	if t == nil {
 		return nil, ErrIllegalAction
@@ -739,23 +965,68 @@ func (e *Engine) stepTradeResponse(ns *State, a Action) ([]Event, error) {
 	switch a.Kind {
 	case ActRejectTrade:
 		rejected := tradePayload(*t)
+		// On an OPEN offer a rejection only passes: the seat declines its own chance
+		// and the offer moves to the next eligible seat. It stays standing until
+		// somebody takes it or everyone has passed — that is what "other agents can
+		// take the offer" means in practice.
+		if t.Target == OpenToTable && len(ns.OpenResponders) > 1 {
+			ns.OpenResponders = ns.OpenResponders[1:]
+			return []Event{e.emit(ns, EvTradeDeclined, rejected)}, nil
+		}
+		ns.OpenResponders = nil
 		ns.PendingTrade = nil
 		e.resumeAfterTrade(ns)
 		return []Event{e.emit(ns, EvTradeRejected, rejected)}, nil
 	case ActAcceptTrade:
+		agreed := *t
+		if agreed.Target == OpenToTable {
+			// The seat at the head of the queue is the one acting — bind the offer to
+			// it before anything is validated or moved, so every rule below runs
+			// against a concrete counterparty and never against OpenToTable.
+			if len(ns.OpenResponders) == 0 {
+				return nil, ErrIllegalAction
+			}
+			agreed.Target = ns.OpenResponders[0]
+		}
 		// Re-validate at execution time (state may have shifted is impossible here,
-		// but this keeps acceptance self-contained and safe).
-		if err := e.validateTrade(ns, *t); err != nil {
+		// but this keeps acceptance self-contained and safe). For an open offer this
+		// is the check that the accepting seat can actually pay what it just agreed to.
+		if err := e.validateTrade(ns, agreed); err != nil {
+			ns.OpenResponders = nil
 			ns.PendingTrade = nil
 			e.resumeAfterTrade(ns)
 			return nil, err
 		}
-		interest := e.executeTrade(ns, *t) // may bill mortgage-transfer interest (lower seq)
-		executed := tradePayload(*t)
+		interest := e.executeTrade(ns, agreed) // may bill mortgage-transfer interest (lower seq)
+		executed := tradePayload(agreed)
+		ns.OpenResponders = nil
 		ns.PendingTrade = nil
-		e.resumeAfterTrade(ns) // control returns to the window or the turn owner
-		return append(interest, e.emit(ns, EvTradeExecuted, executed)), nil
+		e.resumeAfterTrade(ns) // control returns to the window, the debt, or the turn owner
+		// Appended in place rather than `evs := append(interest, …)`: assigning the result of
+		// an append to a DIFFERENT variable leaves two names for one backing array, so a later
+		// append through either can overwrite events the other still refers to. Harmless today
+		// because `interest` is dead from here, which is exactly the kind of "safe until
+		// somebody moves it" that gocritic's appendAssign is pointing at.
+		evs := interest
+		evs = append(evs, e.emit(ns, EvTradeExecuted, executed))
+		// A trade struck to RAISE MONEY has to settle the debt it was struck for. Without
+		// this the seat sits in PhaseResolveDebt holding more than it owes, having done the
+		// one thing the rules say saves it — which is how the first version of this failed:
+		// $410 in hand against a $300 debt, still asked to mortgage or go bankrupt.
+		//
+		// afterRaise is the same settlement path selling a house uses, so a rescue by trade
+		// and a rescue by liquidation end identically.
+		if ns.Phase == PhaseResolveDebt {
+			evs = e.afterRaise(ns, evs, seed)
+		}
+		return evs, nil
 	case ActCounterTrade:
+		// Refused on an open offer — see legalActions for why. Guarded here as well
+		// because legality and execution are reachable independently: a submitted
+		// action is checked against this switch, not only against the legal list.
+		if t.Target == OpenToTable {
+			return nil, ErrIllegalAction
+		}
 		// The responder (current PendingTrade.Target) makes a return offer to the
 		// original proposer. Roles swap: the counter becomes the new pending offer
 		// and the ORIGINAL proposer must now respond. Current (the turn owner) is
@@ -806,6 +1077,7 @@ func otherActiveSeats(s *State, cur int) []int {
 // player is still in the game, it opens the trade window for them; otherwise it
 // goes straight to play (roll or jail).
 func (e *Engine) enterTurn(ns *State) {
+	ns.WindowActions = 0
 	others := otherActiveSeats(ns, ns.Current)
 	if len(others) > 0 {
 		ns.TradeQueue = others
@@ -840,16 +1112,52 @@ func (e *Engine) stepTradeWindow(ns *State, a Action) ([]Event, error) {
 	switch a.Kind {
 	case ActSkipTrade:
 		ns.TradeQueue = ns.TradeQueue[1:]
+		ns.WindowActions = 0
 		if len(ns.TradeQueue) == 0 {
 			e.enterPlay(ns)
 		}
 		return nil, nil
+	// MANAGEMENT BETWEEN TURNS. Official rules let a player build, sell, mortgage and
+	// unmortgage between other players' turns, not only on their own. These do NOT pop the
+	// queue — the seat keeps the floor, exactly as building in its own manage phase does not
+	// end its turn — so it can put up a whole street before handing back.
+	case ActBuild, ActSellHouse, ActMortgage, ActUnmortgage:
+		if ns.WindowActions >= maxWindowActions {
+			// The seat has had its allowance. Without this a policy that alternates build
+			// and sell_house holds the floor forever and the match never advances: both are
+			// legal, both are affordable, and neither pops the queue.
+			return nil, ErrIllegalAction
+		}
+		var evs []Event
+		var err error
+		switch a.Kind {
+		case ActBuild:
+			evs, err = e.doBuild(ns, proposer, a.Property)
+		case ActSellHouse:
+			evs, err = e.doSellHouse(ns, proposer, a.Property)
+		case ActMortgage:
+			evs, err = e.doMortgage(ns, proposer, a.Property)
+		case ActUnmortgage:
+			evs, err = e.doUnmortgage(ns, proposer, a.Property)
+		}
+		if err != nil {
+			return nil, err
+		}
+		ns.WindowActions++
+		return evs, nil
 	case ActProposeTrade:
 		if a.Trade == nil {
 			return nil, ErrIllegalAction
 		}
 		t := *a.Trade
 		t.Proposer = proposer
+		// An open offer is just as available from the trade window as from the owner's
+		// manage phase. Omitting it here would have made "offer to the table" a
+		// privilege of the seat whose turn it is, which is the opposite of the point:
+		// the window exists so a player can deal on a turn that is not their own.
+		if t.Target == OpenToTable {
+			return e.proposeOpenTrade(ns, t, a.Trade, PhaseTrade)
+		}
 		if err := e.validateTrade(ns, t); err != nil {
 			return nil, err
 		}
@@ -873,6 +1181,8 @@ func (e *Engine) resumeAfterTrade(ns *State) {
 	ns.TradeCounters = 0
 	ns.TradeReturn = ""
 	if ret == PhaseTrade {
+		// A window trade resolves back INTO the window with the proposer popped, so the
+		// seat does not get a second bite and the queue keeps draining.
 		if len(ns.TradeQueue) > 0 {
 			ns.TradeQueue = ns.TradeQueue[1:]
 		}
@@ -881,6 +1191,14 @@ func (e *Engine) resumeAfterTrade(ns *State) {
 		} else {
 			e.enterPlay(ns)
 		}
+		return
+	}
+	if ret == PhaseResolveDebt && ns.Debt != nil {
+		// Back to the debt the trade was meant to cover. NOT settled here — settlement is
+		// afterRaise's job and belongs to whoever can see the cash, and a debt that is now
+		// payable is settled by the caller. Returning to PhaseManage instead would strand
+		// an unpaid debt and let the seat end its turn owing money.
+		ns.Phase = PhaseResolveDebt
 		return
 	}
 	ns.Phase = PhaseManage
@@ -1053,11 +1371,18 @@ func (e *Engine) rentFor(ns *State, pos, diceTotal int) int {
 	case KindRailroad:
 		return railroadRentTable[ns.railroadsOwned(h.Owner)]
 	case KindUtility:
-		mult := 4
-		if ns.utilitiesOwned(h.Owner) == 2 {
-			mult = 10
+		// Read from the shared table so the rent the console publishes and the rent
+		// charged here are the same number by construction.
+		// Clamped at both ends: an out-of-range count here would panic mid-match,
+		// which is a far worse failure than charging the nearest defined tier.
+		owned := ns.utilitiesOwned(h.Owner)
+		if owned < 1 {
+			owned = 1 // a rent is being charged, so the owner holds at least this one
 		}
-		return mult * diceTotal
+		if owned > len(utilityMultiples)-1 {
+			owned = len(utilityMultiples) - 1
+		}
+		return utilityMultiples[owned] * diceTotal
 	}
 	return 0
 }
@@ -1322,36 +1647,30 @@ func (e *Engine) declareBankrupt(ns *State) []Event {
 
 // ── Build / sell / mortgage ────────────────────────────────────────────────
 
-func (e *Engine) doBuild(ns *State, pos int) ([]Event, error) {
+func (e *Engine) doBuild(ns *State, seat, pos int) ([]Event, error) {
 	if pos < 0 || pos >= BoardSize {
 		return nil, ErrInvalidProperty
 	}
 	sp := space(pos)
 	h := ns.Holdings[pos]
-	seat := ns.Current
 	if sp.Kind != KindStreet || h.Owner != seat || h.Houses >= 5 {
 		return nil, ErrIllegalAction
 	}
-	if !ns.ownsFullGroup(seat, sp.Group) {
-		return nil, ErrIllegalAction
-	}
-	for _, idx := range groupMembers[sp.Group] {
-		if ns.Holdings[idx].Mortgaged {
-			return nil, ErrIllegalAction
-		}
-	}
-	if h.Houses != minHousesInGroup(ns, sp.Group) { // even-build rule
-		return nil, ErrIllegalAction
-	}
-	if h.Houses < 4 {
-		if ns.HousesRemaining <= 0 {
-			return nil, ErrIllegalAction
-		}
-	} else if ns.HotelsRemaining <= 0 {
-		return nil, ErrIllegalAction
-	}
-	if ns.Players[seat].Cash < sp.HouseCost {
+	// Insufficient funds is reported separately from "illegal": an agent that cannot afford
+	// a house can act on that (sell, mortgage, wait), whereas ErrIllegalAction tells it
+	// nothing. Every OTHER condition is canBuildOn's, so legality and enforcement are the
+	// same statement of the same rule.
+	if ns.Players[seat].Cash < sp.HouseCost && canBuildOnIgnoringCash(ns, seat, pos) {
 		return nil, ErrInsufficientFunds
+	}
+	if !canBuildOn(ns, seat, pos) {
+		return nil, ErrIllegalAction
+	}
+	// HOUSING SHORTAGE. Checked here, after legality and affordability, so a contest can
+	// only be triggered by a build that would otherwise have succeeded — an illegal build
+	// must stay an error rather than becoming an auction nobody asked for.
+	if contested, rivals := buildIsContested(ns, pos); contested {
+		return e.startHouseAuction(ns, seat, pos, rivals, ns.Phase), nil
 	}
 	ns.Players[seat].Cash -= sp.HouseCost
 	if h.Houses < 4 {
@@ -1368,24 +1687,17 @@ func (e *Engine) doBuild(ns *State, pos int) ([]Event, error) {
 	}, nil
 }
 
-func (e *Engine) doSellHouse(ns *State, pos int) ([]Event, error) {
+func (e *Engine) doSellHouse(ns *State, seat, pos int) ([]Event, error) {
 	if pos < 0 || pos >= BoardSize {
 		return nil, ErrInvalidProperty
 	}
 	sp := space(pos)
 	h := ns.Holdings[pos]
-	seat := ns.Current
-	if sp.Kind != KindStreet || h.Owner != seat || h.Houses == 0 {
-		return nil, ErrIllegalAction
-	}
-	if h.Houses != maxHousesInGroup(ns, sp.Group) { // even-sell rule
+	if !canSellHouseOn(ns, seat, pos) {
 		return nil, ErrIllegalAction
 	}
 	refund := sp.HouseCost / 2
 	if h.Houses == 5 {
-		if ns.HousesRemaining < 4 {
-			return nil, ErrIllegalAction // cannot break the hotel without four houses in the bank
-		}
 		ns.HousesRemaining -= 4
 		ns.HotelsRemaining++
 		h.Houses = 4
@@ -1401,20 +1713,14 @@ func (e *Engine) doSellHouse(ns *State, pos int) ([]Event, error) {
 	}, nil
 }
 
-func (e *Engine) doMortgage(ns *State, pos int) ([]Event, error) {
+func (e *Engine) doMortgage(ns *State, seat, pos int) ([]Event, error) {
 	if pos < 0 || pos >= BoardSize {
 		return nil, ErrInvalidProperty
 	}
 	sp := space(pos)
 	h := ns.Holdings[pos]
-	seat := ns.Current
-	if !sp.Ownable() || h.Owner != seat || h.Mortgaged {
+	if !canMortgage(ns, seat, pos) {
 		return nil, ErrIllegalAction
-	}
-	for _, idx := range groupMembers[sp.Group] { // no buildings anywhere in the group
-		if ns.Holdings[idx].Houses > 0 {
-			return nil, ErrIllegalAction
-		}
 	}
 	amt := sp.MortgageValue()
 	h.Mortgaged = true
@@ -1426,18 +1732,16 @@ func (e *Engine) doMortgage(ns *State, pos int) ([]Event, error) {
 	}, nil
 }
 
-func (e *Engine) doUnmortgage(ns *State, pos int) ([]Event, error) {
+func (e *Engine) doUnmortgage(ns *State, seat, pos int) ([]Event, error) {
 	if pos < 0 || pos >= BoardSize {
 		return nil, ErrInvalidProperty
 	}
 	sp := space(pos)
 	h := ns.Holdings[pos]
-	seat := ns.Current
+	cost := unmortgageCost(pos)
 	if !sp.Ownable() || h.Owner != seat || !h.Mortgaged {
 		return nil, ErrIllegalAction
 	}
-	base := sp.MortgageValue()
-	cost := base + (base+9)/10 // mortgage value + 10% interest, rounded up
 	if ns.Players[seat].Cash < cost {
 		return nil, ErrInsufficientFunds
 	}

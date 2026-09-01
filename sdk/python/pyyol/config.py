@@ -165,7 +165,9 @@ def save(cfg: Config, directory: str = "") -> str:
     d = os.path.abspath(directory or os.getcwd())
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, CONFIG_NAME)
-    with open(path, "w") as f:
+    # UTF-8: an agent name is developer-supplied text and pyyol.toml must round-trip it the
+    # same way on every machine, not in whatever encoding the current locale happens to pick.
+    with open(path, "w", encoding="utf-8") as f:
         f.write(dumps(cfg))
     return path
 

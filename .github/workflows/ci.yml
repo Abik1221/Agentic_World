@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.x'
+          go-version: '1.25.13'
           cache: true
           cache-dependency-path: backend/go.sum
 
@@ -92,7 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
+        with: { go-version: '1.25.13', cache: true, cache-dependency-path: backend/go.sum }
       # Migrations are applied by the suite's own TestMain, through the same in-process
       # runner the server uses on boot — so the schema under test is the schema production
       # gets, and there is no second place for it to drift.
@@ -104,7 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
+        with: { go-version: '1.25.13', cache: true, cache-dependency-path: backend/go.sum }
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         # Pinned, for the same reason the Go toolchain above is pinned: `latest` lets a
@@ -120,8 +120,33 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: '1.25.x', cache: true, cache-dependency-path: backend/go.sum }
+        with: { go-version: '1.25.13', cache: true, cache-dependency-path: backend/go.sum }
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  # Pyyol Lens, on its own Go 1.26 toolchain.
+  #
+  # Added because this module was tested only at DEPLOY time. deploy-tracing runs `go test`
+  # before shipping, so a change that broke Lens compiled fine in `ci`, passed review, merged,
+  # and failed at the deploy — which is the most expensive place to find it and the one with
+  # a half-updated stack on the other side. Phase 6 put the harness discriminator in here, so
+  # the module now carries logic the boards depend on.
+  #
+  # Separate job rather than a step on `backend`: this is a DIFFERENT MODULE on a different Go
+  # minor (go.mod requires 1.26.1, the arena is on 1.25), and sharing a setup-go step would
+  # silently build one of them with the wrong toolchain.
+  lens:
+    name: lens (tracing)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tracing/backend
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26.6', cache: true, cache-dependency-path: tracing/backend/go.sum }
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -count=1 ./...

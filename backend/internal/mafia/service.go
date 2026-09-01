@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/benchmark"
+	"github.com/agent-arena/arena/internal/deadline"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/integrity"
 	"github.com/agent-arena/arena/internal/liveness"
@@ -21,6 +22,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/readycheck"
 	"github.com/agent-arena/arena/internal/turnproof"
 )
 
@@ -510,8 +512,28 @@ func (s *Service) startMatch(ctx context.Context, m Match) error {
 		}
 	}
 
-	deadline := s.clock.Now().Add(s.phaseWindow(state.Phase))
-	if err := s.repo.Start(ctx, m.PublicID, roles, state, deadline, events); err != nil {
+	// The start countdown, and the reason the first phase window opens at startsAt rather
+	// than now.
+	//
+	// A table filled its last seat and is about to play. Until now it went live in the same
+	// instant, so a developer watching a terminal — or the console — saw a lobby become a
+	// running match with no moment in between, and an agent that was still finishing its
+	// startup lost the front of its first phase to a game already in progress.
+	//
+	// startsAt is ABSOLUTE and persisted, never a duration, for the reason internal/readycheck
+	// gives: two surfaces each counting down from ten drift apart within seconds, and visibly
+	// disagreeing about when a staked match begins is worse than showing nothing. Every
+	// surface counts to this one value.
+	//
+	// Play is NOT gated on it — the match is active immediately and the driver runs, exactly
+	// as goofspiel's startAfterReady does. What the countdown buys is that the first phase's
+	// window opens when play does, so the countdown does not eat the first phase's thinking
+	// time. Gating the engine on a wall-clock instant would be a second scheduler to keep
+	// correct, and this needs none.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy("mafia").Countdown)
+	deadline := startsAt.Add(s.phaseWindow(state.Phase))
+	if err := s.repo.Start(ctx, m.PublicID, roles, state, startsAt, deadline, events); err != nil {
 		// Compensate the stake-then-start dual-write: the stake committed (ledger tx)
 		// but flipping the match to active failed, so the coins would be stranded in a
 		// full 'waiting' table with no retry. Refund immediately (idempotent disburse
@@ -925,6 +947,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	}
 
 	// A zero-fee practice table staked nothing, so there is nothing to settle.
+	// Hoisted so the RATING path below reads the SAME verdict this settlement used.
+	// Evaluating twice could reach two different answers for one table, leaving a seat
+	// unpaid but rated, or paid but unrated. Zero value is inert, so a table that never
+	// reaches the evaluation below rates exactly as it did before.
+	var verdict integrity.Verdict
+
 	if m.EntryFee > 0 {
 		// Money is at stake, so a seat that cannot show a single LLM-backed decision is
 		// not paid from it — provided some OTHER seat at this table could. The table
@@ -952,8 +980,8 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 					absent[p.AgentPublicID] = true
 				}
 			}
-			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
-			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
+			verdict = integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
+			payouts, _ = integrity.FilterPayable(payouts, verdict, m.PublicID, slog.Default())
 		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, platformFee, payouts); err != nil {
 			return err
@@ -979,7 +1007,12 @@ func (s *Service) finalize(ctx context.Context, m Match, state mf.State, events 
 	// rater is also what keeps such a table out of P-Index entirely, since P-Index reads
 	// match_rating_changes and none are written.
 	if s.rater != nil && m.EntryFee > 0 && !HasHouseSeat(m.Players) {
-		res := rating.MatchResult{MatchPublicID: m.PublicID, Game: rating.GameMafia}
+		// The same verdict that withheld payouts also withholds rating. On a twelve-seat
+		// table only the unproven seats are dropped and the rest are rated, matching
+		// FilterPayable rather than voiding everyone's game.
+		res := rating.MatchResult{
+			MatchPublicID: m.PublicID, Game: rating.GameMafia, Integrity: verdict,
+		}
 		for _, p := range players {
 			placement := 2
 			if p.Team == state.Winner {
@@ -1043,9 +1076,17 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	}
 
 	state, events, err := s.eng.ForceTimeout(m.State, m.Seed)
-	if err != nil || len(events) == 0 {
+	if err != nil {
 		return err
 	}
+	// Deliberately NOT gated on len(events) > 0. Monopoly carried the identical guard and it
+	// wedged five staked tables for up to two days: its engine advanced the state while
+	// emitting nothing observable, the service read "no events" as "nothing happened", and
+	// the advance was discarded on every sweep. No Mafia table has been found stuck this
+	// way, so this is preventive rather than a reproduced defect — but the failure mode is
+	// silent, holds escrow, and the guard buys nothing, since persist() is OCC and re-arms
+	// the deadline.
+
 	if err := s.persist(ctx, m, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
 		return err
 	}
@@ -1315,6 +1356,10 @@ func (s *Service) viewFor(ctx context.Context, m Match, viewerAgent string) Agen
 	v.Legal = bv.Legal
 	v.Public = bv.Public
 	v.Private = bv.Private
+	// Role-scoped by BuildView itself — only a doctor's view carries one, only a mafia's the
+	// other — so copying both unconditionally cannot leak either to a seat not entitled to it.
+	v.CannotProtect = bv.CannotProtect
+	v.AllyKills = bv.AllyKills
 	return v
 }
 
@@ -1328,6 +1373,11 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 		Economy: ComputeEconomy(len(HumanPlayers(m.Players)), m.EntryFee, m.RakePct),
 		// Public identities only — roles stay in the redacted per-seat view.
 		Roster: RosterOf(m.Players, m.State.Alive),
+		// Shipped on EVERY view, in every status, so a client can measure its clock offset
+		// once and render any absolute instant correctly. Only useful in company: StartsAt
+		// alone is unreadable on a device whose clock is minutes out, which is most of them.
+		ServerNow: s.clock.Now().UTC(),
+		StartsAt:  m.StartsAt,
 	}
 	if m.Status == StatusActive {
 		// Who the table is waiting on, straight from the rules. PendingActors was
@@ -1339,11 +1389,33 @@ func (s *Service) baseView(m Match, viewerAgent string) AgentView {
 		// Full phase length + whether talking is allowed right now. Together with
 		// DeadlineMs this is everything a client needs to render "NIGHT · 0:23" and
 		// disable the composer, without hardcoding the rules on the client.
-		v.PhaseDurationMs = s.phaseWindow(m.State.Phase).Milliseconds()
+		window := s.phaseWindow(m.State.Phase)
+		v.PhaseDurationMs = window.Milliseconds()
 		v.CanSpeak = mf.CanSpeak(m.State.Phase)
 		if m.RoundDeadline != nil {
 			if rem := m.RoundDeadline.Sub(s.clock.Now()).Milliseconds(); rem > 0 {
 				v.DeadlineMs = rem
+			}
+			// The last-seconds cue, counted back from the deadline rather than forward from a
+			// phase start we do not store. Same instant either way — the deadline IS the start
+			// plus this window, set together in persist() — and counting back needs one stored
+			// value instead of two.
+			//
+			// Only on a phase where someone still owes an action, which is DERIVED from
+			// PendingActors rather than a hardcoded phase list. Morning and result are
+			// announcement beats — PendingActors has no case for them and returns nil — and
+			// they are 8s long, so a "nearly over" notice there is pure noise on the wire.
+			// Deriving it also means a rules change cannot leave this behind: a new decision
+			// phase gets a warning automatically, and a phase that stops demanding an action
+			// stops warning.
+			if len(v.Pending) > 0 {
+				if lead := deadline.WarnLead(window); lead > 0 {
+					at := m.RoundDeadline.Add(-lead)
+					v.WarnAt = &at
+					if left := at.Sub(s.clock.Now()).Milliseconds(); left > 0 {
+						v.WarnInMs = left
+					}
+				}
 			}
 		}
 		// The engine clears Votes when voting opens, so this is exactly the

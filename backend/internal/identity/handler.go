@@ -24,6 +24,7 @@ type Handler struct {
 	authn        *auth.Authenticator
 	privy        *auth.PrivyVerifier  // nil ⇒ Privy login disabled (503)
 	google       *auth.GoogleVerifier // nil/unconfigured ⇒ Google login disabled (503)
+	github       *auth.GitHubVerifier // nil/unconfigured ⇒ GitHub login disabled (503)
 	registerRL   func(http.Handler) http.Handler
 	loginRL      func(http.Handler) http.Handler
 	keysRL       func(http.Handler) http.Handler
@@ -45,6 +46,22 @@ type Handler struct {
 	//
 	// Nil ⇒ per-IP only (unchanged behaviour).
 	accountRL func(ctx context.Context, identifier string) (ok bool, retryAfter time.Duration)
+	// admins is the ADMIN_USER_IDS allowlist, for the one admin-scoped route this handler
+	// serves (POST /v1/admin/agents). Nil/empty is safe: RequirePlatformOrAdmin still
+	// admits a valid Platform token, and admits nobody else.
+	admins map[string]bool
+}
+
+// SetAdmins installs the ADMIN_USER_IDS allowlist used by the admin create-agent route.
+// Additive to the Platform token, exactly as every other admin surface treats it.
+func (h *Handler) SetAdmins(userIDs []string) {
+	m := make(map[string]bool, len(userIDs))
+	for _, id := range userIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			m[id] = true
+		}
+	}
+	h.admins = m
 }
 
 // SetAccountRateLimit installs the per-account credential throttle used by password
@@ -118,6 +135,7 @@ func (h *Handler) Register(r chi.Router) {
 		// owner, return a dashboard session. Rate-limited alongside login.
 		r.Post("/v1/auth/privy", h.privyLogin)
 		r.Post("/v1/auth/google", h.googleLogin)
+		r.Post("/v1/auth/github", h.githubLogin)
 	})
 	// Magic-link verify consumes a single-use token (public; the token is the
 	// credential), so it is not IP-rate-limited.
@@ -126,8 +144,24 @@ func (h *Handler) Register(r chi.Router) {
 	// Authenticated routes: attach the principal, then guard by scope.
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
+		// ADMIN account creation. The same account creation the public sign-up performs,
+		// with one extra field the public path has no business accepting: the agent's KIND.
+		//
+		// It is a separate route rather than a privileged field on /v1/auth/signup because
+		// signup is deliberately public and unauthenticated (see the pinned public route
+		// surface). Teaching it to read a principal that is normally absent, in order to
+		// decide whether to honour one field, is how an "only when authenticated" check
+		// becomes an "authenticated check that was skipped".
+		//
+		// The guard is auth.RequirePlatformOrAdmin — the same one every other admin surface
+		// uses. There is no second credential path, no shared secret, and no env-var escape
+		// hatch: a caller either presents the Super Admin's Platform token or is in
+		// ADMIN_USER_IDS.
+		r.With(auth.RequirePlatformOrAdmin(h.admins)).Post("/v1/admin/agents", h.adminCreateAgent)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/config", h.updateConfig)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/me", h.me)
+		// The CLI handoff. Owner-scoped: it re-expresses authority the caller already proved.
+		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/auth/cli-token", h.cliToken)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/agent/keys", h.listKeys)
 		r.With(auth.RequireScope(auth.ScopeUser), h.keysRL).Post("/v1/agent/keys", h.createKey)
 		r.With(auth.RequireScope(auth.ScopeUser)).Delete("/v1/agent/keys/{prefix}", h.revokeKey)
@@ -229,6 +263,82 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// adminCreateAgent creates an account whose agent carries an explicit kind.
+//
+// This exists for ONE reason: the platform's own benchmark agents must be `harness` from
+// the moment they are created. gamelab used to sign them up on the public path, which
+// makes them `external` — so a benchmark run landed on the public DEVELOPER leaderboard,
+// rated, as though the platform were a competitor, and /harness stayed empty because no
+// harness-kind seats existed for it to fit.
+//
+// Everything AFTER creation is deliberately identical to a developer's flow. The agent
+// submits a manifest, has its endpoint verified by the platform, is issued an agent-scope
+// key, funds a wallet, and plays through the same lobby and queue with every decision
+// completion-bound. That sameness is the point — a benchmark run on a private code path
+// would measure the private code path. The only thing this route changes is who the agent
+// is declared to BE, which is the one judgement a developer cannot be allowed to make
+// about themselves.
+//
+// Response shape mirrors signup exactly, so the caller's onboarding code is shared.
+func (h *Handler) adminCreateAgent(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		AgentName   string `json:"agent_name"`
+		Description string `json:"description"`
+		Kind        string `json:"kind"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// Required, not defaulted. An admin route whose kind silently defaults to `external`
+	// would answer 201 for a typo'd kind and hand back exactly the agent this route exists
+	// to stop being created.
+	if strings.TrimSpace(in.Kind) == "" {
+		httpx.Error(w, errInvalid("kind is required"))
+		return
+	}
+	kind := strings.TrimSpace(in.Kind)
+
+	// PLATFORM agents create no user account.
+	//
+	// This route used to run every kind through SignUpAs, which mints a user with an email
+	// and a password. For the platform's own benchmark seats that produced a throwaway
+	// account each — `lab+78611-0@pyyol.test` and its siblings sitting in the users table
+	// beside real developers, and their matches attributed to the DEVELOPER board.
+	//
+	// A benchmark seat has no person behind it. It hangs off `usr_system`, the identity the
+	// house bots have used since migration 0017, and email/password on the request are
+	// ignored rather than rejected: an admin script that still sends them keeps working, and
+	// nothing it sends can bring an account into existence.
+	var res SignUpResult
+	var err error
+	if kind == KindExternal {
+		res, err = h.svc.SignUpAs(r.Context(), in.Email, in.Password, in.AgentName, in.Description, kind)
+	} else {
+		res, err = h.svc.CreatePlatformAgent(r.Context(), in.AgentName, in.Description, kind)
+	}
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	out := map[string]any{
+		"api_key":    res.APIKey, // shown exactly once
+		"agent_id":   res.AgentID,
+		"agent_name": res.AgentName,
+		"kind":       kind,
+	}
+	// Session tokens only where there is a session to hold them. A platform agent has no
+	// owner who can log in, and handing back a dashboard token for one would be issuing a
+	// login to an account nobody has.
+	if res.DashboardToken != "" {
+		out["dashboard_token"] = res.DashboardToken
+		out["refresh_token"] = h.issueRefresh(r.Context(), res.UserPublicID)
+	}
+	httpx.JSON(w, http.StatusCreated, out)
+}
+
 // login authenticates an email + password and returns a fresh dashboard session.
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -302,6 +412,59 @@ func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 		email = ""
 	}
 	res, err := h.svc.SignUpOrLoginGoogle(r.Context(), claims.Sub, email, claims.Name)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	out := map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
+		"agent_id":        res.AgentID,
+		"agent_name":      res.AgentName,
+		"created":         res.Created,
+	}
+	if res.APIKey != "" {
+		out["api_key"] = res.APIKey // new account's first key, shown once
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// SetGitHub wires the GitHub OAuth verifier (enables POST /v1/auth/github).
+func (h *Handler) SetGitHub(v *auth.GitHubVerifier) { h.github = v }
+
+// githubLogin completes the GitHub OAuth code exchange (the `code` the browser came
+// back with), find-or-creates the account, and returns a dashboard session — the same
+// response shape as googleLogin, so the frontend session handling is identical.
+func (h *Handler) githubLogin(w http.ResponseWriter, r *http.Request) {
+	if h.github == nil || !h.github.Enabled() {
+		httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "github_unavailable",
+			"GitHub login is not configured here. Use email/password (POST /v1/auth/login)."))
+		return
+	}
+	var in struct {
+		Code        string `json:"code"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.Code == "" {
+		httpx.Error(w, errInvalid("code is required"))
+		return
+	}
+	claims, err := h.github.Exchange(r.Context(), in.Code, in.RedirectURI)
+	if err != nil {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "invalid_github_code", "GitHub sign-in verification failed."))
+		return
+	}
+	// Same trust boundary as Google: only a VERIFIED email may link this GitHub login
+	// onto an existing local account. The stable numeric id keys the account either way.
+	email := claims.Email
+	if !claims.EmailVerified {
+		email = ""
+	}
+	res, err := h.svc.SignUpOrLoginGitHub(r.Context(), claims.ID, claims.Login, email, claims.Name)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -728,6 +891,61 @@ func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"dashboard_token": access,
 		"refresh_token":   next,
+	})
+}
+
+// cliToken mints a SEPARATE, independently-revocable session for a terminal.
+//
+// # The bug this fixes
+//
+// The web CLI-login page handed the CLI whatever `session.dashboardToken` held — and in the
+// browser that is the literal sentinel "cookie:user", never a JWT. The real token lives in an
+// HttpOnly cookie that JS cannot read (deliberately: a JS-readable credential is an XSS-exfil
+// path), and inside the browser the BFF swaps the sentinel for the real cookie on every call.
+// The CLI is not a browser. It stored "cookie:user" and sent it as a Bearer, so EVERY
+// owner-scoped command answered 401 — publish first, and therefore certification, and
+// therefore every match including sandbox. A freshly logged-in CLI user could not play at all.
+//
+// # Why a new session rather than the browser's
+//
+// Forwarding the browser's access token would expire in about an hour. Forwarding its refresh
+// token is worse: refresh ROTATES, so browser and CLI would share one token and whichever
+// spent it first would silently log the other out.
+//
+// RefreshService.Issue starts a NEW FAMILY, and revocation is per-family. So the terminal gets
+// a session that lives alongside the browser's, can be revoked on its own, and refreshes on
+// its own — which is exactly what `pyyol logout` on one machine should mean.
+//
+// Owner-scoped: the caller must already hold a valid user JWT, which through the BFF means a
+// live session cookie. This endpoint never widens authority — it re-expresses authority the
+// caller already proved, in a form a terminal can hold.
+func (h *Handler) cliToken(w http.ResponseWriter, r *http.Request) {
+	// PrincipalFromContext returns a POINTER that is nil when nothing authenticated the
+	// request. Dereferencing it straight away — which the first version of this did — turns
+	// the unauthenticated case into a panic instead of a 401, in the one handler whose whole
+	// job is to be careful about authority. The route is behind RequireScope(ScopeUser) so it
+	// should be unreachable; a guard that is only correct while another guard holds is not a
+	// guard.
+	p := auth.PrincipalFromContext(r.Context())
+	owner := ""
+	if p != nil {
+		owner = p.UserPublicID
+	}
+	if owner == "" {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "unauthenticated", "Authentication is required."))
+		return
+	}
+	access, err := h.svc.IssueDashboardToken(owner)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// A refresh token is what keeps the CLI signed in past the access token's short TTL.
+	// Best-effort: without it the CLI still works until the access token expires, which is a
+	// far better outcome than refusing to hand over any credential at all.
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"dashboard_token": access,
+		"refresh_token":   h.issueRefresh(r.Context(), owner),
 	})
 }
 

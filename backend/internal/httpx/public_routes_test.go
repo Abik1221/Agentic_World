@@ -50,6 +50,17 @@ var publicRoutes = []string{
 	"Get /v1/benchmark/deception",
 	"Get /v1/benchmark/deception/methodology",
 	"Get /v1/benchmark/developers",
+	// The PLATFORM harness board: the same fit over the platform's own benchmark matches,
+	// published deliberately. Public because a benchmark nobody can read is not a benchmark,
+	// and separate from /modelboard because the two must never be confused for one another.
+	"Get /v1/benchmark/harness",
+	// The matches behind the harness numbers. Public for the same reason the board is:
+	// a benchmark that cannot be watched is a claim rather than evidence. Carries no
+	// developer data — the query admits only harness-kind agents.
+	"Get /v1/benchmark/harness/matches",
+	"Get /v1/benchmark/harness/models",
+	"Get /v1/benchmark/harness/history",
+	"Get /v1/benchmark/harness/methodology",
 	"Get /v1/benchmark/model",
 	"Get /v1/benchmark/modelboard",
 	"Get /v1/benchmark/modelboard/history",
@@ -82,6 +93,10 @@ var publicRoutes = []string{
 	"Get /v1/matches/live",
 	"Get /v1/media/avatars/{name}",
 	"Get /v1/monopoly/live",
+	// The engine's own board table (prices, rent tiers, mortgage). Public because the
+	// rules of a staked game have to be readable before you stake on them, and it is
+	// match-independent static data — no seat, no state, nothing to redact.
+	"Get /v1/monopoly/board",
 	"Get /v1/monopoly/{id}/economy",
 	"Get /v1/monopoly/{id}/replay",
 	"Get /v1/monopoly/{id}/roster",
@@ -95,6 +110,7 @@ var publicRoutes = []string{
 	"Get /v1/stats/live",
 	"Get /v1/tournaments",
 	"Get /v1/tournaments/{id}",
+	"Post /v1/auth/github",
 	"Post /v1/auth/google",
 	"Post /v1/auth/login",
 	"Post /v1/auth/logout",

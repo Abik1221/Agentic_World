@@ -92,7 +92,10 @@ func firstUnmortgageable(s *State, seat int) (int, bool) {
 	return 0, false
 }
 
-// unmortgageCost is the mortgage value plus 10% interest (matches doUnmortgage).
+// unmortgageCost is the mortgage value plus 10% interest.
+//
+// The ONE definition: doUnmortgage charges it and canUnmortgage tests affordability against
+// it, so the price an agent is quoted and the price it is charged cannot drift apart.
 func unmortgageCost(pos int) int {
 	base := space(pos).MortgageValue()
 	return base + (base+9)/10

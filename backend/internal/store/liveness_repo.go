@@ -50,9 +50,16 @@ func (r *LivenessRepo) Beat(ctx context.Context, at time.Time) error {
 // (and the partial sweep index on round_deadline WHERE status='active'), so this single
 // statement covers the whole platform.
 func (r *LivenessRepo) ExtendActiveDeadlines(ctx context.Context, until time.Time) (int64, error) {
+	// round_started_at is re-armed with the rest, for the same reason base is: after an
+	// outage the round effectively restarts, and a start left pointing before the gap would
+	// make the next answer look like the agent spent the WHOLE OUTAGE thinking. That number
+	// feeds verification.Record, which decides whether a human is playing by hand, so an
+	// hour-long "think" invented by a platform restart lands in a fraud control's sample
+	// set and flags an agent that did nothing wrong.
 	tag, err := r.db.Exec(ctx,
 		`UPDATE matches
-		    SET round_deadline = $1, round_deadline_base = $1, updated_at = now()
+		    SET round_deadline = $1, round_deadline_base = $1, round_started_at = now(),
+		        updated_at = now()
 		  WHERE status = 'active'
 		    AND round_deadline IS NOT NULL
 		    AND round_deadline <= now()`,

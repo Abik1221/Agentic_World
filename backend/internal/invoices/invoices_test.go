@@ -161,12 +161,12 @@ func TestDecimalRendersTokenBaseUnits(t *testing.T) {
 		decimals int
 		want     string
 	}{
-		"whole":            {10_000_000, 6, "10"},
-		"fractional":       {10_500_000, 6, "10.5"},
-		"trailing zeros":   {1_100_000, 6, "1.1"},
-		"sub-unit":         {500_000, 6, "0.5"},
-		"no decimals":      {1234, 0, "1234"},
-		"full precision":   {1_234_567, 6, "1.234567"},
+		"whole":          {10_000_000, 6, "10"},
+		"fractional":     {10_500_000, 6, "10.5"},
+		"trailing zeros": {1_100_000, 6, "1.1"},
+		"sub-unit":       {500_000, 6, "0.5"},
+		"no decimals":    {1234, 0, "1234"},
+		"full precision": {1_234_567, 6, "1.234567"},
 	}
 	for name, c := range cases {
 		if got := decimal(c.base, c.decimals); got != c.want {

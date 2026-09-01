@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -91,6 +92,18 @@ import (
 
 // version is injected at build time via -ldflags "-X main.version=$(git rev-parse --short HEAD)".
 var version = "dev"
+
+// publishableHosts is the set of upstreams whose responses may be published as a model
+// measurement, as a sorted slice for the SQL ANY(...) parameter.
+func publishableHosts() []string {
+	set := llmgw.PublishableUpstreamHosts(os.Getenv("BENCHMARK_EXTRA_HOSTS"))
+	out := make([]string, 0, len(set))
+	for h := range set {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -312,8 +325,12 @@ func run() error {
 	verifyRL := middleware.RateLimit(limiter, 12, time.Minute, userKey("manifest-verify"))
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
-	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
+	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID))                         // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
+	idHandler.SetGitHub(auth.NewGitHubVerifier(cfg.GitHubClientID, cfg.GitHubClientSecret)) // POST /v1/auth/github (disabled unless GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set)
 	idHandler.SetKeysRateLimit(keysRL)
+	// POST /v1/admin/agents — create an account with an explicit agent kind (the platform's
+	// harness seats). Additive to the Platform token, like every other admin surface.
+	idHandler.SetAdmins(cfg.AdminUserIDs)
 	// Per-ACCOUNT credential throttle, alongside the per-IP loginRL above. Per-IP is
 	// blind to a password list spread one-guess-per-host across a botnet, which never
 	// trips any single IP bucket; keying on the identity under attack bounds what one
@@ -639,9 +656,57 @@ func run() error {
 	// is built: history is the one thing that cannot be backfilled — a fit describes the matches
 	// that existed at a moment, and that moment does not come again.
 	modelBoardSvc.SetHistoryWriter(modelBoardRepo)
+	// WHICH upstreams may be attributed to a model. Defaults to the vendor endpoints this
+	// binary ships, so a production deployment behaves exactly as before; BENCHMARK_EXTRA_HOSTS
+	// declares a legitimate override (an enterprise egress proxy, a self-hosted vLLM whose
+	// results the operator genuinely wants ranked).
+	//
+	// What it stops: a lab that points anthropic at a local stand-in records bound,
+	// well-formed `anthropic / claude-opus-4` calls that never left the machine. Without this
+	// they are indistinguishable from real ones and would be ranked as a model.
+	modelBoardSvc.SetPublishableHosts(publishableHosts())
+	// Names this instance's history series. The platform harness benchmark runs the same fit
+	// over its own matches and writes the same shape of row; the discriminator is what keeps
+	// the two series independent instead of one silently overwriting the other.
+	modelBoardSvc.SetBoard("developer")
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
-	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
+	modelBoardHandler.SetBoard("developer")
+
+	// The platform harness board is gone, and the developer board above is the survivor.
+	//
+	// It was always the stronger of the two. The developer board requires `m.rated`, which
+	// excludes any table a house bot had to fill; the harness board could not use that filter
+	// — its own matches are unrated by design — and approximated it structurally instead.
+	//
+	// Nothing about the measurement was lost with it. Both ran the same Build, the same
+	// Bradley-Terry estimator, the same bootstrap intervals and the same attribution rule.
+	// The harness board was that machinery pointed at platform-run agents, so removing it
+	// removes a data source, not a method.
+
+	// The two boards refresh on DIFFERENT intervals, sized to what each one costs.
+	//
+	// The harness board reads the platform's own benchmark seats — a few dozen in the
+	// window — and its refresh is scoped to them, so it costs ~113 MB and under a second.
+	// Ten minutes is comfortable.
+	//
+	// The developer board reads every developer seat in a 90-day window, which is ~320,000
+	// of them, and one refresh measured 16.7 MINUTES and ~20 GB of reads. On a ten-minute
+	// interval a tick was always already waiting, so it refreshed back to back forever:
+	// four refreshes accounted for 208 GB of reads, and the board was effectively a
+	// permanent table scan wearing a schedule.
+	//
+	// An hour is the honest interval for it. A leaderboard computed over ninety days does
+	// not change meaningfully in ten minutes, so the shorter period bought nothing a viewer
+	// could perceive and cost the disk continuously. This is a mitigation and not the cure —
+	// the query returns 600k rows to be aggregated in Go, and that is the thing to fix — so
+	// the worker now WARNS when a refresh outlasts its interval rather than letting the next
+	// regression hide the same way.
+	// Coverage rollup. Frequent ticks, small batches: the public benchmark endpoints read this
+	// instead of aggregating the decision history per request, which is what made them hang.
+	launch("coverage-rollup",
+		store.NewCoverageWorker(store.NewCoverageRepo(st.DB), time.Minute, 24*time.Hour, log).Run)
+	launch("modelboard", modelboard.NewWorker(modelBoardSvc, time.Hour, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
 	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
 	// about one afternoon. An imbalance is SILENT — per-wallet balances still add up, the UI still
@@ -715,6 +780,10 @@ func run() error {
 	// Profile completion is derived from account state, and one of its steps is "have
 	// you connected a wallet" — so the checklist needs to be able to read that.
 	devProfileSvc.SetWalletReader(devProfileRepo)
+	// Serve username availability from memory instead of a lookup per keystroke. The
+	// route is public, unauthenticated and unthrottled; see CheckUsername for why a
+	// Bloom filter is the safe shape for it and what the staleness costs.
+	go devProfileSvc.RunUsernameFilter(ctx, cfg.UsernameFilterRefresh, log)
 	devProfileHandler := devprofile.NewHandler(devProfileSvc, authn)
 
 	// User-uploaded media (avatars) on S3/MinIO. The prod stack has shipped the bucket
@@ -910,6 +979,13 @@ func run() error {
 		clock,
 		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MonopolyMoveWindow, LockTTL: 15 * time.Second},
 	)
+	// House-agent think time at PRACTICE tables only (see monopoly.ThinkTime).
+	// Staked play is never paced.
+	monopolySvc.WithThinkTime(monopoly.ThinkTime{
+		PerMove: time.Duration(cfg.PracticeThinkMs) * time.Millisecond,
+		Jitter:  time.Duration(cfg.PracticeThinkMs) * time.Millisecond / 2,
+		Budget:  time.Duration(cfg.PracticeThinkBudgetMs) * time.Millisecond,
+	})
 	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
 	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))
 	monopolySvc.SetLimits(walletSvc)
@@ -1159,6 +1235,11 @@ func run() error {
 	// seeing a developer's risk settings is support, changing them is deciding how much of
 	// someone else's money to stake.
 	adminReadHandler.SetAgentsRepo(store.NewAdminAgentsRepo(st.DB))
+	// Queue funnel reporting. ONE repo instance, used by both the writers (matchmaking and
+	// the ready check) and the admin reader, so the dashboard cannot end up reading a
+	// different table than the one being written.
+	queueEvents := store.NewQueueEventsRepo(st.DB, log)
+	adminReadHandler.SetQueueHealth(store.QueueHealthAdapter{Repo: queueEvents})
 	if solvencyMonitor != nil {
 		adminReadHandler.SetTreasury(solvencyMonitor)
 	}
@@ -1363,6 +1444,21 @@ func run() error {
 	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
 	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
 	llmGateway.SetCoverageReader(llmGatewayRepo)
+	// Labels each Lens span with WHOSE traffic it is (external / harness). The platform's
+	// benchmark plays real matches through this same gateway, so without the label a
+	// benchmark run is indistinguishable from user telemetry in the trace views.
+	llmGateway.SetKindReader(llmGatewayRepo)
+	// A 429 must never cost a stake.
+	//
+	// The gateway already records every proxied call with its upstream status, match and round,
+	// so a rate-limited turn is durable evidence that this agent made a real model call for
+	// THIS decision and its provider refused it. That qualifies the seat for the SAME bounded
+	// extension a slow-but-answering agent gets — MaxExtensions and Ceiling unchanged, so a
+	// throttled agent cannot hold a table open any longer than a slow one.
+	//
+	// Without this, a developer on a free tier forfeits a staked match because OpenRouter's 50
+	// requests a day ran out mid-round. They neither played badly nor went dark.
+	matchSvc.SetRateLimitObserver(llmGatewayRepo)
 	// Lens spans for server-observed calls, so a gateway round trip shows up in the same trace
 	// waterfall as the agent's own handler rather than leaving a hole where the slow part was.
 	llmGateway.SetEmitter(lens)
@@ -1442,6 +1538,9 @@ func run() error {
 	// making ratings load-bearing and removing the deterministic-rendezvous collusion
 	// vector. The Pairer is match.CreatePaired; ratings come from the rating service.
 	matchmakingRepo := store.NewMatchmakingRepo(st.DB)
+	// Best-effort history on enqueue and pairing. Nil-checked inside, so an unwired build
+	// behaves exactly as before rather than failing a pairing over telemetry.
+	matchmakingRepo.SetQueueEvents(queueEvents)
 	matchmakingSvc := matchmaking.New(
 		matchmakingRepo,
 		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
@@ -1473,6 +1572,44 @@ func run() error {
 	// so the clear deletes nothing and the row is orphaned afterwards. That is two transactions
 	// racing, not a missing call, so the invariant is restated as a periodic check instead.
 	launch("queue-orphan-sweep", matchmaking.NewSweepWorker(matchmakingRepo, time.Minute, log).Run)
+
+	// READY CHECK. Wired HERE, after matchmaking exists, because a dropped seat is requeued
+	// through it — and wired in the same breath as the sweeper on purpose.
+	//
+	// CreatePaired only takes the ready path when this is configured; without it, pairing
+	// escrows and starts exactly as it always did. That guard is what makes this safe to add,
+	// but it also means the sweeper and the service must be installed TOGETHER: install the
+	// service alone and every paired table lands in ready_check with nothing to release it,
+	// which looks precisely like matchmaking having died — no error anywhere, every layer
+	// behaving as designed.
+	//
+	// OFF BY DEFAULT, and the default is the whole point. Neither SDK calls
+	// POST /v1/match/{id}/ready yet, so turning this on today means every paired table is
+	// asked, re-asked, dropped when its window expires and requeued — forever. Matchmaking
+	// would produce no games and report no error, because each layer would be doing exactly
+	// what it was built to do. Enable it only once the SDKs acknowledge.
+	if cfg.ReadyCheckEnabled {
+		// The ask is POST /initialize — the lifecycle call the protocol already has, whose
+		// InitializeResponse.Ready both SDKs already return and the transports have always
+		// discarded. So the ready check works against agents that have already shipped,
+		// without asking any developer to change a line.
+		//
+		// Socket first: a locally-run `pyyol run` agent is on the WebSocket, which is both
+		// open already and the case a developer watching a terminal is actually in.
+		asker := match.InitializeAsker{
+			Resolver: manifestSvc,
+			Client:   goofspielPlayClient,
+			Sockets:  agentGateway,
+			Log:      log,
+		}
+		matchSvc.SetReadyCheck(matchRepo, asker, readyRequeue{matchmakingSvc})
+		// The "unreachable after the developer started it" number comes from here: a seat
+		// dropped for never answering. Nil-checked at every call inside the ready check, which
+		// decides whether real coins are escrowed — telemetry must not be able to fail it.
+		matchSvc.SetQueueEvents(store.QueueEventAdapter{Repo: queueEvents})
+		launch("ready-check-sweeper", match.NewReadySweeper(matchSvc, matchRepo, log, time.Second).Run)
+		log.Warn("ready check ENABLED — paired tables wait for every seat to acknowledge before any stake is escrowed; agents that do not call /ready will be dropped and requeued")
+	}
 	// Clear ranked-queue entries when a match ends. Without this an entry stayed 'matched'
 	// forever — live rows were still 'matched' against matches finished an hour earlier — and
 	// autoplay, which counts 'matched' as still-queued, never re-entered the agent. An autoplay
@@ -1815,6 +1952,17 @@ func run() error {
 	if depositHandler != nil {
 		mounts = append(mounts, depositHandler.Register)
 	}
+	{
+		// The developer-facing view of the queue history: "which of MY agents is stuck".
+		//
+		// A Mount closure because this file builds the router from `mounts` at the end; there is
+		// no router variable in scope where the repo is constructed. Guarded to USER scope
+		// inside RegisterQueueSelf — an agent key resolves to its owner, so a router without
+		// that guard would let a leaked CI key read its owner's whole queue history.
+		// A registrar VALUE, like depositHandler.Register above: main.go does not import chi,
+		// so the closure is built in devplatform where the router type already is.
+		mounts = append(mounts, devplatform.QueueSelfMount(store.QueueSelfAdapter{Repo: queueEvents}))
+	}
 	// internal/llmgateway (mounted at /gw/*) is RETIRED. internal/llmgw at
 	// /v1/gw/{provider}/* replaced it and is wired above with everything the old one did —
 	// turn-proof binding, per-match verified cost, the Lens span, the "Verified" badge — plus
@@ -2146,10 +2294,24 @@ func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []group
 		}
 		filled = append(filled, b.PublicID)
 	}
-	// Real agents act for themselves over the API, but nothing else would ever act for
-	// the fillers — push-play's drive loop only runs for a push-play table. Without this
-	// the bot seats would stay silent until every phase timed out.
+	// Nothing else would ever act for the fillers — push-play's drive loop only runs for a
+	// push-play table. Without this the bot seats would stay silent until every phase timed out.
 	c.svc.DriveHouseSeats(id, filled)
+	// AND push turns to the REAL agents.
+	//
+	// The line above used to be the whole story, on the premise that "real agents act for
+	// themselves over the API". That is true of a polling client and false of both transports
+	// the SDK offers: `pyyol run` waits for socket turn frames and a hosted endpoint waits to be
+	// POSTed to. Neither polls, so nothing drove them and a ranked Mafia seat sat idle until its
+	// phases timed out. Goofspiel has had the equivalent all along (match.maybeDrive).
+	real := make([]string, 0, len(seats))
+	all := make([]string, 0, len(seats)+len(filled))
+	for _, st := range seats {
+		real = append(real, st.AgentPublicID)
+		all = append(all, st.AgentPublicID)
+	}
+	all = append(all, filled...)
+	c.svc.DriveMatchedSeats(ctx, id, real, all)
 	return id, nil
 }
 
@@ -2174,6 +2336,14 @@ func (c monopolyTableCreator) CreateStartedTable(ctx context.Context, seats []gr
 			return "", err
 		}
 	}
+	// Push turns to the real agents. Without this the table started and nobody was ever asked
+	// to move: Monopoly sizes to the group, so every seat is a real agent, and both SDK
+	// transports are push-based. See monopoly.DriveMatchedSeats.
+	real := make([]string, 0, len(seats))
+	for _, st := range seats {
+		real = append(real, st.AgentPublicID)
+	}
+	c.svc.DriveMatchedSeats(ctx, id, real)
 	return id, nil
 }
 
@@ -2399,7 +2569,11 @@ func (g goofspielRater) Elo(ctx context.Context, agentPublicID string) (int, err
 type raterAdapter struct{ r *rating.Service }
 
 func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
-	res := rating.MatchResult{MatchPublicID: rr.MatchPublicID, Game: rr.Game}
+	// Integrity travels with the result. Dropping it here would silently restore the bug
+	// this adapter sits in the middle of: money voided, rating applied anyway.
+	res := rating.MatchResult{
+		MatchPublicID: rr.MatchPublicID, Game: rr.Game, Integrity: rr.Integrity,
+	}
 	for _, p := range rr.Players {
 		placement := p.Placement
 		if placement == 0 {
@@ -2462,4 +2636,17 @@ func (a mafiaActRecorder) RecordActDecision(ctx context.Context, d mafia.ActDeci
 
 func (a mafiaActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
 	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
+}
+
+// readyRequeue returns a seat that missed its ready window to the matchmaking queue.
+//
+// A thin adapter rather than a dependency from match → matchmaking: the match service must not
+// know how agents are queued, only that a dropped seat gets another chance. Missing a window
+// costs a place, not coins — nothing was escrowed — and without this it would silently cost a
+// place in the arena too.
+type readyRequeue struct{ svc *matchmaking.Service }
+
+func (r readyRequeue) Requeue(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) error {
+	_, err := r.svc.Enqueue(ctx, agentPublicID, ownerPublicID, bid)
+	return err
 }

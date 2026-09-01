@@ -8,7 +8,6 @@ Replace `decide`; leave the rest.
 
 from __future__ import annotations
 
-
 from _shared import MatchMemory
 from pyyol import Adapter
 from pyyol.models import MafiaMove, MafiaView

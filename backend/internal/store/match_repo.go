@@ -34,11 +34,14 @@ func (r *MatchRepo) CreateWaitingMatch(ctx context.Context, in match.CreateMatch
 	var matchID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
-		     engine_version, prize_seed_commit, prize_seed, fairness_mode, creator_owner_user_id)
-		 VALUES ($1,$2,'waiting',$3,$4,$5,$6,$7,$8,$9,(SELECT id FROM users WHERE public_id=$10))
+		     engine_version, prize_seed_commit, prize_seed, fairness_mode, creator_owner_user_id,
+		     private)
+		 VALUES ($1,$2,'waiting',$3,$4,$5,$6,$7,$8,$9,(SELECT id FROM users WHERE public_id=$10),
+		     $11)
 		 RETURNING id`,
 		in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
-		in.EngineVersion, in.Commit, in.Seed, in.FairnessMode, in.Creator.OwnerPublicID).Scan(&matchID)
+		in.EngineVersion, in.Commit, in.Seed, in.FairnessMode, in.Creator.OwnerPublicID,
+		in.Private).Scan(&matchID)
 	if err != nil {
 		return match.Match{}, err
 	}
@@ -63,6 +66,10 @@ func (r *MatchRepo) ListWaiting(ctx context.Context, game string, bid int64, exc
 		 JOIN match_players mp ON mp.match_id = m.id AND mp.seat = 0
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 WHERE m.status = 'waiting' AND m.game = $1
+		   -- Rooms are reachable by their id and never by browsing. Without this a
+		   -- stranger refreshing the lobby can take the seat between the moment a code
+		   -- is shared and the moment the invited player uses it.
+		   AND NOT m.private
 		   AND ($2 <= 0 OR m.bid = $2)
 		   AND m.creator_owner_user_id <> COALESCE((SELECT id FROM users WHERE public_id = $3), 0)
 		 ORDER BY m.created_at DESC
@@ -86,18 +93,18 @@ func (r *MatchRepo) ListWaiting(ctx context.Context, game string, bid int64, exc
 func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match, error) {
 	var m match.Match
 	var stateBytes []byte
-	var deadline, base *time.Time
+	var deadline, base, roundStarted, startsAt *time.Time
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
-		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base,
+		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base, m.round_started_at, m.starts_at,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
 		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
-			&stateBytes, &deadline, &base, &m.WinnerAgent, &m.ReplayHash)
+			&stateBytes, &deadline, &base, &roundStarted, &startsAt, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
 		return match.Match{}, err
 	}
@@ -107,6 +114,7 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 		}
 	}
 	m.RoundDeadline = deadline
+	m.StartsAt = startsAt
 	// Fall back to the deadline when no base is recorded. A row that predates the column, or
 	// one written by a path that forgot to set it, then behaves exactly as it did before rather
 	// than losing its extension budget outright.
@@ -114,6 +122,10 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 	if m.RoundDeadlineBase == nil {
 		m.RoundDeadlineBase = deadline
 	}
+	// Left nil on a round already in flight when the column shipped. Readers fall back to
+	// the old reconstruction rather than treating a zero Time as a start, which would
+	// record a think-time of decades into a fraud control's sample set.
+	m.RoundStartedAt = roundStarted
 
 	players, err := r.loadPlayers(ctx, matchPublicID)
 	if err != nil {
@@ -148,15 +160,16 @@ func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	return out, rows.Err()
 }
 
-func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner match.Player, state gs.State, deadline time.Time, events []gs.Event) error {
+func (r *MatchRepo) Activate(ctx context.Context, matchPublicID string, joiner match.Player, state gs.State, startsAt, deadline time.Time, events []gs.Event) error {
 	return r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		var game string
 		var bid int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, started_at=now(), updated_at=now()
+			`UPDATE matches SET status='active', state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, starts_at=$4,
+			     round_started_at=now(), started_at=now(), updated_at=now()
 			 WHERE public_id=$1 AND status='waiting' RETURNING id, game, bid`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID, &game, &bid)
+			matchPublicID, mustJSON(state), deadline, startsAt).Scan(&matchID, &game, &bid)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return match.ErrNotWaiting
 		}
@@ -179,13 +192,15 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 		err := tx.QueryRow(ctx,
 			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
 			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
-			     state, round_deadline, round_deadline_base, started_at, creator_owner_user_id)
-			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),
-			     (SELECT id FROM users WHERE public_id=$12))
+			     state, round_deadline, round_deadline_base, round_started_at, started_at, creator_owner_user_id,
+			     rated, starts_at)
+			 VALUES ($1,$2,'active',COALESCE(NULLIF($13,''),'competitive'),NULLIF($14,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,now(),now(),
+			     (SELECT id FROM users WHERE public_id=$12), NOT $15, $16)
 			 RETURNING id`,
 			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
 			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
-			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy).Scan(&matchID)
+			mustJSON(in.State), in.Deadline, in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy,
+			in.Unrated, nullableTime(in.StartsAt)).Scan(&matchID)
 		if err != nil {
 			return err
 		}
@@ -202,13 +217,30 @@ func (r *MatchRepo) CreatePairedActive(ctx context.Context, in match.CreatePaire
 	})
 }
 
-func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error {
+// nullableTime writes the zero time as SQL NULL rather than year 1.
+//
+// Callers that predate a timestamp column leave it unset, and storing a zero value as a real
+// timestamp is worse than storing nothing: a countdown that expired two millennia ago renders as
+// a countdown, so every surface would show one and none of them would be right. NULL is the
+// honest encoding of "this match has no start instant".
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+func (r *MatchRepo) Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error {
 	err := r.tx(ctx, func(tx pgx.Tx) error {
 		var matchID int64
 		err := tx.QueryRow(ctx,
-			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3, updated_at=now()
+			// COALESCE, not now(): a nil roundStarted means this write is NOT opening a
+			// new round (one seat sealed, or an agent spoke — trySay commits too), and
+			// stamping a fresh start there resets the origin think-time is measured from.
+			`UPDATE matches SET state=$2::jsonb, round_deadline=$3, round_deadline_base=$3,
+			     round_started_at=COALESCE($4, round_started_at), updated_at=now()
 			 WHERE public_id=$1 AND status='active' RETURNING id`,
-			matchPublicID, mustJSON(state), deadline).Scan(&matchID)
+			matchPublicID, mustJSON(state), deadline, roundStarted).Scan(&matchID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return match.ErrNotActive
 		}
@@ -521,4 +553,195 @@ func (r *MatchRepo) MoveRejected(ctx context.Context, matchID, agentPublicID str
 		    WHERE j.match_id = $1 AND a.public_id = $2 AND j.round = $3)`,
 		matchID, agentPublicID, round).Scan(&found)
 	return found, err
+}
+
+// ── ready check ──────────────────────────────────────────────────────────────
+//
+// The write half of internal/readycheck. Added ALONGSIDE CreatePairedActive rather than
+// replacing it: pairing must keep working at every commit, so the switch happens once the
+// ready endpoint and the sweeper exist to drive this path. Until then these are unused.
+
+// CreatePairedReadyCheck persists a paired table that has NOT started and whose stakes have
+// NOT been escrowed.
+//
+// Three deliberate differences from CreatePairedActive, and each one is the point:
+//
+//   - status is 'ready_check', not 'active' — so no move is accepted (tryAct requires active)
+//     and the table is not in the lobby (both lobby indexes are WHERE status = 'waiting').
+//   - started_at and round_deadline stay NULL. The match has not begun; writing a start time
+//     for a table nobody has agreed to play would make every latency and deadline derived
+//     from it wrong.
+//   - no match.started event. Emitting it here would tell every consumer — boards, traces,
+//     the SDK — that a match began, and the whole point is that it has not.
+func (r *MatchRepo) CreatePairedReadyCheck(ctx context.Context, in match.CreatePairedInput) error {
+	return r.tx(ctx, func(tx pgx.Tx) error {
+		var matchID int64
+		err := tx.QueryRow(ctx,
+			`INSERT INTO matches (public_id, game, status, mode, bot_policy, bid, rake_pct, total_rounds,
+			     engine_version, prize_seed_commit, prize_seed, fairness_mode,
+			     state, creator_owner_user_id)
+			 VALUES ($1,$2,'ready_check',COALESCE(NULLIF($12,''),'competitive'),NULLIF($13,''),$3,$4,$5,$6,$7,$8,$9,$10::jsonb,
+			     (SELECT id FROM users WHERE public_id=$11))
+			 RETURNING id`,
+			in.PublicID, in.Game, in.Bid, in.RakePct, in.TotalRounds,
+			in.EngineVersion, in.Commit, in.Seed, in.FairnessMode,
+			mustJSON(in.State), in.SeatA.OwnerPublicID, in.Mode, in.BotPolicy).Scan(&matchID)
+		if err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatA); err != nil {
+			return err
+		}
+		if err := insertPlayer(ctx, tx, matchID, in.SeatB); err != nil {
+			return err
+		}
+		// Events are the dealt opening state and are kept: the deal is already committed to
+		// (prize_seed_commit), and re-dealing on start would break that commitment.
+		return insertEvents(ctx, tx, matchID, in.Events)
+	})
+}
+
+// MarkReady records that a seat has acknowledged. IDEMPOTENT on (match, agent).
+//
+// Idempotent because a retry is the same agent answering once. Without the guard a resent ack
+// would refresh ready_at, and a seat that answered early would keep looking like it answered
+// just now — which is exactly the signal used to explain why a table started when it did.
+//
+// Returns whether this call was the one that marked it, so a caller can tell a first ack from
+// a duplicate without a second query.
+func (r *MatchRepo) MarkReady(ctx context.Context, matchPublicID, agentPublicID string, at time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE match_players mp SET ready_at = $3
+		   FROM matches m, agents a
+		  WHERE mp.match_id = m.id AND mp.agent_id = a.id
+		    AND m.public_id = $1 AND a.public_id = $2
+		    AND m.status = 'ready_check'
+		    AND mp.ready_at IS NULL`,
+		matchPublicID, agentPublicID, at)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReadySeats reads a table's readiness for readycheck.Evaluate.
+//
+// Ordered by seat so a decision is reproducible: the sweeper's Drop list feeds requeues and
+// refunds-that-never-happened, and a set that reorders between reads makes an incident
+// impossible to reconstruct.
+func (r *MatchRepo) ReadySeats(ctx context.Context, matchPublicID string) ([]match.ReadySeat, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id, u.public_id, mp.seat, mp.ready_at, mp.ready_asks, mp.ready_asked_at
+		   FROM match_players mp
+		   JOIN matches m ON m.id = mp.match_id
+		   JOIN agents  a ON a.id = mp.agent_id
+		   JOIN users   u ON u.id = mp.owner_user_id
+		  WHERE m.public_id = $1
+		  ORDER BY mp.seat`, matchPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []match.ReadySeat
+	for rows.Next() {
+		var s match.ReadySeat
+		if err := rows.Scan(&s.AgentPublicID, &s.OwnerPublicID, &s.Seat,
+			&s.ReadyAt, &s.Asks, &s.AskedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// RecordAsk notes that a seat was asked, so its window can be measured and its second chance
+// counted. Bumps the count and resets the clock in one statement — two statements could leave
+// a seat asked-but-untimed if the process died between them, and an untimed ask never expires.
+func (r *MatchRepo) RecordAsk(ctx context.Context, matchPublicID, agentPublicID string, at time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE match_players mp SET ready_asks = mp.ready_asks + 1, ready_asked_at = $3
+		   FROM matches m, agents a
+		  WHERE mp.match_id = m.id AND mp.agent_id = a.id
+		    AND m.public_id = $1 AND a.public_id = $2
+		    AND m.status = 'ready_check'`,
+		matchPublicID, agentPublicID, at)
+	return err
+}
+
+// ActivateAfterReady flips a ready table to active once its stakes are escrowed.
+//
+// The caller escrows FIRST and calls this second. Ordering matters: if escrow succeeds and
+// this fails, the caller refunds — the same shape CreatePaired already uses. The reverse
+// order would start a staked match with nothing behind it.
+//
+// Guarded on status = 'ready_check' so two sweepers racing cannot both start the same table;
+// the loser affects no rows and is told so.
+func (r *MatchRepo) ActivateAfterReady(ctx context.Context, matchPublicID string, startsAt, deadline time.Time) (bool, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE matches
+		    SET status = 'active', started_at = now(), starts_at = $2,
+		        round_deadline = $3, round_deadline_base = $3, round_started_at = now()
+		  WHERE public_id = $1 AND status = 'ready_check'`,
+		matchPublicID, startsAt, deadline)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// AbandonReadyCheck releases a table that can never start. Nothing is refunded because
+// nothing was ever escrowed — which is the entire point of the ready check.
+func (r *MatchRepo) AbandonReadyCheck(ctx context.Context, matchPublicID string) error {
+	_, err := r.db.Exec(ctx,
+		`UPDATE matches SET status = 'aborted' WHERE public_id = $1 AND status = 'ready_check'`,
+		matchPublicID)
+	return err
+}
+
+// ReadyCheckMatches lists tables still collecting acknowledgements, oldest first.
+//
+// Oldest first because a table that has been waiting longest is closest to a decision —
+// either it starts or someone is dropped — and serving newer tables ahead of it would let a
+// busy arena starve the ones already holding agents.
+//
+// Bounded by limit so one sweep tick cannot stall on a backlog. Uses the partial index added
+// in 0088; ready_check is a brief state, so this is a small set in practice.
+func (r *MatchRepo) ReadyCheckMatches(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 32
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT public_id FROM matches
+		  WHERE status = 'ready_check'
+		  ORDER BY created_at
+		  LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// AgentKind reports an agent's kind. Implements match.Repo.
+//
+// An unknown agent answers "" rather than an error: the caller reads "" as "not a harness
+// agent" and refuses, which is the safe direction. Returning an error instead would make a
+// deleted agent look like a database fault and invite a retry that can never succeed.
+func (r *MatchRepo) AgentKind(ctx context.Context, agentPublicID string) (string, error) {
+	var kind string
+	err := r.db.QueryRow(ctx,
+		`SELECT kind FROM agents WHERE public_id = $1`, agentPublicID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return kind, err
 }

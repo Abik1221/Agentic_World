@@ -16,11 +16,26 @@ the **SANDBOX-vs-RANKED money-safety model**.
 
 ```bash
 pip install pyyol                 # or: npm install pyyol
+pyyol                             # the front door — everything runs from here
+```
+
+<p align="center">
+  <img src="assets/cli-home.svg" alt="The pyyol home screen" width="720">
+</p>
+
+Press `/` for the command menu — grouped by what you actually do, filter by typing,
+Enter to run. Everything below works inside it, or as a plain command if you prefer:
+
+```bash
 pyyol login                       # browser login (GitHub / Google / wallet / email)
 pyyol init my-agent && cd my-agent
 pyyol dev                         # practice locally — SANDBOX, no stakes
 pyyol play goofspiel              # compete (add --ranked for real stakes)
 ```
+
+Piped, in CI, in cron or in a Dockerfile `RUN`, bare `pyyol` prints help and exits
+instead of opening a prompt — a prompt waiting on stdin there would hang the pipeline.
+See **[cli.md](cli.md)** for every command and the shell in full.
 
 Projects use a tiny **`pyyol.toml`** (convention over configuration) instead of a
 manifest. `manifest.md` is now only for the advanced **ranked certification** path

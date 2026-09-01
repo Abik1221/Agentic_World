@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyyolbench"
+version = "0.1.0"
+description = "Pyyol model benchmark harness: one scaffold, many models, three games"
+requires-python = ">=3.10"
+# `pyyol` is the local SDK, installed from ../../sdk/python in the image so the benchmark
+# is always measured against the SDK developers actually ship rather than a pinned copy.
+dependencies = ["pyyol", "openai>=1.40"]
+
+[tool.setuptools.packages.find]
+include = ["pyyolbench*"]

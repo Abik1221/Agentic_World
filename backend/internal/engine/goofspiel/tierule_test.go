@@ -52,3 +52,47 @@ func TestTieCarryDefault(t *testing.T) {
 		t.Fatalf("empty tie rule = %v, want carry default %v", def.Scores, carry.Scores)
 	}
 }
+
+// TestTieDiscardThrowsThePoolAway pins the third documented settlement: "some play that tied
+// prize cards are discarded". The harshest of the three — a tie costs both players the prize
+// outright, so bidding to force a tie can never be a way to bank value for a later round.
+//
+// Uses the shared all-ties harness so the three rules are compared on exactly the same play:
+// both seats tie every round of a 2-round game worth 2+4=6.
+func TestTieDiscardThrowsThePoolAway(t *testing.T) {
+	s := playAllTies(t, TieDiscard)
+	if s.Scores[SeatA] != 0 || s.Scores[SeatB] != 0 {
+		t.Fatalf("scores %v; a discarded tie may not be scored by anyone", s.Scores)
+	}
+	if s.Winner != Tie {
+		t.Fatalf("winner = %d, want a draw when neither seat scored", s.Winner)
+	}
+}
+
+// TestTheThreeTieRulesDisagreeAsIntended: carry, split and discard must produce genuinely
+// different games on identical play, or one of them is not implemented.
+func TestTheThreeTieRulesDisagreeAsIntended(t *testing.T) {
+	carry := playAllTies(t, TieCarry)
+	split := playAllTies(t, TieSplit)
+	discard := playAllTies(t, TieDiscard)
+
+	total := func(s State) int { return s.Scores[SeatA] + s.Scores[SeatB] }
+	// CARRY: every round tied means the pool rolls to the end and is won by nobody — the
+	// standard rule's "if the final bids are equal the remaining prizes are not won".
+	if total(carry) != 0 {
+		t.Errorf("carry total = %d; a pool still carrying when the match ends goes to nobody", total(carry))
+	}
+	// SPLIT: the 6 points are shared rather than lost.
+	if total(split) != 6 {
+		t.Errorf("split total = %d, want the whole 6 shared", total(split))
+	}
+	// DISCARD: thrown away round by round.
+	if total(discard) != 0 {
+		t.Errorf("discard total = %d, want 0", total(discard))
+	}
+	// Carry and discard agree on the TOTAL here but differ in mechanism; the split rule is
+	// what proves the three are not one rule wearing three names.
+	if total(split) == total(carry) {
+		t.Error("split and carry produced the same result on all-ties play")
+	}
+}

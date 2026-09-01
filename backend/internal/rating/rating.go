@@ -2,6 +2,8 @@ package rating
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/arenanorm"
+	"github.com/agent-arena/arena/internal/integrity"
 	"math"
 	"sort"
 	"strconv"
@@ -49,6 +51,18 @@ type MatchResult struct {
 	MatchPublicID string
 	Game          string
 	Players       []PlayerResult
+	// Integrity is the verdict the engine already built for settlement. Rate uses it to
+	// decide which seats may move a rating, via integrity.FilterRatable.
+	//
+	// The ZERO VALUE IS INERT — an engine that does not supply one rates everything, which
+	// is the behaviour that existed before this field. That default is deliberate: reading
+	// an absent verdict as "everyone failed" would void honest play in bulk, the same
+	// mistake the completion-binding rules exist to prevent.
+	//
+	// It is passed in rather than recomputed here because the engines evaluate once for
+	// FilterPayable, and a second evaluation of the same table could disagree with the
+	// first — leaving a seat paid but unrated, or the reverse.
+	Integrity integrity.Verdict
 }
 
 // LeaderboardPage is a paginated leaderboard slice.
@@ -65,6 +79,10 @@ type Service struct {
 	clock platform.Clock
 	cfg   Config
 	m     *metrics
+	// Boards that scan the whole benchmark table, cached briefly. See cache.go for why an
+	// index is not the answer here.
+	modelCache *resultCache[BenchmarkPage]
+	devCache   *resultCache[DeveloperBoard]
 }
 
 // New builds the rating service.
@@ -72,7 +90,13 @@ func New(repo Repo, clock platform.Clock, cfg Config, reg *prometheus.Registry) 
 	if cfg.SeasonLength <= 0 {
 		cfg.SeasonLength = 30 * 24 * time.Hour
 	}
-	return &Service{repo: repo, clock: clock, cfg: cfg, m: newMetrics(reg)}
+	return &Service{
+		repo: repo, clock: clock, cfg: cfg, m: newMetrics(reg),
+		// 30s matches the Cache-Control these endpoints already advertise, so the origin now
+		// keeps the same promise it was making to clients.
+		modelCache: newResultCache[BenchmarkPage](30 * time.Second),
+		devCache:   newResultCache[DeveloperBoard](30 * time.Second),
+	}
 }
 
 // CurrentSeason is the season number for now (date-derived; a new window starts a
@@ -226,6 +250,46 @@ func (s *Service) Rate(ctx context.Context, res MatchResult) error {
 		algo = AlgoGlicko2
 		compute = glicko2Apply
 	}
+	// Integrity voids ratings, not only money.
+	//
+	// Before this, a staked match whose seat proved not one LLM-backed decision was
+	// refunded (match/service.go:1488-1497) and then rated anyway (:1551-1558). Mafia and
+	// Monopoly withheld payouts and called the rater regardless. A scripted agent was
+	// therefore refunded every time and climbed the ladder for free.
+	//
+	// One gate, one filter. An earlier draft also re-checked len(res.Players) < 2 after
+	// filtering, which can never fire — FilterRatable already guarantees two survivors
+	// when it returns ratable — and a dead check that reads like a guarantee is worse
+	// than no check.
+	ids := make([]string, len(res.Players))
+	for i, p := range res.Players {
+		ids[i] = p.AgentPublicID
+	}
+	keep, excluded, ratable := integrity.FilterRatable(ids, res.Integrity)
+	if len(excluded) > 0 {
+		s.m.ratingsVoided.Inc()
+	}
+	if !ratable {
+		// Fewer than two seats survived, so there is no comparison left to make. For a 1v1
+		// that is the whole match, matching Goofspiel's money rule where a bad seat voids
+		// it: rating the honest seat would mean rating it against an opponent we have
+		// reason to think was not an LLM at all.
+		return nil
+	}
+	if len(excluded) > 0 {
+		kept := make(map[string]bool, len(keep))
+		for _, k := range keep {
+			kept[k] = true
+		}
+		filtered := make([]PlayerResult, 0, len(keep))
+		for _, p := range res.Players {
+			if kept[p.AgentPublicID] {
+				filtered = append(filtered, p)
+			}
+		}
+		res.Players = filtered
+	}
+
 	players := make([]ApplyPlayer, len(res.Players))
 	for i, p := range res.Players {
 		players[i] = ApplyPlayer(p)
@@ -351,7 +415,48 @@ type BenchmarkPage struct {
 // enough games to RANK on, which is what ModelStat.Preliminary and the win-rate
 // confidence interval report: dropping thin rows would make the board look complete
 // when it is not, so they are shown and marked instead.
+// HarnessBenchmark is ModelBenchmark over the platform's own benchmark matches.
+//
+// Delegates to the same body so every derived figure — win rate, tokens per match, cost per
+// win, the attribution tiering — is computed identically. A second copy of that derivation
+// would be the same for one release and subtly different for every release after.
+func (s *Service) HarnessBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	return s.benchmarkPage(ctx, game, minGames, true)
+}
+
+// HarnessMatches lists published platform-harness matches that can be replayed.
+// Straight passthrough: the restriction that matters (harness-kind agents only, and
+// only matches that actually have a log) belongs in the query, next to the data.
+func (s *Service) HarnessMatches(ctx context.Context, game string, limit int) ([]HarnessMatch, error) {
+	if game == ArenaAll {
+		game = ""
+	}
+	return s.repo.HarnessMatches(ctx, game, limit)
+}
+
+// ModelBenchmark serves the public model board, cached for a few seconds.
+//
+// The cache sits here rather than in the handler so every caller benefits — the public
+// endpoint, the admin proxy and DeveloperBoard, which reuses this for its baselines and
+// would otherwise trigger the same full scan a second time on one request.
 func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	if s.modelCache == nil { // a Service built without New (tests) stays uncached
+		return s.modelBenchmarkUncached(ctx, game, minGames)
+	}
+	return s.modelCache.get(cacheKey(game, minGames), func(c context.Context) (BenchmarkPage, error) {
+		return s.modelBenchmarkUncached(c, game, minGames)
+	})
+}
+
+func cacheKey(game string, minGames int) string {
+	return game + "|" + strconv.Itoa(minGames)
+}
+
+func (s *Service) modelBenchmarkUncached(ctx context.Context, game string, minGames int) (BenchmarkPage, error) {
+	return s.benchmarkPage(ctx, game, minGames, false)
+}
+
+func (s *Service) benchmarkPage(ctx context.Context, game string, minGames int, harness bool) (BenchmarkPage, error) {
 	if game == ArenaAll {
 		game = "" // the repo reads "" as "do not filter by arena"
 	}
@@ -360,7 +465,11 @@ func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int)
 	}
 	season := s.CurrentSeason()
 	start, end := s.SeasonBounds(season)
-	models, err := s.repo.ModelBenchmark(ctx, season, game, start, end)
+	read := s.repo.ModelBenchmark
+	if harness {
+		read = s.repo.HarnessModelBenchmark
+	}
+	models, err := read(ctx, season, game, start, end)
 	if err != nil {
 		return BenchmarkPage{}, err
 	}
@@ -374,23 +483,7 @@ func (s *Service) ModelBenchmark(ctx context.Context, game string, minGames int)
 		}
 		out = append(out, *m)
 	}
-	// Best first. Intelligence is the primary key because it is the only figure here
-	// that is normalized across arenas — avg ELO is not comparable between a Glicko
-	// 1v1 arena and a TrueSkill N-player one, so it breaks ties rather than setting
-	// the order. Models with too small a sample to score sink below those with one.
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.Intelligence != b.Intelligence {
-			return a.Intelligence > b.Intelligence
-		}
-		if a.WinRate != b.WinRate {
-			return a.WinRate > b.WinRate
-		}
-		if a.AvgElo != b.AvgElo {
-			return a.AvgElo > b.AvgElo
-		}
-		return a.CoinsWon > b.CoinsWon
-	})
+	orderModels(out, game)
 
 	reported := game
 	if reported == "" {
@@ -496,6 +589,15 @@ type DeveloperBoard struct {
 // the exact per-model win rate the public model board publishes — the two boards are
 // two views of one dataset, and a reader can check any edge by hand from them.
 func (s *Service) DeveloperBoard(ctx context.Context, game string, minGames int) (DeveloperBoard, error) {
+	if s.devCache == nil {
+		return s.developerBoardUncached(ctx, game, minGames)
+	}
+	return s.devCache.get(cacheKey(game, minGames), func(c context.Context) (DeveloperBoard, error) {
+		return s.developerBoardUncached(c, game, minGames)
+	})
+}
+
+func (s *Service) developerBoardUncached(ctx context.Context, game string, minGames int) (DeveloperBoard, error) {
 	if game == ArenaAll {
 		game = ""
 	}
@@ -702,12 +804,103 @@ func (s *Service) Standing(ctx context.Context, agentPublicID, game string) (Sta
 
 // ── metrics ──────────────────────────────────────────────────────────────────
 
-type metrics struct{ eloUpdates prometheus.Counter }
+type metrics struct {
+	eloUpdates prometheus.Counter
+	// ratingsVoided counts matches where integrity removed at least one seat from the
+	// rating update, or removed enough that nothing could be rated.
+	//
+	// Published as a counter because the RATE is the interesting number and the platform
+	// has already learned that exclusion numerators without denominators cannot be turned
+	// into a rate by a reader. Divide by elo_updates_total plus this.
+	ratingsVoided prometheus.Counter
+}
 
 func newMetrics(reg *prometheus.Registry) *metrics {
-	m := &metrics{eloUpdates: prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "elo_updates_total", Help: "Matches whose ELO change was applied.",
-	})}
-	reg.MustRegister(m.eloUpdates)
+	m := &metrics{
+		eloUpdates: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "elo_updates_total", Help: "Matches whose ELO change was applied.",
+		}),
+		ratingsVoided: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "rating_integrity_voided_total",
+			Help: "Matches where integrity removed a seat from, or voided, the rating update.",
+		}),
+	}
+	reg.MustRegister(m.eloUpdates, m.ratingsVoided)
 	return m
+}
+
+// arenaRecords extracts per-arena decisive results for normalisation.
+//
+// The all-arena page carries a per-arena breakdown; a single-arena page does not, and there
+// the row's own totals ARE that arena's results. A cross-arena row with no breakdown cannot
+// be normalised at all and returns nothing, which Compute reports as not Comparable — the
+// honest outcome, since pooling it is exactly the bug being fixed.
+func arenaRecords(m ModelStat, pageGame string) []arenanorm.Record {
+	if len(m.Arenas) > 0 {
+		out := make([]arenanorm.Record, 0, len(m.Arenas))
+		for _, a := range m.Arenas {
+			out = append(out, arenanorm.Record{Arena: a.Game, Wins: a.Wins, Losses: a.Losses})
+		}
+		return out
+	}
+	if pageGame == "" {
+		return nil
+	}
+	return []arenanorm.Record{{Arena: pageGame, Wins: m.Wins, Losses: m.Losses}}
+}
+
+// orderModels normalises and sorts a benchmark page in place.
+//
+// Extracted from benchmarkPage so the ordering can be tested without a database. The
+// ordering rule is the part most likely to be quietly wrong, and it was: see the comment
+// inside for what it replaced.
+func orderModels(out []ModelStat, game string) {
+	// Best first, ordered by arena-normalised performance.
+	//
+	// Intelligence USED to be the primary key, for a reason that was half right: it was
+	// the only figure normalised across arenas, since avg ELO is not comparable between a
+	// Glicko 1v1 arena and a TrueSkill N-player one. But Intelligence is
+	// 0.4*legal + 0.4*(1-fallback) + 0.2*speed, which contains NO information about
+	// winning. Two agents that both play legally with no fallbacks both score
+	// 800 + 200*speed, so the order was decided entirely by latency — on a page titled
+	// "which model wins on Pyyol", with the win-rate column underneath contradicting it.
+	// The latency band made it worse: 500/8000ms against a measured p50 of 6,988ms
+	// (migration 0078) scores the median honest agent 0.135.
+	//
+	// The replacement keeps the property that motivated the original choice — cross-arena
+	// comparability — and adds the one it lacked. Each arena's rate is lifted over that
+	// arena's own MEASURED population baseline, and rows are ranked on the Wilson lower
+	// bound, matching modelboard and skill/ranking rather than the ladder's bare point
+	// estimates. Intelligence survives as a displayed column and now only separates rows
+	// whose evidence is otherwise identical.
+	baseRecords := make([]arenanorm.Record, 0, len(out)*len(Arenas))
+	for i := range out {
+		baseRecords = append(baseRecords, arenaRecords(out[i], game)...)
+	}
+	baselines := arenanorm.PopulationBaselines(baseRecords)
+	for i := range out {
+		out[i].Normalized = arenanorm.Compute(arenaRecords(out[i], game), baselines)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		// A row with no normalisable evidence is UNMEASURED, not worst. It sinks, but it
+		// is still shown, for the same reason Preliminary rows are.
+		if a.Normalized.Comparable != b.Normalized.Comparable {
+			return a.Normalized.Comparable
+		}
+		if a.Normalized.LiftLower != b.Normalized.LiftLower {
+			return a.Normalized.LiftLower > b.Normalized.LiftLower
+		}
+		if a.Normalized.Decisive != b.Normalized.Decisive {
+			return a.Normalized.Decisive > b.Normalized.Decisive
+		}
+		if a.Intelligence != b.Intelligence {
+			return a.Intelligence > b.Intelligence
+		}
+		if a.AvgElo != b.AvgElo {
+			return a.AvgElo > b.AvgElo
+		}
+		return a.Provider+"/"+a.Model < b.Provider+"/"+b.Model
+	})
+
 }

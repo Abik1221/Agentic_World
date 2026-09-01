@@ -3,24 +3,54 @@ package match
 import (
 	"time"
 
+	"github.com/agent-arena/arena/internal/deadline"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 )
 
 // AgentView is the redacted, per-viewer state returned to an agent. It never
 // exposes the opponent's sealed card before reveal, nor the future prize order.
 type AgentView struct {
-	MatchID          string      `json:"match_id"`
-	Game             string      `json:"game"`
-	Status           string      `json:"status"`
-	Mode             string      `json:"mode"` // "competitive" | "sandbox"
-	Round            int         `json:"round"`
-	TotalRounds      int         `json:"total_rounds"`
-	CurrentPrize     int         `json:"current_prize"`
-	PrizePool        int         `json:"prize_pool"`
-	YourTurn         bool        `json:"your_turn"`
-	Deadline         *time.Time  `json:"deadline,omitempty"`
-	MoveWindowMs     int64       `json:"move_window_ms"`        // total per-move budget (the shot clock)
-	DeadlineMs       int64       `json:"deadline_ms,omitempty"` // ms remaining until the deadline (0 once elapsed / not your turn)
+	MatchID      string     `json:"match_id"`
+	Game         string     `json:"game"`
+	Status       string     `json:"status"`
+	Mode         string     `json:"mode"` // "competitive" | "sandbox"
+	Round        int        `json:"round"`
+	TotalRounds  int        `json:"total_rounds"`
+	CurrentPrize int        `json:"current_prize"`
+	PrizePool    int        `json:"prize_pool"`
+	YourTurn     bool       `json:"your_turn"`
+	Deadline     *time.Time `json:"deadline,omitempty"`
+	MoveWindowMs int64      `json:"move_window_ms"`        // total per-move budget (the shot clock)
+	DeadlineMs   int64      `json:"deadline_ms,omitempty"` // ms remaining until the deadline (0 once elapsed / not your turn)
+	// StartsAt is when the first turn begins, as an ABSOLUTE instant. Present only for a
+	// match that went through a ready check.
+	//
+	// Absolute on purpose. A countdown shipped as "10" and counted down independently by a
+	// terminal and a browser drifts apart within seconds, and two surfaces disagreeing about
+	// when a staked match begins is worse than no countdown at all. Both count TO this.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+	// ServerNow is the platform's clock at the moment this view was built.
+	//
+	// Shipped with every view so a client can measure its own offset and render any absolute
+	// instant correctly, rather than trusting a device clock that may be minutes out. It costs
+	// one field and removes a whole class of "the timer was wrong on my machine".
+	ServerNow time.Time `json:"server_now"`
+	// WarnAt is when "your time is nearly up" should fire, as an ABSOLUTE instant, or absent
+	// when this turn is too short to warn about (see deadline.WarnLead).
+	//
+	// A FRACTION of the window, not a fixed lead: windows here are adaptive and run from a
+	// 10s floor to a 3m ceiling, so ten seconds would be the whole budget on a short turn and
+	// a rounding error on a long one.
+	//
+	// DERIVED from the window actually in force — deadline minus the recorded round start —
+	// rather than recomputed from the policy. Recomputing would consult the agent's latency
+	// samples again, which have moved on since the round opened, and could yield a warning
+	// that disagrees with the deadline being enforced. Absent when either end is unknown:
+	// guessing the window would be worse than not warning.
+	WarnAt *time.Time `json:"warn_at,omitempty"`
+	// WarnInMs is the same instant as ms remaining, for a caller that would otherwise do the
+	// subtraction itself. 0 once elapsed, or when there is no warning.
+	WarnInMs         int64       `json:"warn_in_ms,omitempty"`
 	You              sideView    `json:"you"`
 	Opponent         oppView     `json:"opponent"`
 	LegalActions     legalView   `json:"legal_actions"`
@@ -134,12 +164,39 @@ func (s *Service) view(m Match, viewerAgentPublicID string) AgentView {
 		PrizeOrderCommit: m.Commit,
 		Stake:            stakeView{YourCoins: m.Bid, OppCoins: m.Bid, RakePct: m.RakePct},
 		MoveWindowMs:     s.cfg.MoveWindow.Milliseconds(),
+		// The platform's own clock, on every view. A client that knows both this and an
+		// absolute instant can render a correct countdown regardless of how wrong its own
+		// device clock is — which is the difference between a terminal and a browser
+		// agreeing on when a staked match starts and merely appearing to.
+		ServerNow: s.clock.Now().UTC(),
+		StartsAt:  m.StartsAt,
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline
 		if m.RoundDeadline != nil {
 			if rem := m.RoundDeadline.Sub(s.clock.Now()).Milliseconds(); rem > 0 {
 				v.DeadlineMs = rem
+			}
+			// The warning, from the window ACTUALLY IN FORCE for this round.
+			//
+			// window = deadline - round start, both stored. Not deadline.For(policy, samples)
+			// recomputed here: the agent's latency samples have moved on since the round
+			// opened, so a fresh computation can disagree with the deadline being enforced,
+			// and a warning that disagrees with its own deadline is worse than none.
+			//
+			// Skipped entirely when the round start is unknown (a round already in flight when
+			// migration 0089 shipped). Reconstructing it would mean subtracting a window we do
+			// not know, which is exactly the class of guess that produced a fraud control fed
+			// on wrong numbers.
+			if m.RoundStartedAt != nil {
+				if window := m.RoundDeadline.Sub(*m.RoundStartedAt); window > 0 {
+					if at, ok := deadline.WarnAt(*m.RoundStartedAt, window); ok {
+						v.WarnAt = &at
+						if left := at.Sub(s.clock.Now()).Milliseconds(); left > 0 {
+							v.WarnInMs = left
+						}
+					}
+				}
 			}
 		}
 	}

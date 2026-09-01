@@ -648,14 +648,88 @@
         }
       },
       "expect_move": "card:7"
+    },
+    {
+      "name": "monopoly_trade_binds_on_the_verb_alone",
+      "why": "A trade is a nested structure, so it is DELIBERATELY excluded from the canonical form: a model re-rendering the same deal with cosmetically different ordering would otherwise reject an honest turn. The payload must therefore leave the bound string untouched \u2014 this is the case that keeps that true in all three languages.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "propose_trade",
+              "trade": {
+                "target": 2,
+                "give_props": [
+                  1,
+                  3
+                ],
+                "give_cash": 50,
+                "want_props": [
+                  6
+                ],
+                "want_cash": 0
+              }
+            }
+          }
+        ]
+      },
+      "expect_move": "propose_trade:0:0"
+    },
+    {
+      "name": "monopoly_open_offer_does_not_leak_into_the_bound_form",
+      "why": "target -1 offers the trade to the WHOLE TABLE. It must not reach the canonical string either \u2014 if it did, a -1 would render as a property or amount and two different decisions could collide on one bound form.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "propose_trade",
+              "trade": {
+                "target": -1,
+                "give_props": [
+                  1
+                ],
+                "want_cash": 200
+              }
+            }
+          }
+        ]
+      },
+      "expect_move": "propose_trade:0:0"
+    },
+    {
+      "name": "monopoly_shortage_bid_keeps_its_square_and_amount",
+      "why": "A bid in a housing-shortage auction names the square the piece would go on, so both property and amount are meaningful and must survive into the bound form.",
+      "game": "monopoly",
+      "tool": "monopoly_action",
+      "response": {
+        "content": [
+          {
+            "type": "tool_use",
+            "name": "monopoly_action",
+            "input": {
+              "kind": "bid",
+              "property": 6,
+              "amount": 120
+            }
+          }
+        ]
+      },
+      "expect_move": "bid:6:120"
     }
   ],
-
   "_plan_readme": [
     "RANGE BINDINGS: one completion that decided SEVERAL rounds.",
     "",
     "WHY. Coverage used to count CALLS, so a completion bound exactly one round. An agent",
-    "that batches — one call planning three rounds — therefore scored about 33% on real",
+    "that batches \u2014 one call planning three rounds \u2014 therefore scored about 33% on real",
     "staked tables while playing entirely model-backed. Phase 4 exists to REWARD batching as",
     "cost optimisation, so the two rules pulled in opposite directions and no threshold",
     "reconciled them. Coverage now means 'decisions a model made' rather than 'calls made'.",
@@ -702,9 +776,18 @@
         ]
       },
       "expect_plan": [
-        { "round": 4, "move": "card:7" },
-        { "round": 5, "move": "card:2" },
-        { "round": 6, "move": "card:9" }
+        {
+          "round": 4,
+          "move": "card:7"
+        },
+        {
+          "round": 5,
+          "move": "card:2"
+        },
+        {
+          "round": 6,
+          "move": "card:9"
+        }
       ]
     },
     {
@@ -721,21 +804,33 @@
             "name": "play_card",
             "input": {
               "plan": [
-                { "round": 1, "card": 13 },
-                { "round": 2, "card": 1 }
+                {
+                  "round": 1,
+                  "card": 13
+                },
+                {
+                  "round": 2,
+                  "card": 1
+                }
               ]
             }
           }
         ]
       },
       "expect_plan": [
-        { "round": 1, "move": "card:13" },
-        { "round": 2, "move": "card:1" }
+        {
+          "round": 1,
+          "move": "card:13"
+        },
+        {
+          "round": 2,
+          "move": "card:1"
+        }
       ]
     },
     {
       "name": "plan_cannot_reach_backwards",
-      "why": "THE security case. Rounds 1 and 2 were played before this call was proven, so binding them would be coverage nothing can check — an agent could retroactively claim turns it played unbound. Only the proven round and later survive.",
+      "why": "THE security case. Rounds 1 and 2 were played before this call was proven, so binding them would be coverage nothing can check \u2014 an agent could retroactively claim turns it played unbound. Only the proven round and later survive.",
       "game": "goofspiel",
       "tool": "play_card",
       "proven_round": 8,
@@ -757,8 +852,14 @@
         ]
       },
       "expect_plan": [
-        { "round": 8, "move": "card:8" },
-        { "round": 9, "move": "card:9" }
+        {
+          "round": 8,
+          "move": "card:8"
+        },
+        {
+          "round": 9,
+          "move": "card:9"
+        }
       ]
     },
     {
@@ -798,11 +899,18 @@
           {
             "type": "tool_use",
             "name": "play_card",
-            "input": { "card": 3 }
+            "input": {
+              "card": 3
+            }
           }
         ]
       },
-      "expect_plan": [{ "round": 11, "move": "card:3" }]
+      "expect_plan": [
+        {
+          "round": 11,
+          "move": "card:3"
+        }
+      ]
     },
     {
       "name": "plan_entry_without_a_round_is_skipped_not_fatal",
@@ -828,13 +936,19 @@
         ]
       },
       "expect_plan": [
-        { "round": 4, "move": "card:7" },
-        { "round": 7, "move": "card:11" }
+        {
+          "round": 4,
+          "move": "card:7"
+        },
+        {
+          "round": 7,
+          "move": "card:11"
+        }
       ]
     },
     {
       "name": "mafia_plan_keeps_no_target_distinct_from_seat_zero",
-      "why": "Range binding is not Goofspiel-only, and Mafia's convention has to survive it. Seat 0 is a REAL PLAYER, so an absent target must stay distinguishable from targeting them — collapsing the two would let a move against that one player be substituted for doing nothing.",
+      "why": "Range binding is not Goofspiel-only, and Mafia's convention has to survive it. Seat 0 is a REAL PLAYER, so an absent target must stay distinguishable from targeting them \u2014 collapsing the two would let a move against that one player be substituted for doing nothing.",
       "game": "mafia",
       "tool": "mafia_action",
       "proven_round": 2,
@@ -846,16 +960,29 @@
             "name": "mafia_action",
             "input": {
               "plan": [
-                { "round": 2, "kind": "kill", "target": 0 },
-                { "round": 3, "kind": "abstain" }
+                {
+                  "round": 2,
+                  "kind": "kill",
+                  "target": 0
+                },
+                {
+                  "round": 3,
+                  "kind": "abstain"
+                }
               ]
             }
           }
         ]
       },
       "expect_plan": [
-        { "round": 2, "move": "kill:0" },
-        { "round": 3, "move": "abstain:none" }
+        {
+          "round": 2,
+          "move": "kill:0"
+        },
+        {
+          "round": 3,
+          "move": "abstain:none"
+        }
       ]
     },
     {
@@ -870,7 +997,15 @@
           {
             "type": "tool_use",
             "name": "mafia_action",
-            "input": { "plan": [{ "round": 1, "kind": "kill", "target": 2 }] }
+            "input": {
+              "plan": [
+                {
+                  "round": 1,
+                  "kind": "kill",
+                  "target": 2
+                }
+              ]
+            }
           }
         ]
       },

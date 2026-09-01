@@ -19,6 +19,7 @@ import (
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/platform/telemetry"
 	"github.com/agent-arena/arena/internal/rating"
+	"github.com/agent-arena/arena/internal/readycheck"
 )
 
 // monopolyCanonAction is the deterministic string an agent signs for one move:
@@ -45,6 +46,59 @@ type Config struct {
 	WaitingTTL time.Duration
 }
 
+// WindowProvider decides how long to wait for one agent's decision, from that agent's own
+// measured latency.
+//
+// WHY THIS EXISTS. internal/deadline already ships a policy for Monopoly —
+// DefaultPolicy("monopoly") returns Base 60s, Floor 15s, Ceiling 3m, Headroom 1.5 — and
+// store.WindowRepo.Window already takes a game and feeds exactly that policy. The service
+// never used any of it: it hardcoded cfg.MoveWindow, defaulting to 45s.
+//
+// So a Monopoly agent got 45s where the policy says the BASE alone should be 60s, and a slow
+// model never earned more time no matter what its measured p95 was. On a staked table that is
+// a forfeit — the precise failure the adaptive window exists to prevent, and the same defect
+// class as Goofspiel's commit() running rounds 2..N on the static constant.
+//
+// Optional. Unset, every match uses cfg.MoveWindow exactly as before.
+type WindowProvider interface {
+	// Window is this agent's budget for one decision in this game, or <= 0 when unknown.
+	Window(ctx context.Context, agentPublicID, game string) time.Duration
+}
+
+// SetWindowProvider installs adaptive decision windows. Nil keeps the configured constant.
+func (s *Service) SetWindowProvider(w WindowProvider) {
+	if w != nil {
+		s.windows = w
+	}
+}
+
+// moveWindow is the budget for the next decision at this table.
+//
+// Falls back to the configured constant on ANY doubt — no provider, no agents, a non-positive
+// answer. A deadline sits on the path of every turn, so this must degrade to the old behaviour
+// rather than risk a zero window, which would forfeit every decision the instant it was asked.
+//
+// A Monopoly turn is taken by ONE seat, but the deadline is written on the match, so it runs on
+// the slowest seat at the table for the same reason Goofspiel's shared round deadline does:
+// cutting an agent off because of who it was seated with is the one thing a deadline must never
+// depend on.
+func (s *Service) moveWindow(ctx context.Context, agentPublicIDs ...string) time.Duration {
+	base := s.cfg.MoveWindow
+	if s.windows == nil {
+		return base
+	}
+	longest := base
+	for _, a := range agentPublicIDs {
+		if a == "" {
+			continue
+		}
+		if w := s.windows.Window(ctx, a, "monopoly"); w > longest {
+			longest = w
+		}
+	}
+	return longest
+}
+
 // Service drives the Monopoly match lifecycle around the pure engine.
 // SetHouseRoster records the agent ids the platform itself runs.
 //
@@ -69,10 +123,15 @@ type Service struct {
 	wallet Wallet
 	bcast  Broadcaster
 	finish FinishHook
+	// windows gives each agent a decision budget from its own measured latency. Nil keeps
+	// cfg.MoveWindow, which is what this service used exclusively before.
+	windows WindowProvider
 	// actDecisions instruments the request path. Nil leaves Act uninstrumented.
 	actDecisions ActDecisionRecorder
 	clock        platform.Clock
 	cfg          Config
+	// think paces house-agent moves at practice tables; zero disables it.
+	think ThinkTime
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -304,11 +363,18 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	state, events := eng.Init(seed)
 
 	id := platform.NewID(platform.PrefixMonopoly)
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	// Deal time: the seats are only now being created, so there is no agent list in scope to
+	// adapt from. The first real decision picks up the adaptive window.
+	//
+	// ONE clock reading feeds both the countdown and the first deadline, so the window cannot
+	// open before the countdown it is meant to follow — the same shape startTable uses.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy(GameName).Countdown)
+	deadline := startsAt.Add(s.cfg.MoveWindow)
 	_, err := s.repo.Create(ctx, CreateMatchInput{
 		PublicID: id, Title: "Monopoly AI Arena", EntryFee: entryFee, RakePct: s.rakePct(),
 		Players: players, Seed: seed, Commit: mono.Commit(seed),
-		State: state, Deadline: deadline, Events: events,
+		State: state, StartsAt: startsAt, Deadline: deadline, Events: events,
 		Creator: Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: 0},
 	})
 	if err != nil {
@@ -440,11 +506,25 @@ func (s *Service) startTable(ctx context.Context, m Match) error {
 			return err
 		}
 	}
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
-	if err := s.repo.Start(ctx, m.PublicID, state, deadline, events); err != nil {
+	// The start countdown. See the same block in internal/mafia's startMatch: startsAt is an
+	// ABSOLUTE, persisted instant so a terminal and a browser count to the same moment instead
+	// of each counting down independently and drifting apart.
+	//
+	// Play is NOT gated on it — the table is active immediately, exactly as goofspiel's
+	// startAfterReady leaves it. The countdown's effect is that the FIRST move window opens at
+	// startsAt rather than now, so the seat that moves first is not handed a clock that has
+	// already been running while nobody could act.
+	now := s.clock.Now()
+	startsAt := readycheck.StartsAt(now, readycheck.DefaultPolicy("monopoly").Countdown)
+	deadline := startsAt.Add(s.moveWindow(ctx, agents...))
+	if err := s.repo.Start(ctx, m.PublicID, state, startsAt, deadline, events); err != nil {
 		// Compensate a stake-then-start dual-write failure so no coins are trapped.
 		if s.wallet != nil && m.EntryFee > 0 {
-			_ = s.wallet.RefundTable(ctx, m.PublicID, agents, m.EntryFee)
+			if rerr := s.wallet.RefundTable(ctx, m.PublicID, agents, m.EntryFee); rerr != nil {
+				slog.Error("TABLE STAKE NOT REFUNDED after failed start — coins are held with no live table",
+					"match", m.PublicID, "agents", len(agents), "entry_fee", m.EntryFee,
+					"refund_error", rerr)
+			}
 		}
 		return err
 	}
@@ -554,10 +634,49 @@ func (s *Service) Roster(ctx context.Context, matchPublicID string) ([]RosterSea
 // broadcast to spectators, and lands in State.Chat, which every agent view
 // carries — that is what lets the other seats answer.
 func (s *Service) Say(ctx context.Context, agentPublicID, matchPublicID, text, kind string) (AgentView, error) {
-	if release, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL); lerr == nil {
-		if !ok {
+	// TALK WAITS FOR THE LOCK; it does not get turned away by it.
+	//
+	// This used to take the lock once and return ErrBusy — HTTP 409 match_busy — the instant it
+	// was held. Gameplay holds the same lock, so in a driven match there was almost never a gap,
+	// and pushplay swallows the error by design ("a rejected line must never block the move").
+	// The result was invisible: agents tried to speak, were refused, and nobody saw it.
+	//
+	// Measured in the lab: ZERO agent_says events across 11,064 finished Monopoly matches, and
+	// talk in only 3.8%% of Goofspiel matches — while live runs of both games logged
+	// "say failed: 409 match_busy" from agents that were trying.
+	//
+	// It also contradicted the documented rule: speaking is "deliberately NOT turn-gated ...
+	// speaking never consumes a turn or blocks the round". A lock that refuses talk whenever the
+	// table is mid-transition turn-gates it in practice.
+	//
+	// The lock is HELD FOR MILLISECONDS (a state read plus write), never across an agent's
+	// thinking time, so a short bounded wait clears the ordinary collision. Bounded on purpose:
+	// talk is not latency-critical, but a caller must never hang on it, and giving up still
+	// returns ErrBusy so the behaviour is unchanged for a genuinely wedged table.
+	//
+	// The ENGINE still enforces the real speech rules — Mafia's night silence, Monopoly's
+	// bankrupt seats, a finished match. This only stops a concurrency guard from standing in for
+	// a game rule.
+	var release func()
+	for attempt := 0; attempt < 4; attempt++ {
+		r, ok, lerr := s.lock.Lock(ctx, lockKey(matchPublicID), s.cfg.LockTTL)
+		if lerr != nil {
+			break // Redis unreachable: proceed lockless, relying on the OCC retry below
+		}
+		if ok {
+			release = r
+			break
+		}
+		if attempt == 3 {
 			return AgentView{}, ErrBusy
 		}
+		select {
+		case <-ctx.Done():
+			return AgentView{}, ctx.Err()
+		case <-time.After(time.Duration(25*(attempt+1)) * time.Millisecond):
+		}
+	}
+	if release != nil {
 		defer release()
 	}
 	const maxAttempts = 4
@@ -695,7 +814,8 @@ func (s *Service) tryAct(ctx context.Context, agentPublicID, matchPublicID strin
 	if err != nil {
 		return AgentView{}, mapEngineErr(err)
 	}
-	state, botEvents := s.drive(eng, state, m.Seed, m.botSeats())
+	// Paced only when nothing is staked — see ThinkTime.
+	state, botEvents := s.drive(ctx, eng, state, m.Seed, m.botSeats(), m.EntryFee == 0)
 	events = append(events, botEvents...)
 
 	if err := s.persist(ctx, m, state, events); err != nil {
@@ -787,15 +907,76 @@ func (s *Service) aggregateSeatBenchmark(ctx context.Context, m Match, state mon
 	}
 }
 
+// ThinkTime paces the platform's own agents at PRACTICE tables so they answer
+// like something that had to decide, instead of resolving in the same instant the
+// player's own move does.
+//
+// Why it is bounded and why it is practice-only:
+//
+//   - It runs INSIDE Act, so every millisecond here is a millisecond the player's
+//     HTTP request is held open. `perMove` is therefore small and `budget` caps
+//     the whole batch — a Monopoly turn can be several engine steps, and an
+//     unbounded per-step sleep would turn one click into a stall.
+//   - Staked play is never paced. A table with money on it must resolve as fast as
+//     the engine can; deliberately slowing it would burn the opponents' own move
+//     windows and could push a seat into a forced timeout. Practice tables have no
+//     stake and no ranking, so the only thing pacing costs there is time.
+//
+// Zero values disable it entirely, which is what every existing caller and every
+// test gets by default.
+type ThinkTime struct {
+	PerMove time.Duration
+	// Jitter is added at most once per move, varied by seat, so the seats do not
+	// answer in lockstep — different agents think at different speeds.
+	Jitter time.Duration
+	// Budget caps the total pause applied within a single Act.
+	Budget time.Duration
+}
+
+// WithThinkTime enables paced house-agent moves at practice tables. Returns the
+// service for chaining, matching WithMonopoly/EnablePushPlay.
+func (s *Service) WithThinkTime(t ThinkTime) *Service { s.think = t; return s }
+
+// pause sleeps for this seat's think time, returning what it spent. It is a no-op
+// when pacing is off, when the budget is exhausted, or when the context is done —
+// a cancelled request must not keep sleeping.
+func (s *Service) pause(ctx context.Context, seat int, spent time.Duration) time.Duration {
+	if s.think.PerMove <= 0 || spent >= s.think.Budget {
+		return 0
+	}
+	d := s.think.PerMove
+	if s.think.Jitter > 0 {
+		// Deterministic in the seat, so a given seat is consistently a little
+		// quicker or slower rather than jittering at random each move.
+		d += time.Duration(seat%5) * s.think.Jitter / 4
+	}
+	if remaining := s.think.Budget - spent; d > remaining {
+		d = remaining
+	}
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
+	return d
+}
+
 // drive plays every pending BOT seat with the engine's deterministic bots,
 // stopping when the pending seat is a human agent or the match is over. A bad
 // bot move can never wedge the match: it falls back to the engine timeout.
-func (s *Service) drive(eng *mono.Engine, state mono.State, seed []byte, bots map[int]bool) (mono.State, []mono.Event) {
+//
+// `paced` asks for house-agent think time; the caller passes it only for
+// practice tables. The pause happens BEFORE the move is computed, so the delay
+// reads as deliberation rather than as lag after the fact.
+func (s *Service) drive(ctx context.Context, eng *mono.Engine, state mono.State, seed []byte, bots map[int]bool, paced bool) (mono.State, []mono.Event) {
 	var evs []mono.Event
+	var spent time.Duration
 	for guard := 0; guard < 200000 && !state.Finished; guard++ {
 		seat := eng.PendingSeat(state)
 		if !bots[seat] {
 			break
+		}
+		if paced {
+			spent += s.pause(ctx, seat, spent)
 		}
 		bot := mono.NewBot("bot", mono.DefaultStyles[seat%len(mono.DefaultStyles)], seed, seat)
 		ns, ev, err := eng.Step(state, seat, bot.Decide(eng, state, seat), seed)
@@ -815,7 +996,7 @@ func (s *Service) persist(ctx context.Context, m Match, state mono.State, events
 	if state.Finished {
 		return s.finalize(ctx, m, state, events)
 	}
-	deadline := s.clock.Now().Add(s.cfg.MoveWindow)
+	deadline := s.clock.Now().Add(s.moveWindow(ctx, m.agentIDs()...))
 	if err := s.repo.Advance(ctx, m.PublicID, state, &deadline, events); err != nil {
 		return err
 	}
@@ -854,6 +1035,11 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 		}
 	}
 
+	// Hoisted so the RATING path below reads the SAME verdict this settlement used.
+	// Evaluating twice could reach two different answers for one table, leaving a seat
+	// unpaid but rated, or paid but unrated. Zero value is inert.
+	var verdict integrity.Verdict
+
 	if s.wallet != nil && m.EntryFee > 0 {
 		// A seat that cannot show one LLM-backed decision is not paid from a staked
 		// table, provided some other seat at this table could. Applied AFTER the draw
@@ -873,8 +1059,8 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 					absent[a.AgentPublicID] = true
 				}
 			}
-			v := integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
-			payouts, _ = integrity.FilterPayable(payouts, v, m.PublicID, slog.Default())
+			verdict = integrity.Evaluate(ctx, s.integrity, m.PublicID, agents, absent, slog.Default())
+			payouts, _ = integrity.FilterPayable(payouts, verdict, m.PublicID, slog.Default())
 		}
 		if err := s.wallet.SettleTable(ctx, m.PublicID, econ.GrossPool, platformFee, payouts); err != nil {
 			return err
@@ -903,7 +1089,11 @@ func (s *Service) finalize(ctx context.Context, m Match, state mono.State, event
 			}
 			return state.NetWorth(seat)
 		}
-		res := rating.MatchResult{MatchPublicID: m.PublicID, Game: rating.GameMonopoly}
+		// The same verdict that withheld payouts also withholds rating: only the unproven
+		// seats are dropped, and the table is still rated for everyone else.
+		res := rating.MatchResult{
+			MatchPublicID: m.PublicID, Game: rating.GameMonopoly, Integrity: verdict,
+		}
 		for _, a := range agents {
 			placement, ak := 1, key(a.Seat)
 			for _, b := range agents {
@@ -971,12 +1161,27 @@ func (s *Service) HandleTimeout(ctx context.Context, matchPublicID string) error
 	if err != nil {
 		return err
 	}
-	state, botEvents := s.drive(eng, state, m.Seed, m.botSeats())
+	// NOT paced: this is the timeout sweeper recovering a stalled table, not a
+	// player waiting on a reply. Sleeping here would hold the sweeper and delay
+	// every other match it still has to check.
+	state, botEvents := s.drive(ctx, eng, state, m.Seed, m.botSeats(), false)
 	events = append(events, botEvents...)
-	if len(events) == 0 {
-		return nil
-	}
-	// A racing live move advanced the match first — the forced timeout is moot.
+
+	// An advanced state with NO events is not "nothing happened", and treating it that way
+	// wedged real tables. stepTradeWindow pops the trade queue and enters play while
+	// emitting nothing observable, and Step always records attendance through noteAsked, so
+	// a forced timeout on a live match ALWAYS moves the state — sometimes silently.
+	//
+	// The early return that used to sit here discarded exactly that advance. The sweeper
+	// selected the table every second, the engine fixed it every second, and the fix was
+	// thrown away every second: five staked tables sat in phase=trade for up to two days
+	// with 2,500 coins locked in escrow that nothing would ever release. It logged nothing,
+	// because "no events" was counted as success.
+	//
+	// Persisting unconditionally is safe. The race this looked like it guarded is handled
+	// where it belongs — persist() is OCC, so a live move that advanced the match first
+	// comes back as ErrConcurrentUpdate and is ignored below. And persist re-arms the
+	// deadline, so a table cannot be re-selected on the next tick and cannot churn.
 	if err := s.persist(ctx, m, state, events); err != nil && !errors.Is(err, ErrConcurrentUpdate) {
 		return err
 	}
@@ -1111,6 +1316,11 @@ func (s *Service) view(m Match, viewerAgent string) AgentView {
 		v := AgentView{
 			MatchID: m.PublicID, Status: m.Status, EntryFee: m.EntryFee,
 			Economy: ComputeEconomy(len(m.Agents), m.EntryFee, m.RakePct),
+			// Carried on the light view too: a client sitting on a waiting table needs the
+			// clock offset ready BEFORE starts_at arrives, or the first countdown it renders
+			// is the one drawn with an unmeasured offset.
+			ServerNow: s.clock.Now().UTC(),
+			StartsAt:  m.StartsAt,
 		}
 		if p := m.agentByAgentID(viewerAgent); p != nil {
 			v.YourSeat = p.Seat
@@ -1131,6 +1341,11 @@ func (s *Service) view(m Match, viewerAgent string) AgentView {
 		// Every seat, bots included — see RosterOf.
 		Roster:  RosterOf(m.Agents, m.Players),
 		Pending: pendingSeats(m.State, pending),
+		// The start countdown, and the clock the client measures its own offset against.
+		// Unconditional: a FINISHED match still reports when it began, which is what makes a
+		// replay able to render the same countdown the spectators saw.
+		ServerNow: s.clock.Now().UTC(),
+		StartsAt:  m.StartsAt,
 	}
 	if m.Status == StatusActive {
 		v.Deadline = m.RoundDeadline

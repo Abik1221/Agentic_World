@@ -147,6 +147,16 @@ func (e *Engine) actNight(s State, seat int, act Action) (State, []Event, error)
 		if act.Kind != "protect" || !s.Alive[act.Target] {
 			return s, nil, ErrIllegalAction
 		}
+		// NO SHIELDING THE SAME SEAT TWICE RUNNING — including yourself.
+		//
+		// Standard Mafia: "a doctor cannot heal the same person (including himself) two nights
+		// in a row; after skipping one night he can heal them again." Without it the role has
+		// no decision left in it: shield yourself every night and the mafia can never kill you,
+		// or pin one player forever. The whole tension of the role is choosing who goes
+		// unguarded tonight.
+		if last, ok := s.LastProtect[seat]; ok && act.Target == last {
+			return s, nil, ErrIllegalAction
+		}
 		if s.nightDone(seat) {
 			return s, nil, nil
 		}
@@ -240,6 +250,15 @@ func (e *Engine) resolveNight(s State) (State, []Event, error) {
 	}
 	if doc := findSeatByRole(s, RoleDoctor); doc > 0 && s.Alive[doc] {
 		act := s.NightActs[doc]
+		// Recorded HERE, at resolution, not when the action was submitted: a night that never
+		// resolves (the match ends first) must not leave a doctor barred from a seat it was
+		// never actually able to shield.
+		if act.Kind == "protect" {
+			if s.LastProtect == nil {
+				s.LastProtect = map[int]int{}
+			}
+			s.LastProtect[doc] = act.Target
+		}
 		events = append(events, e.emit(&s, EvNight, NightPayload{
 			Actor: RoleDoctor, Seat: doc, Text: "Doctor chooses a player to shield.",
 			Secret: fmt.Sprintf("Protected seat %d", act.Target),

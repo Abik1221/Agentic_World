@@ -14,9 +14,12 @@
  *     agent.onTurn("goofspiel", (v) => ({ round: v.round, card: Math.max(...v.legal_actions) }));
  *     await agent.run({ url: "wss://pyyol.example/v1/agent/connect", agentId: "ag_…", token: "…" });
  */
+import { spawn } from "node:child_process";
+
 import type { Agent } from "./server.js";
 import { SDK_VERSION } from "./server.js";
 import { Tracer, runTurnUsage } from "./telemetry.js";
+import { askWatch, watchUrl, WATCH_BROWSER, WATCH_TERMINAL } from "./watch.js";
 
 // Frame types — byte-identical to the Go gateway (internal/agentgw/frame.go).
 const HELLO = "hello", REGISTERED = "registered", PONG = "pong";
@@ -156,6 +159,10 @@ export class RuntimeConnector {
   private registered = false; // true once this session's register succeeded
   private refreshAttempts = 0; // per-connection guard against a refresh loop
   private turnNo = 0; // monotonic per-connection turn counter (telemetry attribution fallback)
+  // The watch prompt is offered ONCE per connection, not once per match: being asked
+  // before every match of a long run is the thing you learn to dread, and a timed-out
+  // prompt has left a reader on stdin that would swallow the next one.
+  private watchOffered = false;
   // Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
   // Correlated to the match trace so the agent's model/tool calls render with
   // the platform's authoritative gateway spans.
@@ -211,6 +218,47 @@ export class RuntimeConnector {
   }
 
   /** Emit a live-feed line to the CLI/console, if a sink was provided. */
+  /**
+   * Offer "browser or terminal?" when a match is found, without blocking anything.
+   *
+   * `pyyol run` is the path a developer is actually on when they type a command and a
+   * staked match appears, and until now that match simply began — no choice, and no way
+   * to reach the live table except finding it yourself.
+   *
+   * Never awaited by the caller. The prompt waits up to ten seconds for a keystroke, and
+   * the dispatch loop cannot afford that: the heartbeat that keeps the connection alive
+   * and the first turn of the match are both queued behind it. A developer who stepped
+   * away for coffee would come back to a forfeited stake.
+   *
+   * Opt out with PYYOL_WATCH=terminal (or browser to skip straight to opening it).
+   * Anything non-interactive is already handled inside askWatch, which prints nothing at
+   * all without a TTY on both ends.
+   */
+  private async offerWatch(payload: Record<string, unknown>): Promise<void> {
+    if (this.watchOffered) return;
+    this.watchOffered = true;
+    try {
+      const matchId = String(payload.match_id ?? "");
+      const game = String(payload.game ?? "");
+      if (!matchId || !game) return;
+      const url = watchUrl(game, matchId);
+      if (!url) return; // no link rather than one onto someone else's match
+
+      const env = String(process.env.PYYOL_WATCH ?? "").trim().toLowerCase();
+      const preset = env === WATCH_BROWSER || env === WATCH_TERMINAL ? env : "";
+      // Bounded by the countdown: the platform starts play whether or not this was
+      // answered, so a longer wait asks about a decision that has already passed.
+      const choice = preset || (await askWatch(`${game} · ${matchId}`, url));
+      if (choice !== WATCH_BROWSER) return;
+
+      const cmd =
+        process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+      spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+    } catch {
+      // Watching is a courtesy; the match is not. Nothing here may reach the run loop.
+    }
+  }
+
   private feed(kind: string, detail: string): void {
     this.opts.onFeed?.(kind, detail);
   }
@@ -438,6 +486,12 @@ export class RuntimeConnector {
       case INITIALIZE: {
         const ack = await this.agent.ackInitialize(frame.payload ?? {});
         send({ t: RESPONSE, id: frame.id ?? "", payload: ack });
+        // AFTER the ack, and deliberately NOT awaited. On the socket path the platform
+        // treats a delivered initialize frame as the acknowledgement, so anything before
+        // the ack delays the answer that keeps this seat in the match — and awaiting the
+        // prompt here would stall every frame queued behind it, including the heartbeat
+        // holding the connection open and the first turn of the match.
+        void this.offerWatch(frame.payload ?? {});
         break;
       }
       case EVENT:
@@ -445,7 +499,11 @@ export class RuntimeConnector {
           match_id: frame.match_id ?? "", game: frame.game ?? "",
           seq: frame.seq ?? 0, type: frame.kind ?? "", payload: frame.payload,
         });
-        this.feed("event", `${frame.kind ?? "event"}${frame.seq !== undefined ? ` seq=${frame.seq}` : ""}`);
+        if (frame.kind === "match_start") {
+          this.feed("match_start", countdownLine(frame.payload));
+        } else {
+          this.feed("event", `${frame.kind ?? "event"}${frame.seq !== undefined ? ` seq=${frame.seq}` : ""}`);
+        }
         break;
       case GAME_END:
         await this.agent.notifyGameEnd({
@@ -457,4 +515,43 @@ export class RuntimeConnector {
         break;
     }
   }
+}
+
+/** How long until play begins, as a line for the terminal.
+ *
+ *  Mirrors _countdown_line in the Python SDK, and must keep mirroring it: the two SDKs
+ *  disagreeing about when a match starts is the same class of divergence sdk/conformance
+ *  exists to prevent.
+ *
+ *  The platform sends an ABSOLUTE `starts_at` and its own `server_now`, never a duration.
+ *  Both are needed. The instant is what the browser counts to as well, so the two surfaces
+ *  agree instead of each counting down from ten and drifting apart; `server_now` is what
+ *  makes this line correct on a machine whose clock is wrong.
+ *
+ *  So the remaining time is measured against the SERVER's clock:
+ *
+ *      remaining = starts_at - server_now
+ *
+ *  Reading Date.now() here would reintroduce exactly the skew that pair exists to remove — a
+ *  developer whose laptop is two minutes fast would see a countdown that had already ended on
+ *  a match that has not started.
+ *
+ *  Fails soft to "match starting": a malformed timestamp must never stop an agent playing.
+ *  The countdown is a courtesy, the match is not.
+ */
+function countdownLine(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "match starting";
+  const p = payload as Record<string, unknown>;
+  const starts = parseTs(p.starts_at);
+  const now = parseTs(p.server_now);
+  if (starts === null || now === null) return "match starting";
+  const secs = Math.max(0, Math.round((starts - now) / 1000));
+  return `match starts in ${secs}s`;
+}
+
+/** Parse an RFC3339 timestamp to epoch ms, or null. Go emits a trailing Z, which Date handles. */
+function parseTs(v: unknown): number | null {
+  if (typeof v !== "string" || !v) return null;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : t;
 }

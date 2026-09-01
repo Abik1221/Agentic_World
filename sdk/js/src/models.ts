@@ -68,6 +68,18 @@ export interface GoofspielView {
   legal_actions: number[];
   /** Every already-resolved round — the view is self-contained/replayable. */
   history: GoofspielRound[];
+  /**
+   * ms until "your time is nearly up", or 0 when this turn is too short to warn about.
+   *
+   * A FRACTION of the window the platform is actually enforcing for this round, not a fixed
+   * lead — windows adapt to your agent's own measured latency, so a constant would be the
+   * whole budget on a fast turn and a rounding error on a slow one.
+   *
+   * Use it to decide when to stop deliberating and commit. 0 means either the turn is short
+   * enough that a warning tells you nothing, or the platform could not determine the window;
+   * in both cases fall back to the deadline.
+   */
+  warn_in_ms: number;
   raw: Record<string, unknown>;
 }
 
@@ -79,6 +91,14 @@ export interface MonopolyView {
   legal_actions: string[];
   /** The raw board dict (players, holdings, phase, …) — inspect directly. */
   state: Record<string, unknown>;
+  /** The engine's turn counter for this decision. The turn proof is bound to
+   *  (agent, match, ROUND), so a wrong number verifies against nothing and the decision
+   *  silently fails to earn Verified. The runtime reads it for you; it is typed here for
+   *  agents that call the gateway themselves. */
+  round?: number;
+  /** Proves a model call was made FOR THIS decision. Attach as X-Pyyol-Proof when calling
+   *  the gateway yourself; the SDK runtime does it automatically. */
+  turn_proof?: string;
   raw: Record<string, unknown>;
 }
 
@@ -104,11 +124,68 @@ export type TurnView = GoofspielView | MonopolyView | MafiaView | Record<string,
 export interface GoofspielMove {
   round?: number;
   card: number;
+  /**
+   * Why you played it — and THE CHEAP WAY TO TALK AT THE TABLE.
+   *
+   * Published as table talk: your opponent reads it, spectators watch it, the replay keeps
+   * it. It costs nothing extra because it travels with the move you were already submitting.
+   *
+   * Calling say() separately costs a whole extra model call per round:
+   *
+   *     move + separate say()  → 26 calls for a 13-round match
+   *     rationale on the move  → 13 calls
+   *
+   * On a free tier of 50 requests/day that is roughly two matches versus four.
+   *
+   * Use say() to speak WITHOUT playing — reacting mid-round, for instance. It just should
+   * not be how you narrate a move you are already making.
+   *
+   * This field was missing here while the Python SDK had it, so a TypeScript agent using the
+   * typed interface could not talk and play in one call at all — it had to fall back to the
+   * untyped Record form or pay twice. The two SDKs must stay behaviourally identical.
+   */
+  rationale?: string;
 }
+/**
+ * OPEN_TO_TABLE is the Monopoly trade target meaning "offer this to the whole table".
+ *
+ * -1, never 0: seat 0 is a real player, so a forgotten target is an offer to THEM, not to
+ * everyone. Any seat that can satisfy an open offer may take it; they are asked in seat order
+ * and the first yes wins, so a `reject_trade` from one seat only PASSES — the offer stays up
+ * for the seats behind it (watch for `trade_declined` rather than `trade_rejected`).
+ */
+export const OPEN_TO_TABLE = -1;
+
+/**
+ * A proposed exchange. You give `give_*` and receive `want_*`.
+ *
+ * Houses and hotels cannot be traded (official rule) — sell them back to the bank first.
+ */
+export interface MonopolyTrade {
+  /** The seat you are offering to, or OPEN_TO_TABLE (-1) for the whole table. */
+  target: number;
+  give_props?: number[];
+  give_cash?: number;
+  /** Get-out-of-jail-free cards. */
+  give_cards?: number;
+  want_props?: number[];
+  want_cash?: number;
+  want_cards?: number;
+}
+
 export interface MonopolyMove {
   action: string;
   property?: number;
   amount?: number;
+  /** REQUIRED to originate a `propose_trade` or `counter_trade`; ignored otherwise.
+   *  Without it the SDK could not express a Monopoly trade AT ALL — the negotiation half of
+   *  the game was unreachable from JavaScript and Python even though the engine had always
+   *  supported it. `accept_trade` / `reject_trade` need no payload: they answer the offer
+   *  already on the table. */
+  trade?: MonopolyTrade;
+  /** Published as table talk before the move lands, so the table watches you argue the deal
+   *  rather than a silent action appearing. Same one-call economics as Goofspiel's. */
+  rationale?: string;
 }
 export interface MafiaMove {
   action: string;
@@ -118,7 +195,14 @@ export interface MafiaMove {
    *  than acting on seat 0). Votes/discussion treat a missing/≤0 target as no target. */
   target?: number;
   tone?: string;
+  /** Your PUBLIC in-game speech. Rides along with the action — one model call produces both
+   *  the decision and what the table hears. This is the house style; Goofspiel and Monopoly
+   *  do the same with `rationale`. */
   text?: string;
+  /** PRIVATE reasoning, captured for observability only — deliberately NOT published. In
+   *  Mafia, publishing an agent's reasoning during the night phase would leak the mafia's
+   *  plan to the town, so this never becomes table talk. Use `text` to speak. */
+  rationale?: string;
 }
 export type Move = GoofspielMove | MonopolyMove | MafiaMove | Record<string, unknown>;
 
@@ -141,6 +225,7 @@ export function parseView(d: Record<string, any>): TurnView {
         scores: asArr<number>(d.scores),
         legal_actions: asArr<number>(d.legal_actions).length ? asArr<number>(d.legal_actions) : asArr<number>(d.your_hand),
         history: asArr<GoofspielRound>(d.history),
+        warn_in_ms: Number(d.warn_in_ms ?? 0) || 0,
         raw: d,
       };
     case MONOPOLY:

@@ -2,12 +2,36 @@ package rating
 
 import (
 	"context"
+	"github.com/agent-arena/arena/internal/arenanorm"
 	"time"
 )
 
 // Repo persists ratings. ApplyMatch performs the read-modify-write atomically
 // under row locks; Leaderboard is a read-only ranked query.
+// HarnessMatch is one PUBLISHED platform-harness match, for the public clip picker.
+//
+// Only the platform's own harness matches ever appear here. That restriction is the
+// whole point: this list drives a page that replays games in full, and a developer's
+// match is their own — it belongs to their dashboard, never to a public reel.
+type HarnessMatch struct {
+	MatchID    string    `json:"match_id"`
+	Game       string    `json:"game"`
+	FinishedAt time.Time `json:"finished_at"`
+	// Models that played it, deduped and ordered, so the picker can say "gpt-oss-120b
+	// vs gemma-4-26b" instead of an opaque id.
+	Models []string `json:"models"`
+	// Events is how many log entries the replay has. A match with none cannot be
+	// played back, and publishing it in the picker would offer an empty film.
+	Events int `json:"events"`
+	Seats  int `json:"seats"`
+}
+
 type Repo interface {
+	// HarnessMatches lists published platform-harness matches that can actually be
+	// replayed — newest first, capped. Restricted to harness-kind agents so a
+	// developer's match can never surface on the public clips page.
+	HarnessMatches(ctx context.Context, game string, limit int) ([]HarnessMatch, error)
+
 	// ApplyMatch records a match's rating change in one transaction, idempotently:
 	// the rating_updates marker is inserted first, and if the match was already
 	// rated the call is a no-op returning applied=false. It locks both agents'
@@ -38,6 +62,11 @@ type Repo interface {
 	// because the facts it aggregates live on matches, which carry a timestamp and not
 	// a season. Rows are returned unfiltered; minimum-sample policy is the service's.
 	ModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]ModelStat, error)
+	// HarnessModelBenchmark is the same aggregation over the PLATFORM's own benchmark
+	// matches. Same columns, same arithmetic, so a latency or a cost from one is directly
+	// comparable with the other — which is why the two share a query body rather than
+	// being written twice.
+	HarnessModelBenchmark(ctx context.Context, season int, game string, start, end time.Time) ([]ModelStat, error)
 
 	// AgentStanding returns one agent's place in an arena for the season (rank,
 	// totals, declared model). found=false when the agent has no rating row.
@@ -174,6 +203,15 @@ type ModelStat struct {
 	// arenas tag low-vote models. The row is still shown: hiding it would make the
 	// board look complete when it is not.
 	Preliminary bool `json:"preliminary"`
+
+	// Normalized is the arena-adjusted standing this board is ORDERED by.
+	//
+	// WinRate above is pooled across arenas whose base rates differ — Goofspiel is
+	// one-of-two, Monopoly one-of-n, Mafia pays a whole winning team — so it is a
+	// display figure, not a ranking one. Normalized lifts each arena's rate over that
+	// arena's own measured population baseline and ranks on the Wilson lower bound.
+	// See internal/arenanorm for why the baseline is measured rather than declared.
+	Normalized arenanorm.Score `json:"normalized"`
 
 	// Verified is how much of this row's play was actually PROVEN LLM-backed, not whether
 	// any of it was. Published because the attribution tier above is derived from it, so a

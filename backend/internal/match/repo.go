@@ -25,7 +25,15 @@ type Repo interface {
 	// Activate transitions waiting→active in one transaction: re-checks the match
 	// is still waiting, inserts the seat-B player, writes the initial snapshot +
 	// deadline, and appends the Init events. Returns ErrNotWaiting if it was taken.
-	Activate(ctx context.Context, matchPublicID string, joiner Player, state gs.State, deadline time.Time, events []gs.Event) error
+	// Activate seats the joiner and flips a waiting table to active.
+	//
+	// startsAt is the ABSOLUTE instant the match begins — the same start countdown mafia's
+	// startMatch and monopoly's startTable already persist. Goofspiel was the only game that
+	// did not: it went from lobby to running in one instant, so `starts_at` was NULL on every
+	// goofspiel row and no surface had an instant to count to. Passing it explicitly (rather
+	// than letting the store default it) keeps the deadline and the countdown derived from ONE
+	// clock reading, so the first move window cannot open before play does.
+	Activate(ctx context.Context, matchPublicID string, joiner Player, state gs.State, startsAt, deadline time.Time, events []gs.Event) error
 
 	// CreatePairedActive creates an ACTIVE match seating both agents at once (the
 	// matchmaking path) in one transaction — the match row, both players, the
@@ -35,7 +43,14 @@ type Repo interface {
 
 	// Advance appends events and updates the snapshot + next deadline for an
 	// in-progress match (one transaction).
-	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, events []gs.Event) error
+	// Advance persists state for a match that is STAYING active.
+	//
+	// roundStarted is non-nil ONLY when this write opens a new round. Advance is called
+	// three times per round for different reasons — one seat sealed, the round finished,
+	// the next round opened — and only the last of those is a new round. Stamping a round
+	// start on the others resets the origin that think-time is measured from, which
+	// collapses every measurement to "time since the last write". nil means leave it alone.
+	Advance(ctx context.Context, matchPublicID string, state gs.State, deadline *time.Time, roundStarted *time.Time, events []gs.Event) error
 	// ExtendDeadline pushes the current round's deadline out WITHOUT touching state or
 	// the event log. Separate from Advance because an extension is not a game event: the
 	// board has not changed, an agent is simply still thinking, and writing a state
@@ -101,11 +116,40 @@ type CreateMatchInput struct {
 	FairnessMode  string
 	Seed          []byte
 	Creator       Player // seat 0
+
+	// Private hides the waiting match from the open lobby, making it reachable only
+	// by somebody holding its public id.
+	//
+	// A room is otherwise an ordinary open match: same stake path, same join checks,
+	// same ErrSameOwner refusal. The only difference is that ListWaiting skips it, so
+	// the seat cannot be taken by a stranger browsing the lobby between the moment the
+	// code is shared and the moment the invited player uses it.
+	//
+	// Defaults to false, so every existing caller keeps producing public lobby entries.
+	Private bool
 }
 
 // CreatePairedInput is the data needed to open an already-active, two-seat match
 // (matchmaking). Unlike CreateMatchInput it carries both players plus the dealt
 // initial snapshot/deadline/events, since there is no separate join step.
+// ReadySeat is one seat's readiness, as the ready-check sweeper sees it.
+//
+// Mirrors readycheck.Seat but carries the owner and the seat index too: a dropped seat has to
+// be requeued (which needs the owner) and replaced (which needs the seat), and re-reading them
+// after the decision would race the very sweep that made it.
+//
+// ReadyAt and AskedAt are pointers because NULL is meaningful in both: not ready, and never
+// asked. A zero time.Time would read as 1 January year 1, which is a very expired ask — and
+// dropping a seat that was never asked is precisely the mistake this design refuses to make.
+type ReadySeat struct {
+	AgentPublicID string
+	OwnerPublicID string
+	Seat          int
+	ReadyAt       *time.Time
+	Asks          int
+	AskedAt       *time.Time
+}
+
 type CreatePairedInput struct {
 	PublicID      string
 	Game          string
@@ -120,9 +164,20 @@ type CreatePairedInput struct {
 	Seed          []byte
 	SeatA         Player // seat 0
 	SeatB         Player // seat 1
-	State         gs.State
-	Deadline      time.Time
-	Events        []gs.Event
+	// Unrated writes matches.rated = false AT INSERT, not by a follow-up UPDATE. A match
+	// that is briefly rated is a match a concurrent board refresh can read as rated, and
+	// the platform benchmark's whole separation rests on this flag plus the agent kind.
+	Unrated bool
+	State   gs.State
+	// StartsAt is the ABSOLUTE instant play begins — the start countdown, persisted so every
+	// surface counts to one moment rather than each running its own timer. Harness tables were
+	// the last path without it: mafia, monopoly and the goofspiel lobby all set one, and 6 of 6
+	// finished benchmark tables had starts_at NULL, so no surface could render a countdown for
+	// the platform's own runs. Zero is written as NULL, which is what a caller predating the
+	// countdown means.
+	StartsAt time.Time
+	Deadline time.Time
+	Events   []gs.Event
 }
 
 // LobbyItem is a summary of an open match.

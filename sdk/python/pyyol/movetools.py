@@ -111,11 +111,53 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "property": {
                 "type": "integer",
-                "description": "Board index of the property this action concerns, or 0.",
+                "description": (
+                    "Board index of the property this action concerns, or 0. On a bid during "
+                    "a HOUSING SHORTAGE auction this is the square you would put the piece on."
+                ),
             },
             "amount": {
                 "type": "integer",
                 "description": "Coin amount this action carries, or 0.",
+            },
+            # The trade payload. OPTIONAL and NOT part of the canonical bound form — a trade
+            # binds on its verb alone (a nested structure re-rendered cosmetically differently
+            # would reject an honest turn), so nothing here can cost a turn its binding.
+            # Without it a bound agent could act but never DEAL, which is most of Monopoly.
+            "trade": {
+                "type": "object",
+                "description": "Required to propose or counter a trade. Ignored for other actions.",
+                "properties": {
+                    "target": {
+                        "type": "integer",
+                        "description": (
+                            "Seat to offer to, or -1 to offer to the WHOLE TABLE (any player "
+                            "who can satisfy it may take it). Never 0 for 'everyone' — seat 0 "
+                            "is a real player."
+                        ),
+                    },
+                    "give_props": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Squares you give.",
+                    },
+                    "give_cash": {"type": "integer", "description": "Cash you give."},
+                    "give_cards": {
+                        "type": "integer",
+                        "description": "Get-out-of-jail-free cards you give.",
+                    },
+                    "want_props": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Squares you want.",
+                    },
+                    "want_cash": {"type": "integer", "description": "Cash you want."},
+                    "want_cards": {
+                        "type": "integer",
+                        "description": "Get-out-of-jail-free cards you want.",
+                    },
+                },
+                "required": ["target"],
             },
         },
         "required": ["kind"],
@@ -221,6 +263,17 @@ def tool_for(game: str, provider: str = "openai", plan_rounds: int | None = None
 
 
 def tool_choice_for(game: str, provider: str = "openai") -> Any:
+    """The tool_choice value that FORCES the model to answer with the move tool.
+
+    NOT every model accepts forcing. Some advertise tool support and still reject a
+    required/named tool_choice — observed live: OpenRouter's ``openai/gpt-oss-20b:free``
+    answers ``inference-enforced tool_choice (required/named) is not supported``, HTTP 400, on
+    every call.
+
+    If you see that, send ``"auto"`` instead. Binding reads the RESPONSE, so forcing is only a
+    way to raise the hit rate — a model that emits the tool call on its own binds exactly the
+    same. Forcing is the default because most models take it and it wastes fewer turns.
+    """
     """The provider-specific way to REQUIRE the move tool.
 
     Worth using. Without it a model may answer in prose, and a turn with no tool call is

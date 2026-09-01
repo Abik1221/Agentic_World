@@ -5,6 +5,42 @@ package identity
 
 import "time"
 
+// The agent kinds. `kind` is what an agent IS, and it decides which surfaces its
+// results may reach — see migration 0094 for why harness is a third kind rather than a
+// reuse of house.
+//
+// DECIDED AT INSERT, NEVER REPAIRED AFTERWARDS. The public sinks filter on an ALLOWLIST
+// of KindExternal (migration 0093 and its siblings, 32 sites), so a new kind is invisible
+// to them by default. That property only holds if the kind is correct the moment the agent
+// is created: matches written while an agent was still `external` stay attributed to the
+// developer board no matter what the column says later.
+const (
+	// KindExternal is a developer's agent — the only kind on public boards.
+	KindExternal = "external"
+	// KindHarness is a platform benchmark agent. LLM-backed and certified exactly like a
+	// developer's agent, because its decisions ARE the measurement; excluded from every
+	// user-facing surface, because its results are the platform's, not a developer's.
+	KindHarness = "harness"
+	// KindHouse is a deterministic table-filling bot. Present for completeness; it is
+	// deliberately not creatable through the API — see ValidateCreatableKind.
+	KindHouse = "house"
+)
+
+// ValidateCreatableKind reports whether a caller may CREATE an agent of this kind.
+//
+// KindHouse is refused on purpose. A house bot's certification exemption is granted by an
+// EXPLICIT id list built at boot (SetHouseRoster), never by this column, so an API-minted
+// house agent would look house-shaped to every query while holding no exemption — and the
+// obvious "fix" for that is to let the roster match on kind, which is precisely the
+// pattern-matching the roster exists to prevent. House bots are seeded, not signed up.
+func ValidateCreatableKind(kind string) error {
+	switch kind {
+	case KindExternal, KindHarness:
+		return nil
+	}
+	return errInvalid(`kind must be "` + KindExternal + `" or "` + KindHarness + `"`)
+}
+
 // Limits are the seven server-enforced spending limits. They live on the agent
 // and are mutable ONLY by the owner (user scope) — never by an agent key.
 type Limits struct {
@@ -52,6 +88,65 @@ func DefaultLimits() Limits {
 		MinWalletBalance: 50, MaxBid: 500, MaxConcurrentMatches: 1,
 		CooldownLosses: 3, CooldownSeconds: 300, AutoJoin: false,
 	}
+}
+
+// harnessMaxConcurrentMatches is the only guardrail a harness agent is created with
+// differently from a developer's.
+//
+// # Why it has to differ at all
+//
+// max_concurrent_matches is a THROUGHPUT limit (wallet.CheckConcurrency): it protects the
+// OWNER's provider bill and rate limits by refusing to seat an agent at several tables at
+// once. A harness agent has no such owner. The platform runs it, and the pacing control is
+// gamelab's runBatch, which starts matches strictly one after another precisely so a
+// rate-limited free tier does not turn a batch into a wall of 429s.
+//
+// # Why it is not simply unlimited
+//
+// CheckConcurrency reads <= 0 as unbounded, but agents.max_concurrent_matches has carried
+// CHECK (max_concurrent_matches >= 1) since migration 0002. The value has to be a real
+// number, so it is chosen rather than disabled.
+//
+// # What the number actually has to clear
+//
+// Not concurrency — SLOTS NOT YET GIVEN BACK. ActiveMatchCount counts matches with
+// status='active', and a match holds its seat's slot until it finalizes. Two things make
+// that outlast the match itself:
+//
+//   - Finalize runs AFTER the seats receive /game-end, which is what the batch counts as
+//     "finished". So the tail of match i overlaps the start of match i+1. At a limit of 1
+//     that alone is fatal: `-matches 14` produced 4 and then refused every start with
+//     "Already in 1 active matches (limit 1)".
+//   - A match that stalls holds its slot until the liveness worker forfeits it. Not
+//     hypothetical: the lab database currently carries 434 matches still marked active.
+//
+// Neither is bounded by the batch's own sequencing, so the ceiling has to clear a whole
+// run's worth of leaked slots. gamelab onboards fresh agents per invocation, so that is
+// one run — 30–50 matches per pairing is what it takes for an interval to exclude 50%.
+// 64 clears it with room, and still bounds a runaway to something an operator notices.
+const harnessMaxConcurrentMatches = 64
+
+// HarnessLimits are what a PLATFORM harness agent is created with: the developer defaults
+// in every respect except throughput, because a harness agent is not protecting anyone's
+// bill but the platform's own.
+//
+// The money limits are deliberately left AT the developer values. A harness agent stakes
+// real coins on real tables — that is what makes its matches the same object the developer
+// board measures — so loosening the loss limits would buy a benchmark that no longer runs
+// under the constraints it claims to be measuring under.
+func HarnessLimits() Limits {
+	l := DefaultLimits()
+	l.MaxConcurrentMatches = harnessMaxConcurrentMatches
+	return l
+}
+
+// LimitsForKind picks the creation-time guardrails for an agent kind, so the choice lives
+// in one place rather than at each call site that happens to create an agent.
+func LimitsForKind(kind string) Limits {
+	if kind == KindHarness {
+		return HarnessLimits()
+	}
+	return DefaultLimits()
 }
 
 // Validate guards against nonsensical limit values before they reach the DB.

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
 	mono "github.com/agent-arena/arena/internal/engine/monopoly"
+	"github.com/agent-arena/arena/internal/monopoly"
 )
 
 // The lab agent must play complete Monopoly matches without ever proposing an illegal action.
@@ -153,4 +155,81 @@ func TestLabAgentAuctionBidsAreAlwaysWellFormed(t *testing.T) {
 		st = next
 	}
 	t.Fatal("auction never closed in 400 iterations — every seat is raising forever")
+}
+
+// ── the wire contract ────────────────────────────────────────────────────────
+//
+// These marshal the PLATFORM'S OWN types and decode them with the lab's, rather than
+// asserting against a hand-written JSON literal. A literal is written from the same
+// misunderstanding that produced the bug, so it agrees with the bug; the platform's struct
+// cannot.
+//
+// What they pin: the lab Monopoly agent read `your_seat` and `legal` while the platform has
+// always sent `seat` and `legal_actions`, so every view decoded to zeros, the handler returned
+// `{}` before logging anything, and the platform's safeFallback played BOTH seats of every lab
+// Monopoly match. A full match ran to GAME END with zero agent decision lines. Nothing errored
+// — an unplayed seat and a played one are the same bytes on the wire.
+
+func TestMonopolyViewDecodesThePlatformsOwnPushView(t *testing.T) {
+	st := &mono.State{
+		Phase:     mono.PhaseManage,
+		TurnCount: 7,
+		Players:   []mono.Player{{Seat: 0, Cash: 1500}, {Seat: 1, Cash: 1200}},
+	}
+	sent := monopoly.MonopolyPushView{
+		Game: "monopoly", MatchID: "mp_contract", Seat: 1,
+		Phase: mono.PhaseManage, LegalActions: []string{mono.ActEndTurn, mono.ActBuild},
+		State: st, Round: 7, TurnProof: "proof-abc",
+	}
+	raw, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got monopolyView
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Legal) != 2 {
+		t.Fatalf("legal actions decoded as %v — an empty list makes the handler answer {} and "+
+			"the platform play the seat for us, silently", got.Legal)
+	}
+	if got.YourSeat != 1 {
+		t.Fatalf("seat decoded as %d, want 1 — YourSeat indexes State.Players, so a wrong seat "+
+			"evaluates someone else's board", got.YourSeat)
+	}
+	if got.Round != 7 {
+		t.Fatalf("round decoded as %d, want 7 — the turn proof is minted for this number", got.Round)
+	}
+	if got.TurnProof != "proof-abc" {
+		t.Fatalf("turn proof decoded as %q; without it no Monopoly decision can be bound", got.TurnProof)
+	}
+	if got.MatchID != "mp_contract" || got.State == nil {
+		t.Fatalf("match id or state lost: %+v", got)
+	}
+}
+
+func TestMonopolyMoveDecodesIntoThePlatformsOwnPushMove(t *testing.T) {
+	// What the lab actually puts on the wire, through the same translation the handler uses.
+	wire := monopolyWireMove(map[string]any{
+		"kind": mono.ActBuild, "property": 6, "rationale": "completing the set",
+	})
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got monopoly.MonopolyPushMove
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Action != mono.ActBuild {
+		t.Fatalf("action decoded as %q — the lab sent `kind` (the engine's word) where the push "+
+			"protocol reads `action`, so the platform saw an empty move, called it illegal and "+
+			"substituted a fallback", got.Action)
+	}
+	if got.Property != 6 {
+		t.Fatalf("property decoded as %d, want 6", got.Property)
+	}
+	if got.Rationale != "completing the set" {
+		t.Fatalf("rationale decoded as %q", got.Rationale)
+	}
 }

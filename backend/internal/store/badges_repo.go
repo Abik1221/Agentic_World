@@ -80,7 +80,7 @@ func (r *BadgesRepo) DeveloperTotals(ctx context.Context, userPublicID string, s
 		`SELECT COALESCE(SUM(r.wins),0), COALESCE(MAX(r.best_streak),0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		   AND r.season = $2 AND a.kind <> 'house'`, userPublicID, season).Scan(&wins, &best)
+		   AND r.season = $2 AND a.kind = 'external'`, userPublicID, season).Scan(&wins, &best)
 	if err != nil {
 		return 0, 0, err
 	}

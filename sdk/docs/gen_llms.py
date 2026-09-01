@@ -46,6 +46,7 @@ _PUBLISHED = {
     # sdk/cli-reference, so every "CLI reference" link landed on the push protocol.
     "protocol.md": "sdk/push-protocol",
     "cli.md": "sdk/cli-reference",
+    "scoring.md": "sdk/scoring",
 }
 
 
@@ -61,6 +62,7 @@ PAGES = [
     ("README.md", "Overview", "what Pyyol is + the doc map"),
     ("quickstart.md", "Quickstart (start here)", "install, log in, scaffold, and run an agent in ~2 minutes"),
     ("cli.md", "CLI reference", "every command, generated from the parser — plus the interactive shell"),
+    ("scoring.md", "How you are scored", "the P-Index (developers) and the model board (models), and why neither can be self-reported"),
     ("local-runtime.md", "Local-runtime model", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
     ("verified-telemetry.md", "Verified LLM agents", "the three layers of proof: instrument() captures cost, route() verifies it server-side, and move tools prove your MODEL chose the move"),
     ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Monopoly, Mafia) — the rules"),
@@ -426,7 +428,32 @@ def main() -> None:
         # PACKAGE's settings, or `ruff format --check` fails in CI on files nobody
         # edited:
         #   ruff format --line-length 100 --target-version py39 sdk/skill/**/templates
-        shutil.copytree(skill_src, sk, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache"))
+        shutil.copytree(
+            skill_src,
+            sk,
+            ignore=shutil.ignore_patterns(
+                "__pycache__", "*.pyc", ".ruff_cache", ".pytest_cache",
+                # templates-js is selected per SDK below, never copied wholesale — a Python
+                # developer must not find .mjs files in their skill any more than a JS
+                # developer should find .py ones.
+                "templates-js",
+            ),
+        )
+
+        # EACH SDK GETS TEMPLATES IN ITS OWN LANGUAGE.
+        #
+        # The skill's templates are the runnable example an assistant copies from, and both
+        # SDKs shipped the PYTHON ones. A JavaScript developer — or their assistant, working in
+        # their repo — opened references/templates/ and found .py files for a project where
+        # `pyyol init` writes agent.mjs. The fastest possible way to make someone think the
+        # tool is not really for them.
+        templates = sk / "references" / "templates"
+        if "js" in sk.parts:
+            js_src = skill_src / "references" / "templates-js"
+            if templates.exists():
+                shutil.rmtree(templates)
+            shutil.copytree(js_src, templates)
+
         # The engine-generated game reference rides along, so a skill can never
         # describe a game the engine no longer plays.
         (sk / "references" / "games" / "_engine_reference.md").write_text(games_md, encoding="utf-8")

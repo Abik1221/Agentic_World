@@ -99,3 +99,39 @@ func TestBadKeyMaterial(t *testing.T) {
 		t.Fatal("expected error for wrong-length public key")
 	}
 }
+
+// TestPublicFromSeedMatchesGenerateKeypair. A derived public key that disagreed with the
+// generated one would produce signatures that verify nowhere, and the failure would be found
+// by a reader of a published bundle rather than by us.
+func TestPublicFromSeedMatchesGenerateKeypair(t *testing.T) {
+	seed, pub, err := GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := PublicFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != pub {
+		t.Fatalf("derived %q, generated %q", got, pub)
+	}
+	// And it must actually verify a real signature.
+	s, err := NewSigner(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewVerifier(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := []byte("certificate bundle")
+	if !v.Verify(msg, s.Sign(msg)) {
+		t.Fatal("a signature did not verify under the derived public key")
+	}
+	if _, err := PublicFromSeed("not-base64!"); err == nil {
+		t.Fatal("garbage seed accepted")
+	}
+	if _, err := PublicFromSeed("c2hvcnQ="); err == nil {
+		t.Fatal("short seed accepted")
+	}
+}
