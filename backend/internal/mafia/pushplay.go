@@ -542,7 +542,17 @@ func botDecide(v AgentView) mf.Action {
 	target := firstOtherAlive(v.Alive, v.YourSeat)
 	switch kind {
 	case "message":
-		return mf.Action{Kind: "message", Tone: "info", Text: "Observing the table.", Target: target}
+		// NO target. This line names nobody, so it must not be recorded as accusing
+		// anybody.
+		//
+		// It used to carry `target`, which is firstOtherAlive — the lowest living seat.
+		// The engine bots read the transcript to decide who to vote for, so three seats
+		// saying "Observing the table." registered as three accusations of that seat,
+		// and every other bot dutifully piled on. A whole table lynched seat 1 on day
+		// one, unanimously, having said nothing about it. That looked like the bots
+		// voting by seat order; they were faithfully following an accusation that was
+		// never made.
+		return mf.Action{Kind: "message", Tone: "info", Text: "Observing the table."}
 	case "protect":
 		// The doctor may guard itself, but NOT the same seat two nights running — so a bot
 		// that always returned its own seat was legal on night one and refused every night
