@@ -4,6 +4,14 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.11.2](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.1...py-v1.11.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* the counted-run watchdog measures silence, not elapsed time ([7a896be](https://github.com/Abik1221/Agentic_World/commit/7a896beafeca437a8602b3085333218357ba5f77))
+* the counted-run watchdog measures silence, not elapsed time ([ab4b2e5](https://github.com/Abik1221/Agentic_World/commit/ab4b2e54c3f32b05213fe232bd466c912c1e77b5))
+
 ## [1.11.1](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.0...py-v1.11.1) (2026-08-31)
 
 
