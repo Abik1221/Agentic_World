@@ -144,3 +144,57 @@ func FilterPayable(payouts map[string]int64, v Verdict, matchID string, log *slo
 	}
 	return out, withheld
 }
+
+// FilterRatable decides which seats' results may move a RATING.
+//
+// # Why rating needs its own answer, and why it lives here
+//
+// Until this existed, integrity voided MONEY but never RATING. A staked Goofspiel match
+// whose seat could not prove a single LLM-backed decision was refunded and then rated
+// anyway; Mafia and Monopoly withheld payouts through FilterPayable and then called the
+// rater regardless. The leaderboard query joins neither fraud_flags nor matches.rated. So a
+// scripted agent was refunded 100% of the time by the rule above and climbed the ladder for
+// free — paying nothing and losing nothing.
+//
+// This is a fourth consumer of the same rule, which is exactly why it belongs in this file:
+// the package exists because three engines needed one rule and three copies would drift.
+//
+// # The rule, and why it needs no special case for 1v1
+//
+// A blocked seat's result is dropped. Whatever remains is rated normally. If fewer than two
+// seats survive there is no comparison left to make, so the match is not rated at all.
+//
+// That single condition produces the right answer in both shapes without branching on player
+// count, mirroring how settlement already differs between them:
+//
+//   - TWO SEATS, one blocked: one survivor, no comparison, nothing rated. This matches
+//     Goofspiel's money rule, where a bad seat voids the whole match — correct for two
+//     players, because rating the honest seat would mean rating it against an opponent we
+//     have reason to think was not an LLM at all.
+//   - TWELVE SEATS, one blocked: eleven survivors, rated. This matches FilterPayable's
+//     reasoning — letting one bad seat cancel eleven other agents' rated game would be a
+//     griefing tool rather than a control.
+//
+// # Placement
+//
+// The verdict is supplied by the caller rather than recomputed here, because the engines
+// already build one for FilterPayable and evaluating a second time could reach a DIFFERENT
+// answer from the same table — a seat paid but unrated, or the reverse. One evaluation, two
+// consumers. The cost is that an engine which forgets to pass its verdict silently rates
+// everything, which is the pre-existing behaviour rather than a new hazard.
+func FilterRatable(agents []string, v Verdict) (keep, excluded []string, ratable bool) {
+	if !v.Armed {
+		// Nothing was measured at this table. Inert, exactly as it is for payouts: an
+		// unarmed verdict must never be read as "everyone failed".
+		return agents, nil, len(agents) >= 2
+	}
+	keep = make([]string, 0, len(agents))
+	for _, a := range agents {
+		if v.Blocked(a) {
+			excluded = append(excluded, a)
+			continue
+		}
+		keep = append(keep, a)
+	}
+	return keep, excluded, len(keep) >= 2
+}

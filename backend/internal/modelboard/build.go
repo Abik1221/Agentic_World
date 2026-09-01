@@ -85,6 +85,27 @@ var pairwiseGames = map[string]bool{
 	"monopoly":  true,
 }
 
+// PairwiseGames is the set above, sorted, for a caller that needs to narrow a query to it.
+//
+// Exported so the seat query can be BUILT from this map instead of restating its contents in
+// SQL. That matters because the query now filters on it: 600,895 seats were being read out of
+// Postgres and handed to BuildComparisons, which discarded 593,530 of them on this one
+// condition — a team game has no pairwise comparison to contribute. Filtering in the database
+// removes 98.8% of the rows before they are ever materialised.
+//
+// A second list in SQL would have been the obvious way to do that and the wrong one: the two
+// would agree until someone added a game, and then the board would either silently ignore it
+// or silently include it depending on which list they found. There is one list, and the SQL is
+// generated from it.
+func PairwiseGames() []string {
+	out := make([]string, 0, len(pairwiseGames))
+	for g := range pairwiseGames {
+		out = append(out, g)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // resultRank orders outcomes so a comparison's direction is decidable. Higher beats lower.
 func resultRank(result string) (int, bool) {
 	switch result {
@@ -109,7 +130,21 @@ func resultRank(result string) (int, bool) {
 // from a board is a claim about that model and a reader deserves to know whether it was never
 // played, never verified, or excluded by a rule.
 func BuildComparisons(seats []Seat, cfg BuildConfig) ([]Comparison, map[string]int) {
+	return buildComparisons(seats, cfg, nil)
+}
+
+// buildComparisons is BuildComparisons plus exclusions the caller already counted.
+//
+// `preCounted` carries reasons the SEAT QUERY resolved before returning rows — today only the
+// non-pairwise games it filters out. They are merged into the same published map, so
+// seats_excluded still accounts for every seat in the window regardless of which layer dropped
+// it. Without this the board would report "0 seats excluded for a non-pairwise game" while
+// having excluded half a million, which is worse than not publishing the number at all.
+func buildComparisons(seats []Seat, cfg BuildConfig, preCounted map[string]int) ([]Comparison, map[string]int) {
 	excluded := map[string]int{}
+	for reason, n := range preCounted {
+		excluded[reason] += n
+	}
 	allowGame := func(g string) bool {
 		if !pairwiseGames[g] {
 			return false
@@ -235,7 +270,13 @@ type Board struct {
 
 // Build assembles and fits a board from seats in one call.
 func Build(seats []Seat, bc BuildConfig, fc Config) Board {
-	cmp, excluded := BuildComparisons(seats, bc)
+	return BuildWithExclusions(seats, nil, bc, fc)
+}
+
+// BuildWithExclusions is Build for a seat source that pre-filtered, and so already knows why
+// some seats are absent. See buildComparisons.
+func BuildWithExclusions(seats []Seat, preCounted map[string]int, bc BuildConfig, fc Config) Board {
+	cmp, excluded := buildComparisons(seats, bc, preCounted)
 	b := Board{Fit: Estimate(cmp, fc), SeatsExcluded: excluded, MinCoverage: bc.MinCoverage}
 	return b
 }

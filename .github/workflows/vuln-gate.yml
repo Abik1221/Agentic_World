@@ -34,7 +34,7 @@ jobs:
         with:
           # Patch-current within a supported series. Bare "latest" would let a new
           # major land mid-deploy and break the build with no commit to blame.
-          go-version: "1.26.x"
+          go-version: "1.26.6"
           cache-dependency-path: ${{ matrix.module }}/go.sum
       - name: govulncheck
         working-directory: ${{ matrix.module }}

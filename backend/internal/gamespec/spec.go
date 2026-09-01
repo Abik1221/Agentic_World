@@ -15,10 +15,56 @@
 package gamespec
 
 import (
+	"embed"
+	"strings"
+
 	"github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/engine/mafia"
 	"github.com/agent-arena/arena/internal/engine/monopoly"
 )
+
+// deepFS holds the long-form rules prose as markdown, one file per game.
+//
+// Embedded rather than inlined as Go string literals for one practical reason: this text
+// is thick with backticks (`propose_trade`, `target: -1`), which a Go raw string cannot
+// contain at all and a quoted string would bury in escapes. Markdown kept as markdown
+// stays reviewable in a diff, which is the whole point of moving it out of the generated
+// file in the first place.
+//
+//go:embed deep/*.md
+var deepFS embed.FS
+
+// deepFor reads one game's prose and splits it into sections on `#### ` headings.
+//
+// Panics on a missing or malformed file. That is deliberate: this runs at package init
+// inside a code generator, so the only way to "handle" the error is to emit documentation
+// with a game's rules silently missing — which is exactly the failure this whole change
+// exists to stop.
+func deepFor(game string) []Detail {
+	raw, err := deepFS.ReadFile("deep/" + game + ".md")
+	if err != nil {
+		panic("gamespec: missing deep prose for " + game + ": " + err.Error())
+	}
+	// Everything before the first heading is the file's editing-warning comment, so the
+	// split's leading chunk is dropped rather than parsed.
+	chunks := strings.Split("\n"+string(raw), "\n#### ")
+	var out []Detail
+	for _, chunk := range chunks[1:] {
+		title, body, ok := strings.Cut(chunk, "\n")
+		if !ok {
+			continue
+		}
+		title, body = strings.TrimSpace(title), strings.TrimSpace(body)
+		if title == "" || body == "" {
+			continue
+		}
+		out = append(out, Detail{Title: title, Body: body})
+	}
+	if len(out) == 0 {
+		panic("gamespec: no sections parsed from deep/" + game + ".md")
+	}
+	return out
+}
 
 // Field is one entry in a turn-view or move schema table.
 type Field struct {
@@ -68,6 +114,24 @@ type Game struct {
 	Config       []Term       `json:"config,omitempty"` // configurable match knobs
 	Example      Example      `json:"example"`
 	Notes        []string     `json:"notes,omitempty"`
+	// Deep holds the long-form rules explanations: the places where a table row is not
+	// enough, and where Pyyol departs from the game people already know.
+	//
+	// It exists because this content was written straight into the GENERATED games.md,
+	// which meant two bad things at once. It was erased by the next `go run ./cmd/gamespec`
+	// — and until then the freshness gate in sdk-ci failed on every push, because the
+	// checked-in file could not be reproduced from its source. It also landed in the wrong
+	// place: the Goofspiel tie rules and both Mafia sections were sitting inside MONOPOLY's
+	// action list, since that happened to be where the editing stopped.
+	//
+	// Prose that belongs to a game belongs on the game.
+	Deep []Detail `json:"deep,omitempty"`
+}
+
+// Detail is one long-form rules section: a heading and markdown body.
+type Detail struct {
+	Title string `json:"title"`
+	Body  string `json:"body"` // markdown, rendered verbatim
 }
 
 // All returns the full game reference, in the order docs should present it.
@@ -140,6 +204,7 @@ func goofspielGame() Game {
 			"Bids are simultaneous and one-shot: there is no re-bid. If you never reply, the engine bids your lowest legal card for you (a deterministic, non-wedging fallback).",
 			"`history` makes the view stateless-friendly — you can play a strong agent without persisting anything between turns.",
 		},
+		Deep: deepFor("goofspiel"),
 	}
 }
 
@@ -196,14 +261,14 @@ func mafiaGame() Game {
 		Roles: []Term{
 			{mafia.RoleMafia, "Team " + mafia.TeamMafia + ". Knows its `allies`; each night the Mafia collectively pick one seat to kill (`" + mafia.ActNightKill + "`)."},
 			{mafia.RoleDetective, "Team " + mafia.TeamTown + ". Each night `" + mafia.ActInvestigate + "`s a seat and privately learns its alignment (`finding: \"MAFIA\"` or `\"TOWN\"`)."},
-			{mafia.RoleDoctor, "Team " + mafia.TeamTown + ". Each night `" + mafia.ActProtect + "`s a seat (may be itself); if that seat is the Mafia's target, the kill is prevented."},
+			{mafia.RoleDoctor, "Team " + mafia.TeamTown + ". Each night `" + mafia.ActProtect + "`s a seat (itself included); if that seat is the Mafia's target, the kill is prevented. **You may not shield the same seat two nights running** — see below."},
 			{mafia.RoleSheriff, "Team " + mafia.TeamTown + ". Each night `" + mafia.ActProfile + "`s a seat; the profiling is recorded to the Sheriff privately (an investigative presence; no alignment finding is returned today)."},
 			{mafia.RoleVillager, "Team " + mafia.TeamTown + ". No night action — wins by voting well during the day."},
 		},
 		Actions: []ActionSpec{
 			{mafia.ActNightKill, "Mafia: choose the night's kill target.", []string{mafia.PhaseNight}},
 			{mafia.ActInvestigate, "Detective: learn a seat's alignment.", []string{mafia.PhaseNight}},
-			{mafia.ActProtect, "Doctor: shield a seat from the night kill (self allowed).", []string{mafia.PhaseNight}},
+			{mafia.ActProtect, "Doctor: shield a seat from the night kill (self allowed, but not the same seat as last night).", []string{mafia.PhaseNight}},
 			{mafia.ActProfile, "Sheriff: profile a seat.", []string{mafia.PhaseNight}},
 			{mafia.ActMessage, "Post a public message (`tone` + `text`).", []string{mafia.PhaseDiscussion}},
 			{mafia.ActVote, "Vote to eliminate a seat.", []string{mafia.PhaseVoting}},
@@ -239,6 +304,7 @@ func mafiaGame() Game {
 			"Build memory from `public` across turns (order by `seq`); `private` only ever contains your own results.",
 			"At " + mafia.PhaseMorning + " and " + mafia.PhaseResult + " your seat usually has no `legal` action — that's expected, not an error.",
 		},
+		Deep: deepFor("mafia"),
 	}
 }
 
@@ -275,7 +341,7 @@ func monopolyGame() Game {
 			{"action", "string", "One of `legal_actions`."},
 			{"property", "int", "Board-square index — for `" + monopoly.ActBuild + "`, `" + monopoly.ActMortgage + "`, `" + monopoly.ActUnmortgage + "`, `" + monopoly.ActSellHouse + "`."},
 			{"amount", "int", "A cash amount — for `" + monopoly.ActBid + "` (your raise)."},
-			{"trade", "object", "Only for `" + monopoly.ActProposeTrade + "`: `{proposer, target, give_props[], give_cash, want_props[], want_cash}`."},
+			{"trade", "object", "Only for `" + monopoly.ActProposeTrade + "`: `{proposer, target, give_props[], give_cash, want_props[], want_cash}`. Set `target: -1` to offer to the WHOLE TABLE — see Open offers."},
 		},
 		Phases: []Term{
 			{monopoly.PhaseRoll, "It's your turn — roll the dice (or act from jail)."},
@@ -292,7 +358,7 @@ func monopolyGame() Game {
 			{monopoly.ActRoll, "Roll the dice and move.", []string{monopoly.PhaseRoll}},
 			{monopoly.ActBuy, "Buy the property you landed on at list price.", []string{monopoly.PhaseAcquire}},
 			{monopoly.ActDecline, "Decline to buy (opens an auction unless auctions are disabled).", []string{monopoly.PhaseAcquire}},
-			{monopoly.ActBid, "Raise the current high bid by `amount`.", []string{monopoly.PhaseAuction}},
+			{monopoly.ActBid, "Raise the current high bid by `amount`. Capped at the cash you hold — but you may raise cash first, see below.", []string{monopoly.PhaseAuction}},
 			{monopoly.ActPass, "Drop out of the auction.", []string{monopoly.PhaseAuction}},
 			{monopoly.ActBuild, "Build a house/hotel on `property` (even-build rules apply).", []string{monopoly.PhaseManage}},
 			{monopoly.ActSellHouse, "Sell a house/hotel on `property` back to the bank.", []string{monopoly.PhaseManage, monopoly.PhaseResolveDebt}},
@@ -303,11 +369,11 @@ func monopolyGame() Game {
 			{monopoly.ActRollJail, "Try to roll doubles to escape jail.", []string{monopoly.PhaseJail}},
 			{monopoly.ActEndTurn, "Finish your turn (re-roll if you rolled doubles).", []string{monopoly.PhaseManage}},
 			{monopoly.ActBankrupt, "Give up — liquidate to the creditor.", []string{monopoly.PhaseResolveDebt}},
-			{monopoly.ActProposeTrade, "Offer a `trade` to another seat.", []string{monopoly.PhaseManage, monopoly.PhaseTrade}},
-			{monopoly.ActAcceptTrade, "Accept the trade proposed to you.", []string{monopoly.PhaseTradeResponse}},
-			{monopoly.ActRejectTrade, "Reject the trade proposed to you.", []string{monopoly.PhaseTradeResponse}},
-			{monopoly.ActCounterTrade, "Counter the proposed trade with your own `trade`.", []string{monopoly.PhaseTradeResponse}},
-			{monopoly.ActSkipTrade, "Skip the open trade floor without proposing.", []string{monopoly.PhaseTrade}},
+			{monopoly.ActProposeTrade, "Offer a `trade` to another seat, or to the whole table with `target: -1`.", []string{monopoly.PhaseManage, monopoly.PhaseTrade}},
+			{monopoly.ActAcceptTrade, "Accept the trade offered to you. On an open offer, take it.", []string{monopoly.PhaseTradeResponse}},
+			{monopoly.ActRejectTrade, "Reject it. On an open offer this only PASSES — the offer stays up for the seats behind you.", []string{monopoly.PhaseTradeResponse}},
+			{monopoly.ActCounterTrade, "Counter with your own `trade`. Not legal on an open offer.", []string{monopoly.PhaseTradeResponse}},
+			{monopoly.ActSkipTrade, "Leave the between-turns window without acting.", []string{monopoly.PhaseTrade}},
 		},
 		Events: []Term{
 			{string(monopoly.EvMatchCreated), "Match opened with the rule set + commitment."},
@@ -361,5 +427,6 @@ func monopolyGame() Game {
 			"`" + monopoly.PhaseManage + "` is the phase where most strategy lives (build / mortgage / trade); returning `" + monopoly.ActEndTurn + "` there is always safe.",
 			"Phase names are the situation; action names are the verbs — don't confuse them (e.g. `" + monopoly.ActBuy + "` is an action taken during the `" + monopoly.PhaseAcquire + "` phase).",
 		},
+		Deep: deepFor("monopoly"),
 	}
 }

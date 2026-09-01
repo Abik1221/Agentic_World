@@ -122,6 +122,12 @@ jobs:
           PRIVY_APP_ID: ${{ secrets.PRIVY_APP_ID }}
           PRIVY_VERIFICATION_KEY: ${{ secrets.PRIVY_VERIFICATION_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          # GitHub OAuth ("Sign in with GitHub"). GitHub forbids repo secrets whose
+          # names start with GITHUB_, so these carry a GH_OAUTH_ prefix here and are
+          # written to the .env below under the GITHUB_CLIENT_ID/SECRET keys the server
+          # actually reads (config.go). Both empty ⇒ the route 503s, Google still works.
+          GH_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
+          GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
           # Solana USDC deposits (all four required to enable real deposits)
           # SOLANA_CLUSTER is the network switch: "devnet" or "mainnet-beta". The
           # backend refuses to boot if it disagrees with the RPC URL or the mint, so
@@ -320,6 +326,10 @@ jobs:
           PRIVY_APP_ID=${PRIVY_APP_ID:-}
           PRIVY_VERIFICATION_KEY=${PRIVY_VERIFICATION_KEY:-}
           GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+          # GitHub OAuth login. Sourced from the GH_OAUTH_* secrets above (the
+          # GITHUB_ secret prefix is reserved). Both empty ⇒ GitHub login disabled.
+          GITHUB_CLIENT_ID=${GH_OAUTH_CLIENT_ID:-}
+          GITHUB_CLIENT_SECRET=${GH_OAUTH_CLIENT_SECRET:-}
 
           # ── Solana USDC deposits (need RPC + mint + owner + ATA to enable) ──
           SOLANA_CLUSTER=${SOLANA_CLUSTER:-}

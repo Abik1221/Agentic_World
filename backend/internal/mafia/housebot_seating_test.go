@@ -23,6 +23,10 @@ type seatingRepo struct {
 	started bool
 	unrated []string
 	roles   map[int]string
+	// The start countdown, captured so a test can prove the first phase window opens when
+	// PLAY does rather than when the table filled. See startcountdown_test.go.
+	startsAt time.Time
+	deadline time.Time
 }
 
 func newSeatingRepo(entryFee int64, creator Player) *seatingRepo {
@@ -44,8 +48,9 @@ func (r *seatingRepo) JoinSeat(_ context.Context, _ string, p Player) error {
 	return nil
 }
 
-func (r *seatingRepo) Start(_ context.Context, _ string, roles map[int]string, st mf.State, _ time.Time, _ []mf.Event) error {
+func (r *seatingRepo) Start(_ context.Context, _ string, roles map[int]string, st mf.State, startsAt, deadline time.Time, _ []mf.Event) error {
 	r.started, r.roles = true, roles
+	r.startsAt, r.deadline = startsAt, deadline
 	r.m.Status, r.m.State = StatusActive, st
 	return nil
 }

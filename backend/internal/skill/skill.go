@@ -121,7 +121,7 @@ const BlunderThreshold = 0.5
 //
 // Do NOT bump for changes that cannot move a score (comments, refactors, new helpers):
 // a needless bump rescores the entire history for nothing.
-const ScorerVersion = 1
+const ScorerVersion = 2
 
 // Summarize reduces scored decisions to a Summary. Safe on an empty slice.
 func Summarize(ds []Decision) Summary {

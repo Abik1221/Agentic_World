@@ -4,6 +4,50 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.11.1](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.0...py-v1.11.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* migration 0091 collided and the server could not start ([a7d43e0](https://github.com/Abik1221/Agentic_World/commit/a7d43e00bcd6064730a5c272697cb740771ed65c))
+
+## [1.11.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.10.1...py-v1.11.0) (2026-08-15)
+
+
+### Features
+
+* **cost:** let a Goofspiel move carry its talk, and fix the JS SDK that could not ([8263fdc](https://github.com/Abik1221/Agentic_World/commit/8263fdc3b4754b007c3a0ecdce3b0b5156d42e50))
+* **lab:** -matches N, so a batch of matches is possible at all ([4724105](https://github.com/Abik1221/Agentic_World/commit/47241056f92a4fa9bbea982f7ab18fb858ee2b81))
+* **mafia:** a doctor may not shield the same seat twice running ([302e311](https://github.com/Abik1221/Agentic_World/commit/302e3118057248d3927fb13cf599cf0ed0932b32))
+* **mafia:** let the mafia see each other's night picks so they can converge ([fefae9f](https://github.com/Abik1221/Agentic_World/commit/fefae9f59ead26950ffea4b6e390e0764064c729))
+* **monopoly:** auction a contested house during a shortage ([3bb0357](https://github.com/Abik1221/Agentic_World/commit/3bb0357e745043a031c1e8cc2fe4e56eb8e14082))
+* **monopoly:** give agents the timing rights the official rules give players ([f7e163d](https://github.com/Abik1221/Agentic_World/commit/f7e163d59b405f61a7da43271e6eb6d3ed2e3d9c))
+* **monopoly:** let a bidder raise cash during an auction ([7f7e0f1](https://github.com/Abik1221/Agentic_World/commit/7f7e0f16a77f2f9e4a45c13598180d7d4657929d))
+* **monopoly:** offer a trade to the whole table, and let any seat take it ([9f55ceb](https://github.com/Abik1221/Agentic_World/commit/9f55cebe600ea0fb5390f097276f1e0252e6079b))
+* **sdk:** ask where to watch instead of seizing the screen ([49b3619](https://github.com/Abik1221/Agentic_World/commit/49b3619e9758b43bf2ea20b4d4192a648620296e))
+* **sdk:** express a Monopoly trade, and stop crashes showing our source ([870dded](https://github.com/Abik1221/Agentic_World/commit/870ddeda2f156812f6370ccf40eb5bc8f15b0b24))
+* **sdk:** show the countdown in the terminal, from the server's clock ([a1300a4](https://github.com/Abik1221/Agentic_World/commit/a1300a4fcf1a348e08a27acdd6fd6640a11225c4))
+* **sdk:** teach the one-call path, and count calls per decision ([d171b4f](https://github.com/Abik1221/Agentic_World/commit/d171b4f4037b8deacb25b8103b11d3cf47ebfe83))
+* **warning:** ship the phase warning from the window actually in force ([9dac325](https://github.com/Abik1221/Agentic_World/commit/9dac3251f5868cb98aabf1d74a4d6298abccbd92))
+
+
+### Bug Fixes
+
+* **cli:** --help crashed on a cp1252 console, and one problem printed two errors ([709f2b7](https://github.com/Abik1221/Agentic_World/commit/709f2b7cae5f8f50755612c6906edaf7a0eb1b29))
+* **cli:** accept --api before the command, and ship per-language scaffold templates ([21c06f5](https://github.com/Abik1221/Agentic_World/commit/21c06f584ac7c8cf7f526f10ccf28dbc87c28969))
+* **cli:** make the expected errors actionable instead of internal ([90bbc32](https://github.com/Abik1221/Agentic_World/commit/90bbc32ea0b9108b09b591dbcd125cef6e642117))
+* **cli:** the `/` menu could not reach more than ten commands ([12afda8](https://github.com/Abik1221/Agentic_World/commit/12afda8f665518cd41037527d9158e6094b4fa33))
+* **docs:** generate the long-form game rules instead of hand-editing the generated file ([d704f5f](https://github.com/Abik1221/Agentic_World/commit/d704f5f4af3f162a56ddd2ed004ea1ab2330df4f))
+* **sdk:** make the Python package pass the CI lint gates ([6c0d535](https://github.com/Abik1221/Agentic_World/commit/6c0d535317a0b64b772534117ee504634a626591))
+* **sdk:** make the quickstart work on non-UTF-8 machines and run an Adapter ([314eaf7](https://github.com/Abik1221/Agentic_World/commit/314eaf7ac6c71e9fae9e5ccda90b846a6c3b74e1))
+* **sdk:** the Monopoly scaffold could not trade, and the shell was untested against the real CLI ([7bb7a29](https://github.com/Abik1221/Agentic_World/commit/7bb7a29da339f4c3949326dbd638f378326faeeb))
+
+
+### Documentation
+
+* **sdk:** lead with `pyyol`, show it, and put both scoring methods on one page ([253dd6e](https://github.com/Abik1221/Agentic_World/commit/253dd6e439d354cc78feaba557933351cb12d3fb))
+* **sdk:** note the models that reject a forced tool_choice ([d4784ff](https://github.com/Abik1221/Agentic_World/commit/d4784ff3d91ebc785aca76027a6108b1157edc90))
+
 ## [1.10.1](https://github.com/Abik1221/Agentic_World/compare/py-v1.10.0...py-v1.10.1) (2026-08-11)
 
 

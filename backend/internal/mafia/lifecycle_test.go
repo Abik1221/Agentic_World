@@ -67,7 +67,7 @@ func (f *fakeRepo) Get(_ context.Context, id string) (Match, error) {
 	return f.getMatch, f.getErr
 }
 func (f *fakeRepo) JoinSeat(context.Context, string, Player) error { return nil }
-func (f *fakeRepo) Start(context.Context, string, map[int]string, mf.State, time.Time, []mf.Event) error {
+func (f *fakeRepo) Start(context.Context, string, map[int]string, mf.State, time.Time, time.Time, []mf.Event) error {
 	return nil
 }
 func (f *fakeRepo) MarkUnrated(_ context.Context, id string) error {

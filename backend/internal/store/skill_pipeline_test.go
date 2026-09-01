@@ -94,7 +94,6 @@ func seedRankedScoredMatch(t *testing.T, pool *pgxpool.Pool, run string, season 
 	return ownerPub
 }
 
-
 // scoreThisMatch drives the worker until this match's decisions are scored, or SKIPS the test
 // when the shared database makes that impossible.
 //

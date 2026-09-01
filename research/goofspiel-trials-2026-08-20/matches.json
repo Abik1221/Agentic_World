@@ -1,0 +1,476 @@
+[
+ {
+  "match_id": "m_o5enybzsgckvhmmi",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:43:06.53529+00:00",
+  "bid": 500,
+  "fallbacks": 7,
+  "decisions": 26,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 12,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 79,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_hhngu4v3pvndzrte",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:43:06.549428+00:00",
+  "bid": 500,
+  "fallbacks": 14,
+  "decisions": 26,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 29,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 61,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_xe5kvdefep6z2vrt",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:43:06.565433+00:00",
+  "bid": 500,
+  "fallbacks": 15,
+  "decisions": 26,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 34,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 48,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_oowecym4zjlr2ynz",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:55:54.419801+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 26,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 62,
+    "coins_delta": 450
+   },
+   {
+    "seat": 1,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 29,
+    "coins_delta": -500
+   }
+  ]
+ },
+ {
+  "match_id": "m_glsmhtshdxdfnwwq",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:55:54.433345+00:00",
+  "bid": 500,
+  "fallbacks": 0,
+  "decisions": 24,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 23,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 68,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_xwgegm5nh7ptjddm",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:55:54.4538+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 21,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 12,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 79,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_cwjwrzqwf4jwg46g",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:55:54.642182+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 25,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 19,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "openai/gpt-5.6-sol-pro",
+    "final_score": 72,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_qq2zwofb5tzqfgql",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T11:55:54.644817+00:00",
+  "bid": 500,
+  "fallbacks": 2,
+  "decisions": 26,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 9,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "openai/gpt-5.6-sol-pro",
+    "final_score": 82,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_2sgxnya7bd4xrjxk",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:05:38.389992+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 25,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 14,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 77,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_ca4hknmcqlisj3pj",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:05:38.400272+00:00",
+  "bid": 500,
+  "fallbacks": 4,
+  "decisions": 24,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 45,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 46,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_6oiee6c6anz3plzd",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:05:38.441862+00:00",
+  "bid": 500,
+  "fallbacks": 3,
+  "decisions": 21,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "openai/gpt-5.6-sol-pro",
+    "final_score": 12,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 79,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_uynzbctt7punumcx",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:05:38.471355+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 25,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 54,
+    "coins_delta": 450
+   },
+   {
+    "seat": 1,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 37,
+    "coins_delta": -500
+   }
+  ]
+ },
+ {
+  "match_id": "m_px4nnsrrr6vvzkrg",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:05:38.48939+00:00",
+  "bid": 500,
+  "fallbacks": 3,
+  "decisions": 22,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "openai/gpt-5.6-sol-pro",
+    "final_score": 54,
+    "coins_delta": 450
+   },
+   {
+    "seat": 1,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 37,
+    "coins_delta": -500
+   }
+  ]
+ },
+ {
+  "match_id": "mf_zc4gr2ccsapmghew",
+  "game": "mafia",
+  "created_at": "2026-08-20T12:22:43.697619+00:00",
+  "bid": 500,
+  "fallbacks": 0,
+  "decisions": 154,
+  "seats": [
+   {
+    "seat": 1,
+    "model": "anthropic/claude-opus-5",
+    "final_score": null,
+    "coins_delta": -500
+   },
+   {
+    "seat": 2,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": null,
+    "coins_delta": -500
+   },
+   {
+    "seat": 3,
+    "model": "google/gemini-3.7-flash",
+    "final_score": null,
+    "coins_delta": -500
+   },
+   {
+    "seat": 4,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": null,
+    "coins_delta": -500
+   }
+  ]
+ },
+ {
+  "match_id": "m_fqv73w4opnmm7sha",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:32:34.266296+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 24,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 17,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 74,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_dgxgntl4pnwfqy6g",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:32:34.268706+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 20,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 33,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 58,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_qvgb6qsvrl2dgfvg",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:32:34.31861+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 23,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 13,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 78,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_5x7lzailghxk55ta",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:32:34.32949+00:00",
+  "bid": 500,
+  "fallbacks": 2,
+  "decisions": 21,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 23,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "anthropic/claude-opus-5",
+    "final_score": 68,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_7n7n6rsy3odufert",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T12:32:34.368805+00:00",
+  "bid": 500,
+  "fallbacks": 1,
+  "decisions": 19,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 12,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "anthropic/claude-sonnet-5",
+    "final_score": 79,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_gng2pvjvyssnn6wl",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T15:13:02.844933+00:00",
+  "bid": 500,
+  "fallbacks": 2,
+  "decisions": 17,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "deepseek/deepseek-v4-pro",
+    "final_score": 10,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "openai/gpt-5.6-sol-pro",
+    "final_score": 81,
+    "coins_delta": 450
+   }
+  ]
+ },
+ {
+  "match_id": "m_l54qqscasxwxcdld",
+  "game": "goofspiel",
+  "created_at": "2026-08-20T15:13:02.8957+00:00",
+  "bid": 500,
+  "fallbacks": 3,
+  "decisions": 20,
+  "seats": [
+   {
+    "seat": 0,
+    "model": "google/gemini-3.7-flash",
+    "final_score": 31,
+    "coins_delta": -500
+   },
+   {
+    "seat": 1,
+    "model": "openai/gpt-5.6-sol-pro",
+    "final_score": 60,
+    "coins_delta": 450
+   }
+  ]
+ }
+]

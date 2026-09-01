@@ -18,6 +18,8 @@ type fakeRepo struct {
 	disputeMatch map[string]string
 	resolved     map[string]bool
 	pairs        []antifraud.Pair
+	votes        []antifraud.VotePair
+	trades       []antifraud.Trade
 }
 
 func newRepo() *fakeRepo {
@@ -73,6 +75,18 @@ func (r *fakeRepo) RecentPairs(context.Context, time.Time, int) ([]antifraud.Pai
 	return r.pairs, nil
 }
 func (r *fakeRepo) AgentsWithSamples(context.Context, int) ([]string, error) { return nil, nil }
+
+// votes and trades let a test drive the multi-seat sweep. Nil by default, so every existing
+// test keeps its old behaviour: an empty evidence set can never trip a detector, which is the
+// right default for a fake that most tests do not care about.
+func (r *fakeRepo) PairVotes(context.Context, string, string, time.Time) ([]antifraud.VotePair, error) {
+	return r.votes, nil
+}
+
+func (r *fakeRepo) PairTrades(context.Context, string, string, time.Time) ([]antifraud.Trade, error) {
+	return r.trades, nil
+}
+
 func (r *fakeRepo) PairMoves(context.Context, string, string, time.Time) ([]antifraud.MoveSample, error) {
 	return nil, nil
 }
@@ -222,5 +236,66 @@ func TestCollusionClawbackOncePerFlag(t *testing.T) {
 	}
 	if cb.debt["ag_b"] != 900 {
 		t.Fatalf("debt stacked on re-sweep: %d, want 900", cb.debt["ag_b"])
+	}
+}
+
+// TestSweepFlagsMafiaVoteCollusion drives the multi-seat sweep end to end through the
+// service: a pair in the suspicious band whose votes are perfectly coordinated must be
+// flagged for review.
+func TestSweepFlagsMafiaVoteCollusion(t *testing.T) {
+	repo := newRepo()
+	// A pair concentrated enough to enter the suspicious band but under the ban threshold.
+	repo.pairs = []antifraud.Pair{{A: "ag_r1", B: "ag_r2", Games: 40, AWins: 30, BWins: 10, NetFlowAToB: 500}}
+	for i := 0; i < 40; i++ {
+		repo.votes = append(repo.votes, antifraud.VotePair{TargetA: i % 7, TargetB: i % 7})
+	}
+	if err := newSvc(repo, &fakeSettler{}).RunDetection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.flagged["ag_r1"] || !repo.flagged["ag_r2"] {
+		t.Fatal("a perfectly coordinated Mafia pair was not flagged by the sweep")
+	}
+}
+
+// TestSweepFlagsMonopolyGifting — same path, the trade signal.
+func TestSweepFlagsMonopolyGifting(t *testing.T) {
+	repo := newRepo()
+	repo.pairs = []antifraud.Pair{{A: "ag_gift", B: "ag_take", Games: 40, AWins: 30, BWins: 10, NetFlowAToB: 500}}
+	for i := 0; i < 20; i++ {
+		repo.trades = append(repo.trades, antifraud.Trade{GaveA: 600, GaveB: 5})
+	}
+	if err := newSvc(repo, &fakeSettler{}).RunDetection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.flagged["ag_gift"] || !repo.flagged["ag_take"] {
+		t.Fatal("systematic Monopoly gifting was not flagged by the sweep")
+	}
+}
+
+// TestSweepLeavesHonestMultiSeatPlayAlone is the one that protects the beta.
+//
+// A pair in the suspicious band whose votes merely CONVERGE — the game working — and whose
+// trades are balanced must not be flagged. A detector that holds honest developers' money is
+// worse than no detector, because it teaches them the platform is unsafe.
+func TestSweepLeavesHonestMultiSeatPlayAlone(t *testing.T) {
+	repo := newRepo()
+	repo.pairs = []antifraud.Pair{{A: "ag_h1", B: "ag_h2", Games: 40, AWins: 30, BWins: 10, NetFlowAToB: 500}}
+	for i := 0; i < 60; i++ {
+		a := i % 9
+		b := a
+		if i%3 == 0 {
+			b = (a + 4) % 9 // they follow consensus most rounds, independently
+		}
+		repo.votes = append(repo.votes, antifraud.VotePair{TargetA: a, TargetB: b})
+	}
+	for i := 0; i < 30; i++ {
+		repo.trades = append(repo.trades, antifraud.Trade{GaveA: 200, GaveB: 180})
+	}
+	if err := newSvc(repo, &fakeSettler{}).RunDetection(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if repo.flagged["ag_h1"] || repo.flagged["ag_h2"] {
+		t.Fatal("honest convergent play and balanced trading were flagged; this would hold " +
+			"honest developers' money")
 	}
 }

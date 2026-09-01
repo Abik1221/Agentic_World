@@ -7,8 +7,11 @@
 package matchmaking
 
 import (
+	"sync"
+
 	"context"
 	"fmt"
+	"github.com/agent-arena/arena/internal/antifraud"
 	"log/slog"
 	"net/http"
 	"time"
@@ -119,7 +122,13 @@ type Service struct {
 	// injected via their setters.
 	elig   Eligibility
 	afford Affordability
-	live   Liveness
+	// links resolves same-beneficiary account groups. Optional: nil falls back to a bare
+	// owner-id comparison, which is the pre-existing behaviour — a platform that has not
+	// wired the lookup must still match players, just with the weaker rule.
+	links   BeneficiaryLinks
+	linkMu  sync.RWMutex
+	linkIdx *antifraud.LinkIndex
+	live    Liveness
 	// stakes rejects a bid that is not an enabled tier for the game. Optional (nil = skip)
 	// only so a deployment with no tier table configured still works; once tiers exist it is
 	// the authority.
@@ -332,4 +341,56 @@ func (w *SweepWorker) Run(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// BeneficiaryLinks discovers account groups that share a payout identity.
+type BeneficiaryLinks interface {
+	BeneficiaryLinks(ctx context.Context) ([]antifraud.LinkedGroup, error)
+}
+
+// SetBeneficiaryLinks installs same-beneficiary detection. Nil keeps the owner-id-only rule.
+func (s *Service) SetBeneficiaryLinks(b BeneficiaryLinks) {
+	if b != nil {
+		s.links = b
+	}
+}
+
+// RefreshLinks rebuilds the beneficiary index.
+//
+// Rebuilt on a schedule and cached, NOT queried per candidate pair: pairing sits on the hot
+// path of every queued match, and a database round trip inside that loop would make
+// matchmaking latency a function of how many agents are waiting.
+//
+// A refresh failure keeps the PREVIOUS index rather than clearing it. Dropping to "nobody is
+// linked" on a transient error is the wrong direction to fail — it would quietly re-open the
+// multi-account hole at exactly the moment the database is unhappy.
+func (s *Service) RefreshLinks(ctx context.Context) error {
+	if s.links == nil {
+		return nil
+	}
+	groups, err := s.links.BeneficiaryLinks(ctx)
+	if err != nil {
+		return err
+	}
+	idx := antifraud.NewLinkIndex(groups)
+	s.linkMu.Lock()
+	s.linkIdx = idx
+	s.linkMu.Unlock()
+	s.log.Info("matchmaking: beneficiary index refreshed",
+		"groups", len(groups), "linked_owners", idx.Size())
+	return nil
+}
+
+// linked reports whether two owners are the same beneficiary.
+//
+// Always true for an identical owner id, index or no index, so the old rule can never be lost
+// by a missing refresh.
+func (s *Service) linked(a, b string) bool {
+	if a != "" && a == b {
+		return true
+	}
+	s.linkMu.RLock()
+	idx := s.linkIdx
+	s.linkMu.RUnlock()
+	return idx.Linked(a, b)
 }

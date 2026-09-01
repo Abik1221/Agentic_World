@@ -744,7 +744,11 @@ def cmd_logs(args: argparse.Namespace) -> int:
     if not os.path.exists(path):
         print(f"no logs yet at {path} (run `pyyol run` to generate them)")
         return 0
-    with open(path) as f:
+    # errors="replace", not just encoding="utf-8". A log is arbitrary agent output: it can
+    # hold a half-written line from a killed process, or bytes from an agent that logged in
+    # some other encoding. `pyyol logs` exists to show a developer what went wrong, so it is
+    # the one command that must never itself crash — a mojibake character beats a traceback.
+    with open(path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     for line in lines[-args.n :]:
         sys.stdout.write(line)
@@ -874,6 +878,111 @@ def cmd_queue(args: argparse.Namespace) -> int:
         time.sleep(1.5)
     print("still waiting for an opponent — leave `pyyol run` connected; check `pyyol status`.")
     return 0
+
+
+def cmd_room(args: argparse.Namespace) -> int:
+    """Create or join a PRIVATE staked table, shared by its id.
+
+    The queue supplies whoever is waiting. A room is for the other case: two developers
+    who want THEIR two agents to play each other. One creates it, sends the id, the other
+    joins it.
+
+    Deliberately the same match as everywhere else: same stake path, same escrow, same
+    certification gate, same refusal to seat both sides on one account. The only thing a
+    room changes is that it is not listed in the open lobby, so the seat cannot be taken
+    by a stranger between the moment the code is shared and the moment it is used.
+    """
+    from . import credentials
+
+    creds = credentials.load() if getattr(args, "api", "") else _ensure_login(args)
+    base = _http_base(args, creds)
+    if not base:
+        if _already_reported(creds):
+            return 2
+        print(f"{BAD} no arena to talk to — run `pyyol login`, or pass --api.", file=sys.stderr)
+        return 2
+
+    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
+    if not token:
+        creds = _ensure_login(args)
+        if creds is None:
+            return 2
+        token = creds.access_token or creds.api_key or ""
+
+    if args.action == "join":
+        if not args.id:
+            print(f"{BAD} which room? `pyyol room join <room-id>`", file=sys.stderr)
+            return 2
+        st, resp = _api_post(f"{base}/v1/lobby/join", token, {"match_id": args.id})
+        if st != 200:
+            return _room_error(st, resp, "join")
+        print(f"{OK} joined room {args.id}")
+        print("    keep your agent connected (`pyyol run`) — it plays automatically.")
+        print(f"    watch it:  pyyol watch {args.id}")
+        return 0
+
+    body: dict[str, object] = {}
+    if args.tier:
+        body["tier"] = args.tier
+    elif args.bid > 0:
+        body["bid"] = args.bid
+    else:
+        print(
+            f"{BAD} a room is staked: pass --tier <low|mid|high> "
+            f"(see `pyyol queue goofspiel --list`) or --bid <coins>.",
+            file=sys.stderr,
+        )
+        return 2
+
+    st, resp = _api_post(f"{base}/v1/room/create", token, body)
+    if st not in (200, 201):
+        return _room_error(st, resp, "create")
+
+    room_id = resp.get("room_id") or resp.get("match_id") or ""
+    bid = resp.get("bid")
+    print(f"{OK} room created")
+    if bid:
+        print(f"    stake: {bid} coins each")
+    # The id gets its own line with nothing around it, because the next thing anyone does
+    # is drag-select it to paste into a chat, and a line with prose on it selects badly.
+    print()
+    print(f"    {room_id}")
+    print()
+    print("    send that to the other player. they run:")
+    print(f"        pyyol room join {room_id}")
+    print("    keep your agent connected (`pyyol run`) — it plays as soon as they join.")
+    return 0
+
+
+def _room_error(st: int, resp: dict, what: str) -> int:
+    """Turn the arena's refusal codes into something a developer can act on.
+
+    Every branch here is a real first-try failure. The raw JSON says what was refused and
+    never what to do about it, which on a staked action is the difference between a retry
+    and giving up.
+    """
+    code = str(resp.get("code") or resp.get("error") or "")
+    msg = resp.get("message") or ""
+    if "same_owner" in code:
+        print(
+            f"{BAD} that is your own room — a match needs two different accounts. "
+            "Send the id to the other player.",
+            file=sys.stderr,
+        )
+    elif "certified" in code:
+        print(
+            f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+            file=sys.stderr,
+        )
+    elif "balance" in code or "insufficient" in code:
+        print(f"{BAD} not enough coins to stake this room.", file=sys.stderr)
+    elif "not_found" in code:
+        print(f"{BAD} no such room — check the id, or it may have been cancelled.", file=sys.stderr)
+    elif "not_waiting" in code:
+        print(f"{BAD} that room is no longer open (already started or cancelled).", file=sys.stderr)
+    else:
+        print(f"{BAD} could not {what} room{_status(st)}: {msg or resp}", file=sys.stderr)
+    return 1
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -1086,7 +1195,11 @@ def _log_file_handler():
 
     d = os.path.join(credentials.config_dir(), "logs")
     os.makedirs(d, exist_ok=True)
-    handler = logging.FileHandler(os.path.join(d, "agent.log"))
+    # UTF-8 explicitly: an agent logs whatever its model produced, so a log line can hold
+    # any character. Without this the handler encodes in the locale's encoding, and a
+    # single accented player name raises inside logging itself — which surfaces as
+    # "--- Logging error ---" on stderr and a silently truncated log.
+    handler = logging.FileHandler(os.path.join(d, "agent.log"), encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger = logging.getLogger("pyyol")
     logger.setLevel(logging.INFO)
@@ -1256,6 +1369,24 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"{BAD} no `{args.var}` found in {args.file} (expose your Agent as `{args.var}`)",
             file=sys.stderr,
         )
+        return 2
+
+    # Normalize whatever the developer exported into an Agent, exactly as
+    # `_load_agent_from_config` does for `pyyol dev` / `pyyol play`.
+    #
+    # `pyyol init` scaffolds an Adapter SUBCLASS, and an Adapter has no .run() — so the
+    # scaffold produced by our own quickstart crashed the moment it was handed to
+    # `pyyol run`, with an AttributeError that reads like the developer's mistake. Every
+    # other load path already normalized; this one alone did a raw getattr.
+    #
+    # TypeError carries the message naming `entry`, so a genuinely wrong export still gets
+    # the friendly explanation rather than a stack trace.
+    from .server import as_agent
+
+    try:
+        agent = as_agent(agent)
+    except TypeError as e:
+        print(f"{BAD} {e}", file=sys.stderr)
         return 2
 
     from .console import build_console
@@ -1667,7 +1798,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         tmpl = _PY_STARTER_GOOFSPIEL if arena == "goofspiel" else _PY_STARTER_GENERIC
         code = tmpl.format(name=name, cls=cls, arena=arena)
         entry = "agent.py:agent"
-    with open(path, "w") as f:
+    # UTF-8, not the locale's encoding. The starter templates contain an em dash, so on any
+    # machine whose preferred encoding is not UTF-8 this raised UnicodeEncodeError and
+    # `pyyol init` — the very first command a developer runs — died. Verified failing under
+    # LC_ALL=C with coercion off, and under a latin-1 locale, on Linux as well as Windows.
+    with open(path, "w", encoding="utf-8") as f:
         f.write(code)
 
     # A manifest scaffold, because ranked REQUIRES one and there was no way to get a
@@ -1687,7 +1822,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # they never intended to run. Add a real URL only when you want always-on play.
     manifest.pop("endpoint", None)
     manifest_path = os.path.join(d, "manifest.json")
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
 
@@ -2975,6 +3110,19 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--bid", type=int, default=0, help="explicit coin stake for a tier-less game")
     pq.add_argument("--token", default="")
     pq.set_defaults(func=cmd_queue)
+
+    # Rooms. Two subcommands under one noun rather than `room-create`/`room-join`, so the
+    # pair reads as one feature in `pyyol --help` instead of two unrelated verbs.
+    prm = sub.add_parser("room", help="create or join a private staked table shared by its id")
+    prm.add_argument("action", choices=["create", "join"])
+    prm.add_argument("id", nargs="?", default="", help="the room id, when joining")
+    _add_api(prm)
+    prm.add_argument(
+        "--tier", default="", help="stake tier key (see `pyyol queue goofspiel --list`)"
+    )
+    prm.add_argument("--bid", type=int, default=0, help="explicit coin stake")
+    prm.add_argument("--token", default="")
+    prm.set_defaults(func=cmd_room)
 
     pwal = sub.add_parser("wallet", help="show your coin balance + per-agent playing wallets")
     _add_api(pwal)

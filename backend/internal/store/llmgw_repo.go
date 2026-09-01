@@ -19,6 +19,22 @@ type LLMGatewayRepo struct{ db *pgxpool.Pool }
 
 func NewLLMGatewayRepo(db *pgxpool.Pool) *LLMGatewayRepo { return &LLMGatewayRepo{db: db} }
 
+// AgentKind returns an agent's kind for the Lens span. Implements llmgw.KindReader.
+//
+// An unknown agent answers "" with no error. The gateway caches whatever it gets, and a
+// missing row is a real (if rare) state — the same deleted-mid-match case RecordCall
+// already tolerates — so turning it into an error would produce a logged failure per call
+// for an agent that is simply gone. The caller reads "" as unknown, never as `external`.
+func (r *LLMGatewayRepo) AgentKind(ctx context.Context, agentPublicID string) (string, error) {
+	var kind string
+	err := r.db.QueryRow(ctx,
+		`SELECT kind FROM agents WHERE public_id = $1`, agentPublicID).Scan(&kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return kind, err
+}
+
 // RecordCall stores one observed call.
 //
 // Unbound calls are stored too. The bound/total ratio is the COVERAGE a verified board has
@@ -41,15 +57,19 @@ func (r *LLMGatewayRepo) RecordCall(ctx context.Context, c llmgw.Call) error {
 		round = &rd
 	}
 	_, err := r.db.Exec(ctx,
+		// upstream_host is the provenance column (0092): who actually ANSWERED, as opposed to
+		// provider/model which are what the developer asked for. The harness benchmark and the
+		// model board attribute only calls with a known external host, so recording it here is
+		// what keeps a lab stand-in's perfectly well-formed response off a public ranking.
 		`INSERT INTO agent_model_calls (
 		     agent_id, match_id, round, bound, provider, model,
 		     prompt_tokens, completion_tokens, cached_read_tokens, cached_write_tokens,
-		     reasoning_tokens, latency_ms, status, streamed)
-		 SELECT a.id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+		     reasoning_tokens, latency_ms, status, streamed, upstream_host)
+		 SELECT a.id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		   FROM agents a WHERE a.public_id = $1`,
 		c.AgentPublicID, matchID, round, c.Bound, c.Provider, c.Model,
 		c.PromptTokens, c.CompletionTokens, c.CachedReadTokens, c.CachedWriteTokens,
-		c.ReasoningTokens, c.LatencyMS, c.Status, c.Streamed)
+		c.ReasoningTokens, c.LatencyMS, c.Status, c.Streamed, c.UpstreamHost)
 	return err
 }
 

@@ -100,6 +100,23 @@ type Event struct {
 	PricingVersion string `json:"pricing_version,omitempty"`
 	MeterSource    string `json:"meter_source,omitempty"`
 
+	// AgentKind is WHOSE traffic this span is: `external` (a developer's agent) or
+	// `harness` (the platform's own benchmark). It is the same discriminator the model
+	// boards use, carried onto the span so Lens can separate the two.
+	//
+	// It exists because the platform harness plays REAL matches through the REAL gateway.
+	// That is deliberate — a benchmark on a private code path would measure the private
+	// code path — but it means a benchmark run's spans land in the same traces a developer
+	// debugging their own agent is looking at. Without a discriminator, an operator cannot
+	// trace a benchmark run without reading user telemetry, and a developer's cost view
+	// silently includes calls that were never theirs.
+	//
+	// EMPTY MEANS UNKNOWN, NOT EXTERNAL. Spans written before this field existed carry ''
+	// and form their own bucket, exactly as meter_source's rows did in ClickHouse migration
+	// 006. Treating unknown as developer traffic would be the one reading that quietly puts
+	// harness calls back into the user's numbers.
+	AgentKind string `json:"agent_kind,omitempty"`
+
 	ErrorType    string         `json:"error_type,omitempty"`
 	ErrorMessage string         `json:"error_message,omitempty"`
 	PayloadJSON  map[string]any `json:"payload_json,omitempty"`

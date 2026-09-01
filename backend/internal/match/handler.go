@@ -36,6 +36,15 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(agent).Post("/v1/lobby/create", h.create)
 		r.With(agent).Post("/v1/lobby/join", h.join)
 		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
+		// Rooms: a private table you share by id, for two developers who want to play
+		// each other rather than whoever the queue supplies.
+		//
+		// Separate routes rather than a flag on /v1/lobby/create, because the lobby
+		// routes are live and something else may depend on their exact shape. Joining
+		// and cancelling deliberately REUSE the lobby handlers: a room is an ordinary
+		// waiting match, and a second join path would be a second place for the escrow
+		// and same-owner checks to drift.
+		r.With(agent).Post("/v1/room/create", h.createRoom)
 		r.With(agent).Get("/v1/match/{id}/state", h.state)
 		r.With(agent).Post("/v1/match/{id}/action", h.action)
 		// Table talk. Separate from /action on purpose: speaking is not a move, is
@@ -107,6 +116,41 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id})
+}
+
+// createRoom opens a private table and returns the code to share.
+//
+// The response names the field room_id as well as match_id. They are the same value:
+// a room IS a match, and inventing a second identifier would mean two ids for one thing
+// and a mapping to keep correct. The alias exists because the person reading it is about
+// to paste it into a chat window, and "room" is what they will call it.
+func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in struct {
+		Tier string `json:"tier"`
+		Bid  int64  `json:"bid"`
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	bid := in.Bid
+	if h.stakes != nil {
+		b, err := h.stakes.ResolveStake(r.Context(), "goofspiel", in.Tier, in.Bid)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		bid = b
+	}
+	id, err := h.svc.CreateRoom(r.Context(), p.AgentPublicID, p.UserPublicID, bid)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"room_id": id, "match_id": id, "game": "goofspiel", "bid": bid,
+	})
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
@@ -266,5 +310,70 @@ func (h *Handler) replay(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	h.writeReplay(w, r, doc)
+}
+
+// writeReplay applies the cache policy and writes the document.
+//
+// Split from the route handler so the policy can be tested directly. It is a decision
+// about disclosure as much as cost, and a test that had to stand up a match service to
+// reach it would not have been written for every status.
+func (h *Handler) writeReplay(w http.ResponseWriter, r *http.Request, doc ReplayDoc) {
+	// Caching turns on the match's STATUS, and the split is a correctness one rather
+	// than a tuning knob.
+	//
+	// A FINISHED match's replay is immutable by construction: the event log is closed
+	// and ReplayHash is a digest OF that log, published so anyone can verify it. So the
+	// hash is exactly the right validator — it changes if and only if the bytes do —
+	// and the body can be cached hard and revalidated for free.
+	//
+	// This is the whole read path for the published clips, and it is the heaviest
+	// public document the arena serves: a full event log per view. Uncached, every
+	// scrub, replay and shared link re-read and re-encoded it. Cached, a viewer
+	// watching one clip repeatedly costs one transfer.
+	//
+	// An UNFINISHED match must NOT be stored. Its log is REDACTED as it streams —
+	// hidden information (Mafia's night, sealed bids) is withheld while it is still
+	// secret — so the document is only correct for the moment it was produced. A
+	// shared cache holding one would serve a stale view of a live game, and could
+	// serve a mid-match snapshot after the information stopped being secret, which is
+	// the wrong answer in both directions. no-store, not no-cache: it must not be
+	// written down at all.
+	if doc.Status == StatusFinished && doc.ReplayHash != "" {
+		etag := `"` + doc.ReplayHash + `"`
+		w.Header().Set("ETag", etag)
+		// immutable so a client with the body does not revalidate at all;
+		// stale-while-revalidate so a shared cache never blocks a viewer on an origin
+		// round-trip once the body is a day old.
+		w.Header().Set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400, immutable")
+		if ifNoneMatch(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	httpx.JSON(w, http.StatusOK, doc)
+}
+
+// ifNoneMatch reports whether the client already holds this entity.
+//
+// Handles the header's real shape rather than the common case: a comma-separated LIST,
+// "*", and the weak "W/" prefix caches are allowed to add. Comparing the raw header to
+// the tag would fail to match a legitimate revalidation and re-send the whole event
+// log — a cache miss that looks like a cache.
+func ifNoneMatch(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == strings.TrimPrefix(etag, "W/") {
+			return true
+		}
+	}
+	return false
 }

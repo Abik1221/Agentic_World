@@ -23,6 +23,14 @@ name: release-please
 on:
   push:
     branches: [main]
+  # Manual re-run, because push is not always enough to recover.
+  #
+  # The two SDKs share .release-please-manifest.json, so merging one release PR puts the
+  # other into conflict. The fix is to close the conflicted PR and let release-please open a
+  # fresh one — but with a push-only trigger that means waiting for the next unrelated commit
+  # to main before a release that is ready can proceed. A release should not be gated on
+  # somebody happening to push something else.
+  workflow_dispatch:
 
 permissions:
   contents: read

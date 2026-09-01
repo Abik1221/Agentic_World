@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/agent-arena/pyyol-lens/backend/internal/config"
 	"github.com/agent-arena/pyyol-lens/backend/internal/schema"
+	"github.com/nats-io/nats.go"
 )
 
 type JetStream struct {

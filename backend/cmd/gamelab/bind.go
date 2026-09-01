@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agent-arena/arena/internal/movebind"
@@ -65,6 +66,16 @@ var (
 	// "modelA,modelB" seats them against each other, and the result is a paired comparison:
 	// same board, same rules, same harness, different model.
 	BindModels []string
+	// BindProviders is BindProvider split on commas: one upstream per SEAT, cycling.
+	//
+	// Exists because a cross-PROVIDER comparison is the interesting one and was impossible:
+	// a single provider meant every seat at the table routed to the same upstream, so
+	// "Groq vs OpenRouter" could only be run as two separate batches whose agents never met.
+	// Models that never play each other produce no comparison for the fit to use.
+	BindProviders []string
+	// BindKeys pairs with BindProviders: each upstream needs its OWN key, and sending
+	// Groq's key to OpenRouter authenticates as nobody.
+	BindKeys []string
 )
 
 // BindStream routes the decision as a STREAMED completion. Worth a separate run: streamed
@@ -101,6 +112,21 @@ var BindBatchRounds = 0
 // Deterministic on (match, round, seat) rather than random so a run is reproducible and two
 // seats do not fail in lockstep. Math/rand would make the measured distribution unrepeatable,
 // which for a number that decides whether real matches get voided is not good enough.
+// bindMaxTokens is the output budget for a bound decision.
+//
+// It was 256, which is generous for a tool call and FATAL for a reasoning model. Measured on
+// the real endpoints: claude-opus-4.8 and claude-sonnet-5 answer in 32 output tokens, but
+// deepseek-v4-pro spent 751 reasoning tokens and hit a 1024-token cap without ever emitting the
+// tool call — a turn that costs money, binds nothing, and is recorded as the model failing to
+// decide. At 4096 the same prompt completes in 2104 tokens (1669 of them reasoning) and returns
+// a valid card.
+//
+// A cap that silently converts "this model thinks before answering" into "this model cannot
+// play" would not be a neutral default in a benchmark — it would be a thumb on the scale
+// against exactly the models the benchmark exists to compare. Models that answer briefly are
+// billed for what they use, so the higher ceiling costs them nothing.
+const bindMaxTokens = 4096
+
 func bindLuck(matchID string, round, seat int) int {
 	h := 2166136261
 	for _, c := range []byte(matchID) {
@@ -197,6 +223,25 @@ type bindResult struct {
 // Cycles over BindModels by the agent's own index, so seat 0 and seat 1 differ even when the
 // list is shorter than the table. Falls back to the single BindModel when no list was given,
 // which keeps every existing invocation behaving exactly as before.
+// providerFor is the upstream THIS agent binds through, cycling by seat index exactly as
+// modelFor does, so seat 0 can be Groq while seat 1 is OpenRouter in the same match.
+func (a *labAgent) providerFor() string {
+	if len(BindProviders) == 0 {
+		return BindProvider
+	}
+	return BindProviders[a.Index%len(BindProviders)]
+}
+
+// keyFor is the credential for THIS agent's upstream. Indexed by the same seat position as
+// the provider so the two cannot drift apart — a key matched to the wrong upstream fails as
+// a 401 that reads like a broken gateway rather than a misconfigured run.
+func (a *labAgent) keyFor() string {
+	if len(BindKeys) == 0 {
+		return BindKey
+	}
+	return BindKeys[a.Index%len(BindKeys)]
+}
+
 func (a *labAgent) modelFor() string {
 	if len(BindModels) == 0 {
 		return BindModel
@@ -204,7 +249,7 @@ func (a *labAgent) modelFor() string {
 	return BindModels[a.Index%len(BindModels)]
 }
 
-func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string, legal []int, prize int) (bindResult, error) {
+func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, span []planStep, proof string, legal []int, prize int, view []byte) (bindResult, error) {
 	if BindGatewayBase == "" {
 		return bindResult{}, fmt.Errorf("gateway base URL not set")
 	}
@@ -223,7 +268,7 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// sends, so the run exercises the same bytes.
 	reqBody := map[string]any{
 		"model":      "claude-opus-4",
-		"max_tokens": 256,
+		"max_tokens": bindMaxTokens,
 		"stream":     BindStream,
 		"tools": []map[string]any{{
 			"name":         movebind.ToolGoofspiel,
@@ -232,17 +277,19 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 		}},
 		"tool_choice": map[string]any{"type": "tool", "name": movebind.ToolGoofspiel},
 		"messages": []map[string]any{{
-			"role":    "user",
-			"content": fmt.Sprintf("Round %d. Choose a card and report it with the tool.", round),
+			"role": "user",
+			"content": viewPrompt(view, fmt.Sprintf(
+				"You are playing Goofspiel in the Pyyol arena. Round %d. Your legal cards are %v "+
+					"and this round's prize is worth %d.", round, legal, prize)),
 		}},
 	}
 	// OPENAI WIRE for anything that is not Anthropic. Groq, and every other OpenAI-compatible
 	// provider, nests the tool under `function` and names the forcing field differently — send
 	// the Anthropic shape and it is a 400, not a silent mis-parse.
-	if BindProvider != "" && BindProvider != "anthropic" {
+	if a.providerFor() != "" && a.providerFor() != "anthropic" {
 		reqBody = map[string]any{
 			"model":      a.modelFor(),
-			"max_tokens": 256,
+			"max_tokens": bindMaxTokens,
 			"stream":     BindStream,
 			"tools": []map[string]any{{
 				"type": "function",
@@ -258,10 +305,10 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 			},
 			"messages": []map[string]any{{
 				"role": "user",
-				"content": fmt.Sprintf(
-					"Goofspiel round %d. Your legal cards are %v. The prize is worth %d. "+
-						"Call play_card with exactly one card from that list.",
-					round, legal, prize),
+				"content": viewPrompt(view, fmt.Sprintf(
+					"You are playing Goofspiel in the Pyyol arena. Round %d. Your legal cards are %v "+
+						"and this round's prize is worth %d. Call play_card with exactly one card "+
+						"from that list.", round, legal, prize)),
 			}},
 		}
 	}
@@ -273,8 +320,8 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	// The gateway routes /v1/gw/{provider}/*, so the path after the provider is the
 	// provider's OWN path — Anthropic's /v1/messages, OpenAI-wire /v1/chat/completions.
 	route := "/v1/gw/anthropic/v1/messages"
-	if BindProvider != "" && BindProvider != "anthropic" {
-		route = "/v1/gw/" + BindProvider + "/v1/chat/completions"
+	if a.providerFor() != "" && a.providerFor() != "anthropic" {
+		route = "/v1/gw/" + a.providerFor() + "/v1/chat/completions"
 	}
 	req, err := http.NewRequest(http.MethodPost, BindGatewayBase+route, bytes.NewReader(raw))
 	if err != nil {
@@ -283,10 +330,10 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 	req.Header.Set("Content-Type", "application/json")
 	// The developer's own provider credential, passed through untouched. A placeholder here
 	// because the upstream is a stand-in; the gateway must not care either way.
-	if BindKey != "" {
+	if a.keyFor() != "" {
 		// The developer's OWN credential, passed through. This is the whole trust model: they
 		// cannot claim a model they are not billed for.
-		req.Header.Set("Authorization", "Bearer "+BindKey)
+		req.Header.Set("Authorization", "Bearer "+a.keyFor())
 	} else {
 		req.Header.Set("x-api-key", "lab-provider-key")
 		req.Header.Set("anthropic-version", "2023-06-01")
@@ -306,18 +353,17 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 		req.Header.Set("X-Lab-Plan", spanHeader(span))
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	// 30s was too short to measure a reasoning model fairly. deepseek-v4-pro averages ~13s and
+	// reaches ~24s on this prompt because it emits ~1.7k reasoning tokens before the tool call;
+	// under a 30s ceiling its slowest turns timed out and were recorded as "not playing", which
+	// in a published comparison reads as the model failing rather than as our client giving up.
+	// A benchmark must not encode its own impatience as a property of the model.
+	body, status, err := postWithTransportRetry(req, raw)
 	if err != nil {
 		return bindResult{}, err
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return bindResult{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return bindResult{}, fmt.Errorf("gateway returned %d: %s", resp.StatusCode,
+	if status < 200 || status > 299 {
+		return bindResult{}, fmt.Errorf("gateway returned %d: %s", status,
 			truncate(string(body), 300))
 	}
 
@@ -364,6 +410,93 @@ func (a *labAgent) decideThroughGateway(matchID string, round, wantCard int, spa
 			len(covered), round, covered)
 	}
 	return out, nil
+}
+
+// # Provider transport failures, and the one retry this benchmark is allowed to make
+//
+// Observed on x-ai/grok-4.6 through OpenRouter: on long non-streaming reasoning turns the
+// upstream declares a Content-Length and then closes the body early — 451 bytes delivered
+// against a declared 2987. The gateway forwards that truncation faithfully, so the client sees
+// an unexpected EOF, nothing binds, and the seat does not play. The arena then plays a FALLBACK
+// move for it.
+//
+// That last step is what makes this a correctness problem rather than an annoyance. A fallback
+// is the platform's move, not the model's, and it lands in the transcript beside real decisions.
+// Left alone it does not merely add noise — it systematically penalises whichever model happens
+// to have the flakier transport, which is not the quantity this benchmark claims to measure.
+//
+// So the call is retried. The boundary matters more than the retry:
+//
+//   - RETRIED: the request never completed — a dial error, a reset, or a body that ended before
+//     its declared length. No model output was obtained, so asking again cannot select anything.
+//   - NOT RETRIED: any completed response. A non-2xx, a completion with no tool call, a tool call
+//     naming a card we did not want — all stand. Re-rolling a completed response until it says
+//     something nicer would be sampling the model until it agrees with us, which is precisely the
+//     way a benchmark lies. That is a different act from re-establishing a connection, and the
+//     two must never be collapsed into one "retry on error".
+//
+// Every retry is counted and reported at the end of a run, because provider transport reliability
+// is itself a finding a reader deserves — it belongs in the published table, not hidden by the
+// mechanism that worked around it.
+var (
+	transportMu      sync.Mutex
+	transportRetried int
+	transportGaveUp  int
+	transportCalls   int
+)
+
+const transportAttempts = 3
+
+// TransportStats reports call, retry and give-up counts for the run.
+func TransportStats() (calls, retried, gaveUp int) {
+	transportMu.Lock()
+	defer transportMu.Unlock()
+	return transportCalls, transportRetried, transportGaveUp
+}
+
+// postWithTransportRetry sends req, re-sending it only when no response was obtained at all.
+//
+// rawBody is needed because a *http.Request body is consumed by the first attempt; re-sending
+// requires a fresh reader rather than the drained one.
+func postWithTransportRetry(req *http.Request, rawBody []byte) ([]byte, int, error) {
+	client := &http.Client{Timeout: 180 * time.Second}
+	transportMu.Lock()
+	transportCalls++
+	transportMu.Unlock()
+
+	var lastErr error
+	for attempt := 1; attempt <= transportAttempts; attempt++ {
+		if attempt > 1 {
+			// A fresh body and a fresh context-free clone: the previous attempt drained one and
+			// may have marked the request as used.
+			r2 := req.Clone(req.Context())
+			r2.Body = io.NopCloser(bytes.NewReader(rawBody))
+			r2.ContentLength = int64(len(rawBody))
+			req = r2
+			time.Sleep(time.Duration(attempt-1) * 2 * time.Second)
+			transportMu.Lock()
+			transportRetried++
+			transportMu.Unlock()
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if rerr != nil {
+			// A body that ended before its declared length. The status line arrived, so this is
+			// not a refusal — it is a response we never fully received.
+			lastErr = fmt.Errorf("upstream body ended early after %d bytes: %w", len(body), rerr)
+			continue
+		}
+		return body, resp.StatusCode, nil
+	}
+	transportMu.Lock()
+	transportGaveUp++
+	transportMu.Unlock()
+	return nil, 0, fmt.Errorf("no response after %d attempts: %w", transportAttempts, lastErr)
 }
 
 func truncate(s string, n int) string {

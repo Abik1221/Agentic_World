@@ -35,6 +35,14 @@ import (
 const labEndpointSecret = "lab-endpoint-secret" // #nosec G101 -- local lab harness only
 
 func main() {
+	// Provider transport reliability is a result, not plumbing. Reported unconditionally at exit
+	// so a run that quietly leaned on retries cannot be read as one that did not need them.
+	defer func() {
+		if calls, retried, gaveUp := TransportStats(); calls > 0 && (retried > 0 || gaveUp > 0) {
+			fmt.Printf("TRANSPORT  %d model calls  ·  %d retried after an incomplete response  ·  %d abandoned\n",
+				calls, retried, gaveUp)
+		}
+	}()
 	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
 	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
 	tier := flag.String("tier", "", "stake tier for a REAL staked table: low|mid|high (empty = free practice)")
@@ -49,6 +57,23 @@ func main() {
 	// platform reaches an agent it shares no network with, and that nothing on the turn path
 	// quietly assumes a docker hostname or a local port.
 	publicURL := flag.String("public-url", "", "external base URL for seat 0 (e.g. a tunnel); empty = all agents local")
+	// Seating agents this process does NOT host.
+	//
+	// -public-url already did this for seat 0, for the tunnel case. The benchmark needs it
+	// for EVERY seat: the model harness (harness/bench) is a Python process per model, and
+	// the whole point of the run is that those processes decide the moves. gamelab keeps the
+	// parts that are hard and already correct — admin onboarding as kind='harness', manifest
+	// verification, wallet funding, the group queue, batching — and stops pretending to be
+	// the brain.
+	//
+	// A seat with a URL here is not served locally; the external process is expected to be
+	// already listening, and onboarding's own verification probe is what proves it. That
+	// probe is why an unreachable URL fails loudly at registration rather than as a forfeit
+	// on the first turn.
+	agentURLs := flag.String("agent-urls", "",
+		"comma-separated base URLs, one per seat, for agents hosted OUTSIDE this process "+
+			"(e.g. \"http://bench-opus5:9101,http://bench-gpt56:9102\"). An empty entry means "+
+			"host that seat locally as usual. Overrides -public-url for the seats it names.")
 	churn := flag.Int("churn", 0, "run the queue-churn test for N ticks: a mixed population of autoplay, one-shot, underfunded and late-joining agents")
 	// Completion binding. Off by default: adding a proxy hop to an ordinary run would change
 	// the shot-clock and forfeit behaviour the lab exists to measure.
@@ -63,7 +88,10 @@ func main() {
 	matches := flag.Int("matches", 0, "play this many matches one after another in THIS process, then exit (0 = play one and keep serving). Batching in one process avoids re-onboarding and the port races that killing the process between runs causes")
 	perMatch := flag.Duration("per-match-timeout", 8*time.Minute, "with -matches, give up waiting on a single match after this long and move to the next")
 	bindBatch := flag.Int("bind-batch", 0, "with -bind, one model call covers this many rounds (the agent plans ahead); produces fewer bindings than rounds, legitimately")
+	// The PLATFORM's own benchmark, rather than a simulated developer. Changes exactly one
+	// step of onboarding (see harness.go) and nothing about how the agents then play.
 	flag.Parse()
+
 
 	LatencyScale, LatencyCapMS = *latencyScale, *latencyCap
 	GoDarkAfterRound, GoDarkSeat = *goDark, *goDarkSeat
@@ -76,6 +104,22 @@ func main() {
 	BindThroughGateway, BindStream, SubstituteAtRound = *bindGw, *bindStream, *substituteAt
 	BindFailPct, BindBatchRounds = *bindFailPct, *bindBatch
 	BindProvider, BindKey, BindModel = *bindProvider, os.Getenv("PYYOL_PROVIDER_KEY"), *bindModel
+	// Per-seat upstreams, so one match can pit one provider's model against another's.
+	// Keys are read from the environment and never from a flag: a flag lands in the process
+	// table and in shell history, and these are live provider credentials.
+	if strings.Contains(*bindProvider, ",") {
+		BindProviders = strings.Split(*bindProvider, ",")
+		for i, p := range BindProviders {
+			BindProviders[i] = strings.TrimSpace(p)
+			// PYYOL_PROVIDER_KEY_<UPPER> per upstream, falling back to the shared key so a
+			// single-provider run is unchanged.
+			k := os.Getenv("PYYOL_PROVIDER_KEY_" + strings.ToUpper(BindProviders[i]))
+			if k == "" {
+				k = BindKey
+			}
+			BindKeys = append(BindKeys, k)
+		}
+	}
 	// A comma-separated -bind-model seats a DIFFERENT model per agent, which is what turns a
 	// run into a paired comparison instead of one model playing itself.
 	if strings.Contains(*bindModel, ",") {
@@ -107,6 +151,13 @@ func main() {
 	}
 	lg.Printf("platform healthy")
 
+	// Harness mode is resolved BEFORE any account is created, and a failure here is fatal.
+	//
+	// The bug this guards against is silent: without it, onboarding falls back to the public
+	// signup, the agents come out kind='external', and the run lands on the public developer
+	// leaderboard while /harness stays empty. Nothing in the log says so, and the matches are
+	// real, so the only way to notice is to read the board afterwards and wonder.
+
 	label := *runLabel
 	if label == "" {
 		label = fmt.Sprintf("%d", time.Now().Unix()%100000)
@@ -118,6 +169,11 @@ func main() {
 		// four behaviours can actually interfere with each other.
 		n = 5
 	}
+	// One entry per seat, empty where the seat is hosted locally. Split once rather than
+	// per iteration so a trailing comma or a short list is a defined shape (missing seats
+	// simply fall through to local hosting) instead of an index panic mid-onboarding.
+	externalURLs := splitSeatURLs(*agentURLs, n)
+
 	agents := make([]*labAgent, 0, n)
 	for i := 0; i < n; i++ {
 		p := personas[i%len(personas)]
@@ -127,6 +183,11 @@ func main() {
 			Port:    *basePort + i,
 			Host:    agentHost,
 			PublicURL: func() string {
+				// -agent-urls wins where it names a seat: it is the more specific flag, and
+				// a run that set both almost certainly meant the per-seat one.
+				if externalURLs[i] != "" {
+					return externalURLs[i]
+				}
 				if i == 0 {
 					return *publicURL
 				}
@@ -135,10 +196,20 @@ func main() {
 			api: a,
 			log: log.New(os.Stdout, fmt.Sprintf("[%-14s] ", p.Name), log.Ltime),
 		}
-		if err := ag.serve(); err != nil {
-			lg.Fatalf("FATAL: agent %s could not listen on :%d: %v", p.Name, ag.Port, err)
+		// Only bind a port for a seat WE host. Serving a local endpoint for an externally
+		// hosted seat would bind a port nobody calls, and — worse — would answer /health and
+		// /handshake, so a misconfigured URL would pass verification against the wrong
+		// process and the run would silently measure gamelab's built-in strategy instead of
+		// the model. Not serving makes that failure loud.
+		if externalURLs[i] == "" {
+			if err := ag.serve(); err != nil {
+				lg.Fatalf("FATAL: agent %s could not listen on :%d: %v", p.Name, ag.Port, err)
+			}
+			lg.Printf("agent endpoint up: %s → %s", p.Name, ag.endpointURL())
+		} else {
+			lg.Printf("agent endpoint EXTERNAL: %s → %s (this process will not serve it)",
+				p.Name, ag.endpointURL())
 		}
-		lg.Printf("agent endpoint up: %s → %s", p.Name, ag.endpointURL())
 		agents = append(agents, ag)
 	}
 
@@ -228,11 +299,26 @@ func main() {
 	startOne := func() error {
 		if *tier != "" {
 			if err := runStakedTable(a, lg, agents, *game, *tier); err != nil {
+				// A HARNESS RUN MUST NOT FALL BACK. Free push-play seats HOUSE BOTS around
+				// the agent, and a house bot produces no benchmark row — so the match yields
+				// ONE attributed seat instead of two, and a paired comparison needs two in
+				// the same match. The fallback therefore turns a benchmark table into a
+				// non-event that still looks like a completed match afterwards.
+				//
+				// Measured, not feared: a 4-match batch produced 8 matches each seating one
+				// harness agent against ag_house_challenger, 43 attributable model calls, and
+				// ZERO comparisons. The board kept showing older data and nothing said why.
+				//
+				// Same rule createHarnessAccount already applies to signup: a harness run that
+				// cannot do the right thing stops, rather than quietly doing a different thing
+				// that reads as success.
+
 				lg.Printf("WARN: staked table could not start (%v) — falling back to free push-play", err)
 				startFreePushPlay(a, lg, agents, *game)
 			}
 			return nil
 		}
+
 		startFreePushPlay(a, lg, agents, *game)
 		return nil
 	}
@@ -274,12 +360,18 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	// Underscores are permitted, so the persona name stays readable in the UI without
 	// collapsing to a lowercase slug.
 	name := strings.ReplaceAll(ag.Persona.Name, " ", "_")
-	if err := a.mustDo("signup", http.MethodPost, "/v1/auth/signup", "", map[string]any{
+	account := map[string]any{
 		"email":       ag.Email,
 		"password":    "lab-passphrase-strong-2026",
 		"agent_name":  acctName,
 		"description": fmt.Sprintf("Deterministic lab agent (%s style), simulating %s latency.", ag.Persona.Style, ag.Persona.Model),
-	}, &signup, http.StatusCreated, http.StatusOK); err != nil {
+	}
+	// THE ONLY STEP -harness CHANGES. A harness seat is created through the admin route so
+	// it is kind='harness' from its first row; everything below this point — manifest,
+	// endpoint verification, agent key, funding, lobby/queue, completion binding — is the
+	// identical developer flow, which is what makes the two boards measure the same object.
+	if err := a.mustDo("signup", http.MethodPost, "/v1/auth/signup", "", account,
+		&signup, http.StatusCreated, http.StatusOK); err != nil {
 		return err
 	}
 	ag.AgentID, ag.DashToken = signup.AgentID, signup.DashboardToken
@@ -332,6 +424,7 @@ func (ag *labAgent) onboard(label string, idx int) error {
 	}
 	return nil
 }
+
 
 func seatsFor(game string) int {
 	switch strings.ToLower(game) {
@@ -491,4 +584,28 @@ func waitPublicReachable(playURL string, timeout time.Duration) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("no 200 from %s within %s (last: %v)", healthURL, timeout, last)
+}
+
+// splitSeatURLs turns the -agent-urls list into exactly n entries, one per seat.
+//
+// Short lists pad with "" (host that seat locally) and long ones are truncated, because the
+// alternative — indexing a caller-supplied slice by seat — turns a trailing comma into a
+// panic partway through onboarding, after accounts have been created and funded. A run that
+// seats one fewer external agent than intended is recoverable; a half-onboarded run leaves
+// wallets and agents behind.
+//
+// Entries are trimmed and their trailing slash removed so "http://h:9101/" and "http://h:9101"
+// are the same seat, which matters because endpointURL appends "/play".
+func splitSeatURLs(raw string, n int) []string {
+	out := make([]string, n)
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	for i, part := range strings.Split(raw, ",") {
+		if i >= n {
+			break
+		}
+		out[i] = strings.TrimRight(strings.TrimSpace(part), "/")
+	}
+	return out
 }

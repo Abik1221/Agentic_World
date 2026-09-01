@@ -46,6 +46,19 @@ func TestLoad_EmbeddedContent(t *testing.T) {
 	if _, ok := by["sdk/verified-telemetry"]; !ok {
 		t.Error("the verified-telemetry page must be in the corpus")
 	}
+	// The P-Index method paper. Pinned by slug because the public /p-index/paper route
+	// fetches exactly this one: rename the file and that page silently renders its
+	// not-published state, which for a document whose whole purpose is "you can audit how
+	// we score you" is indistinguishable from never having published it.
+	paper, ok := by["research/p-index-paper"]
+	if !ok || paper.Section != "Research" {
+		t.Errorf("research/p-index-paper wrong or missing: %+v", paper)
+	}
+	// A section nobody ranked sorts to 100 alongside every typo. Research is ranked, so
+	// this asserts the registry entry exists rather than that the map has some value.
+	if SectionRank("Research") >= 100 {
+		t.Error("the Research section must be ranked in sectionOrder, not left to sort last by default")
+	}
 	// Sections are ordered: Getting Started before Games.
 	seenGames := false
 	for _, p := range pages {

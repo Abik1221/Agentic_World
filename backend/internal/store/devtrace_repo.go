@@ -36,7 +36,7 @@ func (r *DevTraceRepo) OwnedAgentIDs(ctx context.Context, userPublicID string) (
 	rows, err := r.db.Query(ctx,
 		`SELECT a.public_id FROM agents a
 		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		   AND a.kind <> 'house'
+		   AND a.kind = 'external'
 		 ORDER BY a.created_at`, userPublicID)
 	if err != nil {
 		return nil, err

@@ -44,7 +44,9 @@ def maybe_ping(api_base: str, version: str) -> None:
         # Mark BEFORE firing so we attempt at most once per version (no retry storm if
         # the endpoint is down); adoption analytics tolerate the rare missed first run.
         os.makedirs(config_dir(), exist_ok=True)
-        with open(marker, "w"):
+        # No content, so the encoding is academic — named anyway so the "every text open()
+        # declares its encoding" rule has no exceptions to argue about.
+        with open(marker, "w", encoding="utf-8"):
             pass
     except OSError:
         return

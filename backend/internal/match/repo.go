@@ -25,7 +25,15 @@ type Repo interface {
 	// Activate transitions waiting→active in one transaction: re-checks the match
 	// is still waiting, inserts the seat-B player, writes the initial snapshot +
 	// deadline, and appends the Init events. Returns ErrNotWaiting if it was taken.
-	Activate(ctx context.Context, matchPublicID string, joiner Player, state gs.State, deadline time.Time, events []gs.Event) error
+	// Activate seats the joiner and flips a waiting table to active.
+	//
+	// startsAt is the ABSOLUTE instant the match begins — the same start countdown mafia's
+	// startMatch and monopoly's startTable already persist. Goofspiel was the only game that
+	// did not: it went from lobby to running in one instant, so `starts_at` was NULL on every
+	// goofspiel row and no surface had an instant to count to. Passing it explicitly (rather
+	// than letting the store default it) keeps the deadline and the countdown derived from ONE
+	// clock reading, so the first move window cannot open before play does.
+	Activate(ctx context.Context, matchPublicID string, joiner Player, state gs.State, startsAt, deadline time.Time, events []gs.Event) error
 
 	// CreatePairedActive creates an ACTIVE match seating both agents at once (the
 	// matchmaking path) in one transaction — the match row, both players, the
@@ -108,6 +116,17 @@ type CreateMatchInput struct {
 	FairnessMode  string
 	Seed          []byte
 	Creator       Player // seat 0
+
+	// Private hides the waiting match from the open lobby, making it reachable only
+	// by somebody holding its public id.
+	//
+	// A room is otherwise an ordinary open match: same stake path, same join checks,
+	// same ErrSameOwner refusal. The only difference is that ListWaiting skips it, so
+	// the seat cannot be taken by a stranger browsing the lobby between the moment the
+	// code is shared and the moment the invited player uses it.
+	//
+	// Defaults to false, so every existing caller keeps producing public lobby entries.
+	Private bool
 }
 
 // CreatePairedInput is the data needed to open an already-active, two-seat match
@@ -145,9 +164,20 @@ type CreatePairedInput struct {
 	Seed          []byte
 	SeatA         Player // seat 0
 	SeatB         Player // seat 1
-	State         gs.State
-	Deadline      time.Time
-	Events        []gs.Event
+	// Unrated writes matches.rated = false AT INSERT, not by a follow-up UPDATE. A match
+	// that is briefly rated is a match a concurrent board refresh can read as rated, and
+	// the platform benchmark's whole separation rests on this flag plus the agent kind.
+	Unrated bool
+	State   gs.State
+	// StartsAt is the ABSOLUTE instant play begins — the start countdown, persisted so every
+	// surface counts to one moment rather than each running its own timer. Harness tables were
+	// the last path without it: mafia, monopoly and the goofspiel lobby all set one, and 6 of 6
+	// finished benchmark tables had starts_at NULL, so no surface could render a countdown for
+	// the platform's own runs. Zero is written as NULL, which is what a caller predating the
+	// countdown means.
+	StartsAt time.Time
+	Deadline time.Time
+	Events   []gs.Event
 }
 
 // LobbyItem is a summary of an open match.

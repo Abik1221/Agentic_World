@@ -127,12 +127,12 @@ func (s *Store) InsertRawEvents(ctx context.Context, ingestionID string, events 
 		step_name,provider,model,model_version,tool_name,tool_version,root_input_ref,root_output_ref,payload_ref,
 		payload_json,prompt_version_ids_json,model_config_versions_json,latency_ms,input_bytes,output_bytes,prompt_tokens,
 		completion_tokens,cached_tokens,reasoning_tokens,total_tokens,estimated_cost,reconciled_cost,currency,pricing_version,
-		meter_source,error_type,error_code,error_message,sampling_reason,redaction_summary_json,
+		meter_source,agent_kind,error_type,error_code,error_message,sampling_reason,redaction_summary_json,
 		task_kind,archetype,scope,subagent_id,parent_subagent_id,artifact_ids_in_json,artifact_ids_out_json,
 		evidence_ids_out_json,citation_ids_out_json,reducer_name,reduction_ratio,tool_token_savings,
 		budget_iterations_used,budget_iterations_cap,budget_tokens_used,budget_tokens_cap
 	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-		?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -148,7 +148,7 @@ func (s *Store) InsertRawEvents(ctx context.Context, ingestionID string, events 
 			e.RootInputRef, e.RootOutputRef, e.PayloadRef, schema.JSONString(e.PayloadJSON), schema.JSONString(e.PromptVersionIDs),
 			schema.JSONString(e.ModelConfigVersions), e.LatencyMS, e.InputBytes, e.OutputBytes, e.PromptTokens, e.CompletionTokens,
 			e.CachedTokens, e.ReasoningTokens, e.TotalTokens, e.EstimatedCost, e.ReconciledCost, e.Currency, e.PricingVersion,
-			e.MeterSource, e.ErrorType, e.ErrorCode, e.ErrorMessage, e.SamplingReason, schema.JSONString(e.RedactionSummary),
+			e.MeterSource, e.AgentKind, e.ErrorType, e.ErrorCode, e.ErrorMessage, e.SamplingReason, schema.JSONString(e.RedactionSummary),
 			e.TaskKind, e.Archetype, e.Scope, e.SubagentID, e.ParentSubagentID,
 			schema.StringSliceJSON(e.ArtifactIDsIn), schema.StringSliceJSON(e.ArtifactIDsOut), schema.StringSliceJSON(e.EvidenceIDsOut), schema.StringSliceJSON(e.CitationIDsOut),
 			e.ReducerName, e.ReductionRatio, e.ToolTokenSavings,

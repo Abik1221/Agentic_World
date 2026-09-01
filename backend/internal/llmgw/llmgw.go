@@ -51,6 +51,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,6 +129,17 @@ type Emitter interface {
 	Enabled() bool
 }
 
+// KindReader resolves an agent's kind — `external` for a developer's agent, `harness` for
+// one of the platform's own benchmark seats.
+//
+// Read-only and OPTIONAL. Without it, spans carry no kind and Lens shows the traffic
+// undifferentiated, which is the behaviour before this existed. It must never be able to
+// fail a call: this feeds observability, and refusing a developer's model call because a
+// telemetry label could not be looked up would be a strictly worse platform.
+type KindReader interface {
+	AgentKind(ctx context.Context, agentPublicID string) (string, error)
+}
+
 // Verifier checks a turn proof and mints the completion-binding receipt. Satisfied by
 // *turnproof.Signer.
 //
@@ -173,6 +185,15 @@ type Call struct {
 	LatencyMS int64
 	Status    int
 	Streamed  bool
+	// UpstreamHost is the host the gateway actually dialled, resolved from the configured
+	// upstream map rather than from anything the agent sent.
+	//
+	// It is what separates a measurement from a recording. `Provider` and `Model` say what
+	// the developer ASKED for and is billed for; this says who answered. In a lab the two
+	// routinely disagree — anthropic pointed at a local stand-in returns a perfectly
+	// well-formed, bindable response under the model name that was requested — and without
+	// this field nothing downstream can tell that call apart from a real one.
+	UpstreamHost string
 	// CostUSD is what this call cost, priced from the NORMALIZED token counts by the versioned
 	// table. Computed once here and carried, so the recorder and the Lens span cannot report
 	// two different costs for one call — and so pricing runs once rather than per consumer.
@@ -234,7 +255,53 @@ func DefaultUpstreams() map[string]string {
 		"groq":      "https://api.groq.com",
 		"mistral":   "https://api.mistral.ai",
 		"deepseek":  "https://api.deepseek.com",
+		// Already used in practice via an override. Shipping it as a default means its
+		// host is publishable without an operator having to declare it by hand.
+		"openrouter": "https://openrouter.ai/api",
 	}
+}
+
+// PublishableUpstreamHosts returns the hosts whose responses may be published as MODEL
+// measurements — on the harness benchmark, the model board, anywhere a model is ranked.
+//
+// The problem it solves is specific. provider/model are read from the request, and the
+// upstream map decides where that request actually goes. Point anthropic at a local
+// stand-in and the gateway records a bound, well-formed `anthropic / claude-opus-4` call
+// that never left the machine. Every lab run does exactly this, and afterwards nothing on
+// the row distinguishes it from a real call.
+//
+// The default set is the vendor endpoints this binary ships, which gives the two behaviours
+// that matter without anyone configuring anything:
+//
+//   - a production deployment on the defaults publishes everything, as before;
+//   - a lab pointing a provider at a stand-in publishes nothing from it, because the
+//     stand-in's host is not in the set.
+//
+// A deployment with a legitimate override — an enterprise egress proxy, a self-hosted vLLM
+// whose results it genuinely wants ranked — declares that host explicitly. Requiring the
+// declaration is the point: publishing a model ranking is a claim about a model, and the
+// operator should have to say which hosts they stand behind.
+func PublishableUpstreamHosts(extra string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, base := range DefaultUpstreams() {
+		if h := upstreamHost(base); h != "" {
+			out[h] = struct{}{}
+		}
+	}
+	for _, raw := range strings.Split(extra, ",") {
+		// Accept a bare host or a full URL, because an operator copying from
+		// LLM_GATEWAY_UPSTREAMS will paste whichever they have to hand.
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if h := upstreamHost(v); h != "" {
+			out[h] = struct{}{}
+			continue
+		}
+		out[v] = struct{}{}
+	}
+	return out
 }
 
 // UpstreamsFromEnv parses a "slug=url,slug=url" override list onto the defaults.
@@ -246,6 +313,22 @@ func DefaultUpstreams() map[string]string {
 //
 // Still an allowlist afterwards — this widens what an OPERATOR permits, never what an agent
 // can request. An agent naming its own upstream would be an SSRF pivot and an open relay.
+// upstreamHost reduces a configured upstream base URL to its host, for recording on each
+// call. Ports are kept: a stand-in and a real provider can share a hostname and differ
+// only by port, and collapsing them would erase exactly the distinction being recorded.
+//
+// An unparseable base returns "" — UNKNOWN, never a guess. Everything downstream treats
+// an empty host as "provenance not established" and refuses to publish it as a model
+// measurement, so a malformed config costs us a row on the board rather than putting an
+// unverifiable one on it.
+func upstreamHost(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
+}
+
 func UpstreamsFromEnv(raw string) map[string]string {
 	out := DefaultUpstreams()
 	for _, pair := range strings.Split(raw, ",") {
@@ -280,6 +363,45 @@ type Gateway struct {
 	// awarded dedups the badge in-process. The award itself is idempotent, so this is a
 	// courtesy to the database rather than a correctness requirement.
 	awarded sync.Map
+	// kinds resolves an agent's kind for the Lens span. Nil leaves spans unlabelled.
+	kinds KindReader
+	// kindCache memoises agentPublicID → kind for the life of the process.
+	//
+	// Safe to cache without expiry, and that is a property of the schema rather than an
+	// assumption: an agent's kind is written at INSERT and there is no update path for it
+	// anywhere in the codebase, deliberately, because relabelling an agent would not move
+	// the matches it already played. A value that cannot change cannot go stale.
+	kindCache sync.Map
+}
+
+// SetKindReader wires agent-kind labelling of Lens spans. Optional; nil leaves spans
+// unlabelled rather than guessing a kind.
+func (g *Gateway) SetKindReader(k KindReader) { g.kinds = k }
+
+// agentKind resolves the kind for a span, memoised, and answers "" for anything it cannot
+// determine.
+//
+// Empty is deliberately NOT defaulted to `external`. An unknown-kind span is an honest gap;
+// a span mislabelled `external` puts platform benchmark traffic back into a developer's
+// telemetry, which is the exact confusion this label exists to remove.
+func (g *Gateway) agentKind(ctx context.Context, agentPublicID string) string {
+	if g.kinds == nil || agentPublicID == "" {
+		return ""
+	}
+	if v, ok := g.kindCache.Load(agentPublicID); ok {
+		return v.(string)
+	}
+	kind, err := g.kinds.AgentKind(ctx, agentPublicID)
+	if err != nil {
+		// Not cached: a transient read error must not pin this agent to "unknown" for the
+		// rest of the process's life. Not logged at anything above debug either — this is a
+		// label on a trace, and a noisy warning per call would be worse than the gap.
+		g.log.Debug("llmgw: could not resolve agent kind for the Lens span",
+			"agent", agentPublicID, "error", err)
+		return ""
+	}
+	g.kindCache.Store(agentPublicID, kind)
+	return kind
 }
 
 // SetCoverageReader wires verified-coverage reporting. Nil leaves it unavailable.
@@ -361,6 +483,12 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 		AgentPublicID: agentPublicID,
 		MatchID:       r.Header.Get(HeaderMatch),
 		Provider:      providerSlug,
+		// WHERE this call actually went, captured here because this is the only moment the
+		// fact exists. Provider and Model are read from the request — what the developer
+		// asked for — and `base` is what LLM_GATEWAY_UPSTREAMS resolved that to. Point a
+		// provider at a local stand-in and the two disagree completely, with nothing on the
+		// row to say so afterwards.
+		UpstreamHost: upstreamHost(base),
 	}
 	call.Round, _ = strconv.Atoi(r.Header.Get(HeaderTurn))
 	call.Model, call.Streamed = peekRequest(body)
@@ -404,6 +532,9 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 			w.Header().Add(k, v)
 		}
 	}
+	// The upstream wait is over and the first byte is about to go out; the deadline the router
+	// armed at request arrival may already have passed.
+	armWrite(w)
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream through, TEEING both shapes into a bounded buffer.
@@ -451,8 +582,35 @@ func (g *Gateway) Proxy(w http.ResponseWriter, r *http.Request, agentPublicID, p
 	// never get this wrong.
 	call.CostUSD = pricing.EstimateCostFor(call.Provider, call.Model, call.PromptTokens,
 		call.CompletionTokens, call.CachedReadTokens, call.CachedWriteTokens, call.ReasoningTokens)
+
+	// AND SAY SO WHEN THE RATE WAS A GUESS.
+	//
+	// A model with no entry in the price table is charged a plausible mid-range rate rather
+	// than zero — deliberately, because zero is a way to win a cost-efficiency board. But an
+	// estimate that nothing announces is only better than zero by degree: it still ends up
+	// printed as "$0.004 per win" beside figures derived from real published rates, and
+	// nothing on the row says which is which.
+	//
+	// Once per model, not per call: a benchmark makes thousands of calls per model and a line
+	// each would bury exactly the signal this is for. WARN rather than Info because the window
+	// to act is before the results are published, and the operator is reading this log during
+	// the run — see pricing.UnpricedModels for the full list at any point.
+	if pricing.PriceBasis(call.Model) == "estimated" && pricing.NoteUnpricedModel(call.Model) {
+		g.log.Warn("llmgw: no price table entry for this model — its cost is an ESTIMATE and "+
+			"any cost-efficiency ranking including it is an estimate too",
+			"provider", call.Provider, "model", call.Model,
+			"fix", "add the model's published rates to internal/pricing before publishing a benchmark")
+	}
+
 	if copyErr != nil {
-		g.log.Debug("llmgw: response copy ended early", "agent", agentPublicID, "error", copyErr)
+		// WARN, not Debug. A body that ends early is indistinguishable from a short answer to
+		// everything downstream: nothing binds, usage reads as unknown, and the seat is recorded
+		// as not having played. Debug level meant the one event that explains all three was the
+		// one event nobody could see — the same failure mode UsageUnreadable exists to prevent.
+		g.log.Warn("llmgw: the upstream response body ended early — this call binds nothing and "+
+			"is costed at zero, and the agent will be recorded as not having played",
+			"agent", agentPublicID, "provider", call.Provider, "model", call.Model,
+			"captured_bytes", captured.buf.Len(), "error", copyErr)
 	}
 	g.record(call)
 }
@@ -629,6 +787,34 @@ func applyUsageShape(c *Call, s usageShape) {
 // — with many concurrent calls the product of the two is what matters, not one response.
 const maxCapturedBytes = 4 << 20 // 4 MiB
 
+// # Why the proxy re-arms the connection's write deadline
+//
+// The router gives every ordinary request a FIXED write deadline, set once when the request
+// arrives, because the server itself runs WriteTimeout=0 so that SSE can work. For a normal
+// handler that is right. For this one it is a bug, and a subtle one: a proxied model call spends
+// almost all of its life waiting on the upstream, and only then starts writing. A reasoning model
+// that thinks for 30 seconds therefore reaches its first write with the deadline ALREADY expired,
+// the write fails instantly after a few hundred bytes, and the client receives a truncated body.
+//
+// The damage was not a clean error. Downstream it surfaced as three unrelated-looking faults —
+// nothing bound, usage unreadable so the call costed zero, and the agent recorded as not having
+// played, which the arena covers with a fallback move. The effect scaled with how long a model
+// thinks, so it fell hardest on exactly the reasoning models a benchmark most wants to measure,
+// and it looked like those models were failing to answer.
+//
+// The long-lived paths already solved this with a ROLLING deadline re-armed before each write,
+// and that is the correct shape here too: it bounds any single stalled write, so a black-hole
+// client still cannot wedge a goroutine, while placing no ceiling at all on how long the upstream
+// may think. A larger fixed deadline would have been the wrong fix — it only moves the cliff.
+const proxyWriteGrace = 60 * time.Second
+
+// armWrite (re)arms the rolling per-write deadline. Best-effort by design: a ResponseWriter that
+// cannot expose a deadline is left unbounded rather than failing the call, matching rule 1 — the
+// gateway must never be the reason a match fails.
+func armWrite(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(proxyWriteGrace))
+}
+
 // capBuffer accumulates up to limit bytes and then stops, remembering that it did.
 //
 // The truncated flag is the point. A silently short buffer would be parsed as if complete:
@@ -793,6 +979,9 @@ func copyFlushing(dst io.Writer, src io.Reader, w http.ResponseWriter) (int64, e
 	for {
 		n, rerr := src.Read(buf)
 		if n > 0 {
+			// Rolling: each write gets the full grace, so a slow-but-progressing stream is
+			// never reaped while a stalled one still is.
+			armWrite(w)
 			written, werr := dst.Write(buf[:n])
 			total += int64(written)
 			if canFlush {
@@ -834,6 +1023,14 @@ func (g *Gateway) emit(c Call) {
 	if g.em == nil || !g.em.Enabled() {
 		return
 	}
+	// Detached and short, for the same reason record() detaches: by the time emit runs the
+	// client's context is already finished, so inheriting it would cancel the lookup on
+	// every single call. Bounded tightly because this sits on the response path — a slow
+	// database must cost the span its label, not the request its latency.
+	kindCtx, cancelKind := context.WithTimeout(context.Background(), 2*time.Second)
+	agentKind := g.agentKind(kindCtx, c.AgentPublicID)
+	cancelKind()
+
 	status := "ok"
 	if c.Status < 200 || c.Status > 299 {
 		status = "error"
@@ -863,8 +1060,12 @@ func (g *Gateway) emit(c Call) {
 		PricingVersion:   pricing.Version,
 		Currency:         telemetry.CurrencyUSD,
 		MeterSource:      telemetry.MeterSourceGateway,
-		LatencyMS:        int64(c.LatencyMS),
-		Priority:         telemetry.PriorityHigh,
+		// Whose traffic this is. The platform's harness plays real matches through this same
+		// gateway, so without this an operator tracing a benchmark run is reading developer
+		// telemetry and a developer's cost view contains calls that were never theirs.
+		AgentKind: agentKind,
+		LatencyMS: int64(c.LatencyMS),
+		Priority:  telemetry.PriorityHigh,
 		PayloadJSON: map[string]any{
 			"turn": c.Round,
 			// Whether this call is provably the one made for that turn. The ranked integrity

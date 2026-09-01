@@ -14,9 +14,11 @@ type stubSeats struct {
 	calls int
 }
 
-func (s *stubSeats) Seats(context.Context, string, time.Time, time.Time) ([]Seat, error) {
+func (s *stubSeats) Seats(context.Context, string, time.Time, time.Time, []string) ([]Seat, map[string]int, error) {
 	s.calls++
-	return s.seats, s.err
+	// nil exclusions: this stub filters nothing, which is what a source that does no
+	// pre-filtering returns.
+	return s.seats, nil, s.err
 }
 
 func twoModelSeats(n int) []Seat {

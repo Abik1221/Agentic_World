@@ -22,12 +22,12 @@ var (
 )
 
 type state struct {
-	Status  string `json:"status"`
-	Round   int    `json:"round"`
-	YourTurn bool  `json:"your_turn"`
-	Prize   int    `json:"current_prize"`
-	Pool    int    `json:"prize_pool"`
-	You     struct {
+	Status   string `json:"status"`
+	Round    int    `json:"round"`
+	YourTurn bool   `json:"your_turn"`
+	Prize    int    `json:"current_prize"`
+	Pool     int    `json:"prize_pool"`
+	You      struct {
 		Hand []int `json:"hand"`
 	} `json:"you"`
 	Result map[string]any `json:"result"`

@@ -332,7 +332,7 @@ func (h Handler) TraceEvents(c *fiber.Ctx) error {
 			coalesce(r.prompt_tokens, toInt64(0)),coalesce(r.completion_tokens, toInt64(0)),coalesce(r.cached_tokens, toInt64(0)),coalesce(r.reasoning_tokens, toInt64(0)),
 			if(r.total_tokens > 0, r.total_tokens, s.total_tokens),
 			if(r.estimated_cost > 0, r.estimated_cost, s.total_cost),toFloat64(0) as reconciled_cost,
-			coalesce(r.currency, '') as currency,coalesce(r.pricing_version, '') as pricing_version,coalesce(r.meter_source, '') as meter_source,e.error_type,'' as error_code,e.error_message,'' as sampling_reason,'' as redaction_summary_json,e.event_time
+			coalesce(r.currency, '') as currency,coalesce(r.pricing_version, '') as pricing_version,coalesce(r.meter_source, '') as meter_source,coalesce(r.agent_kind, '') as agent_kind,e.error_type,'' as error_code,e.error_message,'' as sampling_reason,'' as redaction_summary_json,e.event_time
 		FROM events e
 		LEFT JOIN traces t ON e.trace_id = t.trace_id
 		LEFT JOIN spans s ON e.trace_id = s.trace_id AND e.span_id = s.span_id
@@ -361,7 +361,11 @@ func (h Handler) TraceEvents(c *fiber.Ctx) error {
 				argMax(operation, ingested_at) AS operation,
 				argMax(currency, ingested_at) AS currency,
 				argMax(pricing_version, ingested_at) AS pricing_version,
-				argMax(meter_source, ingested_at) AS meter_source
+				argMax(meter_source, ingested_at) AS meter_source,
+				-- Whose traffic this span is (external / harness). Without it the Trace
+				-- Inspector cannot separate a platform benchmark run from a developer's own
+				-- calls, which share this ingest by design. '' means unknown (pre-007).
+				argMax(agent_kind, ingested_at) AS agent_kind
 			FROM events_raw
 			WHERE trace_id = ?
 			GROUP BY event_id, trace_id
@@ -385,7 +389,7 @@ func (h Handler) TraceEvents(c *fiber.Ctx) error {
 			&item.Component, &item.Operation, &item.SpanType, &item.StepName, &item.Provider, &item.Model, &item.ModelVersion, &item.ToolName,
 			&item.ToolVersion, &item.RootInputRef, &item.RootOutputRef, &item.PayloadRef, &payload, &promptVersions, &modelVersions, &item.LatencyMS,
 			&item.InputBytes, &item.OutputBytes, &item.PromptTokens, &item.CompletionTokens, &item.CachedTokens, &item.ReasoningTokens, &item.TotalTokens,
-			&item.EstimatedCost, &item.ReconciledCost, &item.Currency, &item.PricingVersion, &item.MeterSource, &item.ErrorType, &item.ErrorCode,
+			&item.EstimatedCost, &item.ReconciledCost, &item.Currency, &item.PricingVersion, &item.MeterSource, &item.AgentKind, &item.ErrorType, &item.ErrorCode,
 			&item.ErrorMessage, &item.SamplingReason, &redaction, &item.IngestedAt,
 		); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": err.Error()})

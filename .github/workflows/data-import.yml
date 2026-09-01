@@ -49,7 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
-        with: { go-version: "1.25.x", cache: true, cache-dependency-path: backend/go.sum }
+        with: { go-version: "1.25.13", cache: true, cache-dependency-path: backend/go.sum }
 
       - name: Bundle exists
         run: |

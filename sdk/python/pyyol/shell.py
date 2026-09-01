@@ -23,6 +23,7 @@ hang it in exactly the environments nobody is watching.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import sys
@@ -102,7 +103,7 @@ def _wordmark(color: bool) -> str:
 # once. The groups are an ORDER, not a LIST — anything they do not claim still appears under
 # "More", so a command added to the parser can never go missing because nobody updated this.
 _GROUPS: list[tuple[str, list[str]]] = [
-    ("Play", ["play", "dev", "games", "watch", "queue"]),
+    ("Play", ["play", "dev", "games", "watch", "queue", "room"]),
     ("Ship", ["init", "publish", "serve", "autoplay"]),
     ("Inspect", ["status", "doctor", "usage", "replay", "logs"]),
     ("Standing", ["leaderboard", "profile", "wallet", "arenas"]),
@@ -134,6 +135,8 @@ class _LiveStrip:
         self.text = "  " + s("LIVE", _DIM) + "  " + s("checking…", _DIM)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Set while a command owns the terminal. See `quiet` and `_redraw`.
+        self._muted = threading.Event()
 
     # -- rendering -------------------------------------------------------------
     def _render(self, games: list[dict[str, Any]]) -> str:
@@ -210,9 +213,33 @@ class _LiveStrip:
             if self.text != before:
                 self._redraw()
 
+    @contextlib.contextmanager
+    def quiet(self):
+        """Stop repainting while a command owns the terminal.
+
+        `_redraw` steps up one line and ERASES it, on the assumption that the line above
+        the cursor is the strip. That holds at an idle prompt and is false the moment a
+        command prints anything: `pyyol play` streams a decision and event feed from the
+        match thread while this thread fires every five seconds, so the line being erased
+        was whatever the match had just printed.
+
+        The symptom is worse than a cosmetic one. A match log with `turn 93` followed by
+        `turn 95` reads as a DROPPED TURN — a forfeit — and sent us looking for a
+        reconnect bug in the arena that does not exist. The turn was played and logged;
+        the ticker wiped the line.
+
+        `_typing()` cannot catch this. It inspects the readline input buffer, which says
+        nothing about another thread writing to the same stream.
+        """
+        self._muted.set()
+        try:
+            yield
+        finally:
+            self._muted.clear()
+
     def _redraw(self) -> None:
         """Repaint the strip in place, and only while nothing is half-typed."""
-        if self._typing():
+        if self._typing() or self._muted.is_set():
             return
         # Save cursor, step up onto the strip, clear it, rewrite, come back. The prompt and
         # anything typed on it are untouched.
@@ -613,7 +640,8 @@ def _loop(
                 _print_help(s, cmds, out)
                 continue
             out.write(s("  /" + chosen, _BRAND) + "\n")
-            _dispatch(parser, [chosen], s, out)
+            with strip.quiet():
+                _dispatch(parser, [chosen], s, out)
             continue
         head = bare.split()[0].lower()
 
@@ -637,7 +665,10 @@ def _loop(
             )
             continue
 
-        _dispatch(parser, argv, s, out)
+        # Muted for the duration: a command owns the terminal while it runs, and the
+        # ticker erasing the line above the cursor would eat its output. See _LiveStrip.quiet.
+        with strip.quiet():
+            _dispatch(parser, argv, s, out)
 
 
 def _dispatch(parser: Any, argv: list[str], s: _Style, out: TextIO) -> None:

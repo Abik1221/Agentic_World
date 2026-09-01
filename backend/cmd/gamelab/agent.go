@@ -125,6 +125,44 @@ var GoDarkAfterRound = 0
 // GoDarkSeat selects which seat goes dark. -1 means every seat.
 var GoDarkSeat = -1
 
+// scaffold returns this agent's HARNESS fingerprint: a stable id for "the system prompt,
+// tools and sampling settings this agent decides with", with the MODEL deliberately excluded.
+//
+// It is the single thing that makes a benchmark a paired comparison rather than a
+// confounded one. The board fits models by holding the scaffold constant and swapping the
+// model; a seat with no fingerprint cannot be paired with anything and is dropped before the
+// fit ever sees it.
+//
+// gamelab did not send one, and the consequence was invisible until measured: of 20 real
+// model-backed seats in the lab, 18 carried no fingerprint, so a board built from real
+// OpenRouter and Groq calls fitted 0 models from 0 comparisons. The calls were real, the
+// matches were real, and none of it could be ranked.
+//
+// Excludes the model on purpose. With the model in the hash every model would get its own
+// scaffold id, nothing would ever pair, and the fingerprint would silently defeat the
+// comparison it exists to enable.
+func (a *labAgent) scaffold() string {
+	// Persona style and latency profile ARE the harness here: they are what differs between
+	// these agents once the model is taken out. Hashed rather than sent raw so the id has the
+	// same shape as an SDK-produced one.
+	return fmt.Sprintf("lab-%016x", hashSeed("scaffold-v1", a.Persona.Style,
+		a.Persona.ThinkMedianMS, a.Persona.ThinkSpreadMS))
+}
+
+// usage is the per-decision report this agent attaches to a move: the persona's token
+// figures PLUS the harness fingerprint.
+//
+// The fingerprint goes inside `usage` because that is where the server reads it from
+// (internal/store/actdecisions.go reads u.Scaffold off the parsed usage object). A first
+// attempt put it at the top level of the move payload, which serialised fine, was accepted
+// fine, and was silently dropped — 43,667 decisions later the scaffold column was still
+// empty. A field the wire format does not read is indistinguishable from one never sent.
+func (a *labAgent) usage(viewBytes int, think time.Duration) map[string]any {
+	u := a.Persona.tokens(viewBytes, think)
+	u["scaffold"] = a.scaffold()
+	return u
+}
+
 // tokens fabricates a plausible usage report: prompt grows with how much history the
 // view carried, completion tracks how long the agent "thought".
 func (p persona) tokens(viewBytes int, think time.Duration) map[string]any {

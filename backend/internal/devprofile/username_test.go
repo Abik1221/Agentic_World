@@ -2,6 +2,7 @@ package devprofile
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -134,5 +135,143 @@ func TestSuggestionNeverProducesAnInvalidName(t *testing.T) {
 		if reason := validateUsernameShape(got); reason != "" {
 			t.Fatalf("suggested %q which the validator rejects: %s", got, reason)
 		}
+	}
+}
+
+// ─────────────────────── the Bloom fast path ───────────────────────────────
+//
+// The availability check backs a live flag under a text input on a PUBLIC,
+// unauthenticated, unthrottled route. The point of the filter is that the common
+// answer — "that name is free" — costs no database round trip. These tests pin both
+// halves: the lookup is skipped when it can be, and still happens when correctness
+// needs it.
+
+// countingRepo records how many times the uniqueness lookup actually ran.
+type countingRepo struct {
+	taken map[string]bool
+	hits  int
+	Repo  // unused methods stay nil
+}
+
+func (r *countingRepo) ResolveHandle(_ context.Context, h string) (Identity, bool, error) {
+	r.hits++
+	if r.taken[strings.ToLower(h)] {
+		return Identity{}, true, nil
+	}
+	return Identity{}, false, nil
+}
+
+func (r *countingRepo) AllUsernames(context.Context) ([]string, error) {
+	out := make([]string, 0, len(r.taken))
+	for t := range r.taken {
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+func TestAvailableNameIsAnsweredWithoutTouchingTheDatabase(t *testing.T) {
+	repo := &countingRepo{taken: map[string]bool{"alice": true, "bob": true}}
+	s := &Service{repo: repo}
+	if err := s.RefreshUsernameFilter(context.Background()); err != nil {
+		t.Fatalf("RefreshUsernameFilter: %v", err)
+	}
+	repo.hits = 0
+
+	for i := 0; i < 20; i++ {
+		st, err := s.CheckUsername(context.Background(), fmt.Sprintf("free_name_%d", i))
+		if err != nil {
+			t.Fatalf("CheckUsername: %v", err)
+		}
+		if !st.Available {
+			t.Fatalf("free_name_%d reported unavailable: %q", i, st.Reason)
+		}
+	}
+	if repo.hits > 3 {
+		t.Fatalf("%d database lookups for 20 free names — the Bloom fast path is not "+
+			"engaging, so a public unthrottled endpoint still costs a query per keystroke",
+			repo.hits)
+	}
+}
+
+func TestTakenNameStillConsultsTheDatabase(t *testing.T) {
+	repo := &countingRepo{taken: map[string]bool{"alice": true}}
+	s := &Service{repo: repo}
+	if err := s.RefreshUsernameFilter(context.Background()); err != nil {
+		t.Fatalf("RefreshUsernameFilter: %v", err)
+	}
+	repo.hits = 0
+
+	st, err := s.CheckUsername(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("CheckUsername: %v", err)
+	}
+	if st.Available {
+		t.Fatal("a claimed username was reported available — the filter must never skip " +
+			"the lookup that settles a positive")
+	}
+	if repo.hits == 0 {
+		t.Fatal("no lookup ran for a name the filter flagged; a Bloom hit is only ever " +
+			"'probably present' and has to be confirmed")
+	}
+}
+
+// users.username is CITEXT, so the database matches case-insensitively. A filter built
+// lowercased must be probed lowercased, or "Alice" reads as free while the database
+// considers it taken.
+func TestFilterMatchesCitextCaseInsensitivity(t *testing.T) {
+	repo := &countingRepo{taken: map[string]bool{"alice": true}}
+	s := &Service{repo: repo}
+	if err := s.RefreshUsernameFilter(context.Background()); err != nil {
+		t.Fatalf("RefreshUsernameFilter: %v", err)
+	}
+	for _, probe := range []string{"Alice", "ALICE", "aLiCe"} {
+		st, err := s.CheckUsername(context.Background(), probe)
+		if err != nil {
+			t.Fatalf("CheckUsername(%q): %v", probe, err)
+		}
+		if st.Available {
+			t.Fatalf("%q reported available, but the database holds 'alice' in a citext "+
+				"column and would match it", probe)
+		}
+	}
+}
+
+func TestClaimingWritesThroughToTheFilter(t *testing.T) {
+	repo := &countingRepo{taken: map[string]bool{}}
+	s := &Service{repo: repo}
+	if err := s.RefreshUsernameFilter(context.Background()); err != nil {
+		t.Fatalf("RefreshUsernameFilter: %v", err)
+	}
+	if st, _ := s.CheckUsername(context.Background(), "newcomer"); !st.Available {
+		t.Fatal("name was not available before being claimed")
+	}
+	s.noteUsernameClaimed("newcomer")
+	repo.taken["newcomer"] = true
+
+	st, err := s.CheckUsername(context.Background(), "newcomer")
+	if err != nil {
+		t.Fatalf("CheckUsername: %v", err)
+	}
+	if st.Available {
+		t.Fatal("a just-claimed name was still offered — write-through is not working, so " +
+			"the field would stay green until the next rebuild")
+	}
+}
+
+// Cold start: before the first rebuild there is no filter, and the check must fall
+// through to the database rather than declare everything free.
+func TestNoFilterYetFallsThroughToTheDatabase(t *testing.T) {
+	repo := &countingRepo{taken: map[string]bool{"alice": true}}
+	s := &Service{repo: repo} // deliberately NOT refreshed
+	st, err := s.CheckUsername(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("CheckUsername: %v", err)
+	}
+	if st.Available {
+		t.Fatal("with no filter built, a taken name was reported available — a cold start " +
+			"must be safe, not optimistic")
+	}
+	if repo.hits == 0 {
+		t.Fatal("no lookup ran on a cold start")
 	}
 }

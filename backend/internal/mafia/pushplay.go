@@ -150,6 +150,13 @@ type MafiaPushView struct {
 	Votes      map[int]int `json:"votes,omitempty"`       // voter seat -> target seat
 	VoteTally  map[int]int `json:"vote_tally,omitempty"`  // target seat -> vote count
 	DeadlineMs int64       `json:"deadline_ms,omitempty"` // ms left on the shot clock
+	// StartsAt / ServerNow are the start countdown, carried here for the reason this struct's
+	// CannotProtect comment already states: a field added to the service's AgentView and not
+	// copied into this hand-built push view does not exist as far as a push-play agent is
+	// concerned. A hosted agent watching its own table deserves the same countdown a browser
+	// gets, and both count to the same absolute instant.
+	StartsAt  *time.Time `json:"starts_at,omitempty"`
+	ServerNow time.Time  `json:"server_now"`
 	// Round is the decision's turn number, and it exists so BOTH SIDES AGREE on it.
 	//
 	// The SDK derives what it reports as X-Pyyol-Turn from `round` first and `day` only as
@@ -480,6 +487,7 @@ func (p *pushPlayer) decideRemote(ctx context.Context, tr agentwire.Transport, m
 		Day: v.Day, Phase: v.Phase, Alive: v.Alive, Allies: v.Allies, Legal: v.Legal,
 		Public: windowed, Digest: digest, Private: v.Private,
 		Votes: v.Votes, VoteTally: v.VoteTally, DeadlineMs: v.DeadlineMs,
+		StartsAt: v.StartsAt, ServerNow: v.ServerNow,
 		// One proof per DECISION, not per day: several decisions happen inside one Mafia
 		// day, so the turn number folds the phase in (see turnproof.MafiaTurn). The SAME
 		// number is published as Round above, which is what the agent reports back.

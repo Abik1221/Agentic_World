@@ -114,9 +114,14 @@ type Match struct {
 	TargetPlayers int
 	State         mono.State
 	RoundDeadline *time.Time
-	Agents        []Player
-	WinnerSeat    int
-	ReplayHash    string
+	// StartsAt is the ABSOLUTE instant play begins, set when the table starts. Null before
+	// then, and on any match predating it. Absolute rather than a duration for the reason
+	// internal/readycheck gives: two surfaces counting down independently drift apart, and
+	// disagreeing about when a staked match begins is worse than showing no countdown.
+	StartsAt   *time.Time
+	Agents     []Player
+	WinnerSeat int
+	ReplayHash string
 }
 
 // agentIDs is every seated agent's public id, for a decision that concerns the whole table.
@@ -197,12 +202,18 @@ type AgentView struct {
 	//
 	// Usually one seat (Monopoly is turn-based), but an AUCTION is concurrent: every
 	// seat still in the bidding is deciding at once, so this must be a list.
-	Pending  []int           `json:"pending,omitempty"`
-	State    *mono.State     `json:"state"`
-	Deadline *time.Time      `json:"deadline,omitempty"`
-	EntryFee int64           `json:"entry_fee"`
-	Economy  EconomySnapshot `json:"economy"`
-	Result   *Result         `json:"result,omitempty"`
+	Pending  []int       `json:"pending,omitempty"`
+	State    *mono.State `json:"state"`
+	Deadline *time.Time  `json:"deadline,omitempty"`
+	// StartsAt is the ABSOLUTE instant play begins, present once the table has started.
+	// Clients count TO it; see internal/readycheck for why it is an instant, not a duration.
+	StartsAt *time.Time `json:"starts_at,omitempty"`
+	// ServerNow is the platform's clock when this view was built, shipped on EVERY view so a
+	// client can measure its own offset. StartsAt alone is unusable on a skewed device.
+	ServerNow time.Time       `json:"server_now"`
+	EntryFee  int64           `json:"entry_fee"`
+	Economy   EconomySnapshot `json:"economy"`
+	Result    *Result         `json:"result,omitempty"`
 }
 
 type Result struct {
@@ -222,9 +233,17 @@ type CreateMatchInput struct {
 	Seed          []byte
 	Commit        string
 	State         mono.State
-	Deadline      time.Time
-	Events        []mono.Event
-	Creator       Player
+	// StartsAt is the ABSOLUTE instant play begins — the start countdown, persisted so a
+	// terminal and a browser count to the SAME moment instead of each running its own timer.
+	//
+	// It belongs on the immediate-start path too, not just startTable's. Mafia sets it on
+	// every table it starts, practice included (490/490 in lab traffic); monopoly set it only
+	// in startTable, so every bots-vs-developer table — the path a developer actually meets
+	// first — activated with starts_at NULL and no surface had an instant to count to.
+	StartsAt time.Time
+	Deadline time.Time
+	Events   []mono.Event
+	Creator  Player
 }
 
 // Repo persists Monopoly matches on the shared matches/match_players/match_events
@@ -240,7 +259,7 @@ type Repo interface {
 	// JoinSeat seats a new agent at the given seat on a waiting table.
 	JoinSeat(ctx context.Context, matchPublicID string, p Player) error
 	// Start flips a waiting table to active with its initialized engine state.
-	Start(ctx context.Context, matchPublicID string, state mono.State, deadline time.Time, events []mono.Event) error
+	Start(ctx context.Context, matchPublicID string, state mono.State, startsAt, deadline time.Time, events []mono.Event) error
 	// CancelWaiting aborts a waiting table (creator-only; no-op if already started).
 	CancelWaiting(ctx context.Context, matchPublicID, creatorAgentPublicID string) error
 	// ExpireStaleWaiting aborts up to limit waiting tables created at/before cutoff

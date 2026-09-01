@@ -33,11 +33,22 @@ func (r *DevProfileRepo) ResolveHandle(ctx context.Context, handle string) (devp
 	err := r.db.QueryRow(ctx,
 		`SELECT u.public_id, COALESCE(u.username::text, ''), COALESCE(u.display_name, ''),
 		        COALESCE((SELECT a.bio FROM agents a
-		                   WHERE a.owner_user_id = u.id AND a.kind <> 'house'
+		                   WHERE a.owner_user_id = u.id AND a.kind = 'external'
 		                   ORDER BY a.id ASC LIMIT 1), ''),
 		        COALESCE(u.avatar_url, ''), COALESCE(u.country, ''), u.segment, u.created_at
 		 FROM users u
-		 WHERE u.public_id = $1 OR u.username = $1
+		 -- username is CITEXT and its UNIQUE index is too, so uniqueness is enforced
+		 -- case-INSENSITIVELY: with devA124656 taken, the database rejects DEVA124656.
+		 --
+		 -- The cast is what makes this lookup agree with that. A bound parameter arrives
+		 -- typed text, and citext-compared-to-text resolves to the case-SENSITIVE operator
+		 -- — so this query reported DEVA124656 as free, the field showed a green tick, and
+		 -- the save then failed with username_taken. Exactly the "two implementations of
+		 -- is-this-allowed" split the validator comment warns about, and an impersonation
+		 -- vector besides: @Alice reading as available next to @alice.
+		 --
+		 -- public_id stays uncast: it is plain text and its comparison must remain exact.
+		 WHERE u.public_id = $1 OR u.username = $1::citext
 		 ORDER BY (u.public_id = $1) DESC
 		 LIMIT 1`, handle).
 		Scan(&id.UserPublicID, &id.Username, &id.DisplayName, &id.Bio, &id.AvatarURL, &id.Country, &id.Segment, &id.DeveloperSince)
@@ -59,7 +70,7 @@ func (r *DevProfileRepo) LifetimeCoinsEarned(ctx context.Context, userPublicID s
 		`SELECT COALESCE(SUM(r.coins_earned),0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		   AND a.kind <> 'house'`,
+		   AND a.kind = 'external'`,
 		userPublicID).Scan(&coins)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
@@ -74,7 +85,7 @@ func (r *DevProfileRepo) Stats(ctx context.Context, userPublicID string, season 
 		        COALESCE(MAX(r.current_streak),0), COALESCE(MAX(r.best_streak),0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		   AND r.season = $2 AND a.kind <> 'house'`,
+		   AND r.season = $2 AND a.kind = 'external'`,
 		userPublicID, season).
 		Scan(&st.Wins, &st.Losses, &st.Draws, &st.CurrentWinStreak, &st.LongestWinStreak)
 	if err != nil {
@@ -87,7 +98,7 @@ func (r *DevProfileRepo) Stats(ctx context.Context, userPublicID string, season 
 		`SELECT r.game, MAX(r.elo), COALESCE(SUM(r.wins),0), COALESCE(SUM(r.losses),0), COALESCE(SUM(r.ties),0)
 		 FROM ratings r JOIN agents a ON a.id = r.agent_id
 		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		   AND r.season = $2 AND a.kind <> 'house'
+		   AND r.season = $2 AND a.kind = 'external'
 		 GROUP BY r.game
 		 ORDER BY MAX(r.elo) DESC`, userPublicID, season)
 	if err != nil {
@@ -126,7 +137,7 @@ func (r *DevProfileRepo) SandboxActivity(ctx context.Context, userPublicID strin
 		   JOIN match_players mp ON mp.match_id = m.id
 		   JOIN agents a         ON a.id = mp.agent_id
 		  WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-		    AND a.kind <> 'house'
+		    AND a.kind = 'external'
 		    AND m.mode = 'sandbox'
 		    AND m.status = 'finished'
 		  GROUP BY m.game`, userPublicID)
@@ -155,7 +166,7 @@ func (r *DevProfileRepo) Agents(ctx context.Context, userPublicID string, season
 		`SELECT a.public_id, a.name, a.slug, a.status, COALESCE(MAX(rt.elo), 1500)
 		 FROM agents a
 		 LEFT JOIN ratings rt ON rt.agent_id = a.id AND rt.season = $2
-		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind <> 'house'
+		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind = 'external'
 		 GROUP BY a.public_id, a.name, a.slug, a.status
 		 ORDER BY COALESCE(MAX(rt.elo), 1500) DESC`, userPublicID, season)
 	if err != nil {
@@ -180,7 +191,7 @@ func (r *DevProfileRepo) RecentMatches(ctx context.Context, userPublicID string,
 		 FROM match_rating_changes mrc
 		 JOIN agents  ag ON ag.id = mrc.agent_id
 		 JOIN matches m  ON m.id = mrc.match_id
-		 WHERE ag.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND ag.kind <> 'house'
+		 WHERE ag.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND ag.kind = 'external'
 		 ORDER BY mrc.created_at DESC
 		 LIMIT $2 OFFSET $3`, userPublicID, limit, offset)
 	if err != nil {
@@ -211,7 +222,7 @@ func (r *DevProfileRepo) TokenEfficiency(ctx context.Context, userPublicID strin
 		        COUNT(*) FILTER (WHERE b.result = 'win')::int
 		 FROM agent_match_benchmark b
 		 JOIN agents a ON a.id = b.agent_id
-		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind <> 'house'`,
+		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind = 'external'`,
 		userPublicID).Scan(&tokens, &wins)
 	if err != nil {
 		return 0, 0, err
@@ -234,7 +245,7 @@ func (r *DevProfileRepo) TopModels(ctx context.Context, userPublicID string, lim
 		 SELECT mdl.provider, mdl.model, COUNT(*)::int AS agents
 		 FROM mdl
 		 JOIN agents a ON a.public_id = mdl.agent_public_id
-		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind <> 'house'
+		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind = 'external'
 		 GROUP BY mdl.provider, mdl.model
 		 ORDER BY agents DESC, mdl.model
 		 LIMIT $2`, userPublicID, limit)
@@ -405,7 +416,7 @@ WITH pub AS (
     WHERE u.status = 'active'
       AND (u.username IS NOT NULL
            OR EXISTS (SELECT 1 FROM agents a
-                      WHERE a.owner_user_id = u.id AND a.kind <> 'house'))
+                      WHERE a.owner_user_id = u.id AND a.kind = 'external'))
 ), rec AS (
     SELECT a.owner_user_id AS uid,
            COUNT(DISTINCT a.id)::int                        AS agents,
@@ -413,7 +424,7 @@ WITH pub AS (
            COALESCE(SUM(rt.wins + rt.losses + rt.ties),0)::int AS matches
     FROM agents a
     LEFT JOIN ratings rt ON rt.agent_id = a.id AND rt.season = $1
-    WHERE a.kind <> 'house'
+    WHERE a.kind = 'external'
     GROUP BY a.owner_user_id
 )
 SELECT pub.public_id AS public_id, pub.username AS username, pub.display_name AS display_name,
@@ -433,7 +444,7 @@ SELECT pub.public_id AS public_id, pub.username AS username, pub.display_name AS
        -- nothing like what was typed, and the result reads as a bug.
        COALESCE((
            SELECT a.name FROM agents a
-           WHERE a.owner_user_id = pub.id AND a.kind <> 'house' AND $2 <> ''
+           WHERE a.owner_user_id = pub.id AND a.kind = 'external' AND $2 <> ''
              AND (a.name ILIKE '%' || $2 || '%' ESCAPE '\'
                   OR a.slug      ILIKE '%' || $2 || '%' ESCAPE '\'
                   OR a.public_id ILIKE '%' || $2 || '%' ESCAPE '\')
@@ -453,7 +464,7 @@ WHERE (
      -- an agent name, slug or id finds its owner.
      OR EXISTS (
           SELECT 1 FROM agents a
-          WHERE a.owner_user_id = pub.id AND a.kind <> 'house'
+          WHERE a.owner_user_id = pub.id AND a.kind = 'external'
             AND (a.name ILIKE '%' || $2 || '%' ESCAPE '\'
                  OR a.slug      ILIKE '%' || $2 || '%' ESCAPE '\'
                  OR a.public_id ILIKE '%' || $2 || '%' ESCAPE '\')
@@ -603,7 +614,7 @@ func (r *DevProfileRepo) SetProfile(ctx context.Context, userPublicID string, di
 			 WHERE id = (
 			   SELECT a.id FROM agents a
 			    WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1)
-			      AND a.kind <> 'house'
+			      AND a.kind = 'external'
 			    ORDER BY a.id ASC LIMIT 1
 			 )`, userPublicID, *bio); err != nil {
 			return err
@@ -753,7 +764,7 @@ SELECT u.public_id AS public_id,
               COALESCE(SUM(rt.wins + rt.losses + rt.ties),0)::int  AS matches
          FROM agents a
          LEFT JOIN ratings rt ON rt.agent_id = a.id AND rt.season = $1
-        WHERE a.kind <> 'house'
+        WHERE a.kind = 'external'
         GROUP BY a.owner_user_id
   ) rec ON rec.uid = u.id
  WHERE own.public_id = $2
@@ -856,7 +867,7 @@ SELECT u.public_id, COALESCE(u.username::text,''), COALESCE(u.display_name,''),
               COALESCE(SUM(rt.wins + rt.losses + rt.ties),0)::int  AS matches
          FROM agents a2
          LEFT JOIN ratings rt ON rt.agent_id = a2.id AND rt.season = $1
-        WHERE a2.kind <> 'house'
+        WHERE a2.kind = 'external'
         GROUP BY a2.owner_user_id
   ) rec ON rec.uid = u.id
  WHERE a.public_id = $2 AND u.status = 'active'
@@ -939,7 +950,7 @@ func (r *DevProfileRepo) TopModel(ctx context.Context, season int) (devprofile.S
 		             THEN SUM(b.legal)::float8 / SUM(b.decisions)::float8
 		             ELSE 0 END                                            AS legal_rate
 		   FROM agent_match_verified_cost vc
-		   JOIN agents a  ON a.id = vc.agent_id AND a.kind <> 'house'
+		   JOIN agents a  ON a.id = vc.agent_id AND a.kind = 'external'
 		   JOIN matches mt ON mt.public_id = vc.match_id AND mt.status = 'finished'
 		   JOIN match_rating_changes mrc ON mrc.match_id = mt.id
 		                                AND mrc.agent_id = vc.agent_id
@@ -968,4 +979,30 @@ func (r *DevProfileRepo) TopModel(ctx context.Context, season int) (devprofile.S
 	// Sourced from the verified rung by construction — the query reads no other.
 	m.Verified = true
 	return m, true, nil
+}
+
+// AllUsernames lists every claimed username, lowercased, for the availability filter.
+//
+// One sequential scan of a narrow column, run on a timer — deliberately traded against
+// the alternative it replaces: an indexed lookup on EVERY KEYSTROKE of an unauthenticated
+// public endpoint. The scan is bounded by the number of accounts and happens a handful of
+// times an hour; the lookups it removes are unbounded and driven by whoever is typing.
+func (r *DevProfileRepo) AllUsernames(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT lower(username::text) FROM users WHERE username IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		if u != "" {
+			out = append(out, u)
+		}
+	}
+	return out, rows.Err()
 }

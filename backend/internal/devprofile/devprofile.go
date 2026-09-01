@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
+	"github.com/agent-arena/arena/internal/bloom"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/pindex"
 )
@@ -69,6 +71,12 @@ type Service struct {
 	// follows tells a developer they have a new follower (row + live push).
 	// Optional and best-effort — see follownotify.go.
 	follows FollowAnnouncer
+	// usernames answers "is this handle free" from memory for the common case. Held as
+	// an atomic pointer so RefreshUsernameFilter can swap a freshly built filter in
+	// without readers taking a lock — the live availability check runs on every
+	// keystroke and must never contend. Nil until the first refresh, and CheckUsername
+	// falls through to the database while it is.
+	usernames atomic.Pointer[bloom.Filter]
 }
 
 // New builds the service.
@@ -479,6 +487,10 @@ func (s *Service) SetUsername(ctx context.Context, userPublicID, username string
 	if err := s.repo.SetUsername(ctx, userPublicID, username); err != nil {
 		return err
 	}
+	// Write-through, so the live availability check stops offering this name the instant
+	// it is claimed rather than at the next rebuild. Only ever SETS bits, which cannot
+	// introduce a false negative — the one error that would matter.
+	s.noteUsernameClaimed(username)
 	return nil
 }
 

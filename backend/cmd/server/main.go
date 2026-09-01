@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -91,6 +92,18 @@ import (
 
 // version is injected at build time via -ldflags "-X main.version=$(git rev-parse --short HEAD)".
 var version = "dev"
+
+// publishableHosts is the set of upstreams whose responses may be published as a model
+// measurement, as a sorted slice for the SQL ANY(...) parameter.
+func publishableHosts() []string {
+	set := llmgw.PublishableUpstreamHosts(os.Getenv("BENCHMARK_EXTRA_HOSTS"))
+	out := make([]string, 0, len(set))
+	for h := range set {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -312,8 +325,12 @@ func run() error {
 	verifyRL := middleware.RateLimit(limiter, 12, time.Minute, userKey("manifest-verify"))
 	keysRL := middleware.RateLimit(limiter, 10, time.Hour, userKey("agent-keys"))
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
-	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID)) // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
+	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID))                         // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
+	idHandler.SetGitHub(auth.NewGitHubVerifier(cfg.GitHubClientID, cfg.GitHubClientSecret)) // POST /v1/auth/github (disabled unless GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set)
 	idHandler.SetKeysRateLimit(keysRL)
+	// POST /v1/admin/agents — create an account with an explicit agent kind (the platform's
+	// harness seats). Additive to the Platform token, like every other admin surface.
+	idHandler.SetAdmins(cfg.AdminUserIDs)
 	// Per-ACCOUNT credential throttle, alongside the per-IP loginRL above. Per-IP is
 	// blind to a password list spread one-guess-per-host across a botnet, which never
 	// trips any single IP bucket; keying on the identity under attack bounds what one
@@ -639,9 +656,57 @@ func run() error {
 	// is built: history is the one thing that cannot be backfilled — a fit describes the matches
 	// that existed at a moment, and that moment does not come again.
 	modelBoardSvc.SetHistoryWriter(modelBoardRepo)
+	// WHICH upstreams may be attributed to a model. Defaults to the vendor endpoints this
+	// binary ships, so a production deployment behaves exactly as before; BENCHMARK_EXTRA_HOSTS
+	// declares a legitimate override (an enterprise egress proxy, a self-hosted vLLM whose
+	// results the operator genuinely wants ranked).
+	//
+	// What it stops: a lab that points anthropic at a local stand-in records bound,
+	// well-formed `anthropic / claude-opus-4` calls that never left the machine. Without this
+	// they are indistinguishable from real ones and would be ranked as a model.
+	modelBoardSvc.SetPublishableHosts(publishableHosts())
+	// Names this instance's history series. The platform harness benchmark runs the same fit
+	// over its own matches and writes the same shape of row; the discriminator is what keeps
+	// the two series independent instead of one silently overwriting the other.
+	modelBoardSvc.SetBoard("developer")
 	modelBoardHandler := modelboard.NewHandler(modelBoardSvc)
 	modelBoardHandler.SetHistoryReader(modelBoardRepo)
-	launch("modelboard", modelboard.NewWorker(modelBoardSvc, 10*time.Minute, log).Run)
+	modelBoardHandler.SetBoard("developer")
+
+	// The platform harness board is gone, and the developer board above is the survivor.
+	//
+	// It was always the stronger of the two. The developer board requires `m.rated`, which
+	// excludes any table a house bot had to fill; the harness board could not use that filter
+	// — its own matches are unrated by design — and approximated it structurally instead.
+	//
+	// Nothing about the measurement was lost with it. Both ran the same Build, the same
+	// Bradley-Terry estimator, the same bootstrap intervals and the same attribution rule.
+	// The harness board was that machinery pointed at platform-run agents, so removing it
+	// removes a data source, not a method.
+
+	// The two boards refresh on DIFFERENT intervals, sized to what each one costs.
+	//
+	// The harness board reads the platform's own benchmark seats — a few dozen in the
+	// window — and its refresh is scoped to them, so it costs ~113 MB and under a second.
+	// Ten minutes is comfortable.
+	//
+	// The developer board reads every developer seat in a 90-day window, which is ~320,000
+	// of them, and one refresh measured 16.7 MINUTES and ~20 GB of reads. On a ten-minute
+	// interval a tick was always already waiting, so it refreshed back to back forever:
+	// four refreshes accounted for 208 GB of reads, and the board was effectively a
+	// permanent table scan wearing a schedule.
+	//
+	// An hour is the honest interval for it. A leaderboard computed over ninety days does
+	// not change meaningfully in ten minutes, so the shorter period bought nothing a viewer
+	// could perceive and cost the disk continuously. This is a mitigation and not the cure —
+	// the query returns 600k rows to be aggregated in Go, and that is the thing to fix — so
+	// the worker now WARNS when a refresh outlasts its interval rather than letting the next
+	// regression hide the same way.
+	// Coverage rollup. Frequent ticks, small batches: the public benchmark endpoints read this
+	// instead of aggregating the decision history per request, which is what made them hang.
+	launch("coverage-rollup",
+		store.NewCoverageWorker(store.NewCoverageRepo(st.DB), time.Minute, 24*time.Hour, log).Run)
+	launch("modelboard", modelboard.NewWorker(modelBoardSvc, time.Hour, log).Run)
 	// Ledger integrity, on a schedule. The double-entry invariants were verified by hand and held
 	// (960 transactions, 2873 entries, 152 wallets, nothing unbalanced), but that is a statement
 	// about one afternoon. An imbalance is SILENT — per-wallet balances still add up, the UI still
@@ -715,6 +780,10 @@ func run() error {
 	// Profile completion is derived from account state, and one of its steps is "have
 	// you connected a wallet" — so the checklist needs to be able to read that.
 	devProfileSvc.SetWalletReader(devProfileRepo)
+	// Serve username availability from memory instead of a lookup per keystroke. The
+	// route is public, unauthenticated and unthrottled; see CheckUsername for why a
+	// Bloom filter is the safe shape for it and what the staleness costs.
+	go devProfileSvc.RunUsernameFilter(ctx, cfg.UsernameFilterRefresh, log)
 	devProfileHandler := devprofile.NewHandler(devProfileSvc, authn)
 
 	// User-uploaded media (avatars) on S3/MinIO. The prod stack has shipped the bucket
@@ -910,6 +979,13 @@ func run() error {
 		clock,
 		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MonopolyMoveWindow, LockTTL: 15 * time.Second},
 	)
+	// House-agent think time at PRACTICE tables only (see monopoly.ThinkTime).
+	// Staked play is never paced.
+	monopolySvc.WithThinkTime(monopoly.ThinkTime{
+		PerMove: time.Duration(cfg.PracticeThinkMs) * time.Millisecond,
+		Jitter:  time.Duration(cfg.PracticeThinkMs) * time.Millisecond / 2,
+		Budget:  time.Duration(cfg.PracticeThinkBudgetMs) * time.Millisecond,
+	})
 	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
 	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))
 	monopolySvc.SetLimits(walletSvc)
@@ -1368,6 +1444,10 @@ func run() error {
 	llmGatewayRepo := store.NewLLMGatewayRepo(st.DB)
 	llmGateway := llmgw.New(llmgw.Config{Upstreams: llmgw.UpstreamsFromEnv(os.Getenv("LLM_GATEWAY_UPSTREAMS"))}, llmGatewayRepo, turnproof.New(cfg.TurnProofSecret), log)
 	llmGateway.SetCoverageReader(llmGatewayRepo)
+	// Labels each Lens span with WHOSE traffic it is (external / harness). The platform's
+	// benchmark plays real matches through this same gateway, so without the label a
+	// benchmark run is indistinguishable from user telemetry in the trace views.
+	llmGateway.SetKindReader(llmGatewayRepo)
 	// A 429 must never cost a stake.
 	//
 	// The gateway already records every proxied call with its upstream status, match and round,
@@ -2489,7 +2569,11 @@ func (g goofspielRater) Elo(ctx context.Context, agentPublicID string) (int, err
 type raterAdapter struct{ r *rating.Service }
 
 func (a raterAdapter) Rate(ctx context.Context, rr match.RatingResult) error {
-	res := rating.MatchResult{MatchPublicID: rr.MatchPublicID, Game: rr.Game}
+	// Integrity travels with the result. Dropping it here would silently restore the bug
+	// this adapter sits in the middle of: money voided, rating applied anyway.
+	res := rating.MatchResult{
+		MatchPublicID: rr.MatchPublicID, Game: rr.Game, Integrity: rr.Integrity,
+	}
 	for _, p := range rr.Players {
 		placement := p.Placement
 		if placement == 0 {

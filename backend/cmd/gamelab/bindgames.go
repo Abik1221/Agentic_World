@@ -38,6 +38,32 @@ import (
 // Mafia deliberately includes `text` — the PUBLIC speech that rides with the action. That is
 // the one-call path: one model call yields the decision and what the table hears. Without it a
 // bound Mafia agent could act but never talk, which is most of the game.
+// viewPrompt is the prompt a BENCHMARKED seat sends: the seat's whole view, verbatim.
+//
+// The bound prompt used to be a one-line summary — "Goofspiel round 4, legal cards [...], the
+// prize is worth 9" — for all three games. That is enough to produce a legal move and useless
+// as a measurement: with no history, no scores and no opponent state in the prompt, every model
+// is guessing from the same three facts, so the run cannot distinguish a model that reasons
+// about the game from one that picks a plausible number. A benchmark built on it would report
+// differences that are noise, which is worse than reporting nothing.
+//
+// It also makes the questions this benchmark exists to answer unanswerable. "Does the model use
+// history?" and "does it plan over a long horizon?" are questions about what it does with
+// context it was given; a prompt that carries no context cannot ask them.
+//
+// Same wrapper as internal/labagent.PromptFor, deliberately: the certification harness and the
+// match harness must put the same bytes in front of a model or their numbers are not comparable.
+func viewPrompt(raw []byte, head string) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		// Fall back to the summary rather than failing the turn: an unparseable view is a bug
+		// worth surfacing, but forfeiting the round would corrupt the match on top of it.
+		return head
+	}
+	return head + "\n\nHere is your full view of the current turn:\n" + buf.String() +
+		"\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
+}
+
 func gameToolSchema(game string) map[string]any {
 	switch game {
 	case movebind.GameMafia:
@@ -119,7 +145,7 @@ func (a *labAgent) decideGameThroughGateway(game, matchID string, turn, seat int
 
 	reqBody := map[string]any{
 		"model":      "claude-opus-4",
-		"max_tokens": 400,
+		"max_tokens": bindMaxTokens,
 		"stream":     BindStream,
 		"tools": []map[string]any{{
 			"name": tool, "description": "Take one action for this turn.", "input_schema": schema,
@@ -133,7 +159,7 @@ func (a *labAgent) decideGameThroughGateway(game, matchID string, turn, seat int
 	if BindProvider != "" && BindProvider != "anthropic" {
 		reqBody = map[string]any{
 			"model":      a.modelFor(),
-			"max_tokens": 400,
+			"max_tokens": bindMaxTokens,
 			"stream":     BindStream,
 			"tools": []map[string]any{{
 				"type": "function",
@@ -172,7 +198,7 @@ func (a *labAgent) decideGameThroughGateway(game, matchID string, turn, seat int
 	req.Header.Set("X-Pyyol-Turn", fmt.Sprint(turn))
 	req.Header.Set("X-Pyyol-Proof", proof)
 
-	resp, err := (&http.Client{Timeout: 90 * time.Second}).Do(req)
+	resp, err := (&http.Client{Timeout: 180 * time.Second}).Do(req)
 	if err != nil {
 		return boundAction{}, err
 	}

@@ -74,8 +74,12 @@ func (m *Matcher) pairPool(ctx context.Context, pool []Entry, now time.Time) {
 				continue
 			}
 			b := pool[j]
-			if a.OwnerPublicID == b.OwnerPublicID {
-				continue // never pair an owner against themselves
+			if m.svc.linked(a.OwnerPublicID, b.OwnerPublicID) {
+				// Never pair a beneficiary against itself. This SUBSUMES the old
+				// same-owner comparison: two accounts paying out to one wallet are one
+				// person however they signed up, and the old check let exactly that
+				// through. See internal/antifraud/linkage.go.
+				continue
 			}
 			if !withinBand(a, b, now, m.svc.cfg) {
 				continue

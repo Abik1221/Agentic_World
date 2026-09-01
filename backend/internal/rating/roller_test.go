@@ -48,11 +48,26 @@ func (f *rollFakeRepo) Leaderboard(_ context.Context, _ string, season, _, _ int
 	return nil, nil
 }
 func (f *rollFakeRepo) SnapshotRanks(context.Context, time.Time) (int, error) { return 0, nil }
+
+// The clips picker's source. Empty here: these tests are about season rolling, and a
+// fake that invented harness matches would let a test pass on data the platform never
+// produced.
+func (f *rollFakeRepo) HarnessMatches(context.Context, string, int) ([]HarnessMatch, error) {
+	return nil, nil
+}
 func (f *rollFakeRepo) RollSeason(_ context.Context, season int, champion string) (bool, error) {
 	f.rolled = append(f.rolled, season)
 	f.champSeen[season] = champion
 	return true, nil
 }
+
+// HarnessModelBenchmark returns nothing: these tests exercise the DEVELOPER board, and a
+// fake that returned the same rows for both would make the two indistinguishable in exactly
+// the tests meant to tell them apart.
+func (f *rollFakeRepo) HarnessModelBenchmark(context.Context, int, string, time.Time, time.Time) ([]ModelStat, error) {
+	return nil, nil
+}
+
 func (f *rollFakeRepo) ModelBenchmark(_ context.Context, _ int, game string, start, end time.Time) ([]ModelStat, error) {
 	f.benchGame, f.benchStart, f.benchEnd = game, start, end
 	return f.models, nil

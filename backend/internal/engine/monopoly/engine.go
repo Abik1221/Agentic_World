@@ -1002,7 +1002,13 @@ func (e *Engine) stepTradeResponse(ns *State, a Action, seed []byte) ([]Event, e
 		ns.OpenResponders = nil
 		ns.PendingTrade = nil
 		e.resumeAfterTrade(ns) // control returns to the window, the debt, or the turn owner
-		evs := append(interest, e.emit(ns, EvTradeExecuted, executed))
+		// Appended in place rather than `evs := append(interest, …)`: assigning the result of
+		// an append to a DIFFERENT variable leaves two names for one backing array, so a later
+		// append through either can overwrite events the other still refers to. Harmless today
+		// because `interest` is dead from here, which is exactly the kind of "safe until
+		// somebody moves it" that gocritic's appendAssign is pointing at.
+		evs := interest
+		evs = append(evs, e.emit(ns, EvTradeExecuted, executed))
 		// A trade struck to RAISE MONEY has to settle the debt it was struck for. Without
 		// this the seat sits in PhaseResolveDebt holding more than it owes, having done the
 		// one thing the rules say saves it — which is how the first version of this failed:
@@ -1365,11 +1371,18 @@ func (e *Engine) rentFor(ns *State, pos, diceTotal int) int {
 	case KindRailroad:
 		return railroadRentTable[ns.railroadsOwned(h.Owner)]
 	case KindUtility:
-		mult := 4
-		if ns.utilitiesOwned(h.Owner) == 2 {
-			mult = 10
+		// Read from the shared table so the rent the console publishes and the rent
+		// charged here are the same number by construction.
+		// Clamped at both ends: an out-of-range count here would panic mid-match,
+		// which is a far worse failure than charging the nearest defined tier.
+		owned := ns.utilitiesOwned(h.Owner)
+		if owned < 1 {
+			owned = 1 // a rent is being charged, so the owner holds at least this one
 		}
-		return mult * diceTotal
+		if owned > len(utilityMultiples)-1 {
+			owned = len(utilityMultiples) - 1
+		}
+		return utilityMultiples[owned] * diceTotal
 	}
 	return 0
 }

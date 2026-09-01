@@ -38,6 +38,14 @@ type Delivery struct {
 	EventType     string
 	Payload       json.RawMessage
 	Attempts      int
+	// CreatedAt is when the event was enqueued, and it is what bounds the backlog.
+	//
+	// Attempts bounds the RETRY path, but the circuit-breaker path deliberately does
+	// not count an attempt (delivery was never tried), so nothing bounded it at all:
+	// an endpoint that stays down is deferred forever. Age is the bound that path
+	// needs, and it has to come from the row rather than from a counter the defer
+	// path is not allowed to touch.
+	CreatedAt time.Time
 }
 
 // Enqueuer is the write side used by the game drive loops. Both methods are
@@ -85,6 +93,23 @@ type Config struct {
 	BaseBackoff time.Duration // first retry delay; doubles each attempt (default 2s)
 	MaxBackoff  time.Duration // backoff ceiling (default 5m)
 	Lease       time.Duration // claim lease; a dead worker's rows re-due after this (default 30s)
+	// MaxAge abandons a delivery this long after it was enqueued, whatever its
+	// attempt count (default 24h).
+	//
+	// This is a cost control and a correctness one. An endpoint whose circuit stays
+	// open is DEFERRED rather than retried — correctly, since nothing was tried — but
+	// a defer rewrites next_attempt_at, which is an indexed column, so every one is a
+	// non-HOT update that adds an entry to every index on the table. Measured on the
+	// lab database: 79.5 million updates against 93,831 live rows, ZERO of them HOT,
+	// 242,591 dead tuples standing, autovacuum triggered 3,339 times and still behind,
+	// and as a result claiming 64 due deliveries walked 883 MB of bloated index.
+	//
+	// The deliveries doing that were unwinnable: a dead endpoint deferred every
+	// cooldown, forever, with no attempt ever counted. Capping by age retires them.
+	// It also happens to be what the product wants — a game event delivered a day
+	// late is of no use to the agent that missed it — so the bound is not a tuning
+	// knob bolted onto a broken loop, it is the missing half of the retry policy.
+	MaxAge time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -108,6 +133,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Lease <= 0 {
 		c.Lease = 30 * time.Second
+	}
+	if c.MaxAge <= 0 {
+		c.MaxAge = 24 * time.Hour
 	}
 	return c
 }
@@ -177,6 +205,26 @@ func (d *Dispatcher) tick(ctx context.Context) error {
 
 // process delivers one leased delivery, then records the outcome.
 func (d *Dispatcher) process(ctx context.Context, dl Delivery) {
+	// THE BACKLOG HAS A MAXIMUM AGE, and it is checked before anything else.
+	//
+	// Placed here rather than in the circuit-breaker branch below on purpose. The
+	// defer path is the one that was unbounded, but a bound that only exists on one
+	// branch is a bound that the next branch added will not have — and the reason to
+	// abandon a day-old event does not depend on WHY it is a day old. Ahead of the
+	// resolver too, so an expired delivery costs no lookup.
+	//
+	// A zero CreatedAt means the row predates the column being selected; treated as
+	// ageless rather than as instantly expired, because guessing "very old" here would
+	// silently bin a live backlog on the deploy that introduced this.
+	if !dl.CreatedAt.IsZero() && d.now().Sub(dl.CreatedAt) > d.cfg.MaxAge {
+		d.log.Info("webhook delivery abandoned: older than the backlog window",
+			"delivery", dl.PublicID, "agent", dl.AgentPublicID,
+			"age", d.now().Sub(dl.CreatedAt).Round(time.Second).String(),
+			"max_age", d.cfg.MaxAge.String(), "attempts", dl.Attempts)
+		_ = d.store.GiveUp(ctx, dl.PublicID, "older than the backlog window")
+		return
+	}
+
 	target, found, err := d.resolver.PlayTarget(ctx, dl.AgentPublicID)
 	if err != nil {
 		// Transient resolve failure (e.g. DB blip) — retry with backoff.

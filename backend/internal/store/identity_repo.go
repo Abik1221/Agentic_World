@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/agent-arena/arena/internal/identity"
@@ -415,18 +416,32 @@ func (r *IdentityRepo) CreateAccount(ctx context.Context, in identity.CreateAcco
 		return identity.Agent{}, identity.User{}, err
 	}
 
-	// 2. Create the agent with default limits.
+	// 2. Create the agent with the limits and kind the caller asked for.
+	//
+	// THE KIND IS WRITTEN HERE, at creation, and there is no update path for it. Public
+	// sinks filter on an allowlist of kind='external', so what an agent is has to be true
+	// from its first row: a match played while the agent was still `external` is already
+	// attributed to the developer board, and re-labelling the agent afterwards leaves that
+	// match exactly where it was. Empty means external, so every caller that does not set
+	// it — X-claim onboarding, Google sign-in, the public sign-up — keeps creating
+	// developer agents unchanged.
 	l := in.Limits
+	kind := in.Kind
+	if kind == "" {
+		kind = identity.KindExternal
+	}
 	var agentID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO agents (public_id, owner_user_id, name, slug, description, framework,
 		     status, verification_level, coin_limit_per_match, daily_loss_limit, session_loss_limit,
-		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid, auto_join)
-		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid, auto_join,
+		     kind)
+		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		 RETURNING id`,
 		in.AgentPublicID, userID, in.AgentName, in.AgentSlug, nullString(in.Description), nullString(in.Framework),
 		l.CoinLimitPerMatch, l.DailyLossLimit, l.SessionLossLimit, l.MinWalletBalance,
-		l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds, l.MaxBid, l.AutoJoin).
+		l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds, l.MaxBid, l.AutoJoin,
+		kind).
 		Scan(&agentID)
 	if err != nil {
 		return identity.Agent{}, identity.User{}, err
@@ -547,6 +562,98 @@ func (r *IdentityRepo) UpsertGoogleAccount(ctx context.Context, in identity.Goog
 		return identity.GoogleUpsertResult{}, err
 	}
 	return identity.GoogleUpsertResult{
+		UserPublicID: in.UserPublicID, AgentPublicID: in.AgentPublicID, AgentName: in.AgentName, Created: true,
+	}, nil
+}
+
+// UpsertGitHubAccount implements identity.Repo. See the interface doc. Deliberately
+// mirrors UpsertGoogleAccount step-for-step, keyed on github_id instead of google_sub.
+func (r *IdentityRepo) UpsertGitHubAccount(ctx context.Context, in identity.GitHubUpsertInput) (identity.GitHubUpsertResult, error) {
+	// 1. Already linked to this GitHub identity → log in.
+	var uPub, aPub, aName string
+	err := r.db.QueryRow(ctx,
+		`SELECT u.public_id, a.public_id, a.name
+		 FROM users u JOIN agents a ON a.owner_user_id = u.id
+		 WHERE u.github_id = $1
+		 ORDER BY a.id LIMIT 1`, in.GitHubID).Scan(&uPub, &aPub, &aName)
+	if err == nil {
+		return identity.GitHubUpsertResult{UserPublicID: uPub, AgentPublicID: aPub, AgentName: aName}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return identity.GitHubUpsertResult{}, err
+	}
+
+	// 2. A pre-existing, unlinked email account (GitHub verified this email) → link it.
+	if in.Email != "" {
+		var uid int64
+		e2 := r.db.QueryRow(ctx,
+			`SELECT u.id, u.public_id, COALESCE(a.public_id,''), COALESCE(a.name,'')
+			 FROM users u LEFT JOIN agents a ON a.owner_user_id = u.id
+			 WHERE u.email = $1 AND u.github_id IS NULL
+			 ORDER BY a.id LIMIT 1`, in.Email).Scan(&uid, &uPub, &aPub, &aName)
+		if e2 == nil {
+			if _, err := r.db.Exec(ctx,
+				`UPDATE users SET github_id = $1 WHERE id = $2 AND github_id IS NULL`, in.GitHubID, uid); err != nil {
+				return identity.GitHubUpsertResult{}, err
+			}
+			return identity.GitHubUpsertResult{UserPublicID: uPub, AgentPublicID: aPub, AgentName: aName}, nil
+		}
+		if !errors.Is(e2, pgx.ErrNoRows) {
+			return identity.GitHubUpsertResult{}, e2
+		}
+	}
+
+	// 3. Create a fresh account: user + treasury wallet + agent + first key + agent wallet.
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var userID int64
+	err = tx.QueryRow(ctx,
+		`INSERT INTO users (public_id, email, github_id) VALUES ($1, $2, $3) RETURNING id`,
+		in.UserPublicID, nullString(in.Email), in.GitHubID).Scan(&userID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return identity.GitHubUpsertResult{}, identity.ErrEmailTaken
+		}
+		return identity.GitHubUpsertResult{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO wallets (user_id, kind, balance)
+		 SELECT $1, 'user', 0 WHERE NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1)`, userID); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	l := in.Limits
+	var agentID int64
+	err = tx.QueryRow(ctx,
+		`INSERT INTO agents (public_id, owner_user_id, name, slug, description, framework,
+		     status, verification_level, coin_limit_per_match, daily_loss_limit, session_loss_limit,
+		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid, auto_join)
+		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15)
+		 RETURNING id`,
+		in.AgentPublicID, userID, in.AgentName, in.AgentSlug, nullString(""), nullString(""),
+		l.CoinLimitPerMatch, l.DailyLossLimit, l.SessionLossLimit, l.MinWalletBalance,
+		l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds, l.MaxBid, l.AutoJoin).
+		Scan(&agentID)
+	if err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
+		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO wallets (agent_id, kind, balance) VALUES ($1, 'agent', 0)`, agentID); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return identity.GitHubUpsertResult{}, err
+	}
+	return identity.GitHubUpsertResult{
 		UserPublicID: in.UserPublicID, AgentPublicID: in.AgentPublicID, AgentName: in.AgentName, Created: true,
 	}, nil
 }
@@ -811,4 +918,71 @@ func ensureUserWallet(ctx context.Context, tx pgx.Tx, userID int64) error {
 		 SELECT $1, 'user', 0 WHERE NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1)`,
 		userID)
 	return err
+}
+
+// CreatePlatformAgent creates an agent under an EXISTING owner, creating no user account.
+//
+// Every other path in this file mints a user and an agent together, because every other path
+// is somebody signing up. The platform's own benchmark agents are not somebody: there is no
+// person behind them, no email that should receive mail, and no password that should exist.
+// Minting a throwaway account per benchmark seat produced exactly what you would expect —
+// `lab+78611-0@pyyol.test` rows sitting in the users table looking like developers.
+//
+// So they hang off `usr_system`, the same owner the house bots already use (migration 0017).
+// One platform identity, no credentials, and a users table that only ever contains people.
+func (r *IdentityRepo) CreatePlatformAgent(ctx context.Context, in identity.PlatformAgentInput) (identity.Agent, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return identity.Agent{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The owner must already exist. Created here on demand it would be a second place that
+	// defines the system identity, and the two would disagree the first time one changed.
+	var ownerID int64
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM users WHERE public_id = $1`, in.OwnerPublicID).Scan(&ownerID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.Agent{}, fmt.Errorf("platform owner %q does not exist", in.OwnerPublicID)
+		}
+		return identity.Agent{}, err
+	}
+
+	l := in.Limits
+	var agentID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO agents (public_id, owner_user_id, name, slug, description, framework,
+		     status, verification_level, coin_limit_per_match, daily_loss_limit, session_loss_limit,
+		     min_wallet_balance, max_concurrent_matches, cooldown_losses, cooldown_seconds, max_bid,
+		     auto_join, kind)
+		 VALUES ($1,$2,$3,$4,$5,$6,'unverified','new',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		 RETURNING id`,
+		in.AgentPublicID, ownerID, in.AgentName, in.AgentSlug, nullString(in.Description),
+		nullString(in.Framework), l.CoinLimitPerMatch, l.DailyLossLimit, l.SessionLossLimit,
+		l.MinWalletBalance, l.MaxConcurrentMatches, l.CooldownLosses, l.CooldownSeconds,
+		l.MaxBid, l.AutoJoin, in.Kind).Scan(&agentID); err != nil {
+		return identity.Agent{}, err
+	}
+
+	// The key and the wallet, exactly as CreateAccount issues them. A benchmark agent
+	// authenticates and holds a wallet like any other seat — what differs is who owns it and
+	// which boards its results reach, not how it plays.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
+		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+		return identity.Agent{}, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO wallets (agent_id, kind, balance) VALUES ($1, 'agent', 0)`,
+		agentID); err != nil {
+		return identity.Agent{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return identity.Agent{}, err
+	}
+	return identity.Agent{
+		PublicID: in.AgentPublicID, OwnerPublicID: in.OwnerPublicID, Name: in.AgentName,
+		Slug: in.AgentSlug, Description: in.Description, Status: "unverified", Limits: in.Limits,
+	}, nil
 }
