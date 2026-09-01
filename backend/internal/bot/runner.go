@@ -429,7 +429,9 @@ func PickMafiaAction(v mafia.AgentView) (mf.Action, bool) {
 			return mf.Action{Kind: "profile", Target: target}, true
 		}
 	case mf.PhaseDiscussion:
-		return mf.Action{Kind: "message", Tone: "info", Text: "Observing the table.", Target: target}, true
+		// No target: the line names nobody, so it must not read as an accusation.
+		// See the same fix in internal/mafia/pushplay.go botDecide.
+		return mf.Action{Kind: "message", Tone: "info", Text: "Observing the table."}, true
 	case mf.PhaseVoting:
 		return mf.Action{Kind: "vote", Target: target}, true
 	}

@@ -114,22 +114,43 @@ func (b *Bot) voteTarget(v AgentView) int {
 	// So town follows the accusation it made, or the loudest one on the table. This
 	// also makes the discussion MATTER: talk you can influence changes the vote, which
 	// is the whole point of practising against it.
-	if t := b.accusationTarget(v); t > 0 && v.Alive[t] && t != v.Seat {
+	if t := b.accusationTarget(v); t >= 0 && v.Alive[t] && t != v.Seat {
 		return t
 	}
+	// Nobody argued for anything — a round of pure mourning, which happens often on
+	// day one when the only news is the night kill.
+	//
+	// This used to return the lowest living seat, and that is the whole "survive by
+	// not being seat 1" problem the doc comment above already calls out: it is not
+	// only predictable, it is decisive. Every silent bot picks the SAME seat, so a
+	// quiet round is an automatic unanimous lynch of whoever sits lowest, before that
+	// player has said or done anything.
+	//
+	// A per-seat draw removes the coordination without removing the determinism. Its
+	// own hash stream, keyed by seat and day, so it is replay-stable and does not
+	// disturb the draw order of the chat or night streams — those are seeded
+	// independently, and a shared generator would make one phase's draws move
+	// another's.
 	others := aliveOthers(v)
-	if len(others) > 0 {
-		return others[0]
+	if len(others) == 0 {
+		return v.Seat
 	}
-	return v.Seat
+	return pick(newHashRand(b.seed, fmt.Sprintf("vote:noread:%d:%d", v.Seat, v.Day)), others)
 }
 
 // accusationTarget returns the seat this bot argued against this round, falling back
 // to whoever the table pressured most. Its own accusation wins: a seat that talks
 // itself into a read and then follows someone else's is not how a table behaves.
+// Returns -1 when the table argued for nothing, NOT 0.
+//
+// Seat 0 is a real player, so 0 cannot double as "no read" — with the old sentinel a
+// bot that accused seat 0, or a table that pressured it hardest, had its own
+// conclusion silently discarded and fell through to the seat-order default instead.
+// The one seat that could never be voted on the strength of an argument was the first
+// one at the table.
 func (b *Bot) accusationTarget(v AgentView) int {
 	tally := map[int]int{}
-	mine := 0
+	mine := -1
 	for _, e := range v.Public {
 		m, ok := e.Payload.(MessagePayload)
 		if !ok || m.Target == nil {
@@ -144,14 +165,14 @@ func (b *Bot) accusationTarget(v AgentView) int {
 		}
 		tally[t]++
 	}
-	if mine > 0 {
+	if mine >= 0 {
 		return mine
 	}
 	// Otherwise the seat under the most pressure. Ties resolve to the lowest seat so
 	// the choice stays deterministic and replay-stable.
-	best, bestN := 0, 0
+	best, bestN := -1, 0
 	for seat, n := range tally {
-		if n > bestN || (n == bestN && seat < best) {
+		if n > bestN || (n == bestN && best >= 0 && seat < best) {
 			best, bestN = seat, n
 		}
 	}
