@@ -1031,9 +1031,30 @@ func run() error {
 	// presence. See OBSERVABILITY_COVERAGE_GAP.md.
 	mafiaSvc.SetActDecisionRecorder(mafiaActRecorder{repo: pindexRepo})
 
-	monopolyHandler := monopoly.NewHandler(monopolyHub, monopolySvc, authn)
-	monopolyHandler.SetStakeResolver(gameStakesSvc) // tier → stake; escrowed + settled via MonopolyWallet
-	launch("monopoly-sweeper", monopoly.NewSweeper(monopolySvc, log, time.Second).Run)
+	// Monopoly is OFF: no routes, and — the part that matters — no sweeper.
+	//
+	// The sweeper polled every second for tables whose turn deadline had lapsed and
+	// advanced them. That is correct for a table someone is still playing, and ruinous
+	// for one nobody is: an abandoned match keeps being advanced, one forced turn per
+	// 60-second timeout, until it reaches the 1000-turn cap.
+	//
+	// Measured on a real one (mp_mkbmjjwqoajggqbq): the agent stopped answering at turn
+	// 80, and six hours later the arena had dealt that dead seat 314 more turns and was
+	// still going — 2034 events, turn 394 of 1000, roughly ten hours left to run. Worse,
+	// it was invisible: /v1/games reported monopoly live=0 the whole time, because the
+	// live counter only sees matches with a connected agent. So the load accumulated
+	// with nothing on the platform showing it.
+	//
+	// The symptom was the API: about one request in ten hanging for 21 seconds, and
+	// WebSocket connects timing out, which made Goofspiel and Mafia untestable.
+	//
+	// Removing the sweeper is what stops it. A restart would not have: the state lives
+	// in the database, so the sweeper picks the same matches straight back up.
+	//
+	// This is the entry-point cut only. The engine, service, telemetry, SDKs, docs and
+	// UI come out separately — deliberately, because the server needed to be healthy
+	// before a change that size, not after it.
+	_ = monopolyHub
 
 	// Funded freeroll (Stage 10): the prize pool moves through the ledger via the
 	// Bank adapter; entry is gated on the tournament_ready badge + no fraud flags.
@@ -1922,7 +1943,6 @@ func run() error {
 		subscriptionHandler.Register,
 		specHandler.Register,
 		mafiaHandler.Register,
-		monopolyHandler.Register,
 		ratingHandler.Register,
 		pindexHandler.Register,
 		modelBoardHandler.Register,
