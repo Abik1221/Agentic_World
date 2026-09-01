@@ -58,7 +58,7 @@ func (r *SpectatorRepo) LiveMatches(ctx context.Context) ([]spectator.LiveMatch,
 // tables. Waiting = open lobbies (waiting matches / monopoly lobbies) + the ranked
 // group queue. Robust to empty tables — every game always appears (zeroes included).
 func (r *SpectatorRepo) GamesStatus(ctx context.Context) ([]spectator.GameStatus, error) {
-	order := []string{"goofspiel", "mafia", "monopoly"}
+	order := []string{"goofspiel", "mafia"}
 	st := map[string]*spectator.GameStatus{}
 	for _, g := range order {
 		st[g] = &spectator.GameStatus{Game: g}
@@ -109,18 +109,6 @@ func (r *SpectatorRepo) GamesStatus(ctx context.Context) ([]spectator.GameStatus
 		}); err != nil {
 		return nil, err
 	}
-
-	// monopoly: live + playing + waiting lobbies (own tables)
-	mono := st["monopoly"]
-	_ = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM monopoly_matches WHERE status='live'`).Scan(&mono.Live)
-	_ = r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM monopoly_team_agents ta
-		   JOIN monopoly_teams t ON t.id = ta.team_id
-		   JOIN monopoly_matches mm ON mm.id = t.match_id
-		 WHERE mm.status='live'`).Scan(&mono.Playing)
-	var monoLobby int64
-	_ = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM monopoly_matches WHERE status='lobby'`).Scan(&monoLobby)
-	mono.Waiting += monoLobby
 
 	out := make([]spectator.GameStatus, 0, len(order))
 	for _, g := range order {

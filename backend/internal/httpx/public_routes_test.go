@@ -92,15 +92,9 @@ var publicRoutes = []string{
 	"Get /v1/match/{id}/watch",
 	"Get /v1/matches/live",
 	"Get /v1/media/avatars/{name}",
-	"Get /v1/monopoly/live",
 	// The engine's own board table (prices, rent tiers, mortgage). Public because the
 	// rules of a staked game have to be readable before you stake on them, and it is
 	// match-independent static data — no seat, no state, nothing to redact.
-	"Get /v1/monopoly/board",
-	"Get /v1/monopoly/{id}/economy",
-	"Get /v1/monopoly/{id}/replay",
-	"Get /v1/monopoly/{id}/roster",
-	"Get /v1/monopoly/{id}/watch",
 	"Get /v1/payments/flows",
 	"Get /v1/pindex/methodology",
 	"Get /v1/rankings/standing",

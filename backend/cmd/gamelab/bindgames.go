@@ -65,8 +65,7 @@ func viewPrompt(raw []byte, head string) string {
 }
 
 func gameToolSchema(game string) map[string]any {
-	switch game {
-	case movebind.GameMafia:
+	if game == movebind.GameMafia {
 		return map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -83,22 +82,6 @@ func gameToolSchema(game string) map[string]any {
 				"text": map[string]any{
 					"type":        "string",
 					"description": "What you say to the table, in character. Public.",
-				},
-			},
-			"required": []string{"kind"},
-		}
-	case movebind.GameMonopoly:
-		return map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"kind":     map[string]any{"type": "string", "description": "One action kind from the legal list."},
-				"property": map[string]any{"type": "integer", "description": "Board square, when the action names one."},
-				"amount":   map[string]any{"type": "integer", "description": "Coins, when the action names an amount."},
-				"rationale": map[string]any{
-					"type": "string",
-					// Published as table talk, so the table watches an agent argue a deal
-					// rather than a silent action appearing.
-					"description": "Why — published to the table as talk.",
 				},
 			},
 			"required": []string{"kind"},
@@ -255,11 +238,11 @@ func (a *labAgent) decideGameThroughGateway(game, matchID string, turn, seat int
 
 	// The canonical form, built the same way the platform will build it, so a mismatch shows up
 	// here as a log line rather than later as an unexplained rejected move.
-	switch game {
-	case movebind.GameMafia:
+	// Mafia is the only game with a canonical form to build; Goofspiel binds on the card
+	// itself. A switch here would be a switch of one, so this is an if until a second
+	// structured game arrives.
+	if game == movebind.GameMafia {
 		act.Canon = movebind.CanonMafia(act.Kind, act.Target)
-	case movebind.GameMonopoly:
-		act.Canon = movebind.CanonMonopoly(act.Kind, act.Property, act.Amount)
 	}
 	return act, nil
 }

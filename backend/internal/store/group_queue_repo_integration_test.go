@@ -13,7 +13,7 @@ import (
 )
 
 // These exercise the N-player group queue + the waiting-lobby TTL sweep SQL against a
-// REAL Postgres — the queries the group matchmaker and the mafia/monopoly sweepers run
+// REAL Postgres — the queries the group matchmaker and the mafia sweeper runs
 // in production. Skipped unless PYYOL_TEST_DATABASE_URL points at a Postgres (the repo
 // has no standing PG harness); the test migrates the schema itself so an empty DB works.
 
@@ -80,27 +80,30 @@ func TestGroupQueueRepoIntegration(t *testing.T) {
 		}(ag))
 	}
 
-	// Enqueue all three for monopoly @100.
+	// Enqueue all three for mafia @100.
 	for _, p := range []struct{ ag, ow string }{{aAg, aOw}, {bAg, bOw}, {cAg, cOw}} {
-		if err := repo.Upsert(ctx, groupmatch.Entry{AgentPublicID: p.ag, OwnerPublicID: p.ow, Game: "monopoly", Bid: 100, Elo: 1500}); err != nil {
+		if err := repo.Upsert(ctx, groupmatch.Entry{AgentPublicID: p.ag, OwnerPublicID: p.ow, Game: "mafia", Bid: 100, Elo: 1500}); err != nil {
 			t.Fatalf("upsert %s: %v", p.ag, err)
 		}
 	}
 
 	// WaitingByGame filters by game and orders by (bid, enqueued_at).
-	waiting, err := repo.WaitingByGame(ctx, "monopoly", 100)
+	waiting, err := repo.WaitingByGame(ctx, "mafia", 100)
 	if err != nil {
 		t.Fatalf("WaitingByGame: %v", err)
 	}
 	if countAgents(waiting, aAg, bAg, cAg) != 3 {
-		t.Fatalf("expected the 3 monopoly agents waiting, got %d of them (%d total rows)", countAgents(waiting, aAg, bAg, cAg), len(waiting))
+		t.Fatalf("expected the 3 mafia agents waiting, got %d of them (%d total rows)", countAgents(waiting, aAg, bAg, cAg), len(waiting))
 	}
-	if maf, _ := repo.WaitingByGame(ctx, "mafia", 100); countAgents(maf, aAg, bAg, cAg) != 0 {
-		t.Fatalf("mafia pool must not see monopoly entries")
+	// Cross-game isolation: a DIFFERENT game's pool must not see these entries.
+	// The pair here was mafia/monopoly before Monopoly was withdrawn; goofspiel serves
+	// the same purpose, and the property under test is the game filter, not the games.
+	if other, _ := repo.WaitingByGame(ctx, "goofspiel", 100); countAgents(other, aAg, bAg, cAg) != 0 {
+		t.Fatalf("goofspiel pool must not see mafia entries")
 	}
 
 	// Get reflects waiting.
-	if e, err := repo.Get(ctx, aAg); err != nil || e.Status != groupmatch.StatusWaiting || e.Game != "monopoly" {
+	if e, err := repo.Get(ctx, aAg); err != nil || e.Status != groupmatch.StatusWaiting || e.Game != "mafia" {
 		t.Fatalf("Get(a): %+v err=%v", e, err)
 	}
 
@@ -213,15 +216,15 @@ func TestGroupMatchEndToEndLive(t *testing.T) {
 
 	creator := &recordingCreator{seats: 2, matchID: "gm_live_" + run}
 	svc := groupmatch.New(repo,
-		map[string]groupmatch.TableCreator{"monopoly": creator},
+		map[string]groupmatch.TableCreator{"mafia": creator},
 		fixedElo{}, sysClock{},
 		groupmatch.Config{Interval: 10 * time.Millisecond},
 		slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 
-	if _, err := svc.Enqueue(ctx, aAg, aOw, "monopoly", 100); err != nil {
+	if _, err := svc.Enqueue(ctx, aAg, aOw, "mafia", 100); err != nil {
 		t.Fatalf("enqueue a: %v", err)
 	}
-	if _, err := svc.Enqueue(ctx, bAg, bOw, "monopoly", 100); err != nil {
+	if _, err := svc.Enqueue(ctx, bAg, bOw, "mafia", 100); err != nil {
 		t.Fatalf("enqueue b: %v", err)
 	}
 
@@ -356,7 +359,6 @@ func TestExpireStaleWaitingIntegration(t *testing.T) {
 		}
 	}{
 		{"mafia", NewMafiaRepo(pool)},
-		{"monopoly", NewMonopolyRepo(pool)},
 	}
 	for _, tc := range cases {
 		staleID := "m_stale_" + tc.game + "_" + run

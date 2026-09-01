@@ -88,12 +88,6 @@ func (s *Service) SettleHeld(ctx context.Context, matchPublicID string) error {
 		return err
 	}
 	if found {
-		// A held Monopoly table carries its gross in a sentinel entry (Monopoly has no
-		// matches.bid to derive it from). Detect + recover it, then replay the split.
-		if gross, ok := payouts[heldMonopolyGrossKey]; ok {
-			delete(payouts, heldMonopolyGrossKey)
-			return s.settleMonopoly(ctx, matchPublicID, gross, fee, payouts)
-		}
 		return s.settleMafia(ctx, matchPublicID, fee, payouts)
 	}
 	set, err := s.repo.Settlement(ctx, matchPublicID)

@@ -82,7 +82,6 @@ func DefaultBuildConfig() BuildConfig {
 // board that reports it rather than smuggled into this one.
 var pairwiseGames = map[string]bool{
 	"goofspiel": true,
-	"monopoly":  true,
 }
 
 // PairwiseGames is the set above, sorted, for a caller that needs to narrow a query to it.

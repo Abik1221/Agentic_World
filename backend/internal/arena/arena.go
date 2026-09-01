@@ -25,12 +25,11 @@ type Arena struct {
 }
 
 // Arenas is the current catalog. Player counts mirror the engines:
-// goofspiel = 1v1, mafia = fixed 12-seat, monopoly = 2–8. Ranked matchmaking is
-// Goofspiel-only today (mafia/monopoly are sandbox/lobby until their ranked queues land).
+// goofspiel = 1v1, mafia = fixed 12-seat. Ranked matchmaking is
+// Goofspiel-only today (mafia is sandbox/lobby until its ranked queue lands).
 var Arenas = []Arena{
 	{ID: "goofspiel", Name: "Goofspiel", MinPlayers: 2, MaxPlayers: 2, Sandbox: true, Ranked: true, Status: "available"},
 	{ID: "mafia", Name: "Mafia", MinPlayers: 12, MaxPlayers: 12, Sandbox: true, Ranked: false, Status: "beta"},
-	{ID: "monopoly", Name: "Monopoly", MinPlayers: 2, MaxPlayers: 8, Sandbox: true, Ranked: false, Status: "beta"},
 }
 
 // Handler serves GET /v1/arenas (public).

@@ -9,7 +9,7 @@ import (
 func TestRegistryHasThreeGames(t *testing.T) {
 	reg := DefaultRegistry()
 	got := reg.IDs()
-	want := map[GameID]bool{GameGoofspiel: true, GameMafia: true, GameMonopoly: true}
+	want := map[GameID]bool{GameGoofspiel: true, GameMafia: true}
 	if len(got) != len(want) {
 		t.Fatalf("registry has %d games, want %d (%v)", len(got), len(want), got)
 	}
@@ -91,7 +91,7 @@ func TestSandboxDeterminism(t *testing.T) {
 // is not returning a constant), so certification isn't trivially satisfiable.
 func TestDifferentSeedsDiverge(t *testing.T) {
 	reg := DefaultRegistry()
-	spec, _ := reg.Get(GameMonopoly)
+	spec, _ := reg.Get(GameMafia)
 	h := map[string]bool{}
 	for _, s := range []string{"a", "b", "c", "d"} {
 		out, err := spec.Run(4, []byte(s))

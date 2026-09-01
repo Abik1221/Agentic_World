@@ -8,7 +8,6 @@ import (
 	"github.com/agent-arena/arena/internal/arena"
 	"github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/engine/mafia"
-	"github.com/agent-arena/arena/internal/engine/monopoly"
 )
 
 // byID indexes the spec games for lookup.
@@ -86,10 +85,6 @@ func TestVocabularyMatchesEngine(t *testing.T) {
 	wantSame(t, "mafia.actions", docActions(g["mafia"].Actions), mafia.AllActions)
 	wantSame(t, "mafia.events", docTerms(g["mafia"].Events), eventStrings(mafia.AllEventTypes))
 
-	// Monopoly.
-	wantSame(t, "monopoly.phases", docTerms(g["monopoly"].Phases), monopoly.AllPhases)
-	wantSame(t, "monopoly.actions", docActions(g["monopoly"].Actions), monopoly.AllActions)
-	wantSame(t, "monopoly.events", docTerms(g["monopoly"].Events), eventStrings(monopoly.AllEventTypes))
 }
 
 // TestActionPhasesAreRealPhases ensures every phase referenced by an action is a

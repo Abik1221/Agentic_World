@@ -310,7 +310,10 @@ func TestArenaBreakdownIsDerivedLikeTheAggregate(t *testing.T) {
 		Arenas: []ArenaStat{
 			{Game: GameMafia, Matches: 4, Wins: 3, Losses: 1, Tokens: 40_000, Decisions: 100,
 				LegalInternal: 95, PlaySecondsInternal: 400, TimedMatchesInternal: 2},
-			{Game: GameMonopoly, Matches: 2, Wins: 1, Losses: 1, Tokens: 20_000},
+			// A SECOND arena is the point: the breakdown must carry a row per arena, each
+			// deriving its own rates rather than inheriting the aggregate's. This was
+			// Monopoly; which arena it is does not matter, only that there are two.
+			{Game: GameGoofspiel, Matches: 2, Wins: 1, Losses: 1, Tokens: 20_000},
 		},
 	}}
 	page, err := svcAtSeason(repo, 1).ModelBenchmark(context.Background(), ArenaAll, 1)
@@ -389,7 +392,7 @@ func TestStandingWithoutArenaDoesNotAssumeGoofspiel(t *testing.T) {
 }
 
 func TestIsArena(t *testing.T) {
-	for _, ok := range []string{"", ArenaAll, GameGoofspiel, GameMafia, GameMonopoly} {
+	for _, ok := range []string{"", ArenaAll, GameGoofspiel, GameMafia} {
 		if !IsArena(ok) {
 			t.Errorf("IsArena(%q) = false, want true", ok)
 		}

@@ -24,7 +24,7 @@ func TestVerify_EndToEndRealClient(t *testing.T) {
 		case "/handshake":
 			sawBearer = r.Header.Get("Authorization")
 			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{"accepted":true,"sdkVersion":"1.0.0","supportedGames":["mafia","goofspiel","monopoly"]}`))
+			_, _ = w.Write([]byte(`{"accepted":true,"sdkVersion":"1.0.0","supportedGames":["mafia","goofspiel"]}`))
 		default:
 			w.WriteHeader(404)
 		}

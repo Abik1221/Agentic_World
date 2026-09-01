@@ -33,17 +33,6 @@
       "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{\"game\":\"mafia\",\"round\":2,\"phase\":\"night\",\"seat\":3,\"alive\":[0,1,2,3]}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
     },
     {
-      "name": "monopoly turn",
-      "view": {
-        "game": "monopoly",
-        "turn": 11,
-        "seat": 1,
-        "cash": 1500,
-        "position": 12
-      },
-      "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{\"game\":\"monopoly\",\"turn\":11,\"seat\":1,\"cash\":1500,\"position\":12}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."
-    },
-    {
       "name": "empty view",
       "view": {},
       "prompt": "You are playing a match in the Pyyol arena. Here is your view of the current turn:\n{}\n\nDecide your move and report it by calling the provided tool. Do not answer in prose."

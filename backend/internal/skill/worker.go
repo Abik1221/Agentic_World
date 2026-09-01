@@ -182,8 +182,6 @@ func ScoreDecision(game string, input []byte, action string) (Decision, bool) {
 			return Decision{}, false
 		}
 		return ScoreGoofspielBid(st, card)
-	case "monopoly":
-		return ScoreMonopolyDecision(input, action)
 	default:
 		return Decision{}, false
 	}

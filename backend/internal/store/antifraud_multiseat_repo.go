@@ -32,7 +32,6 @@ import (
 	"time"
 
 	"github.com/agent-arena/arena/internal/antifraud"
-	"github.com/agent-arena/arena/internal/engine/monopoly"
 )
 
 // These methods hang off AntifraudRepo rather than a separate type, so antifraud.Repo keeps
@@ -157,21 +156,19 @@ func (r *AntifraudRepo) PairTrades(ctx context.Context, agentA, agentB string, s
 	return out, rows.Err()
 }
 
-// propValue prices a bundle of property indices at the board's LIST price.
+// propValue prices a bundle of traded property indices.
 //
-// List price, not market or mortgage value. It is the one number the engine already agrees
-// on, it is public, and it does not require modelling development or monopoly premiums —
-// a valuation model here would drift from the engine's and become a second source of truth
-// for what a property is worth. The detector only needs a consistent yardstick to spot a
-// one-directional flow; it does not need to be right about Boardwalk.
+// It priced them at the Monopoly board's list price, read from that engine. The engine is
+// gone with the arena, and no shipped game trades property, so there is nothing left to
+// value and this returns zero.
+//
+// The function is KEPT, along with PairTrades and the Trade half of the collusion score,
+// because none of that is Monopoly-specific reasoning — it is "did assets flow one way
+// between two agents", which is how property-gifting collusion is caught in ANY trading
+// game. Deleting the seam would mean rebuilding it, and rebuilding a fraud control is
+// where the subtle mistakes get made. Restoring it for a future trading arena is a matter
+// of pricing that game's assets here.
 func propValue(indices []int) int64 {
-	board := monopoly.Board()
-	var total int64
-	for _, idx := range indices {
-		if idx < 0 || idx >= len(board) {
-			continue // an out-of-range index is corrupt evidence, not a free property
-		}
-		total += int64(board[idx].Price)
-	}
-	return total
+	_ = indices
+	return 0
 }

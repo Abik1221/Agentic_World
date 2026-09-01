@@ -55,7 +55,6 @@ import (
 	"github.com/agent-arena/arena/internal/media"
 	"github.com/agent-arena/arena/internal/middleware"
 	"github.com/agent-arena/arena/internal/modelboard"
-	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/openapi"
 	"github.com/agent-arena/arena/internal/payments"
 	"github.com/agent-arena/arena/internal/paymenttrace"
@@ -426,9 +425,8 @@ func run() error {
 	}
 	goofspielPlayClient := newPlayClient(cfg.MoveWindow)
 	mafiaPlayClient := newPlayClient(mafiaPlayWindow)
-	monopolyPlayClient := newPlayClient(cfg.MonopolyMoveWindow)
 	log.Info("agent play clients configured (separate from the verification probe)",
-		"goofspiel", cfg.MoveWindow, "mafia", mafiaPlayWindow, "monopoly", cfg.MonopolyMoveWindow,
+		"goofspiel", cfg.MoveWindow, "mafia", mafiaPlayWindow,
 		"retries", 0)
 	manifestSvc := manifest.New(store.NewManifestRepo(st.DB), manifestProbe, manifestSealer)
 	manifestHandler := manifest.NewHandler(manifestSvc, authn)
@@ -962,53 +960,6 @@ func run() error {
 	mafiaSvc.SetStakeFloor(gameStakesSvc)
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
-	// Monopoly (turn-based property game) on the same patterns as Mafia: pure
-	// engine → match service → SSE spectator stream → agent action API. The
-	// service seats the creator and fills the rest of the table with deterministic
-	// server bots, auto-advancing bot turns after each agent move. Wallet is nil
-	// for now (practice tables, entry fee 0); wire a MonopolyWallet adapter to
-	// pool stakes once staked matchmaking lands.
-	monopolyRepo := store.NewMonopolyRepo(st.DB)
-	monopolyHub := monopoly.NewHub(monopolyRepo, log)
-	monopolySvc := monopoly.NewService(
-		monopolyRepo,
-		store.NewLocker(st.Redis),
-		wallet.NewMonopolyWallet(walletSvc), // staked agent-vs-agent tables: escrow + settle + refund
-		monopolyHub,
-		nil, // FinishHook
-		clock,
-		monopoly.Config{PlatformFeePct: 10, MoveWindow: cfg.MonopolyMoveWindow, LockTTL: 15 * time.Second},
-	)
-	// House-agent think time at PRACTICE tables only (see monopoly.ThinkTime).
-	// Staked play is never paced.
-	monopolySvc.WithThinkTime(monopoly.ThinkTime{
-		PerMove: time.Duration(cfg.PracticeThinkMs) * time.Millisecond,
-		Jitter:  time.Duration(cfg.PracticeThinkMs) * time.Millisecond / 2,
-		Budget:  time.Duration(cfg.PracticeThinkBudgetMs) * time.Millisecond,
-	})
-	// Staked-join gates (mirror Mafia): spending budget + certification/suspension.
-	monopolySvc.SetRakeSource(liveRake(cfg.RakePct))
-	monopolySvc.SetLimits(walletSvc)
-	monopolySvc.SetVerifier(verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected})
-	// Push-play: drive the creator's seat from their hosted endpoint; engine bots
-	// fill the rest. Reuses the same match machinery + SSE spectating.
-	monopolySvc.EnablePushPlay(manifestSvc, monopolyPlayClient, log)
-	monopolySvc.SetWebhookEnqueuer(webhookQueue)
-	monopolySvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
-	monopolySvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
-	// Long-poll wake-ups for GET /v1/monopoly/{id}/state?wait=true (parity with Goofspiel).
-	monopolySvc.SetNotifier(store.NewNotifier(st.Redis))
-	monopolySvc.SetRater(ratingSvc) // paid tables update the per-arena Monopoly rating (TrueSkill)
-	monopolySvc.SetIntegrityChecker(store.NewPIndexRepo(st.DB))
-	monopolySvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
-	// Request-path instrumentation. Without this, a Monopoly match played by polling State and
-	// posting Act produces no benchmark fact, no decision log and no board presence — which is
-	// why 2067 finished Monopoly matches contributed nothing to any board while Goofspiel, whose
-	// ranked play is always platform-driven, looked fine. See OBSERVABILITY_COVERAGE_GAP.md.
-	//
-	// The adapter lives here rather than the service importing store: a game service defines the
-	// shape it needs and main.go translates, so the engine never depends on the persistence layer.
-	monopolySvc.SetActDecisionRecorder(monopolyActRecorder{repo: pindexRepo})
 
 	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
 	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
@@ -1054,7 +1005,6 @@ func run() error {
 	// This is the entry-point cut only. The engine, service, telemetry, SDKs, docs and
 	// UI come out separately — deliberately, because the server needed to be healthy
 	// before a change that size, not after it.
-	_ = monopolyHub
 
 	// Funded freeroll (Stage 10): the prize pool moves through the ledger via the
 	// Bank adapter; entry is gated on the tournament_ready badge + no fraud flags.
@@ -1300,20 +1250,17 @@ func run() error {
 	// dispute. A disabled client makes every call a no-op.
 	matchSvc.SetChatTracer(lens)
 	mafiaSvc.SetChatTracer(lens)
-	monopolySvc.SetChatTracer(lens)
 	// Per-decision events, emitted as each turn resolves. The benchmark Recorder is an
 	// in-process buffer flushed once at match end and capped at 256 moves, so a crash
 	// lost every decision in the match and a long game silently stopped recording.
 	matchSvc.SetDecisionTracer(lens)
 	mafiaSvc.SetDecisionTracer(lens)
-	monopolySvc.SetDecisionTracer(lens)
 	// Endpoint verification outcomes. A FAILED verification previously produced no
 	// telemetry at all, so a developer whose endpoint never passed had nothing to look
 	// at and an operator could not see failures in aggregate.
 	manifestSvc.SetLifecycleTracer(lens)
 	matchSvc.SetLiveness(livenessTracker)
 	mafiaSvc.SetLiveness(livenessTracker)
-	monopolySvc.SetLiveness(livenessTracker)
 	launch("liveness", func(c context.Context) { livenessTracker.Run(c, livenessRepo) })
 	matchSvc.SetStyleRecorder(styleRepo) // record aggression/efficiency at match finish (best-effort)
 	// House-agent move picker for sandbox practice matches (no coins/limits/rating).
@@ -1331,7 +1278,7 @@ func run() error {
 	// the gate can be turned on, and neither is yet:
 	//
 	//   1. matchSvc's turn minter is also installed only under auto-drive (below), unlike
-	//      mafiaSvc/monopolySvc which get one unconditionally. With no minter, ranked turn
+	//      mafiaSvc which gets one unconditionally. With no minter, ranked turn
 	//      views carry no proof token at all, so NO seat can bind a decision — and the
 	//      zero-proof gate would then void EVERY ranked match. Strictly worse than no
 	//      enforcement.
@@ -1516,7 +1463,6 @@ func run() error {
 	// perfectly — roughly two minutes a round on a table an opponent has staked on.
 	matchSvc.SetRejectionLog(store.NewMatchRepo(st.DB))
 	mafiaSvc.SetBoundMoveReader(llmGatewayRepo)
-	monopolySvc.SetBoundMoveReader(llmGatewayRepo)
 	log.Info("completion binding active: a submitted move that contradicts the model's own output is rejected",
 		"games", "goofspiel,mafia,monopoly",
 		"inert_when", "the turn carries no bound move (agent does not route, or no move tool call)")
@@ -1658,7 +1604,6 @@ func run() error {
 			// Monopoly keeps forming at exactly MinPlayers, as it already did: it is
 			// natively playable at that size, so its target IS its minimum and the
 			// short-form fallback never engages. Nothing about its timing changes here.
-			string(devplatform.GameMonopoly): monopolyTableCreator{svc: monopolySvc, seats: monopoly.MinPlayers},
 		},
 		ratingSvc, clock,
 		groupmatch.Config{ShortFormAfter: cfg.GroupShortFormAfter},
@@ -1776,7 +1721,7 @@ func run() error {
 			rankedQueueAdapter{mm: matchmakingSvc},
 			sandboxStarterAdapter{
 				throttle: autoplay.NewSandboxThrottle(5 * time.Minute),
-				goof:     sandboxSvc, mafia: mafiaSvc, monopoly: monopolySvc,
+				goof: sandboxSvc, mafia: mafiaSvc,
 			},
 			autoplay.Config{},
 			log,
@@ -1808,7 +1753,6 @@ func run() error {
 				houseIDs = append(houseIDs, a.PublicID)
 			}
 			mafiaSvc.SetHouseRoster(houseIDs)
-			monopolySvc.SetHouseRoster(houseIDs)
 			// Dev-only: certify the platform's demo bots so they clear the ranked
 			// certification gate. They have no hosted endpoint, so record a
 			// pre-verified manifest directly. This lets the demo runner produce rated
@@ -1819,7 +1763,7 @@ func run() error {
 					log.Warn("demo agent certify failed", "agent", a.PublicID, "error", err)
 				}
 			}
-			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).WithMonopoly(monopolySvc).Run)
+			launch("demo-bot-runner", bot.NewRunner(matchSvc, mafiaSvc, agents, log).Run)
 			// NOTE: mafia push-play is now enabled unconditionally above with dedicated
 			// kind='house' filler bots, so it no longer depends on these demo agents.
 		}
@@ -2335,37 +2279,6 @@ func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []group
 	return id, nil
 }
 
-type monopolyTableCreator struct {
-	svc   *monopoly.Service
-	seats int
-}
-
-func (c monopolyTableCreator) SeatTarget() int { return c.seats }
-
-// MinSeats equals SeatTarget: Monopoly's creator already sizes the table to the group it
-// is handed, and its target is its minimum playable size, so there is nothing to relax.
-func (c monopolyTableCreator) MinSeats() int { return c.seats }
-
-func (c monopolyTableCreator) CreateStartedTable(ctx context.Context, seats []groupmatch.Seat, bid int64) (string, error) {
-	id, err := c.svc.CreateTable(ctx, seats[0].AgentPublicID, seats[0].OwnerPublicID, bid, len(seats))
-	if err != nil {
-		return "", err
-	}
-	for _, s := range seats[1:] {
-		if _, err := c.svc.Join(ctx, s.AgentPublicID, s.OwnerPublicID, id); err != nil {
-			return "", err
-		}
-	}
-	// Push turns to the real agents. Without this the table started and nobody was ever asked
-	// to move: Monopoly sizes to the group, so every seat is a real agent, and both SDK
-	// transports are push-based. See monopoly.DriveMatchedSeats.
-	real := make([]string, 0, len(seats))
-	for _, st := range seats {
-		real = append(real, st.AgentPublicID)
-	}
-	c.svc.DriveMatchedSeats(ctx, id, real)
-	return id, nil
-}
 
 // autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
 // ranked auto-play for the game it would play — that its manifest declares that game
@@ -2623,27 +2536,9 @@ func (f awarderFunc) AwardVerified(ctx context.Context, agentPublicID string) er
 	return f(ctx, agentPublicID)
 }
 
-// monopolyActRecorder adapts the store to the shape monopoly asks for.
-//
-// A translation layer of two methods, so internal/monopoly does not import internal/store. The
-// alternative compiles and inverts the layering, and every field added later would then live in a
-// persistence type the engine has no business knowing about.
-type monopolyActRecorder struct{ repo *store.PIndexRepo }
-
-func (a monopolyActRecorder) RecordActDecision(ctx context.Context, d monopoly.ActDecision) error {
-	return a.repo.RecordActDecision(ctx, store.ActDecision{
-		MatchID: d.MatchID, AgentPublicID: d.AgentPublicID, Game: "monopoly",
-		Seq: d.Seq, Round: d.Round, Action: d.Action, Outcome: d.Outcome,
-		InputJSON: d.InputJSON,
-	})
-}
-
-func (a monopolyActRecorder) AggregateSeatBenchmark(ctx context.Context, matchID, game string, results map[string]string) error {
-	return a.repo.AggregateSeatBenchmark(ctx, matchID, game, results)
-}
 
 // mafiaActRecorder adapts the store to the shape mafia asks for, so internal/mafia does not
-// import internal/store. Same reasoning as monopolyActRecorder above.
+// import internal/store. Same reasoning as the game services generally: the engine never imports persistence.
 type mafiaActRecorder struct{ repo *store.PIndexRepo }
 
 func (a mafiaActRecorder) RecordActDecision(ctx context.Context, d mafia.ActDecision) error {
