@@ -721,7 +721,37 @@ func (s *Service) checkStake(ctx context.Context, bid int64) error {
 	return nil
 }
 
+// CreateRoom opens a PRIVATE waiting match: a room reachable only by its public id.
+//
+// # Why this delegates rather than duplicating
+//
+// A room is an open match with one bit flipped. Every control that matters — the stake
+// floor, the spending limits, the verification gate, the escrow on join, the refusal to
+// join your own match — is identical, and the reason to route through the same function
+// is that this codebase has already been bitten by the alternative: the stake floor was
+// bypassed once because a second caller reached the escrow path around the check. A room
+// that reimplemented these would be a second place for that to happen, and the second
+// place is always the one nobody updates.
+//
+// # What the caller is buying
+//
+// Invisibility, and nothing else. The room does not skip a check, does not escape the
+// rake, and does not get a different settlement path. It is the open lobby minus the
+// listing.
+func (s *Service) CreateRoom(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
+	return s.createWaiting(ctx, agentPublicID, ownerPublicID, bid, true)
+}
+
 func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
+	return s.createWaiting(ctx, agentPublicID, ownerPublicID, bid, false)
+}
+
+// createWaiting is the one implementation behind both the open lobby and rooms.
+//
+// `private` is the ONLY difference between them. Keeping it a parameter rather than a
+// branch inside the body means a future check added here cannot be added to one path and
+// forgotten on the other.
+func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicID string, bid int64, private bool) (string, error) {
 	if err := s.checkStake(ctx, bid); err != nil {
 		return "", err
 	}
@@ -749,6 +779,7 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 		FairnessMode:  gs.FairnessShuffled,
 		Seed:          seed,
 		Creator:       Player{AgentPublicID: agentPublicID, OwnerPublicID: ownerPublicID, Seat: gs.SeatA},
+		Private:       private,
 	})
 	if err != nil {
 		return "", err
@@ -1907,109 +1938,4 @@ func (s *Service) rakePct() int {
 		}
 	}
 	return s.cfg.RakePct
-}
-
-// CreateHarnessPaired seats two PLATFORM benchmark agents in one match at zero stake.
-//
-// A sibling of CreatePaired, not a flag on it. The alternative was letting bid = 0 through
-// CreateOpen/CreatePaired for harness agents, and that is exactly the shape this codebase has
-// already been burned by: an exemption cut into a stake control, which then has to be correct
-// at every call site forever. Here the stake path is not relaxed — it is not reached. Nothing
-// is escrowed because there is nothing to escrow.
-//
-// # Why the benchmark needs its own seating at all
-//
-// A paired comparison needs two attributed seats IN THE SAME MATCH: same harness, models
-// swapped, so the harness cancels and the difference is the model. The two existing paths
-// each get half of that. CreatePaired seats two agents and stakes them, which a research
-// harness must never do — the house never stakes here, and a benchmark seat winning coins
-// would be fraud. Sandbox push-play stakes nothing and seats HOUSE BOTS, so each benchmark
-// model plays alone against an engine bot: measured, a 4-match run produced 8 tables, 43
-// successful model calls and ZERO comparisons.
-//
-// # What keeps it safe
-//
-// Both seats must be kind='harness', checked here rather than trusted from the caller. That
-// is the whole authorization story: a route that could seat a DEVELOPER's agent at zero stake
-// would be a way to play ranked-looking matches for free, and an admin credential is not a
-// reason to allow it — the check is about what the agent IS, not who asked.
-//
-// The match is unrated, so it reaches no developer board, no rating and no P-Index. That is
-// the same separation the harness kind gets everywhere else; it is repeated here because a
-// table created outside the normal flow is exactly where such a property gets forgotten.
-// boardSeed, when non-nil, fixes the prize order instead of drawing one at random.
-//
-// This exists for duplicate scheduling (internal/exploit): every pairing must play byte-identical
-// deals or their scores cannot be compared within a board, and a random seed per match is exactly
-// the confounder that made the 2026-08-20 run unreadable.
-//
-// It is accepted HERE and nowhere else, and that is not stylistic. A fixed prize order is a
-// PREDICTABLE one, and a Goofspiel board whose prize sequence is known in advance is a different,
-// far easier game — it can be solved offline. On a staked table that is a fairness hole and a way
-// to take a developer's money. This path is zero-stake, zero-rake, unrated, and restricted to
-// platform benchmark agents whose kind is checked below, so there is nothing here to win by
-// knowing the deal.
-//
-// The provable-fairness commit is unaffected: it proves the seed was fixed before play, which it
-// was. What a commit cannot do is make a reused seed safe where somebody can profit from it.
-func (s *Service) CreateHarnessPaired(ctx context.Context, aAgent, aOwner, bAgent, bOwner string, boardSeed []byte) (string, error) {
-	if aAgent == bAgent {
-		// A model cannot be compared with itself, and a table with one agent in both seats
-		// would produce a comparison that always ties.
-		return "", httpx.NewError(400, "invalid_request", "a benchmark table needs two distinct agents")
-	}
-	for _, id := range []string{aAgent, bAgent} {
-		kind, err := s.repo.AgentKind(ctx, id)
-		if err != nil {
-			return "", err
-		}
-		if kind != "harness" {
-			return "", httpx.NewError(403, "not_a_harness_agent",
-				"only platform benchmark agents may be seated at a zero-stake table")
-		}
-	}
-
-	seed := make([]byte, 32)
-	if len(boardSeed) > 0 {
-		// Length is enforced rather than padded. A short seed silently zero-extended would make
-		// two runs that meant different boards produce the same one, and that collision would
-		// look like a real result.
-		if len(boardSeed) != 32 {
-			return "", httpx.NewError(400, "invalid_request", "a board seed must be exactly 32 bytes")
-		}
-		copy(seed, boardSeed)
-	} else if _, err := rand.Read(seed); err != nil {
-		return "", err
-	}
-	cfg := gs.DefaultConfig()
-	cfg.Rounds = s.cfg.Rounds
-	cfg.FairnessMode = gs.FairnessShuffled
-	eng := gs.New(cfg)
-	state, events := eng.Init(seed)
-
-	publicID := platform.NewID(platform.PrefixMatch)
-	in := CreatePairedInput{
-		PublicID: publicID, Game: "goofspiel", Bid: 0, RakePct: 0,
-		TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version, Commit: gs.Commit(seed),
-		FairnessMode: gs.FairnessShuffled, Seed: seed,
-		SeatA: Player{AgentPublicID: aAgent, OwnerPublicID: aOwner, Seat: gs.SeatA},
-		SeatB: Player{AgentPublicID: bAgent, OwnerPublicID: bOwner, Seat: gs.SeatB},
-		State: state, Events: events,
-		// Unrated: benchmark results are the platform's, not a developer's, and every public
-		// board reads this flag or the agent kind to stay clean.
-		Unrated: true,
-	}
-	// No escrow, no refund path, no ready check: there are no coins to protect and both seats
-	// are processes the platform started itself.
-	// The same start countdown every other path sets. ONE clock reading feeds both values, so
-	// the first move window cannot open before the countdown it is meant to follow.
-	now := s.clock.Now()
-	in.StartsAt = readycheck.StartsAt(now, readycheck.DefaultPolicy("goofspiel").Countdown)
-	in.Deadline = in.StartsAt.Add(s.moveWindow(ctx, aAgent, bAgent))
-	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
-		return "", err
-	}
-	s.publish(publicID, state, events)
-	s.maybeDrive(publicID, aAgent, bAgent)
-	return publicID, nil
 }

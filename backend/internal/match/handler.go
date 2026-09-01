@@ -2,7 +2,6 @@ package match
 
 import (
 	"context"
-	"github.com/agent-arena/arena/internal/identity"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,19 +9,14 @@ import (
 
 	"github.com/agent-arena/arena/internal/auth"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
-	"github.com/agent-arena/arena/internal/exploit"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/go-chi/chi/v5"
 )
 
 // Handler exposes the agent-facing match API plus the public replay endpoint.
 type Handler struct {
-	svc   *Service
-	authn *auth.Authenticator
-	// admins is the explicit operator allowlist for the harness-table route. Nil/empty is
-	// safe: RequirePlatformOrAdmin still admits a Platform-scope service credential, and
-	// admits nobody else.
-	admins map[string]bool
+	svc    *Service
+	authn  *auth.Authenticator
 	stakes stakeResolver
 }
 
@@ -34,34 +28,23 @@ const maxStateWait = 15 * time.Second
 
 // Register mounts the routes. Lobby/state/action require an agent credential;
 // replay is public (anyone can verify a finished match).
-// SetAdmins injects the operator allowlist for the harness-table route. A setter rather
-// than a constructor argument so existing callers keep compiling; nil means only a
-// Platform-scope service credential is admitted, which is the safe default.
-func (h *Handler) SetAdmins(ids []string) {
-	m := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		if id != "" {
-			m[id] = true
-		}
-	}
-	h.admins = m
-}
-
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
 		r.With(agent).Get("/v1/lobby", h.lobby)
 		r.With(agent).Post("/v1/lobby/create", h.create)
-		// ZERO-STAKE BENCHMARK TABLE — operator only, and the service still refuses any seat
-		// that is not a harness agent. Two independent gates on purpose: this one says who
-		// may ASK, the service says what may be SEATED, and only the second is a statement
-		// about free play. An admin credential is not a reason to seat a developer's agent
-		// for free.
-		r.With(auth.RequirePlatformOrAdmin(h.admins)).
-			Post("/v1/admin/harness/table", h.createHarnessTable)
 		r.With(agent).Post("/v1/lobby/join", h.join)
 		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
+		// Rooms: a private table you share by id, for two developers who want to play
+		// each other rather than whoever the queue supplies.
+		//
+		// Separate routes rather than a flag on /v1/lobby/create, because the lobby
+		// routes are live and something else may depend on their exact shape. Joining
+		// and cancelling deliberately REUSE the lobby handlers: a room is an ordinary
+		// waiting match, and a second join path would be a second place for the escrow
+		// and same-owner checks to drift.
+		r.With(agent).Post("/v1/room/create", h.createRoom)
 		r.With(agent).Get("/v1/match/{id}/state", h.state)
 		r.With(agent).Post("/v1/match/{id}/action", h.action)
 		// Table talk. Separate from /action on purpose: speaking is not a move, is
@@ -135,53 +118,39 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id})
 }
 
-// createHarnessTable seats two platform benchmark agents in one match at zero stake.
+// createRoom opens a private table and returns the code to share.
 //
-// Takes agent ids rather than reading the caller's own principal: the operator is not a
-// player here, they are asking the platform to seat two of ITS agents against each other.
-func (h *Handler) createHarnessTable(w http.ResponseWriter, r *http.Request) {
+// The response names the field room_id as well as match_id. They are the same value:
+// a room IS a match, and inventing a second identifier would mean two ids for one thing
+// and a mapping to keep correct. The alias exists because the person reading it is about
+// to paste it into a chat window, and "room" is what they will call it.
+func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
-		AgentA string `json:"agent_a"`
-		AgentB string `json:"agent_b"`
-		// Board and SpecSalt request DUPLICATE scheduling: a deal derived from the salt and
-		// board index rather than drawn at random, so that every pairing in a benchmark run
-		// plays byte-identical boards and their scores can be compared within a board.
-		//
-		// SpecSalt must be supplied explicitly for this to engage. Defaulting it would mean a
-		// caller could get a predictable deal by omission, and predictability is the one
-		// property that makes a fixed board dangerous anywhere money is involved. Omit it and
-		// the table randomises exactly as before.
-		Board    int    `json:"board"`
-		SpecSalt string `json:"spec_salt"`
+		Tier string `json:"tier"`
+		Bid  int64  `json:"bid"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	if in.AgentA == "" || in.AgentB == "" {
-		httpx.Error(w, httpx.NewError(400, "invalid_request", "agent_a and agent_b are required"))
-		return
+	bid := in.Bid
+	if h.stakes != nil {
+		b, err := h.stakes.ResolveStake(r.Context(), "goofspiel", in.Tier, in.Bid)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		bid = b
 	}
-	if in.Board < 0 {
-		httpx.Error(w, httpx.NewError(400, "invalid_request", "board must not be negative"))
-		return
-	}
-	// nil unless a salt was named: no salt, no determinism.
-	var seed []byte
-	if in.SpecSalt != "" {
-		seed = exploit.BoardSeed(in.SpecSalt, in.Board)
-	}
-	// Both seats are owned by the platform identity — that is what a harness agent IS, and
-	// the service verifies the kind before seating either of them. The service also refuses a
-	// seed on any path that is not this one, so an admin credential cannot use it to fix the
-	// deal on a table where somebody could profit from knowing it.
-	id, err := h.svc.CreateHarnessPaired(r.Context(), in.AgentA, identity.SystemOwnerPublicID,
-		in.AgentB, identity.SystemOwnerPublicID, seed)
+	id, err := h.svc.CreateRoom(r.Context(), p.AgentPublicID, p.UserPublicID, bid)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{"match_id": id})
+	httpx.JSON(w, http.StatusCreated, map[string]any{
+		"room_id": id, "match_id": id, "game": "goofspiel", "bid": bid,
+	})
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {

@@ -10,13 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"bytes"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
-	"github.com/agent-arena/arena/internal/exploit"
 	"github.com/agent-arena/arena/internal/match"
 	"github.com/agent-arena/arena/internal/platform"
 	"github.com/agent-arena/arena/internal/readycheck"
-	"reflect"
 )
 
 // fakeMover stands in for the socket gateway: both agents are "connected" and each
@@ -80,6 +77,9 @@ type fakeRepo struct {
 	finishCalls   int
 	signingKeys   map[string]string // agentPublicID → registered Ed25519 pubkey ("" = none)
 	advances      []advanceCall     // every Advance, in order — see the round-start guard
+	// lastCreate is the most recent CreateWaitingMatch input, so a test can assert on
+	// fields match.Match does not carry back — Private in particular.
+	lastCreate match.CreateMatchInput
 }
 
 func newFakeRepo() *fakeRepo {
@@ -89,6 +89,7 @@ func newFakeRepo() *fakeRepo {
 func (r *fakeRepo) CreateWaitingMatch(_ context.Context, in match.CreateMatchInput) (match.Match, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.lastCreate = in
 	m := match.Match{
 		PublicID: in.PublicID, Game: in.Game, Status: match.StatusWaiting, Bid: in.Bid,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
@@ -633,20 +634,6 @@ func TestRoundStartIsStampedOnlyWhenARoundOpens(t *testing.T) {
 	}
 }
 
-// AgentKind answers "external" for anything these tests seat. They exercise the DEVELOPER
-// paths, and a stub that claimed "harness" would let a zero-stake benchmark table be created
-// in tests that are not about it — hiding the very check CreateHarnessPaired exists for.
-// harnessKinds lets a test opt specific agents into the platform-benchmark kind. Empty by
-// default so the developer-path tests are unaffected.
-var harnessKinds = map[string]bool{}
-
-func (f *fakeRepo) AgentKind(_ context.Context, id string) (string, error) {
-	if harnessKinds[id] {
-		return "harness", nil
-	}
-	return "external", nil
-}
-
 // TestJoinSetsStartCountdown pins that a goofspiel lobby table gets the same start countdown
 // mafia and monopoly already persist.
 //
@@ -687,112 +674,5 @@ func TestJoinSetsStartCountdown(t *testing.T) {
 	if m.RoundDeadline == nil || !m.RoundDeadline.After(*m.StartsAt) {
 		t.Fatalf("round deadline %v must be strictly after starts_at %v, otherwise the countdown "+
 			"eats the first round's thinking time", m.RoundDeadline, m.StartsAt)
-	}
-}
-
-// TestHarnessBoardSeedIsDeterministicAndShared pins the property duplicate scheduling needs:
-// the same board seed must produce the same deal for every pairing, and a different seed must
-// produce a different one.
-//
-// If this ever stops holding, two pairings are no longer playing the same board and the
-// within-board comparison silently becomes an ordinary unpaired one — which is the failure mode
-// that made the 2026-08-20 run unreadable, and it would not announce itself.
-func TestHarnessBoardSeedIsDeterministicAndShared(t *testing.T) {
-	ctx := context.Background()
-	for _, id := range []string{"ag_h1", "ag_h2", "ag_h3", "ag_h4", "ag_h5", "ag_h6"} {
-		harnessKinds[id] = true
-		defer delete(harnessKinds, id)
-	}
-	seedA := exploit.BoardSeed("spec-v1", 3)
-	seedB := exploit.BoardSeed("spec-v1", 3)
-	seedOther := exploit.BoardSeed("spec-v1", 4)
-
-	if !bytes.Equal(seedA, seedB) {
-		t.Fatal("BoardSeed is not deterministic; two pairings would play different deals on the " +
-			"same board index")
-	}
-	if bytes.Equal(seedA, seedOther) {
-		t.Fatal("two different boards derived the same seed; the board set collapses to one deal")
-	}
-	if len(seedA) != 32 {
-		t.Fatalf("BoardSeed returned %d bytes, want 32 — the service rejects any other length",
-			len(seedA))
-	}
-
-	// Two separate harness tables handed the same seed must deal the same prize order.
-	svc, repo := newSvcWithRepo()
-	id1, err := svc.CreateHarnessPaired(ctx, "ag_h1", "usr_sys", "ag_h2", "usr_sys", seedA)
-	if err != nil {
-		t.Fatalf("first harness table: %v", err)
-	}
-	id2, err := svc.CreateHarnessPaired(ctx, "ag_h3", "usr_sys", "ag_h4", "usr_sys", seedB)
-	if err != nil {
-		t.Fatalf("second harness table: %v", err)
-	}
-
-	repo.mu.Lock()
-	m1, m2 := repo.matches[id1], repo.matches[id2]
-	repo.mu.Unlock()
-
-	if !reflect.DeepEqual(m1.State.PrizeOrder, m2.State.PrizeOrder) {
-		t.Fatalf("same seed produced different prize orders: %v vs %v",
-			m1.State.PrizeOrder, m2.State.PrizeOrder)
-	}
-
-	// And a different board must actually differ, or blocking has nothing to block on.
-	id3, err := svc.CreateHarnessPaired(ctx, "ag_h5", "usr_sys", "ag_h6", "usr_sys", seedOther)
-	if err != nil {
-		t.Fatalf("third harness table: %v", err)
-	}
-	repo.mu.Lock()
-	m3 := repo.matches[id3]
-	repo.mu.Unlock()
-	if reflect.DeepEqual(m1.State.PrizeOrder, m3.State.PrizeOrder) {
-		t.Fatal("two different boards dealt the same prize order; the board set is degenerate")
-	}
-}
-
-// TestHarnessRejectsShortBoardSeed. A silently zero-extended seed would make two boards collide
-// and the collision would look like a genuine result.
-func TestHarnessRejectsShortBoardSeed(t *testing.T) {
-	svc := newSvc()
-	if _, err := svc.CreateHarnessPaired(context.Background(),
-		"ag_h1", "usr_sys", "ag_h2", "usr_sys", []byte{1, 2, 3}); err == nil {
-		t.Fatal("a 3-byte board seed was accepted; it must be rejected, not padded")
-	}
-}
-
-// TestHarnessTableGetsStartCountdown closes the last path without one.
-//
-// Mafia, monopoly and the goofspiel lobby all persist starts_at; harness tables did not, and 6 of
-// 6 finished benchmark tables carried NULL — so the console could render no countdown for the
-// platform's own runs, which are precisely the ones an operator watches.
-func TestHarnessTableGetsStartCountdown(t *testing.T) {
-	ctx := context.Background()
-	for _, id := range []string{"ag_hc1", "ag_hc2"} {
-		harnessKinds[id] = true
-		defer delete(harnessKinds, id)
-	}
-	svc, repo := newSvcWithRepo()
-	id, err := svc.CreateHarnessPaired(ctx, "ag_hc1", "usr_sys", "ag_hc2", "usr_sys", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	repo.mu.Lock()
-	m := repo.matches[id]
-	repo.mu.Unlock()
-
-	now := time.Unix(1_700_000_000, 0).UTC()
-	if m.StartsAt == nil {
-		t.Fatal("a harness table was created with no starts_at — no surface can count to a " +
-			"shared instant for the platform's own benchmark runs")
-	}
-	if !m.StartsAt.After(now) {
-		t.Fatalf("starts_at %v is not after the creation instant %v; a countdown that has "+
-			"already elapsed is the same as none", m.StartsAt, now)
-	}
-	if m.RoundDeadline == nil || !m.RoundDeadline.After(*m.StartsAt) {
-		t.Fatalf("round deadline %v must follow starts_at %v, or the countdown eats the first "+
-			"round's thinking time", m.RoundDeadline, m.StartsAt)
 	}
 }

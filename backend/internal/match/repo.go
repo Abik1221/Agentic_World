@@ -15,12 +15,6 @@ type Repo interface {
 	// CreateWaitingMatch inserts a waiting match plus its seat-A (creator) player.
 	CreateWaitingMatch(ctx context.Context, in CreateMatchInput) (Match, error)
 
-	// AgentKind reports an agent's kind ('external' | 'house' | 'harness'). Used to refuse
-	// seating anything but a platform benchmark agent at a zero-stake table — checked from
-	// the database rather than trusted from the caller, because the caller asking is an
-	// admin and "an admin asked" is not evidence about what the agent IS.
-	AgentKind(ctx context.Context, agentPublicID string) (string, error)
-
 	// ListWaiting returns open matches for (game,bid), excluding the joiner's own
 	// matches (same-owner pairing block), most recent first.
 	ListWaiting(ctx context.Context, game string, bid int64, excludeOwnerPublicID string, limit int) ([]LobbyItem, error)
@@ -122,6 +116,17 @@ type CreateMatchInput struct {
 	FairnessMode  string
 	Seed          []byte
 	Creator       Player // seat 0
+
+	// Private hides the waiting match from the open lobby, making it reachable only
+	// by somebody holding its public id.
+	//
+	// A room is otherwise an ordinary open match: same stake path, same join checks,
+	// same ErrSameOwner refusal. The only difference is that ListWaiting skips it, so
+	// the seat cannot be taken by a stranger browsing the lobby between the moment the
+	// code is shared and the moment the invited player uses it.
+	//
+	// Defaults to false, so every existing caller keeps producing public lobby entries.
+	Private bool
 }
 
 // CreatePairedInput is the data needed to open an already-active, two-seat match
