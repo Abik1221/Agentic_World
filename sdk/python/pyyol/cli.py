@@ -2056,16 +2056,32 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         # exists to remove, reintroduced by a dropped frame. So once everything has
         # been started, stop after a stretch of silence instead of trusting the count.
         if wanted:
-            idle = 0.0
-            while not stop.is_set() and idle < _COUNTED_RUN_IDLE_TIMEOUT_S:
+            # Silence since the last frame, NOT time since the run began.
+            #
+            # This counter used to start at zero and only ever climb, so a run was
+            # capped at a flat 300 seconds however busy it was. Goofspiel and Mafia
+            # finish inside that and never noticed. A Monopoly match does not: it was
+            # cut off mid-play every single time, always at five minutes, and the CLI
+            # reported it as "nothing finished" — which read as a broken match rather
+            # than a stopwatch. No Monopoly game could be played to completion.
+            #
+            # conn.last_activity is stamped on every lifecycle event, so a game that is
+            # producing turns keeps the countdown pinned no matter how long it runs, and
+            # a genuinely dead connection still gives up on schedule. That is what the
+            # comment above always said this did.
+            while not stop.is_set():
                 time.sleep(2.0)
-                idle += 2.0
+                if time.monotonic() - conn.last_activity >= _COUNTED_RUN_IDLE_TIMEOUT_S:
+                    break
             if not stop.is_set():
+                # Say SILENCE, not "no match finished". The old wording described a
+                # long healthy game as a failure to finish, which sent people looking
+                # at their agent when the connection had simply gone quiet.
                 console.emit(
                     "match",
-                    "stopping: no match finished in the last "
-                    f"{int(_COUNTED_RUN_IDLE_TIMEOUT_S)}s — some results may have been "
-                    "missed while disconnected. `pyyol replay` is authoritative.",
+                    "stopping: nothing heard from the arena for "
+                    f"{int(_COUNTED_RUN_IDLE_TIMEOUT_S)}s — the match may still be "
+                    "running without this agent. `pyyol replay` is authoritative.",
                 )
                 stop.set()
                 threading.Timer(0.5, conn.stop).start()
