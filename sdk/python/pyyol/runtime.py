@@ -148,6 +148,18 @@ class RuntimeConnector:
         # asked before every match of a long run is the thing you learn to dread, and a
         # timed-out prompt has left a reader on stdin that would swallow the next one.
         self._watch_offered = False
+        # When this connection last saw ANYTHING happen, for callers that need to tell
+        # "quiet" from "slow".
+        #
+        # A counted run has to give up eventually, or a dropped game_end frame hangs it
+        # forever. But "eventually" has to mean silence, not elapsed time: a Monopoly
+        # match runs for far longer than any timeout a Goofspiel match would need, and
+        # cutting a healthy game off mid-play is a worse failure than the hang, because
+        # it looks like the match itself is broken.
+        #
+        # monotonic, not wall clock: an NTP correction mid-match must not read as
+        # minutes of silence and stop a run that is fine.
+        self.last_activity = time.monotonic()
         # Opt-in Pyyol Lens telemetry (no-op unless PYYOL_LENS_ENDPOINT+KEY set).
         # Correlated to the match trace so the agent's model/tool calls render
         # alongside the platform's authoritative gateway spans.
@@ -157,6 +169,11 @@ class RuntimeConnector:
 
     def _emit(self, kind: str, msg: str, level: int = logging.INFO, **fields: Any) -> None:
         # File/debug log (what `pyyol logs` tails) + the live terminal console.
+        #
+        # Every lifecycle signal funnels through here, which is why the activity stamp
+        # lives here rather than in each caller: a new event type added later is counted
+        # as activity automatically, instead of silently not being.
+        self.last_activity = time.monotonic()
         log.log(level, "%s %s", kind, msg)
         self.console.emit(kind, msg, **fields)
 
