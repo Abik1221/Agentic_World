@@ -489,13 +489,44 @@ jobs:
           if command -v ufw >/dev/null 2>&1; then ufw allow "${ARENA_PORT}"/tcp || true; fi
 
           echo "Waiting for /readyz (DB reachable + migrations applied)..."
+          READY=no
           for i in $(seq 1 40); do
             if curl -fsS "http://localhost:${ARENA_PORT}/readyz" >/dev/null 2>&1; then
-              echo "✅ Arena backend healthy on :${ARENA_PORT} (/readyz OK — migrations applied)."; exit 0
+              echo "✅ Arena backend healthy on :${ARENA_PORT} (/readyz OK — migrations applied)."
+              READY=yes; break
             fi
             [ "$i" -eq 40 ] && { echo "❌ /readyz never became healthy."; $DC -f docker-compose.prod.yml logs --tail=80 server; exit 1; }
             sleep 3
           done
+          [ "$READY" = yes ] || exit 1
+
+          # Surface the operator seeding result.
+          #
+          # Seeding runs on every boot and, until now, said so only in the container log —
+          # which this workflow prints ONLY when the deploy fails. So the one outcome that
+          # decides whether anyone can sign in as an admin was invisible on every successful
+          # deploy, and the failure mode is silent by nature: an operator whose id is not in
+          # ADMIN_USER_IDS signs in perfectly well and sees an empty console.
+          #
+          # The server already logs that case as a WARN naming the exact id to add. This just
+          # puts those lines where whoever ran the deploy will actually see them.
+          #
+          # Grepped rather than dumped because the full log is noisy, and NOTHING here prints
+          # a credential: the server logs the public id, whether the account was created and
+          # whether it is in the allowlist — never the password.
+          echo "--- operator seeding ---"
+          SEEDLOG=$($DC -f docker-compose.prod.yml logs --tail=400 server 2>/dev/null \
+            | grep -E "operator account|SEED_ADMIN_OPERATORS|admin allowlist" || true)
+          if [ -n "$SEEDLOG" ]; then
+            echo "$SEEDLOG"
+          else
+            echo "(no seeding lines — SEED_ADMIN_OPERATORS and SEED_ADMIN_EMAIL are both unset)"
+          fi
+          # A seeded account missing from the allowlist is not a deploy failure — the arena is
+          # serving and every other user is fine — so this warns loudly rather than exiting 1.
+          if printf '%s' "$SEEDLOG" | grep -q "NOT in ADMIN_USER_IDS"; then
+            echo "::warning::An operator account is not in ADMIN_USER_IDS: it can sign in but has no admin rights. See the line above for the id to add."
+          fi
           ENDSSH
 
       - name: Summary
