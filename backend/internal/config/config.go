@@ -387,10 +387,15 @@ type Config struct {
 	// The password is a real credential: pass it as a CI secret, never a literal in a repo.
 	SeedAdminEmail    string
 	SeedAdminPassword string
-	SeedAdminUserID   string        // "" ⇒ seedadmin.DefaultUserID
-	DetectInterval    time.Duration // anti-fraud detection sweep cadence
-	CollusionLookback time.Duration // how far back the collusion sweep looks
-	CollusionMinGames int           // minimum head-to-head games before flagging
+	SeedAdminUserID   string // "" ⇒ seedadmin.DefaultUserID
+	// SeedAdminOperators seeds SEVERAL operator accounts, as a JSON list. The single
+	// SEED_ADMIN_* trio above still works and covers the one-operator case; this is what a
+	// deployment with a team sets instead. Also a CI secret, for the same reason: the
+	// repository is public and a credential pushed to it is disclosed permanently.
+	SeedAdminOperators string
+	DetectInterval     time.Duration // anti-fraud detection sweep cadence
+	CollusionLookback  time.Duration // how far back the collusion sweep looks
+	CollusionMinGames  int           // minimum head-to-head games before flagging
 
 	// Money & limits (Stage 4)
 	SessionWindow     time.Duration // trailing window defining a "session" for session-loss
@@ -595,7 +600,7 @@ func Load() (*Config, error) {
 		HotWalletMinSOLLamports:  int64(l.intVal("HOT_WALLET_MIN_SOL_LAMPORTS", 0)),
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
-		MoveWindow:         time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
+		MoveWindow: time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
 		// Defaults chosen to read as deliberation without stalling a click: roughly
 		// three quarters of a second per house move, and never more than three
 		// seconds of pause inside a single action.
@@ -657,12 +662,13 @@ func Load() (*Config, error) {
 		AdminUserIDs: l.csv("ADMIN_USER_IDS", ""),
 		// Operator account seeding. Both empty ⇒ nothing is seeded (the default), so a
 		// deployment that does not want this is unaffected. See internal/seedadmin.
-		SeedAdminEmail:    l.str("SEED_ADMIN_EMAIL", ""),
-		SeedAdminPassword: l.str("SEED_ADMIN_PASSWORD", ""),
-		SeedAdminUserID:   l.str("SEED_ADMIN_USER_ID", ""),
-		DetectInterval:    l.dur("DETECT_INTERVAL", time.Hour),
-		CollusionLookback: l.dur("COLLUSION_LOOKBACK", 7*24*time.Hour),
-		CollusionMinGames: l.intVal("COLLUSION_MIN_GAMES", 5),
+		SeedAdminEmail:     l.str("SEED_ADMIN_EMAIL", ""),
+		SeedAdminPassword:  l.str("SEED_ADMIN_PASSWORD", ""),
+		SeedAdminUserID:    l.str("SEED_ADMIN_USER_ID", ""),
+		SeedAdminOperators: l.str("SEED_ADMIN_OPERATORS", ""),
+		DetectInterval:     l.dur("DETECT_INTERVAL", time.Hour),
+		CollusionLookback:  l.dur("COLLUSION_LOOKBACK", 7*24*time.Hour),
+		CollusionMinGames:  l.intVal("COLLUSION_MIN_GAMES", 5),
 
 		SessionWindow:     l.dur("SESSION_WINDOW", 6*time.Hour),
 		ReconcileInterval: l.dur("RECONCILE_INTERVAL", 24*time.Hour),

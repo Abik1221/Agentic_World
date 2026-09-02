@@ -104,6 +104,8 @@ jobs:
           SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
           SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
           SEED_ADMIN_USER_ID: ${{ secrets.SEED_ADMIN_USER_ID }}
+          # Several operators, as one JSON list. See the .env block below.
+          SEED_ADMIN_OPERATORS: ${{ secrets.SEED_ADMIN_OPERATORS }}
           PLATFORM_ENGINE_PRIVATE_KEY: ${{ secrets.PLATFORM_ENGINE_PRIVATE_KEY }}
           PLATFORM_ADMIN_PUBLIC_KEY: ${{ secrets.PLATFORM_ADMIN_PUBLIC_KEY }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
@@ -283,6 +285,23 @@ jobs:
           SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL:-}
           SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD:-}
           SEED_ADMIN_USER_ID=${SEED_ADMIN_USER_ID:-}
+
+          # SEVERAL operators, as one JSON list:
+          #   [{"email":"a@x.com","password":"..."},{"email":"b@x.com","password":"..."}]
+          #
+          # JSON rather than a delimited string because a password contains whatever
+          # character would have been the separator, and a scheme that mangles a credential
+          # surfaces as "invalid login" with nothing pointing at the parser.
+          #
+          # The first entry takes usr_pyyoladmin (so ADMIN_USER_IDS keeps matching on a
+          # deployment that already had one operator); the rest get usr_admin_<local-part>.
+          # Every id must be listed in ADMIN_USER_IDS or the account signs in and sees
+          # nothing — the boot log names the exact id when that happens.
+          #
+          # A REPOSITORY SECRET, never a literal here. This repository is public: a password
+          # committed to it is disclosed the moment it is pushed, and deleting it later does
+          # not help because the history keeps it.
+          SEED_ADMIN_OPERATORS=${SEED_ADMIN_OPERATORS:-}
           # Short access JWT; the BFF silently rotates the refresh token so active
           # users stay signed in, and only true absence (past the refresh TTL) logs out.
           DASHBOARD_TOKEN_TTL=${DASHBOARD_TOKEN_TTL:-1h}
