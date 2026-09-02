@@ -1818,6 +1818,41 @@ func run() error {
 		}
 	}
 
+	// Several operators, from one JSON secret. Runs alongside the single-account path above
+	// rather than replacing it, so a deployment already using SEED_ADMIN_EMAIL keeps working
+	// untouched.
+	//
+	// Best-effort like the single seed, and for the same reason: refusing to serve the arena
+	// because an operator's password was two characters short is the wrong trade. But every
+	// outcome is logged per account, because "seeding failed" tells whoever is locked out
+	// nothing about which account or why.
+	if ops, perr := seedadmin.ParseOperators(cfg.SeedAdminOperators); perr != nil {
+		log.Error("SEED_ADMIN_OPERATORS could not be read — no operators seeded from it", "err", perr)
+	} else if len(ops) > 0 {
+		results, rerr := seedadmin.RunAll(ctx, st.DB, ops, cfg.APIKeyPepper)
+		if rerr != nil {
+			log.Error("some operator accounts could not be seeded", "err", rerr)
+		}
+		for _, res := range results {
+			admin := false
+			for _, id := range cfg.AdminUserIDs {
+				if id == res.UserPublicID {
+					admin = true
+					break
+				}
+			}
+			log.Info("operator account seeded", "user", res.UserPublicID, "created", res.Created,
+				"in_admin_allowlist", admin)
+			if !admin {
+				// The account works and sees nothing, which is the confusing half of this
+				// pair of settings. Name the exact id so the fix is a copy-paste.
+				log.Warn("operator account is NOT in ADMIN_USER_IDS — it can sign in but has no admin rights",
+					"user", res.UserPublicID,
+					"fix", "add "+res.UserPublicID+" to ADMIN_USER_IDS")
+			}
+		}
+	}
+
 	docsHandler := docs.NewHandler(docsRepo)
 	docsAdminHandler := docs.NewAdminHandler(docsRepo, authn, cfg.AdminUserIDs)
 
