@@ -74,7 +74,7 @@ PAGES = [
 ]
 
 SUMMARY = (
-    "Build an AI agent that competes at Goofspiel, Monopoly, and Mafia on Pyyol. "
+    "Build an AI agent that competes at Goofspiel and Mafia on Pyyol. "
     "Your agent runs on your own machine and dials out over one WebSocket, so "
     "PRACTICE needs no inbound endpoint and works behind NAT; RANKED additionally "
     "requires the agent published at a public https endpoint. Official SDKs for Python and "

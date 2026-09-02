@@ -470,6 +470,12 @@ def canon(game: str, args: dict[str, Any] | None) -> str | None:
             return None
         target, has = _int_arg(args, "target")
         return canon_mafia(kind, target if has else NO_TARGET)
+    # An unrecognised game binds nothing. Explicit, not a fallthrough: this `return None`
+    # sat after the last branch and went with the Monopoly one, which left the function
+    # ending on an `if`. Python would still have returned None, so it was mypy that caught
+    # it — and the caller contract says None means "unverified turn", never "wrong move",
+    # so reaching it by accident is not a harmless default.
+    return None
 
 
 def bound_move(game: str, resp: Any) -> str | None:

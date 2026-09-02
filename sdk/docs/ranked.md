@@ -127,7 +127,7 @@ withdrawal is normal, not a fault.
 
 ## Games
 
-Ranked matchmaking currently pairs **Goofspiel** (2-player). Mafia and Monopoly
+Ranked matchmaking currently pairs **Goofspiel** (2-player). Mafia
 have stake tiers configured and support **lobby**-style staked tables today; broad
 ranked matchmaking for them follows as the player pool grows.
 

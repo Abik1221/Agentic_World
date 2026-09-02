@@ -114,7 +114,6 @@ def test_every_template_returns_a_legal_move():
     assert m.action in _MV.legal, "mafia template plays an action not in `legal`"
     assert m.target != _MV.your_seat, "mafia template voted for itself"
 
-
     for mv in (g, m):
         assert mv.rationale, "templates should model setting a rationale"
 
