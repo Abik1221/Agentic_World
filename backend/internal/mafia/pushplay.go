@@ -295,6 +295,9 @@ func (p *pushPlayer) drive(s *Service, matchID string, remotes map[string]agentc
 	// on its proven private results). Cached per seat so each keeps its deterministic
 	// rng across the match. Pure engine — no AI/network.
 	houseBots := map[int]*mf.Bot{}
+	// When each BOT seat is willing to answer, keyed by the phase it is acting in.
+	// See the else-branch below and housedrive.go's readyAt, which this mirrors.
+	botReadyAt := map[phaseKey]time.Time{}
 	for {
 		if ctx.Err() != nil {
 			p.log.Warn("mafia pushplay: deadline exceeded", "match", matchID)
@@ -395,6 +398,25 @@ func (p *pushPlayer) drive(s *Service, matchID string, remotes map[string]agentc
 					s.decisionTracer.EmitAgentDecision(de)
 				}
 			} else {
+				// Take a moment before answering — the same pacing the house driver uses.
+				//
+				// This loop drives the bot seats for SANDBOX play, which is the path a
+				// developer is actually on when they run `pyyol play mafia`. Pacing only
+				// the group-matchmaking driver would have left the common case answering
+				// instantly, which is the thing that reads as machinery: eleven seats
+				// speaking and voting inside one tick, in seat order.
+				//
+				// A floor on when the seat may act, never a sleep: the loop keeps serving
+				// every other seat while this one is thinking.
+				k := phaseKey{seat: v.YourSeat, day: v.Day, phase: string(v.Phase)}
+				when, seen := botReadyAt[k]
+				if !seen {
+					when = time.Now().Add(thinkFor(matchID, k))
+					botReadyAt[k] = when
+				}
+				if time.Now().Before(when) {
+					continue
+				}
 				// Strong, role-aware engine bot. Falls back to the simple legal pick
 				// if it ever returns a kind not currently legal (never stalls a seat).
 				bot := houseBots[v.YourSeat]
