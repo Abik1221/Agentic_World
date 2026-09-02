@@ -44,6 +44,18 @@ func deepFor(game string) []Detail {
 	if err != nil {
 		panic("gamespec: missing deep prose for " + game + ": " + err.Error())
 	}
+	// Normalise line endings before the prose is embedded.
+	//
+	// This text ends up inside gamespec.json as escaped string content, so a CRLF source
+	// file produces "\r\n" in the JSON. A checkout on Windows has CRLF and one on Linux has
+	// LF, so the SAME command generated two different files depending on who ran it — and
+	// llms-docs-fresh, which regenerates and diffs, failed for whoever was not on the
+	// platform that last committed. The diff was 38 invisible escapes and read as though
+	// the docs were stale.
+	//
+	// Normalising here rather than in the generator: the line endings of a source file are
+	// not part of the prose, and every consumer of this function wants the same answer.
+	raw = []byte(strings.ReplaceAll(string(raw), "\r\n", "\n"))
 	// Everything before the first heading is the file's editing-warning comment, so the
 	// split's leading chunk is dropped rather than parsed.
 	chunks := strings.Split("\n"+string(raw), "\n#### ")
