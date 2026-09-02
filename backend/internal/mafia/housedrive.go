@@ -2,6 +2,8 @@ package mafia
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -50,6 +52,22 @@ func (s *Service) driveHouseSeats(matchPublicID string, houseAgentIDs []string) 
 	// and its accumulated private knowledge (a detective remembers what it proved).
 	bots := map[int]*mf.Bot{}
 
+	// When each seat is willing to act, keyed by the phase it is acting in.
+	//
+	// Every house seat used to answer in the same pass of this loop, so twelve players
+	// spoke and voted inside one tick — instantly, together, in seat order. Nothing else
+	// about a table gives the game away as completely: a human reads simultaneity as
+	// machinery long before they notice anything about the moves themselves.
+	//
+	// So each seat now takes its own moment to answer. The delay is DETERMINISTIC — drawn
+	// from the match id, the seat and the phase — so a replay of the same match paces
+	// identically and the pause cannot become a source of flakiness in tests.
+	//
+	// It is a floor on when a seat MAY act, never a sleep: the loop keeps serving every
+	// other seat while one is thinking. Blocking here would make the whole table wait on
+	// the slowest thinker, which is the opposite of the intent.
+	readyAt := map[phaseKey]time.Time{}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -71,6 +89,16 @@ func (s *Service) driveHouseSeats(matchPublicID string, houseAgentIDs []string) 
 			if len(v.Legal) == 0 {
 				continue // this seat has nothing pending in the current phase
 			}
+			// Take a moment before answering, per seat and per phase.
+			k := phaseKey{seat: v.YourSeat, day: v.Day, phase: string(v.Phase)}
+			when, seen := readyAt[k]
+			if !seen {
+				when = time.Now().Add(thinkFor(matchPublicID, k))
+				readyAt[k] = when
+			}
+			if time.Now().Before(when) {
+				continue // still thinking — the loop serves the other seats meanwhile
+			}
 			bot := bots[v.YourSeat]
 			if bot == nil {
 				bot = mf.NewBot("house", []byte(matchPublicID+":"+id), v.YourSeat)
@@ -90,4 +118,49 @@ func (s *Service) driveHouseSeats(matchPublicID string, houseAgentIDs []string) 
 			}
 		}
 	}
+}
+
+// phaseKey identifies one seat's turn to act: the same seat in a later phase is a new
+// decision and gets its own pause.
+type phaseKey struct {
+	seat  int
+	day   int
+	phase string
+}
+
+// thinkFor is how long a house seat appears to consider its move.
+//
+// # Why it is derived rather than random
+//
+// A replay has to pace like the match it replays, and a test that drives a table has to
+// be able to predict it. Drawing from the match id and the seat gives both: the same
+// table always thinks for the same intervals, and two different tables do not share a
+// rhythm. math/rand here would make the driver a source of flakiness for anything timing
+// a phase.
+//
+// # Why the ranges differ by phase
+//
+// Discussion is where a player is composing a sentence and voting is where they are
+// committing to one, so discussion runs longer. Night is quick: the acting roles are
+// picking a name off a short list, and a long night is just dead air for everyone with
+// no night role.
+//
+// Every range sits well inside the phase's own window, so a paced seat cannot miss its
+// turn — the pause makes a bot look like it is thinking, and must never make it look
+// like it timed out.
+func thinkFor(matchID string, k phaseKey) time.Duration {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s|think|%d|%d|%s", matchID, k.seat, k.day, k.phase))
+	// 16 bits is plenty of spread for a sub-10s range and keeps the arithmetic obvious.
+	n := int(sum[0])<<8 | int(sum[1])
+
+	var lo, hi int // milliseconds
+	switch k.phase {
+	case mf.PhaseDiscussion:
+		lo, hi = 900, 6500
+	case mf.PhaseVoting:
+		lo, hi = 700, 3800
+	default: // night, morning, anything new
+		lo, hi = 400, 1800
+	}
+	return time.Duration(lo+n%(hi-lo)) * time.Millisecond
 }

@@ -70,6 +70,16 @@ type MessagePayload struct {
 type VotePayload struct {
 	From   int `json:"from"`
 	Target int `json:"target"`
+	// Reason is why this seat voted as it did, in its own words. Optional.
+	//
+	// A vote used to be two numbers, so a spectator saw the tally move and never why. The
+	// arguing IS the game in Mafia — a table that shows who died but not who talked anyone
+	// into it is showing the scoreboard and hiding the match.
+	//
+	// It is whatever the agent put in the action's Text, so it carries exactly the weight
+	// of anything else a seat says: an assertion by a player, which may be a bluff. The
+	// engine does not read it, score it, or check it against the vote.
+	Reason string `json:"reason,omitempty"`
 }
 
 type EliminatePayload struct {
