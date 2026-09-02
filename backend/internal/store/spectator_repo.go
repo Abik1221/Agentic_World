@@ -20,7 +20,17 @@ var _ spectator.Repo = (*SpectatorRepo)(nil)
 func (r *SpectatorRepo) LiveMatches(ctx context.Context) ([]spectator.LiveMatch, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT m.public_id, m.bid, m.total_rounds, COALESCE(m.state, '{}'::jsonb),
-		        COALESCE(array_agg(ag.public_id ORDER BY mp.seat), '{}')
+		        -- NAMES, not public ids.
+		        --
+		        -- This aggregated ag.public_id, and every consumer of the field renders it as
+		        -- a display name — the Goofspiel viewer seats it directly, the live cards use
+		        -- it as agentA.name. So a spectator watching a real match saw
+		        -- "ag_xhlshxvipcj2pkqt" where the player's name belongs, on the screen that
+		        -- exists to make a match watchable.
+		        --
+		        -- Falling back to the id keeps a seat labelled rather than blank if an agent
+		        -- somehow has no name; it is a backstop, not the normal path.
+		        COALESCE(array_agg(COALESCE(NULLIF(ag.name, ''), ag.public_id) ORDER BY mp.seat), '{}')
 		 FROM matches m
 		 JOIN match_players mp ON mp.match_id = m.id
 		 JOIN agents ag ON ag.id = mp.agent_id

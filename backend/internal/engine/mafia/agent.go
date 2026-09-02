@@ -62,7 +62,11 @@ func (b *Bot) Decide(v AgentView) Action {
 		// round is the other way to look mechanical.
 		return Action{}
 	case PhaseVoting:
-		return Action{Kind: ActVote, Target: b.voteTarget(v)}
+		// The reason rides on the vote as Text, which the engine records on the vote
+		// event. A ballot with no explanation is the difference between watching a tally
+		// move and watching a table argue.
+		target, reason := b.voteDecision(v)
+		return Action{Kind: ActVote, Target: target, Text: reason}
 	}
 	return Action{}
 }
@@ -91,16 +95,32 @@ func (b *Bot) decideNight(v AgentView) Action {
 // player it has PROVEN is Mafia; Mafia push the lowest living town seat; everyone
 // else piles onto the lowest living seat that isn't themselves.
 func (b *Bot) voteTarget(v AgentView) int {
+	t, _ := b.voteDecision(v)
+	return t
+}
+
+// voteDecision is voteTarget plus the sentence explaining it.
+//
+// One function so the vote and its stated reason are decided TOGETHER. Computing the
+// reason separately would let a bot vote on one branch and explain itself from
+// another — a seat saying "the table pressured 4" while voting 7, which is worse
+// than saying nothing: it reads as a lie rather than as a bot.
+func (b *Bot) voteDecision(v AgentView) (int, string) {
 	if v.Role == RoleDetective {
 		for _, seat := range knownMafia(v) {
 			if v.Alive[seat] {
-				return seat
+				// Deliberately vague about HOW it knows. A detective that announces "I
+				// investigated you" is claiming the role — a real move, but a different
+				// one, and not a decision the driver should make for every table.
+				return seat, fmt.Sprintf("I have a hard read on seat %d. Voting there.", seat)
 			}
 		}
 	}
 	if v.Role == RoleMafia {
 		if t := townTargets(v); len(t) > 0 {
-			return t[0]
+			// Mafia give a town-sounding reason, because that is what mafia do. It says
+			// nothing an innocent seat could not also say.
+			return t[0], fmt.Sprintf("Seat %d has been drifting all round. I'd rather not carry them.", t[0])
 		}
 	}
 	// Vote the way you argued.
@@ -115,7 +135,7 @@ func (b *Bot) voteTarget(v AgentView) int {
 	// also makes the discussion MATTER: talk you can influence changes the vote, which
 	// is the whole point of practising against it.
 	if t := b.accusationTarget(v); t >= 0 && v.Alive[t] && t != v.Seat {
-		return t
+		return t, fmt.Sprintf("The case against seat %d is the only one anyone made. Going with it.", t)
 	}
 	// Nobody argued for anything — a round of pure mourning, which happens often on
 	// day one when the only news is the night kill.
@@ -133,9 +153,13 @@ func (b *Bot) voteTarget(v AgentView) int {
 	// another's.
 	others := aliveOthers(v)
 	if len(others) == 0 {
-		return v.Seat
+		return v.Seat, ""
 	}
-	return pick(newHashRand(b.seed, fmt.Sprintf("vote:noread:%d:%d", v.Seat, v.Day)), others)
+	t := pick(newHashRand(b.seed, fmt.Sprintf("vote:noread:%d:%d", v.Seat, v.Day)), others)
+	// Says it has nothing, which is true. A confident-sounding reason on a round where
+	// the seat has no read would be the bot inventing evidence — the one thing table talk
+	// here must not do, because a spectator cannot tell an invented tell from a real one.
+	return t, fmt.Sprintf("Nothing solid this round. Seat %d on instinct.", t)
 }
 
 // accusationTarget returns the seat this bot argued against this round, falling back

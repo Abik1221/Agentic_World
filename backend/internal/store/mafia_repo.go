@@ -124,7 +124,23 @@ func (r *MafiaRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 		        COALESCE(ms.role, ''), COALESCE(ms.team, ''), COALESCE(ms.alive, true),
 		        COALESCE(ms.coins_delta, mp.coins_delta, 0),
 		        COALESCE(ag.kind, '') = 'house',
-		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''), COALESCE(u.avatar_url, '')
+		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''),
+		        -- The AGENT's face first, its owner's only as a fallback.
+		        --
+		        -- This read u.avatar_url alone, which is the owner's PROFILE picture. Two
+		        -- consequences, both visible on every table:
+		        --
+		        --   * House bots never had a face. Migration 0068 gave each one an avatar on
+		        --     agents.avatar_url, and nothing read that column — they all belong to
+		        --     usr_system, which has no profile picture, so every seat fell back to a
+		        --     blank SVG. The avatars have been sitting there unread since.
+		        --   * A developer with several agents saw the same picture on all of them,
+		        --     because it was never the agent's identity being shown.
+		        --
+		        -- A seat is an AGENT, so it shows the agent's face. Falling back to the owner
+		        -- keeps today's behaviour for anyone who set a profile picture and never set
+		        -- one per agent.
+		        COALESCE(NULLIF(ag.avatar_url, ''), NULLIF(u.avatar_url, ''), '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 JOIN users u ON u.id = mp.owner_user_id

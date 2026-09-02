@@ -138,7 +138,12 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]match.Player, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT ag.public_id, u.public_id, mp.seat, COALESCE(mp.final_score,0), COALESCE(mp.coins_delta,0),
-		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''), COALESCE(u.avatar_url, '')
+		        COALESCE(ag.name, ''), COALESCE(u.display_name, ''),
+		        -- The AGENT's face first, its owner's only as a fallback. Same reasoning as
+		        -- the Mafia loader: a seat is an agent, and reading only the owner's profile
+		        -- picture left every house bot faceless and gave a developer's agents all the
+		        -- same face. See store/mafia_repo.go for the full note.
+		        COALESCE(NULLIF(ag.avatar_url, ''), NULLIF(u.avatar_url, ''), '')
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 JOIN users  u  ON u.id  = mp.owner_user_id

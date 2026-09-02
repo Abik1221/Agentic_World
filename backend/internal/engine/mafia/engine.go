@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Engine is a pure Mafia rules machine: append-only events, deterministic timeouts.
@@ -422,7 +423,9 @@ func (e *Engine) actVote(s State, seat int, act Action) (State, []Event, error) 
 	}
 	s.Votes[seat] = act.Target
 	var events []Event
-	events = append(events, e.emit(&s, EvVote, VotePayload{From: seat, Target: act.Target}))
+	events = append(events, e.emit(&s, EvVote, VotePayload{
+		From: seat, Target: act.Target, Reason: strings.TrimSpace(act.Text),
+	}))
 
 	alive := 0
 	for _, ok := range s.Alive {
