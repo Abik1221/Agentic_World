@@ -2,7 +2,7 @@
  * Typed models for the Pyyol push protocol.
  *
  * Lifecycle envelopes are fully typed. Turn views are typed for their common
- * fields; complex nested state (e.g. the Monopoly board) is left as an open
+ * fields; complex nested state is left as an open
  * object so the SDK stays thin and never drifts from the server's evolving state
  * shape. Nothing here contains game strategy — these are pure data shapes.
  */
@@ -10,9 +10,8 @@
 export const PROTOCOL_VERSION = "1.0";
 
 export const GOOFSPIEL = "goofspiel";
-export const MONOPOLY = "monopoly";
 export const MAFIA = "mafia";
-export const SUPPORTED_GAMES = [GOOFSPIEL, MONOPOLY, MAFIA] as const;
+export const SUPPORTED_GAMES = [GOOFSPIEL, MAFIA] as const;
 
 // --- Lifecycle envelopes ---
 
@@ -83,24 +82,6 @@ export interface GoofspielView {
   raw: Record<string, unknown>;
 }
 
-export interface MonopolyView {
-  game: "monopoly";
-  match_id: string;
-  seat: number;
-  phase: string;
-  legal_actions: string[];
-  /** The raw board dict (players, holdings, phase, …) — inspect directly. */
-  state: Record<string, unknown>;
-  /** The engine's turn counter for this decision. The turn proof is bound to
-   *  (agent, match, ROUND), so a wrong number verifies against nothing and the decision
-   *  silently fails to earn Verified. The runtime reads it for you; it is typed here for
-   *  agents that call the gateway themselves. */
-  round?: number;
-  /** Proves a model call was made FOR THIS decision. Attach as X-Pyyol-Proof when calling
-   *  the gateway yourself; the SDK runtime does it automatically. */
-  turn_proof?: string;
-  raw: Record<string, unknown>;
-}
 
 export interface MafiaView {
   game: "mafia";
@@ -117,7 +98,7 @@ export interface MafiaView {
   raw: Record<string, unknown>;
 }
 
-export type TurnView = GoofspielView | MonopolyView | MafiaView | Record<string, unknown>;
+export type TurnView = GoofspielView | MafiaView | Record<string, unknown>;
 
 // --- Moves (what a turn handler returns) ---
 
@@ -146,47 +127,7 @@ export interface GoofspielMove {
    */
   rationale?: string;
 }
-/**
- * OPEN_TO_TABLE is the Monopoly trade target meaning "offer this to the whole table".
- *
- * -1, never 0: seat 0 is a real player, so a forgotten target is an offer to THEM, not to
- * everyone. Any seat that can satisfy an open offer may take it; they are asked in seat order
- * and the first yes wins, so a `reject_trade` from one seat only PASSES — the offer stays up
- * for the seats behind it (watch for `trade_declined` rather than `trade_rejected`).
- */
-export const OPEN_TO_TABLE = -1;
 
-/**
- * A proposed exchange. You give `give_*` and receive `want_*`.
- *
- * Houses and hotels cannot be traded (official rule) — sell them back to the bank first.
- */
-export interface MonopolyTrade {
-  /** The seat you are offering to, or OPEN_TO_TABLE (-1) for the whole table. */
-  target: number;
-  give_props?: number[];
-  give_cash?: number;
-  /** Get-out-of-jail-free cards. */
-  give_cards?: number;
-  want_props?: number[];
-  want_cash?: number;
-  want_cards?: number;
-}
-
-export interface MonopolyMove {
-  action: string;
-  property?: number;
-  amount?: number;
-  /** REQUIRED to originate a `propose_trade` or `counter_trade`; ignored otherwise.
-   *  Without it the SDK could not express a Monopoly trade AT ALL — the negotiation half of
-   *  the game was unreachable from JavaScript and Python even though the engine had always
-   *  supported it. `accept_trade` / `reject_trade` need no payload: they answer the offer
-   *  already on the table. */
-  trade?: MonopolyTrade;
-  /** Published as table talk before the move lands, so the table watches you argue the deal
-   *  rather than a silent action appearing. Same one-call economics as Goofspiel's. */
-  rationale?: string;
-}
 export interface MafiaMove {
   action: string;
   /** Seat to act on. Seat 0 is a real player, so for a night action
@@ -196,7 +137,7 @@ export interface MafiaMove {
   target?: number;
   tone?: string;
   /** Your PUBLIC in-game speech. Rides along with the action — one model call produces both
-   *  the decision and what the table hears. This is the house style; Goofspiel and Monopoly
+   *  the decision and what the table hears. This is the house style; Goofspiel
    *  do the same with `rationale`. */
   text?: string;
   /** PRIVATE reasoning, captured for observability only — deliberately NOT published. In
@@ -204,7 +145,7 @@ export interface MafiaMove {
    *  plan to the town, so this never becomes table talk. Use `text` to speak. */
   rationale?: string;
 }
-export type Move = GoofspielMove | MonopolyMove | MafiaMove | Record<string, unknown>;
+export type Move = GoofspielMove | MafiaMove | Record<string, unknown>;
 
 const asNum = (v: unknown, d = 0): number => (typeof v === "number" ? v : Number(v ?? d) || d);
 const asStr = (v: unknown, d = ""): string => (typeof v === "string" ? v : d);
@@ -226,16 +167,6 @@ export function parseView(d: Record<string, any>): TurnView {
         legal_actions: asArr<number>(d.legal_actions).length ? asArr<number>(d.legal_actions) : asArr<number>(d.your_hand),
         history: asArr<GoofspielRound>(d.history),
         warn_in_ms: Number(d.warn_in_ms ?? 0) || 0,
-        raw: d,
-      };
-    case MONOPOLY:
-      return {
-        game: MONOPOLY,
-        match_id: asStr(d.match_id),
-        seat: asNum(d.seat),
-        phase: asStr(d.phase),
-        legal_actions: asArr<string>(d.legal_actions),
-        state: (d.state as Record<string, unknown>) ?? {},
         raw: d,
       };
     case MAFIA: {

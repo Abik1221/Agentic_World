@@ -281,9 +281,9 @@ class Agent:
 
         Monopoly USED to be the reason this parameter existed: its view carried no numeric
         round, so the runtime fell back to a per-match counter the server could not predict and
-        no Monopoly turn could ever bind. The platform now publishes `round` (the engine's turn
+        no such turn could ever bind. The platform now publishes `round` (the engine's turn
         counter) and `_turn_number` reads it first, so the fallback is a safety net rather than
-        the Monopoly path.
+        that path.
         """
         return self._handle_turn(view_data, turn_no=turn_no)
 

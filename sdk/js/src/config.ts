@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 export const CONFIG_NAME = "pyyol.toml";
-export const KNOWN_ARENAS = ["goofspiel", "mafia", "monopoly"] as const;
+export const KNOWN_ARENAS = ["goofspiel", "mafia"] as const;
 export const MODES = ["sandbox", "ranked"] as const;
 
 const ORDER = [

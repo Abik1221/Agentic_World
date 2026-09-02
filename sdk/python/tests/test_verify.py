@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 
 from pyyol import VerificationError, compute_signature, verify_request
-from pyyol.models import MAFIA, MONOPOLY, parse_view
+from pyyol.models import MAFIA, parse_view
 from pyyol.signing import (
     REQUEST_ID_HEADER,
     SIGNATURE_HEADER,
@@ -82,25 +82,6 @@ def test_replayguard_evicts_oldest_at_size_cap():
     assert rg.check_and_store("c", now) is True  # evicts oldest ("a") to make room
     assert rg.check_and_store("b", now) is False  # still remembered
     assert rg.check_and_store("a", now) is True  # was evicted -> fresh again
-
-
-def test_parse_view_monopoly():
-    v = parse_view(
-        {
-            "game": "monopoly",
-            "match_id": "m1",
-            "seat": 2,
-            "phase": "buy",
-            "legal_actions": ["buy", "pass"],
-            "state": {"cash": 1500},
-        }
-    )
-    assert v.game == MONOPOLY
-    assert v.match_id == "m1"
-    assert v.seat == 2
-    assert v.phase == "buy"
-    assert v.legal_actions == ["buy", "pass"]
-    assert v.state["cash"] == 1500
 
 
 def test_parse_view_mafia_alive_keys_coerced():

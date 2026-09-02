@@ -35,7 +35,7 @@ WARN = "•"
 
 # N-player games use the group matchmaking queue (/v1/group-queue); Goofspiel (1v1)
 # uses the 2-player queue (/v1/queue). Same enqueue request shape, different endpoint.
-GROUP_GAMES = frozenset({"mafia", "monopoly"})
+GROUP_GAMES = frozenset({"mafia"})
 
 
 def queue_path_for(game: str) -> str:
@@ -281,16 +281,6 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 def _synthetic_turn(game: str):
     """Return (view, legal, is_legal_move_fn) for a probe turn."""
-    if game == "monopoly":
-        view = {
-            "game": "monopoly",
-            "match_id": "validate",
-            "seat": 0,
-            "phase": "roll",
-            "legal_actions": ["roll", "end_turn"],
-            "state": {"players": [], "phase": "roll"},
-        }
-        return view, ["roll", "end_turn"], lambda m: m.get("action") in ("roll", "end_turn")
     if game == "mafia":
         view = {
             "game": "mafia",
@@ -763,7 +753,6 @@ def cmd_logs(args: argparse.Namespace) -> int:
 _PLAY_PATH = {
     "goofspiel": "/v1/sandbox/pushplay",
     "mafia": "/v1/mafia/pushplay",
-    "monopoly": "/v1/monopoly/pushplay",
 }
 
 # SSE event types that end a match, so `watch` can return control.
@@ -2451,7 +2440,6 @@ def cmd_profile(args: argparse.Namespace) -> int:
 _REPLAY_PATH = {
     "goofspiel": "/v1/match/{id}/replay",
     "mafia": "/v1/mafia/{id}/replay",
-    "monopoly": "/v1/monopoly/{id}/replay",
 }
 
 
@@ -2493,7 +2481,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
 def _winner_label(w) -> str:
     """Map a winner value to a display label. Seat ints (0/1/-1) become
-    'seat N'/'tie'; strings (mafia team / monopoly seat / agent id) pass through."""
+    'seat N'/'tie'; strings (mafia team / agent id) pass through."""
     if w is None or w == "":
         return ""
     if isinstance(w, bool):
@@ -2505,7 +2493,7 @@ def _winner_label(w) -> str:
 
 def _replay_outcome(resp: dict[str, Any]):
     """Extract (winner_label, scores) from a replay doc. Goofspiel encodes the result
-    in a terminal `match_finished` event (winner seat + scores); mafia/monopoly may
+    in a terminal `match_finished` event (winner seat + scores); mafia may
     carry a top-level winner. Returns ("", None) when it can't be determined."""
     for k in ("winner", "winner_team", "winner_agent"):
         if resp.get(k) not in (None, ""):
@@ -2884,7 +2872,7 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("dir")
     pi.add_argument("--lang", choices=["python", "js"], default="python")
     pi.add_argument("--framework", default="", help="e.g. langgraph, crewai, openai-agents")
-    pi.add_argument("--arena", choices=["goofspiel", "mafia", "monopoly"], default="goofspiel")
+    pi.add_argument("--arena", choices=["goofspiel", "mafia"], default="goofspiel")
     pi.add_argument("--name", default="")
     pi.set_defaults(func=cmd_init)
 
@@ -2939,7 +2927,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp = sub.add_parser(
         "play", help="compete in an arena. SANDBOX by default; --ranked = real stakes"
     )
-    pp.add_argument("arena", choices=["goofspiel", "mafia", "monopoly"])
+    pp.add_argument("arena", choices=["goofspiel", "mafia"])
     pp.add_argument(
         "--ranked", action="store_true", help="REAL stakes (needs `pyyol publish`; confirmed)"
     )
@@ -2990,7 +2978,7 @@ def build_parser() -> argparse.ArgumentParser:
     # --- discover / inspect ---
     prep = sub.add_parser("replay", help="fetch a match replay")
     prep.add_argument("match")
-    prep.add_argument("--game", choices=["goofspiel", "mafia", "monopoly"], default="")
+    prep.add_argument("--game", choices=["goofspiel", "mafia"], default="")
     prep.add_argument("--json", action="store_true")
     _add_api(prep)
     prep.set_defaults(func=cmd_replay)
@@ -3027,7 +3015,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pv.add_argument("--url", required=True)
     pv.add_argument("--secret", default="")
-    pv.add_argument("--game", choices=["goofspiel", "monopoly", "mafia"], default="goofspiel")
+    pv.add_argument("--game", choices=["goofspiel", "mafia"], default="goofspiel")
     pv.set_defaults(func=cmd_validate)
 
     ps = sub.add_parser(

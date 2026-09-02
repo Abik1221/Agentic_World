@@ -28,7 +28,7 @@ def _conn() -> RuntimeConnector:
         url="ws://x",
         agent_id="ag",
         token="s",
-        games=["monopoly"],
+        games=["mafia"],
         _connect=lambda *a, **k: None,
     )
 

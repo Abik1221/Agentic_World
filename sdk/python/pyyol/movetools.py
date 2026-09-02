@@ -50,16 +50,13 @@ from typing import Any
 # its own name keeps passing.
 TOOL_GOOFSPIEL = "play_card"
 TOOL_MAFIA = "mafia_action"
-TOOL_MONOPOLY = "monopoly_action"
 
 GAME_GOOFSPIEL = "goofspiel"
 GAME_MAFIA = "mafia"
-GAME_MONOPOLY = "monopoly"
 
 _TOOL_BY_GAME = {
     GAME_GOOFSPIEL: TOOL_GOOFSPIEL,
     GAME_MAFIA: TOOL_MAFIA,
-    GAME_MONOPOLY: TOOL_MONOPOLY,
 }
 
 # NO_TARGET is the wire convention for "this action names no seat".
@@ -102,72 +99,11 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
         },
         "required": ["kind"],
     },
-    GAME_MONOPOLY: {
-        "type": "object",
-        "properties": {
-            "kind": {
-                "type": "string",
-                "description": "The action verb, e.g. buy, pass, bid, mortgage, build.",
-            },
-            "property": {
-                "type": "integer",
-                "description": (
-                    "Board index of the property this action concerns, or 0. On a bid during "
-                    "a HOUSING SHORTAGE auction this is the square you would put the piece on."
-                ),
-            },
-            "amount": {
-                "type": "integer",
-                "description": "Coin amount this action carries, or 0.",
-            },
-            # The trade payload. OPTIONAL and NOT part of the canonical bound form — a trade
-            # binds on its verb alone (a nested structure re-rendered cosmetically differently
-            # would reject an honest turn), so nothing here can cost a turn its binding.
-            # Without it a bound agent could act but never DEAL, which is most of Monopoly.
-            "trade": {
-                "type": "object",
-                "description": "Required to propose or counter a trade. Ignored for other actions.",
-                "properties": {
-                    "target": {
-                        "type": "integer",
-                        "description": (
-                            "Seat to offer to, or -1 to offer to the WHOLE TABLE (any player "
-                            "who can satisfy it may take it). Never 0 for 'everyone' — seat 0 "
-                            "is a real player."
-                        ),
-                    },
-                    "give_props": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Squares you give.",
-                    },
-                    "give_cash": {"type": "integer", "description": "Cash you give."},
-                    "give_cards": {
-                        "type": "integer",
-                        "description": "Get-out-of-jail-free cards you give.",
-                    },
-                    "want_props": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Squares you want.",
-                    },
-                    "want_cash": {"type": "integer", "description": "Cash you want."},
-                    "want_cards": {
-                        "type": "integer",
-                        "description": "Get-out-of-jail-free cards you want.",
-                    },
-                },
-                "required": ["target"],
-            },
-        },
-        "required": ["kind"],
-    },
 }
 
 _DESCRIPTIONS = {
     GAME_GOOFSPIEL: "Play one card from your hand for this round. Call this to make your move.",
     GAME_MAFIA: "Take your action for this phase. Call this to make your move.",
-    GAME_MONOPOLY: "Take your action for this turn. Call this to make your move.",
 }
 
 
@@ -517,17 +453,6 @@ def canon_mafia(kind: str, target: int) -> str:
     return f"{kind.strip().lower()}:{t}"
 
 
-def canon_monopoly(kind: str, property_: int = 0, amount: int = 0) -> str:
-    """The bound form of a Monopoly action: verb, property, amount.
-
-    All three are always rendered, including zeros. Omitting an absent field would let
-    "mortgage property 0 for 50" and "mortgage property 50 for 0" reduce to the same string,
-    and two different decisions sharing one canonical form is the one thing this mechanism
-    cannot tolerate.
-    """
-    return f"{kind.strip().lower()}:{int(property_)}:{int(amount)}"
-
-
 def canon(game: str, args: dict[str, Any] | None) -> str | None:
     """Reduce move arguments to the canonical string a bound decision stores.
 
@@ -545,14 +470,6 @@ def canon(game: str, args: dict[str, Any] | None) -> str | None:
             return None
         target, has = _int_arg(args, "target")
         return canon_mafia(kind, target if has else NO_TARGET)
-    if game == GAME_MONOPOLY:
-        kind = _str_arg(args, "kind").strip()
-        if not kind:
-            return None
-        property_, _ = _int_arg(args, "property")
-        amount, _ = _int_arg(args, "amount")
-        return canon_monopoly(kind, property_, amount)
-    return None
 
 
 def bound_move(game: str, resp: Any) -> str | None:

@@ -76,4 +76,3 @@ def test_http_base_prefers_flag_then_derives_from_connect_url():
 def test_play_path_maps_each_game():
     assert cli._PLAY_PATH["goofspiel"] == "/v1/sandbox/pushplay"
     assert cli._PLAY_PATH["mafia"] == "/v1/mafia/pushplay"
-    assert cli._PLAY_PATH["monopoly"] == "/v1/monopoly/pushplay"

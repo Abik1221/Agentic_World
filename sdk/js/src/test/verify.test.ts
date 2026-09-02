@@ -5,7 +5,6 @@ import test from "node:test";
 
 import {
   MAFIA,
-  MONOPOLY,
   ReplayGuard,
   VerificationError,
   computeSignature,
@@ -76,23 +75,6 @@ test("ReplayGuard evicts the oldest nonce when the size cap is reached", () => {
   assert.equal(rg.checkAndStore("c", now), false, "c still remembered");
   // "a" was evicted, so it reads as fresh again (safe: it's outside any skew window).
   assert.equal(rg.checkAndStore("a", now), true);
-});
-
-test("parseView maps a monopoly view", () => {
-  const v = parseView({
-    game: "monopoly",
-    match_id: "m1",
-    seat: 2,
-    phase: "buy",
-    legal_actions: ["buy", "pass"],
-    state: { cash: 1500 },
-  }) as any;
-  assert.equal(v.game, MONOPOLY);
-  assert.equal(v.match_id, "m1");
-  assert.equal(v.seat, 2);
-  assert.equal(v.phase, "buy");
-  assert.deepEqual(v.legal_actions, ["buy", "pass"]);
-  assert.equal(v.state.cash, 1500);
 });
 
 test("parseView maps a mafia view (alive keys coerced to numbers)", () => {

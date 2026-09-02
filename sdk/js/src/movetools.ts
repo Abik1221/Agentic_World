@@ -42,11 +42,9 @@
 // its own name keeps passing.
 export const TOOL_GOOFSPIEL = "play_card";
 export const TOOL_MAFIA = "mafia_action";
-export const TOOL_MONOPOLY = "monopoly_action";
 
 export const GAME_GOOFSPIEL = "goofspiel";
 export const GAME_MAFIA = "mafia";
-export const GAME_MONOPOLY = "monopoly";
 
 /**
  * NO_TARGET is the wire convention for "this action names no seat".
@@ -60,7 +58,6 @@ export const NO_TARGET = -1;
 const TOOL_BY_GAME: Record<string, string> = {
   [GAME_GOOFSPIEL]: TOOL_GOOFSPIEL,
   [GAME_MAFIA]: TOOL_MAFIA,
-  [GAME_MONOPOLY]: TOOL_MONOPOLY,
 };
 
 type JsonSchema = Record<string, unknown>;
@@ -92,53 +89,12 @@ const SCHEMAS: Record<string, JsonSchema> = {
     },
     required: ["kind"],
   },
-  [GAME_MONOPOLY]: {
-    type: "object",
-    properties: {
-      kind: {
-        type: "string",
-        description: "The action verb, e.g. buy, pass, bid, mortgage, build.",
-      },
-      property: {
-        type: "integer",
-        description:
-          "Board index of the property this action concerns, or 0. On a bid during a " +
-          "HOUSING SHORTAGE auction this is the square you would put the piece on.",
-      },
-      amount: { type: "integer", description: "Coin amount this action carries, or 0." },
-      // The trade payload. OPTIONAL and NOT part of the canonical bound form — a trade binds
-      // on its verb alone (a nested structure re-rendered cosmetically differently would
-      // reject an honest turn), so nothing here can cost a turn its binding. Without it a
-      // bound agent could act but never DEAL, which is most of Monopoly.
-      trade: {
-        type: "object",
-        description: "Required to propose or counter a trade. Ignored for other actions.",
-        properties: {
-          target: {
-            type: "integer",
-            description:
-              "Seat to offer to, or -1 to offer to the WHOLE TABLE (any player who can " +
-              "satisfy it may take it). Never 0 for 'everyone' — seat 0 is a real player.",
-          },
-          give_props: { type: "array", items: { type: "integer" }, description: "Squares you give." },
-          give_cash: { type: "integer", description: "Cash you give." },
-          give_cards: { type: "integer", description: "Get-out-of-jail-free cards you give." },
-          want_props: { type: "array", items: { type: "integer" }, description: "Squares you want." },
-          want_cash: { type: "integer", description: "Cash you want." },
-          want_cards: { type: "integer", description: "Get-out-of-jail-free cards you want." },
-        },
-        required: ["target"],
-      },
-    },
-    required: ["kind"],
-  },
 };
 
 const DESCRIPTIONS: Record<string, string> = {
   [GAME_GOOFSPIEL]:
     "Play one card from your hand for this round. Call this to make your move.",
   [GAME_MAFIA]: "Take your action for this phase. Call this to make your move.",
-  [GAME_MONOPOLY]: "Take your action for this turn. Call this to make your move.",
 };
 
 /** The tool name that carries a move for `game`, or "" if the game has no contract. */
@@ -394,16 +350,6 @@ export function canonMafia(kind: string, target: number): string {
   return `${kind.trim().toLowerCase()}:${t}`;
 }
 
-/**
- * The bound form of a Monopoly action: verb, property, amount.
- *
- * All three are always rendered, including zeros. Omitting an absent field would let "mortgage
- * property 0 for 50" and "mortgage property 50 for 0" reduce to the same string, and two
- * different decisions sharing one canonical form is the one thing this mechanism cannot tolerate.
- */
-export function canonMonopoly(kind: string, property = 0, amount = 0): string {
-  return `${kind.trim().toLowerCase()}:${Math.trunc(property)}:${Math.trunc(amount)}`;
-}
 
 /**
  * Reduce move arguments to the canonical string a bound decision stores.
@@ -422,13 +368,6 @@ export function canonMove(game: string, args: Record<string, unknown> | null): s
     if (!kind) return null;
     const [target, has] = intArg(args, "target");
     return canonMafia(kind, has ? target : NO_TARGET);
-  }
-  if (game === GAME_MONOPOLY) {
-    const kind = strArg(args, "kind").trim();
-    if (!kind) return null;
-    const [property] = intArg(args, "property");
-    const [amount] = intArg(args, "amount");
-    return canonMonopoly(kind, property, amount);
   }
   return null;
 }

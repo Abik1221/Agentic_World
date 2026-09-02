@@ -32,7 +32,9 @@ const doc = JSON.parse(readFileSync(fixturePath, "utf8")) as { cases: PromptCase
 
 test("prompt fixture is not empty", () => {
   // A suite that finds zero cases would report success while testing nothing.
-  assert.ok(doc.cases.length >= 5, `only ${doc.cases.length} prompt cases loaded`);
+  // Floor, not a count: the guard exists so an EMPTY fixture cannot report success. It was 5
+  // until the Monopoly case was removed with that arena.
+  assert.ok(doc.cases.length >= 4, `only ${doc.cases.length} prompt cases loaded`);
 });
 
 for (const c of doc.cases) {

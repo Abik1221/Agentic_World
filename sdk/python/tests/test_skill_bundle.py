@@ -11,7 +11,7 @@ from pathlib import Path
 
 SKILL = Path(__file__).resolve().parents[1] / "pyyol" / "skill"
 REFS = SKILL / "references"
-GAMES = ("goofspiel", "mafia", "monopoly")
+GAMES = ("goofspiel", "mafia")
 
 
 def test_skill_ships_complete():
@@ -114,10 +114,8 @@ def test_every_template_returns_a_legal_move():
     assert m.action in _MV.legal, "mafia template plays an action not in `legal`"
     assert m.target != _MV.your_seat, "mafia template voted for itself"
 
-    p = _load("monopoly").MonopolyAgent().step(_PV())
-    assert p.action in _PV.legal_actions, "monopoly template plays an ILLEGAL action"
 
-    for mv in (g, m, p):
+    for mv in (g, m):
         assert mv.rationale, "templates should model setting a rationale"
 
 
@@ -139,7 +137,6 @@ def test_every_template_is_idempotent_on_a_redelivered_turn():
     for name, view, cls in (
         ("goofspiel", _GV(), "GoofspielAgent"),
         ("mafia", _MV(), "MafiaAgent"),
-        ("monopoly", _PV(), "MonopolyAgent"),
     ):
         agent = getattr(_load(name), cls)()
         first = agent.step(view)

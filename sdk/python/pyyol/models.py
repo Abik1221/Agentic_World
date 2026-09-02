@@ -2,7 +2,7 @@
 
 The lifecycle envelopes (initialize / event / game-end) are fully typed. Game
 turn views are typed for their common fields; complex nested state (e.g. the
-Monopoly board) is exposed as ``raw`` so the SDK stays thin and never drifts from
+board state) is exposed as ``raw`` so the SDK stays thin and never drifts from
 the server's evolving state shape. Moves are plain builders you return from a
 turn handler — return a dataclass or a dict, both serialize.
 
@@ -17,7 +17,6 @@ from typing import Any
 PROTOCOL_VERSION = "1.0"
 
 GOOFSPIEL = "goofspiel"
-MONOPOLY = "monopoly"
 
 # OPEN_TO_TABLE is the Monopoly trade target meaning "offer this to the whole table".
 #
@@ -26,7 +25,7 @@ MONOPOLY = "monopoly"
 # and the first yes wins, so `reject_trade` from one seat only PASSES — the offer stays up.
 OPEN_TO_TABLE = -1
 MAFIA = "mafia"
-SUPPORTED_GAMES = (GOOFSPIEL, MONOPOLY, MAFIA)
+SUPPORTED_GAMES = (GOOFSPIEL, MAFIA)
 
 
 # --- Lifecycle envelopes -------------------------------------------------------
@@ -147,41 +146,6 @@ class GoofspielView:
 
 
 @dataclass
-class MonopolyView:
-    """The redacted board POSTed each turn for Monopoly. ``state`` is the raw
-    board dict (players, holdings, phase, …) — inspect it directly."""
-
-    match_id: str
-    seat: int
-    phase: str
-    legal_actions: list[str]
-    state: dict[str, Any]
-    game: str = MONOPOLY
-    # The engine's turn counter for this decision. Surfaced because the turn proof is bound to
-    # (agent, match, ROUND): a wrong number verifies against nothing and the decision silently
-    # fails to earn Verified. The runtime already reads it off the raw payload; it is typed
-    # here so an agent doing its own gateway calls can see it too.
-    round: int = 0
-    # Proves a model call was made FOR THIS decision. Attach it as X-Pyyol-Proof when calling
-    # the gateway yourself; the SDK runtime does it for you automatically.
-    turn_proof: str = ""
-    raw: dict[str, Any] = field(default_factory=dict, repr=False)
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> MonopolyView:
-        return cls(
-            match_id=d.get("match_id", ""),
-            seat=int(d.get("seat", 0)),
-            phase=d.get("phase", ""),
-            legal_actions=list(d.get("legal_actions", [])),
-            state=d.get("state") or {},
-            round=int(d.get("round", 0) or 0),
-            turn_proof=d.get("turn_proof", "") or "",
-            raw=d,
-        )
-
-
-@dataclass
 class MafiaView:
     """The redacted per-seat view POSTed each turn for Mafia. ``public`` /
     ``private`` are raw event dicts this seat may legitimately see."""
@@ -218,7 +182,7 @@ class MafiaView:
         )
 
 
-_VIEW_BY_GAME = {GOOFSPIEL: GoofspielView, MONOPOLY: MonopolyView, MAFIA: MafiaView}
+_VIEW_BY_GAME = {GOOFSPIEL: GoofspielView, MAFIA: MafiaView}
 
 
 def parse_view(d: dict[str, Any]):
@@ -247,7 +211,7 @@ class GoofspielMove:
     #     rationale on the move → 13 calls
     #
     # On a free tier of 50 requests/day that is the difference between about two matches and
-    # about four. Mafia and Monopoly work the same way (Mafia's public speech rides on its
+    # about four. Mafia works the same way (its public speech rides on its
     # action as `text`), so this is the house style, not a Goofspiel quirk.
     #
     # Use say() when you want to speak WITHOUT playing a card — reacting to the opponent
@@ -262,68 +226,6 @@ class GoofspielMove:
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"round": self.round, "card": self.card}
-        if self.rationale:
-            d["rationale"] = self.rationale
-        return d
-
-
-@dataclass
-class MonopolyTrade:
-    """A proposed exchange. The proposer gives ``give_*`` and receives ``want_*``.
-
-    ``target`` is the seat you are offering to, or ``OPEN_TO_TABLE`` (-1) to offer it to
-    EVERYONE: any player who can satisfy an open offer may take it, first come first served,
-    and the seats are asked in seat order.
-
-    -1 and never 0, for the reason seat numbering forces everywhere in Pyyol: **seat 0 is a
-    real player**. An offer whose target you forget to set is a concrete offer to seat 0, not
-    an offer to the table — so an open offer must say -1 explicitly.
-
-    Houses and hotels cannot be traded (official rule). Sell them back to the bank first.
-    """
-
-    target: int
-    give_props: list[int] = field(default_factory=list)
-    give_cash: int = 0
-    give_cards: int = 0  # get-out-of-jail-free cards
-    want_props: list[int] = field(default_factory=list)
-    want_cash: int = 0
-    want_cards: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "target": self.target,
-            "give_props": list(self.give_props),
-            "give_cash": self.give_cash,
-            "give_cards": self.give_cards,
-            "want_props": list(self.want_props),
-            "want_cash": self.want_cash,
-            "want_cards": self.want_cards,
-        }
-
-
-@dataclass
-class MonopolyMove:
-    action: str
-    property: int = 0
-    amount: int = 0
-    # REQUIRED to originate a `propose_trade` or `counter_trade`; ignored otherwise.
-    #
-    # Without this field the SDK could not express a Monopoly trade AT ALL — the negotiation
-    # half of the game was unreachable from Python and JavaScript even though the engine had
-    # always supported it. `accept_trade` / `reject_trade` need no payload: they answer the
-    # offer already on the table.
-    trade: MonopolyTrade | None = None
-    rationale: str = ""  # see GoofspielMove.rationale
-
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "action": self.action,
-            "property": self.property,
-            "amount": self.amount,
-        }
-        if self.trade is not None:
-            d["trade"] = self.trade.to_dict()
         if self.rationale:
             d["rationale"] = self.rationale
         return d

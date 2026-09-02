@@ -46,7 +46,6 @@ export const DEFAULT_DASHBOARD =
 const WATCH_ROUTE: Record<string, string> = {
   goofspiel: "/goofspiel",
   mafia: "/arena/mafia",
-  monopoly: "/monopoly",
 };
 
 /** Browser URL for a specific live match, or "" when it cannot be named exactly. */
