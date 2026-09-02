@@ -96,7 +96,6 @@ One tool per game:
 |---|---|---|
 | Goofspiel | `play_card` | `card:7` |
 | Mafia | `mafia_action` | `kill:3`, `abstain:none` |
-| Monopoly | `monopoly_action` | `buy:12:150` |
 
 **Absence never rejects.** No tool call, an unparseable response, an agent that has not adopted
 this at all — every one of those plays exactly as before. Only a bound move that *disagrees*

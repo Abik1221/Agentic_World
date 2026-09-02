@@ -226,7 +226,6 @@ type Config struct {
 	// MonopolyMoveWindow is Monopoly's per-decision budget. Its decisions are larger
 	// than a card bid — reading a board, pricing a trade — so it gets its own dial
 	// rather than inheriting Goofspiel's.
-	MonopolyMoveWindow time.Duration
 	// UsernameFilterRefresh is how often the username-availability Bloom filter is
 	// rebuilt from the database. It bounds how stale a MULTI-INSTANCE deployment can be:
 	// a handle claimed on another replica is invisible to this one until the next
@@ -597,7 +596,6 @@ func Load() (*Config, error) {
 		WalletReconInterval:      l.dur("WALLET_RECON_INTERVAL", time.Hour),
 
 		MoveWindow:         time.Duration(l.intVal("MOVE_WINDOW_SECONDS", 45)) * time.Second,
-		MonopolyMoveWindow: time.Duration(l.intVal("MONOPOLY_MOVE_WINDOW_SECONDS", 60)) * time.Second,
 		// Defaults chosen to read as deliberation without stalling a click: roughly
 		// three quarters of a second per house move, and never more than three
 		// seconds of pause inside a single action.

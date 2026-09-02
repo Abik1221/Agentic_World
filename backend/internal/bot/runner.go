@@ -8,37 +8,22 @@ import (
 
 	"github.com/agent-arena/arena/internal/demo"
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
-	mono "github.com/agent-arena/arena/internal/engine/monopoly"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/match"
-	"github.com/agent-arena/arena/internal/monopoly"
 )
 
 // Runner drives rule-based demo agents (no LLM). Users bring real agents in prod;
 // this fills tables locally so matches run end-to-end.
 type Runner struct {
-	match    *match.Service
-	mafia    *mafia.Service
-	monopoly *monopoly.Service
-	agents   []demo.Agent
-	log      *slog.Logger
-
-	// monoMatch is the ONE demo Monopoly match currently in progress. Monopoly games
-	// are long (up to DefaultMaxTurns dice rolls), so — unlike the short Goofspiel/Mafia
-	// matches — we drive a single table a batch of moves per tick and only start a new
-	// one once it finishes, instead of spawning a fresh table every tick (which would
-	// pile up hundreds of unfinished tables).
-	monoMatch  string // current demo Monopoly match id ("" ⇒ none in progress)
-	monoDriver string // the demo agent seated at seat 0 of monoMatch
+	match  *match.Service
+	mafia  *mafia.Service
+	agents []demo.Agent
+	log    *slog.Logger
 }
 
 func NewRunner(matchSvc *match.Service, mafiaSvc *mafia.Service, agents []demo.Agent, log *slog.Logger) *Runner {
 	return &Runner{match: matchSvc, mafia: mafiaSvc, agents: agents, log: log}
 }
-
-// WithMonopoly enables demo Monopoly self-play (chainable). Optional so callers that
-// don't wire it keep compiling and simply skip Monopoly.
-func (r *Runner) WithMonopoly(svc *monopoly.Service) *Runner { r.monopoly = svc; return r }
 
 func (r *Runner) Run(ctx context.Context) {
 	if len(r.agents) == 0 {
@@ -64,79 +49,6 @@ func (r *Runner) tick(ctx context.Context, idx *int) {
 	if r.mafia != nil {
 		r.tickMafia(ctx, idx)
 	}
-	if r.monopoly != nil {
-		r.tickMonopoly(ctx, idx)
-	}
-}
-
-// tickMonopoly advances a single demo Monopoly practice table (no entry fee): the
-// Service seats server bots in the other seats and auto-drives them inside each Act;
-// we drive only the creator seat. One table at a time — a batch of moves per tick —
-// starting a new one only when the previous finishes. (Staked/ranked Monopoly is
-// agent-vs-agent and is covered by the group queue + the money E2E, not here.)
-func (r *Runner) tickMonopoly(ctx context.Context, idx *int) {
-	if r.monoMatch == "" {
-		a := r.next(idx)
-		mid, err := r.monopoly.CreateTable(ctx, a.PublicID, a.OwnerPublicID, 0, monopoly.DefaultPlayers)
-		if err != nil {
-			return
-		}
-		r.monoMatch = mid
-		r.monoDriver = a.PublicID
-	}
-	if r.driveMonopolyBatch(ctx, r.monoDriver, r.monoMatch, 80) { // finished?
-		r.monoMatch, r.monoDriver = "", ""
-	}
-}
-
-// driveMonopolyBatch plays up to `budget` creator-seat moves. Returns true when the
-// match has finished (or errored / vanished), so the caller can start a fresh table.
-func (r *Runner) driveMonopolyBatch(ctx context.Context, agentID, matchID string, budget int) bool {
-	for step := 0; step < budget; step++ {
-		v, err := r.monopoly.State(ctx, matchID, agentID, false, 0)
-		if err != nil {
-			return true // match gone / errored: drop it and start over next time
-		}
-		if v.Status == monopoly.StatusFinished {
-			return true
-		}
-		if !v.YourTurn || len(v.Legal) == 0 {
-			return false // Service still resolving bot seats; try again next tick
-		}
-		if _, err := r.monopoly.Act(ctx, agentID, matchID, PickMonopolyAction(v.Legal), "", true); err != nil {
-			return true
-		}
-	}
-	return false // budget spent, match still going — continue it next tick
-}
-
-// PickMonopolyAction returns a legal, PARAMETER-FREE action for whatever phase the
-// creator seat is in, so a demo bot can drive any Monopoly match to completion without
-// ever submitting an illegal move. The priority order plays sensibly (advance, buy
-// landed property, end the turn) and safely declines the param-bearing options — skip
-// an open trade window, reject an offered trade, drop out of an auction, and go bankrupt
-// to settle an unpayable debt (mortgage/sell/build all need a property arg, so they are
-// intentionally avoided here). Rules engine, not LLM.
-func PickMonopolyAction(legal []string) mono.Action {
-	has := func(k string) bool {
-		for _, l := range legal {
-			if l == k {
-				return true
-			}
-		}
-		return false
-	}
-	// First legal match wins, in this order. Every entry is a no-arg action.
-	for _, k := range []string{
-		mono.ActRoll, mono.ActRollJail, mono.ActPayJail, mono.ActUseJailCard,
-		mono.ActBuy, mono.ActEndTurn, mono.ActSkipTrade, mono.ActRejectTrade,
-		mono.ActPass, mono.ActDecline, mono.ActBankrupt,
-	} {
-		if has(k) {
-			return mono.Action{Kind: k}
-		}
-	}
-	return mono.Action{Kind: legal[0]} // last resort (should not happen)
 }
 
 func (r *Runner) tickGoofspiel(ctx context.Context, idx *int) {

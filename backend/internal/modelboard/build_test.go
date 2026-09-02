@@ -49,10 +49,10 @@ func TestAnNPlayerMatchContributesOneUnitOfEvidence(t *testing.T) {
 	// of a Goofspiel match, so the board would quietly become a Monopoly board — the cross-game
 	// weighting has to be a decision, not a side effect of table size.
 	seats := []Seat{
-		seat("m1", "monopoly", "a1", "claude", "sc_1", "dev1", "win", 1.0),
-		seat("m1", "monopoly", "a2", "gpt", "sc_2", "dev2", "loss", 1.0),
-		seat("m1", "monopoly", "a3", "llama", "sc_3", "dev3", "loss", 1.0),
-		seat("m1", "monopoly", "a4", "gemini", "sc_4", "dev4", "loss", 1.0),
+		seat("m1", "goofspiel", "a1", "claude", "sc_1", "dev1", "win", 1.0),
+		seat("m1", "goofspiel", "a2", "gpt", "sc_2", "dev2", "loss", 1.0),
+		seat("m1", "goofspiel", "a3", "llama", "sc_3", "dev3", "loss", 1.0),
+		seat("m1", "goofspiel", "a4", "gemini", "sc_4", "dev4", "loss", 1.0),
 	}
 	cmp, ex := BuildComparisons(seats, DefaultBuildConfig())
 	if len(cmp) != 6 {
@@ -219,21 +219,29 @@ func TestBuildIsDeterministicRegardlessOfSeatOrder(t *testing.T) {
 	}
 }
 
+// The Games filter drops seats the caller did not ask for, and SAYS how many.
+//
+// It paired goofspiel against monopoly, which were the two pairwise games. With Monopoly
+// withdrawn, goofspiel is the only one — and a second game cannot stand in, because mafia is
+// excluded by the PAIRWISE check first and would leave this asserting someone else's filter.
+//
+// So the filter is exercised directly instead: ask for a game none of the seats played. The
+// property is unchanged — seats outside the requested set are excluded, and counted under
+// game_filtered rather than vanishing silently, which is the part that matters when a board
+// comes out thinner than expected.
 func TestGameFilterIsAppliedAndCounted(t *testing.T) {
 	seats := []Seat{
 		seat("m1", "goofspiel", "a1", "claude", "sc_1", "dev1", "win", 1.0),
 		seat("m1", "goofspiel", "a2", "gpt", "sc_2", "dev2", "loss", 1.0),
-		seat("m2", "monopoly", "a3", "claude", "sc_1", "dev1", "win", 1.0),
-		seat("m2", "monopoly", "a4", "gpt", "sc_2", "dev2", "loss", 1.0),
 	}
 	bc := DefaultBuildConfig()
-	bc.Games = []string{"goofspiel"}
+	bc.Games = []string{"some-other-arena"}
 	cmp, ex := BuildComparisons(seats, bc)
-	if len(cmp) != 1 {
-		t.Fatalf("got %d comparisons, want 1 from goofspiel only", len(cmp))
+	if len(cmp) != 0 {
+		t.Fatalf("got %d comparisons, want 0 — no seat played the requested game", len(cmp))
 	}
 	if ex["game_filtered"] != 2 {
-		t.Errorf("census = %v, want the two monopoly seats counted", ex)
+		t.Errorf("census = %v, want both seats counted as game_filtered", ex)
 	}
 }
 

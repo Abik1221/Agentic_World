@@ -47,7 +47,6 @@ var allowedVisibility = map[string]bool{"public": true, "private": true}
 var supportedGames = map[string]bool{
 	string(devplatform.GameGoofspiel): true,
 	string(devplatform.GameMafia):     true,
-	string(devplatform.GameMonopoly):  true,
 }
 
 // Parse decodes a submitted manifest document. contentType selects the codec:

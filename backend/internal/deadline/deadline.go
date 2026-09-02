@@ -73,11 +73,6 @@ type Policy struct {
 // kill, and was silently converting real decisions into abstains.
 func DefaultPolicy(game string) Policy {
 	switch game {
-	case "monopoly":
-		return Policy{
-			Base: 60 * time.Second, Floor: 15 * time.Second, Ceiling: 3 * time.Minute,
-			Headroom: 1.5, Extension: 30 * time.Second, MaxExtensions: 3,
-		}
 	case "mafia":
 		return Policy{
 			Base: 60 * time.Second, Floor: 15 * time.Second, Ceiling: 2 * time.Minute,
@@ -203,7 +198,7 @@ func clamp(v, lo, hi time.Duration) time.Duration {
 // constant nobody thought to keep in step.
 var MaxCeiling = func() time.Duration {
 	max := time.Duration(0)
-	for _, g := range []string{"goofspiel", "mafia", "monopoly"} {
+	for _, g := range []string{"goofspiel", "mafia"} {
 		if c := DefaultPolicy(g).Ceiling; c > max {
 			max = c
 		}

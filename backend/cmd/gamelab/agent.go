@@ -261,7 +261,7 @@ func (a *labAgent) serve() error {
 			// Advertise only what this agent actually plays — every entry here has a branch in
 			// handlePlay. Listing a game while answering it with an empty object is what let
 			// fallback-driven matches look like agent matches.
-			"supportedGames": []string{"goofspiel", "monopoly", "mafia"},
+			"supportedGames": []string{"goofspiel", "mafia"},
 		})
 	})
 	mux.HandleFunc("/play", a.handlePlay)

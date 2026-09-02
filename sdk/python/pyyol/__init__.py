@@ -77,16 +77,13 @@ __all__ = [
     "canon_plan",
     "canon_goofspiel",
     "canon_mafia",
-    "canon_monopoly",
     "PLAN_KEY",
     "MAX_SPAN_ROUNDS",
     "NO_TARGET",
     "TOOL_GOOFSPIEL",
     "TOOL_MAFIA",
-    "TOOL_MONOPOLY",
     "GAME_GOOFSPIEL",
     "GAME_MAFIA",
-    "GAME_MONOPOLY",
     # Range bindings: one completion that decided several rounds. Coverage counts DECISIONS a
     # model made, not calls, so batching no longer costs an agent its verified share.
     "bound_plan",
@@ -105,10 +102,6 @@ __all__ = [
     # works (parity with the JS SDK's `export * from "./models"`).
     "GoofspielView",
     "GoofspielMove",
-    "MonopolyView",
-    "MonopolyMove",
-    "MonopolyTrade",
-    "OPEN_TO_TABLE",
     "MafiaView",
     "MafiaMove",
     "parse_view",
@@ -116,7 +109,6 @@ __all__ = [
     # The game names themselves. JS exports these from its models module at top level; here they
     # sat in pyyol.models, so `pyyol.GOOFSPIEL` worked in one SDK and not the other.
     "GOOFSPIEL",
-    "MONOPOLY",
     "MAFIA",
     "game_rules",
     "__version__",
@@ -165,16 +157,13 @@ _LAZY = {
     "canon_plan": "movetools",
     "canon_goofspiel": "movetools",
     "canon_mafia": "movetools",
-    "canon_monopoly": "movetools",
     "PLAN_KEY": "movetools",
     "MAX_SPAN_ROUNDS": "movetools",
     "NO_TARGET": "movetools",
     "TOOL_GOOFSPIEL": "movetools",
     "TOOL_MAFIA": "movetools",
-    "TOOL_MONOPOLY": "movetools",
     "GAME_GOOFSPIEL": "movetools",
     "GAME_MAFIA": "movetools",
-    "GAME_MONOPOLY": "movetools",
     "canonical": "pricing",
     "cache_write_rate": "pricing",
     "PROTOCOL_VERSION": "models",
@@ -187,23 +176,18 @@ _LAZY = {
     # models is annotation-only + stdlib, so importing it stays cheap.
     "GoofspielView": "models",
     "GoofspielMove": "models",
-    "MonopolyView": "models",
-    "MonopolyMove": "models",
-    "MonopolyTrade": "models",
-    "OPEN_TO_TABLE": "models",
     "MafiaView": "models",
     "MafiaMove": "models",
     "parse_view": "models",
     "move_to_dict": "models",
     "GOOFSPIEL": "models",
-    "MONOPOLY": "models",
     "MAFIA": "models",
 }
 
 
 def game_rules(game: str = "") -> str:
     """The engine-generated rules bundled with this package (all 3 games as
-    Markdown). Pass a game name ("goofspiel"|"monopoly"|"mafia") to slice just that
+    Markdown). Pass a game name ("goofspiel"|"mafia") to slice just that
     section, or nothing for the full reference. This is the same text an LLM/agent
     author needs — it ships INSIDE the wheel (pyyol/rules/games.md), so it is always
     available offline and can never drift from the deployed engine."""

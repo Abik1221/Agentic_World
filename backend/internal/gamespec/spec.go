@@ -11,7 +11,7 @@
 //     failing the build if a role/phase/action/event is added upstream but not here.
 //
 // The field lists mirror the REAL socket (WSS) turn views the SDK receives:
-// remoteplay.GoofspielView, mafia.MafiaPushView, monopoly.MonopolyPushView.
+// remoteplay.GoofspielView, mafia.MafiaPushView.
 package gamespec
 
 import (
@@ -20,7 +20,6 @@ import (
 
 	"github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/engine/mafia"
-	"github.com/agent-arena/arena/internal/engine/monopoly"
 )
 
 // deepFS holds the long-form rules prose as markdown, one file per game.
@@ -45,6 +44,18 @@ func deepFor(game string) []Detail {
 	if err != nil {
 		panic("gamespec: missing deep prose for " + game + ": " + err.Error())
 	}
+	// Normalise line endings before the prose is embedded.
+	//
+	// This text ends up inside gamespec.json as escaped string content, so a CRLF source
+	// file produces "\r\n" in the JSON. A checkout on Windows has CRLF and one on Linux has
+	// LF, so the SAME command generated two different files depending on who ran it — and
+	// llms-docs-fresh, which regenerates and diffs, failed for whoever was not on the
+	// platform that last committed. The diff was 38 invisible escapes and read as though
+	// the docs were stale.
+	//
+	// Normalising here rather than in the generator: the line endings of a source file are
+	// not part of the prose, and every consumer of this function wants the same answer.
+	raw = []byte(strings.ReplaceAll(string(raw), "\r\n", "\n"))
 	// Everything before the first heading is the file's editing-warning comment, so the
 	// split's leading chunk is dropped rather than parsed.
 	chunks := strings.Split("\n"+string(raw), "\n#### ")
@@ -136,7 +147,7 @@ type Detail struct {
 
 // All returns the full game reference, in the order docs should present it.
 func All() []Game {
-	return []Game{goofspielGame(), mafiaGame(), monopolyGame()}
+	return []Game{goofspielGame(), mafiaGame()}
 }
 
 // --- Goofspiel ----------------------------------------------------------------
@@ -308,125 +319,3 @@ func mafiaGame() Game {
 	}
 }
 
-// --- Monopoly -----------------------------------------------------------------
-
-func monopolyGame() Game {
-	return Game{
-		ID:         "monopoly",
-		Title:      "Monopoly",
-		Status:     "beta",
-		MinPlayers: 2,
-		MaxPlayers: 8,
-		TurnBudget: "~45s per decision; miss it and the engine submits a safe legal action for you",
-		Tagline:    "Standard Monopoly for 2–8 seats. Near-perfect information — the whole board is in every view.",
-		Overview: "A standard Monopoly game (default 4 players, $1500 starting cash, $200 for passing GO). " +
-			"You are one seat; engine bots fill the rest on a practice table. It is a phase machine: on " +
-			"your turn you `" + monopoly.ActRoll + "`, resolve where you land (buy / auction / pay rent / " +
-			"draw a card / go to jail), then in the **" + monopoly.PhaseManage + "** phase you may build, " +
-			"mortgage, trade, and finally `" + monopoly.ActEndTurn + "`.\n\n" +
-			"Monopoly is near-perfect-information: the whole board is exposed in `state` (only future " +
-			"randomness — unshuffled decks — is hidden). Rather than track fixed field names, **read " +
-			"`legal_actions` each turn and pick from it** — the phase tells you the situation, the " +
-			"legal list tells you exactly what you may do.",
-		WinCondition: "Last solvent player standing wins: everyone else goes **bankrupt**. If the turn cap " +
-			"is reached first, the seat with the highest net worth wins (ties possible).",
-		ViewFields: []Field{
-			{"seat", "int", "Your seat index."},
-			{"phase", "string", "Current phase — one of the Phase values below — describing the decision owed."},
-			{"legal_actions", "string[]", "The exact action kinds valid for you right now. Always choose from this."},
-			{"state", "object", "The redacted board: `players` (cash, position, jail, bankrupt), `holdings` (owner/houses/mortgaged per square), dice, current turn, pending auction/trade, etc. Inspect directly."},
-		},
-		MoveSchema: `{ "action": <string>, "property": <int?>, "amount": <int?>, "trade": <object?> }`,
-		MoveFields: []Field{
-			{"action", "string", "One of `legal_actions`."},
-			{"property", "int", "Board-square index — for `" + monopoly.ActBuild + "`, `" + monopoly.ActMortgage + "`, `" + monopoly.ActUnmortgage + "`, `" + monopoly.ActSellHouse + "`."},
-			{"amount", "int", "A cash amount — for `" + monopoly.ActBid + "` (your raise)."},
-			{"trade", "object", "Only for `" + monopoly.ActProposeTrade + "`: `{proposer, target, give_props[], give_cash, want_props[], want_cash}`. Set `target: -1` to offer to the WHOLE TABLE — see Open offers."},
-		},
-		Phases: []Term{
-			{monopoly.PhaseRoll, "It's your turn — roll the dice (or act from jail)."},
-			{monopoly.PhaseJail, "You're in jail; choose how to get out."},
-			{monopoly.PhaseAcquire, "You landed on an unowned property — buy it or decline."},
-			{monopoly.PhaseAuction, "An auction is open (someone declined a property) — bid or pass."},
-			{monopoly.PhaseResolveDebt, "You owe more than your cash — raise funds or go bankrupt."},
-			{monopoly.PhaseManage, "Post-move: build / mortgage / trade, then end your turn (re-roll on doubles)."},
-			{monopoly.PhaseTradeResponse, "A trade was proposed to you — accept, reject, or counter."},
-			{monopoly.PhaseTrade, "Open trade floor at the top of a turn — propose a trade to anyone, or skip."},
-			{monopoly.PhaseGameOver, "Terminal phase — the match is over."},
-		},
-		Actions: []ActionSpec{
-			{monopoly.ActRoll, "Roll the dice and move.", []string{monopoly.PhaseRoll}},
-			{monopoly.ActBuy, "Buy the property you landed on at list price.", []string{monopoly.PhaseAcquire}},
-			{monopoly.ActDecline, "Decline to buy (opens an auction unless auctions are disabled).", []string{monopoly.PhaseAcquire}},
-			{monopoly.ActBid, "Raise the current high bid by `amount`. Capped at the cash you hold — but you may raise cash first, see below.", []string{monopoly.PhaseAuction}},
-			{monopoly.ActPass, "Drop out of the auction.", []string{monopoly.PhaseAuction}},
-			{monopoly.ActBuild, "Build a house/hotel on `property` (even-build rules apply).", []string{monopoly.PhaseManage}},
-			{monopoly.ActSellHouse, "Sell a house/hotel on `property` back to the bank.", []string{monopoly.PhaseManage, monopoly.PhaseResolveDebt}},
-			{monopoly.ActMortgage, "Mortgage `property` for cash.", []string{monopoly.PhaseManage, monopoly.PhaseResolveDebt}},
-			{monopoly.ActUnmortgage, "Lift a mortgage on `property` (+10% interest).", []string{monopoly.PhaseManage}},
-			{monopoly.ActPayJail, "Pay the $50 fine, then roll.", []string{monopoly.PhaseJail}},
-			{monopoly.ActUseJailCard, "Spend a get-out-of-jail-free card, then roll.", []string{monopoly.PhaseJail}},
-			{monopoly.ActRollJail, "Try to roll doubles to escape jail.", []string{monopoly.PhaseJail}},
-			{monopoly.ActEndTurn, "Finish your turn (re-roll if you rolled doubles).", []string{monopoly.PhaseManage}},
-			{monopoly.ActBankrupt, "Give up — liquidate to the creditor.", []string{monopoly.PhaseResolveDebt}},
-			{monopoly.ActProposeTrade, "Offer a `trade` to another seat, or to the whole table with `target: -1`.", []string{monopoly.PhaseManage, monopoly.PhaseTrade}},
-			{monopoly.ActAcceptTrade, "Accept the trade offered to you. On an open offer, take it.", []string{monopoly.PhaseTradeResponse}},
-			{monopoly.ActRejectTrade, "Reject it. On an open offer this only PASSES — the offer stays up for the seats behind you.", []string{monopoly.PhaseTradeResponse}},
-			{monopoly.ActCounterTrade, "Counter with your own `trade`. Not legal on an open offer.", []string{monopoly.PhaseTradeResponse}},
-			{monopoly.ActSkipTrade, "Leave the between-turns window without acting.", []string{monopoly.PhaseTrade}},
-		},
-		Events: []Term{
-			{string(monopoly.EvMatchCreated), "Match opened with the rule set + commitment."},
-			{string(monopoly.EvTurnStarted), "A seat's turn began."},
-			{string(monopoly.EvDiceRolled), "Dice were rolled."},
-			{string(monopoly.EvMoved), "A token moved to a new square."},
-			{string(monopoly.EvCashChanged), "A one-sided bank transaction (salary, tax, card, dividend)."},
-			{string(monopoly.EvRentPaid), "Rent was paid from one player to another."},
-			{string(monopoly.EvPropertyPurchased), "A property was bought."},
-			{string(monopoly.EvCardDrawn), "A Chance / Community Chest card was drawn."},
-			{string(monopoly.EvWentToJail), "A player went to jail."},
-			{string(monopoly.EvLeftJail), "A player left jail."},
-			{string(monopoly.EvHouseBuilt), "A house/hotel was built."},
-			{string(monopoly.EvHouseSold), "A house/hotel was sold to the bank."},
-			{string(monopoly.EvMortgaged), "A property was mortgaged."},
-			{string(monopoly.EvUnmortgaged), "A mortgage was lifted."},
-			{string(monopoly.EvAuctionStarted), "An auction opened."},
-			{string(monopoly.EvBidPlaced), "An auction bid was placed."},
-			{string(monopoly.EvAuctionPassed), "A player passed in an auction."},
-			{string(monopoly.EvAuctionWon), "An auction was won."},
-			{string(monopoly.EvAuctionUnsold), "An auction closed with no buyer."},
-			{string(monopoly.EvBankrupt), "A player went bankrupt."},
-			{string(monopoly.EvTradeProposed), "A trade was proposed."},
-			{string(monopoly.EvTradeExecuted), "A trade was accepted and executed."},
-			{string(monopoly.EvTradeRejected), "A trade was rejected."},
-			{string(monopoly.EvTurnEnded), "A seat's turn ended."},
-			{string(monopoly.EvMatchFinished), "Final result: winner + rewards."},
-		},
-		Config: []Term{
-			{"players = 2..8 (default 4)", "Table size; empty seats are filled by engine bots."},
-			{"starting_cash = 1500 / go_salary = 200", "Standard economy."},
-			{"auctions", "Declining an unowned property sends it to auction unless auctions are disabled."},
-			{"free_parking_pool", "Optional house rule: taxes and fines fund a Free Parking jackpot."},
-		},
-		Example: Example{
-			Python: "@agent.on_turn(\"monopoly\")\n" +
-				"def decide(v):\n" +
-				"    # Read the legal list every turn; a preferred-order pick keeps the game moving.\n" +
-				"    for a in (\"" + monopoly.ActRoll + "\", \"" + monopoly.ActBuy + "\", \"" + monopoly.ActEndTurn + "\"):\n" +
-				"        if a in v.legal_actions:\n" +
-				"            return {\"action\": a}\n" +
-				"    return {\"action\": v.legal_actions[0]}",
-			JS: "agent.onTurn(\"monopoly\", (v) => {\n" +
-				"  for (const a of [\"" + monopoly.ActRoll + "\", \"" + monopoly.ActBuy + "\", \"" + monopoly.ActEndTurn + "\"])\n" +
-				"    if (v.legal_actions.includes(a)) return { action: a };\n" +
-				"  return { action: v.legal_actions[0] };\n" +
-				"});",
-		},
-		Notes: []string{
-			"Always pick `action` from the turn's `legal_actions` — the legal set already encodes affordability and even-build rules, so any listed action is guaranteed to be accepted.",
-			"`" + monopoly.PhaseManage + "` is the phase where most strategy lives (build / mortgage / trade); returning `" + monopoly.ActEndTurn + "` there is always safe.",
-			"Phase names are the situation; action names are the verbs — don't confuse them (e.g. `" + monopoly.ActBuy + "` is an action taken during the `" + monopoly.PhaseAcquire + "` phase).",
-		},
-		Deep: deepFor("monopoly"),
-	}
-}

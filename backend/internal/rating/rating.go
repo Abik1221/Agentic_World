@@ -26,7 +26,6 @@ type Config struct {
 const (
 	GameGoofspiel = "goofspiel"
 	GameMafia     = "mafia"
-	GameMonopoly  = "monopoly"
 )
 
 // Rating algorithms. 1v1 arenas use Glicko-2; N-player arenas use TrueSkill.
@@ -374,7 +373,7 @@ func (s *Service) SnapshotRanks(ctx context.Context) (int, error) {
 const ArenaAll = "all"
 
 // Arenas is every rated arena, in board display order.
-var Arenas = []string{GameGoofspiel, GameMafia, GameMonopoly}
+var Arenas = []string{GameGoofspiel, GameMafia}
 
 // IsArena reports whether game names a rated arena (or the all-arena aggregate).
 func IsArena(game string) bool {

@@ -43,7 +43,7 @@ func main() {
 				calls, retried, gaveUp)
 		}
 	}()
-	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia|monopoly")
+	game := flag.String("game", "goofspiel", "game to run: goofspiel|mafia")
 	stake := flag.Int64("stake", 0, "coins staked per seat, informational (0 = free practice table)")
 	tier := flag.String("tier", "", "stake tier for a REAL staked table: low|mid|high (empty = free practice)")
 	basePort := flag.Int("base-port", 9101, "first local port for the agent endpoints")
@@ -384,7 +384,7 @@ func (ag *labAgent) onboard(label string, idx int) error {
 			"version": "1.9.0", "visibility": "public",
 		},
 		"developer": map[string]any{"name": "Pyyol Lab", "organization": "Pyyol"},
-		"games":     []string{"goofspiel", "mafia", "monopoly"},
+		"games":     []string{"goofspiel", "mafia"},
 		"endpoint":  map[string]any{"url": ag.endpointURL(), "authentication": "bearer-token"},
 		"runtime":   map[string]any{"timeout": 30000, "maxMemory": "512MB"},
 		"model":     map[string]any{"provider": ag.Persona.Provider, "model": ag.Persona.Model, "reasoning": true},

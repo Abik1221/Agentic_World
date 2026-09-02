@@ -55,10 +55,10 @@ usage: pyyol play [-h] [--ranked] [--tier TIER] [--matches MATCHES] [--yes]
                   [--url URL] [--agent AGENT] [--token TOKEN] [--quiet]
                   [--no-color] [--open {auto,always,never}] [--api API]
                   [--watch {ask,browser,terminal}]
-                  {goofspiel,mafia,monopoly}
+                  {goofspiel,mafia}
 
 positional arguments:
-  {goofspiel,mafia,monopoly}
+  {goofspiel,mafia}
 
 options:
   -h, --help            show this help message and exit
@@ -167,7 +167,7 @@ scaffold a new agent project (agent + pyyol.toml)
 
 ```
 usage: pyyol init [-h] [--lang {python,js}] [--framework FRAMEWORK]
-                  [--arena {goofspiel,mafia,monopoly}] [--name NAME]
+                  [--arena {goofspiel,mafia}] [--name NAME]
                   dir
 
 positional arguments:
@@ -178,7 +178,7 @@ options:
   --lang {python,js}
   --framework FRAMEWORK
                         e.g. langgraph, crewai, openai-agents
-  --arena {goofspiel,mafia,monopoly}
+  --arena {goofspiel,mafia}
   --name NAME
 ```
 
@@ -301,7 +301,7 @@ options:
 fetch a match replay
 
 ```
-usage: pyyol replay [-h] [--game {goofspiel,mafia,monopoly}] [--json]
+usage: pyyol replay [-h] [--game {goofspiel,mafia}] [--json]
                     [--api API]
                     match
 
@@ -310,7 +310,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --game {goofspiel,mafia,monopoly}
+  --game {goofspiel,mafia}
   --json
   --api API             platform API base (defaults to the logged-in one)
 ```
@@ -479,13 +479,13 @@ options:
 
 ```
 usage: pyyol validate [-h] --url URL [--secret SECRET]
-                      [--game {goofspiel,monopoly,mafia}]
+                      [--game {goofspiel,mafia}]
 
 options:
   -h, --help            show this help message and exit
   --url URL
   --secret SECRET
-  --game {goofspiel,monopoly,mafia}
+  --game {goofspiel,mafia}
 ```
 
 ### `pyyol simulate`

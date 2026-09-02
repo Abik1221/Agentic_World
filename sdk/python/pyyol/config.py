@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass, field
 
 CONFIG_NAME = "pyyol.toml"
-KNOWN_ARENAS = ("goofspiel", "mafia", "monopoly")
+KNOWN_ARENAS = ("goofspiel", "mafia")
 MODES = ("sandbox", "ranked")
 
 

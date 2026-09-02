@@ -387,7 +387,7 @@ func TestGatewaySpanCarriesNoMoveWhenNothingWasBound(t *testing.T) {
 // only end-to-end evidence is a Goofspiel match, and "it dispatches by game" is exactly the
 // kind of claim that turns out to have a hardcoded constant behind it. Mafia and Monopoly are
 // the two with more seats and more money on the table.
-func TestASpanBindsEveryRoundInMafiaAndMonopoly(t *testing.T) {
+func TestASpanBindsEveryRoundInMafia(t *testing.T) {
 	cases := []struct {
 		name, matchID, tool, body string
 		wantMoves                 []string
@@ -402,15 +402,6 @@ func TestASpanBindsEveryRoundInMafiaAndMonopoly(t *testing.T) {
 				{"round":4,"kind":"kill","target":0},
 				{"round":5,"kind":"abstain"}]}}]}`,
 			wantMoves: []string{"kill:0", "abstain:none"},
-		},
-		{
-			name:    "monopoly",
-			matchID: "mp_spanitest0001",
-			tool:    "monopoly_action",
-			body: `{"model":"m","content":[{"type":"tool_use","name":"monopoly_action","input":{"plan":[
-				{"round":4,"kind":"buy","property":12,"amount":150},
-				{"round":5,"kind":"pass"}]}}]}`,
-			wantMoves: []string{"buy:12:150", "pass:0:0"},
 		},
 	}
 

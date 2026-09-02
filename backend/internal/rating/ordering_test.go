@@ -40,16 +40,16 @@ func TestBoardIsNotOrderedByLatency(t *testing.T) {
 // TestCrossArenaOrderingUsesPerArenaBaselines. A model that only ever queued 1v1 must not
 // outrank one that won above base rate in a harder arena.
 func TestCrossArenaOrderingUsesPerArenaBaselines(t *testing.T) {
-	// Population: goofspiel sits at 50%, monopoly at 25%.
+	// Population: goofspiel sits at 50%, mafia at 25%.
 	filler := ms("v", "filler", 0, 0, 1000, []ArenaStat{
 		{Game: GameGoofspiel, Wins: 5000, Losses: 5000},
-		{Game: GameMonopoly, Wins: 2500, Losses: 7500},
+		{Game: GameMafia, Wins: 2500, Losses: 7500},
 	})
 	cherry := ms("v", "queue-filter", 550, 450, 700, []ArenaStat{
 		{Game: GameGoofspiel, Wins: 550, Losses: 450},
 	})
 	rounder := ms("v", "all-rounder", 400, 600, 12000, []ArenaStat{
-		{Game: GameMonopoly, Wins: 400, Losses: 600},
+		{Game: GameMafia, Wins: 400, Losses: 600},
 	})
 
 	out := []ModelStat{cherry, rounder, filler}

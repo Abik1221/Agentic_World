@@ -8,7 +8,6 @@ import (
 
 	"github.com/agent-arena/arena/internal/engine/goofspiel"
 	"github.com/agent-arena/arena/internal/engine/mafia"
-	"github.com/agent-arena/arena/internal/engine/monopoly"
 )
 
 // This file adapts each concrete engine to the platform's GameSpec.run seam.
@@ -128,41 +127,6 @@ func runMafia(_ int, seed []byte) (MatchOutcome, error) {
 		Events:     len(tbl.Log()),
 		ReplayHash: tbl.ReplayHash(),
 		Seats:      len(seats),
-	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Monopoly (2–8 seats)
-// ---------------------------------------------------------------------------
-
-func monopolySpec() GameSpec {
-	return GameSpec{
-		ID:             GameMonopoly,
-		Name:           "Monopoly",
-		Summary:        "2–8 seat property-trading race; perfect information apart from dice.",
-		Info:           InfoPerfectPlusChance,
-		MinSeats:       2,
-		MaxSeats:       8,
-		PreferredSeats: 4,
-		EngineVersion:  "monopoly-1.0.0",
-		run:            runMonopoly,
-	}
-}
-
-func runMonopoly(seats int, seed []byte) (MatchOutcome, error) {
-	cfg := monopoly.Config{Players: seats, StartingCash: 1500, MaxTurns: 1000}
-	tbl := monopoly.NewTable(cfg, seed, nil) // nil agents => padded with reference bots
-	tbl.PlayOut()
-	if !tbl.Finished() {
-		return MatchOutcome{Seats: seats}, nil
-	}
-	return MatchOutcome{
-		Completed:  true,
-		Winner:     seatOrTie(tbl.Winner(), monopoly.Tie),
-		Moves:      len(tbl.Moves()),
-		Events:     len(tbl.Log()),
-		ReplayHash: tbl.ReplayHash(),
-		Seats:      seats,
 	}, nil
 }
 

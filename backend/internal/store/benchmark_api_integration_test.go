@@ -98,8 +98,10 @@ func TestBenchmarkAPILive(t *testing.T) {
 	if page.SeasonStart == "" {
 		t.Error("season_start must be published so a reader can tell what window the figures cover")
 	}
-	if len(page.Arenas) != 3 {
-		t.Errorf("arenas = %v, want the three rated arenas", page.Arenas)
+	// Asserted against rating.Arenas rather than a literal, so withdrawing or adding an
+	// arena does not leave this failing on a number. It was 3 until Monopoly came out.
+	if len(page.Arenas) != len(rating.Arenas) {
+		t.Errorf("arenas = %v, want the %d rated arenas", page.Arenas, len(rating.Arenas))
 	}
 
 	var row *apiModel

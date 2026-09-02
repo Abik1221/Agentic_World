@@ -364,11 +364,13 @@ func (g denyGate) Allow(ctx context.Context, matchPublicID string) (bool, error)
 	return false, nil
 }
 
-// TestMoneyFlowE2E_MonopolyRespectsFraudGate verifies the fix: under a deny-all gate,
-// BOTH Mafia and Monopoly now HOLD escrow (winner unpaid, pending review) instead of
-// auto-paying, and a cleared hold releases the exact split via SettleHeld. This closes
-// the earlier gap where staked Monopoly settled straight through a flag.
-func TestMoneyFlowE2E_MonopolyRespectsFraudGate(t *testing.T) {
+// TestMoneyFlowE2E_StakedTableRespectsFraudGate: under a deny-all gate a staked table
+// HOLDS escrow (winner unpaid, pending review) instead of auto-paying, and a cleared hold
+// releases the exact per-seat split via SettleHeld.
+//
+// It covered Mafia and Monopoly; with Monopoly withdrawn it covers Mafia, which is the
+// remaining multi-seat staked game and the one the multi-winner split path exists for.
+func TestMoneyFlowE2E_StakedTableRespectsFraudGate(t *testing.T) {
 	dsn := os.Getenv("PYYOL_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set PYYOL_TEST_DATABASE_URL")
@@ -417,35 +419,23 @@ func TestMoneyFlowE2E_MonopolyRespectsFraudGate(t *testing.T) {
 	}
 	t.Logf("✅ Mafia respects the gate: escrow retained, winner unpaid (held for review)")
 
-	// ── Monopoly under the SAME DENY gate: now HOLDS (gap fixed) ──
-	monoID := fmt.Sprintf("m_mono_hold_%d", time.Now().UnixNano())
-	esc1 := sysBalance(t, pool, ledger.SysEscrow)
-	if err := walletSvc.StakeMonopolyTable(ctx, monoID, trio, fee); err != nil {
-		t.Fatalf("mono stake: %v", err)
+	// ── Admin release (gate cleared): SettleHeld pays the held split exactly ──
+	//
+	// This half ran on the Monopoly table before that arena was withdrawn. It is kept and
+	// re-pointed at the Mafia hold above, because what it proves is a property of the
+	// WALLET, not of a game: a hold released by an admin pays the persisted per-seat split
+	// and drains escrow to zero. Dropping it with the arena would have quietly retired
+	// coverage of the multi-winner release path — the one where an error over- or
+	// under-pays real money.
+	if err := walletSvc.SettleHeld(ctx, mafiaID); err != nil {
+		t.Fatalf("SettleHeld: %v", err)
 	}
-	wBefore2, _ := ledgerSvc.Balance(ctx, winner)
-	monoPayouts := map[string]int64{winner: gross - 90}
-	if err := walletSvc.SettleMonopolyTable(ctx, monoID, gross, 90, monoPayouts); err != nil {
-		t.Fatalf("mono settle: %v", err)
-	}
-	if got := sysBalance(t, pool, ledger.SysEscrow) - esc1; got != gross {
-		t.Fatalf("MONOPOLY should now HOLD escrow under a deny gate: escrow delta %d want %d", got, gross)
-	}
-	if wAfter2, _ := ledgerSvc.Balance(ctx, winner); wAfter2 != wBefore2 {
-		t.Fatalf("MONOPOLY winner must NOT be paid while held: %d -> %d", wBefore2, wAfter2)
-	}
-	t.Logf("✅ FIXED: Monopoly now respects the fraud gate — escrow retained, winner unpaid (held for review)")
-
-	// ── Admin release (gate cleared): SettleHeld pays the held Monopoly split exactly ──
-	if err := walletSvc.SettleHeld(ctx, monoID); err != nil {
-		t.Fatalf("mono SettleHeld: %v", err)
-	}
-	if got := sysBalance(t, pool, ledger.SysEscrow) - esc1; got != 0 {
+	if got := sysBalance(t, pool, ledger.SysEscrow) - esc0; got != 0 {
 		t.Fatalf("escrow not drained after held release: net %d", got)
 	}
-	if wAfter, _ := ledgerSvc.Balance(ctx, winner); wAfter != wBefore2+(gross-90) {
-		t.Fatalf("held-release payout wrong: %d want %d", wAfter, wBefore2+(gross-90))
+	if wAfter, _ := ledgerSvc.Balance(ctx, winner); wAfter != wBefore+(gross-90) {
+		t.Fatalf("held-release payout wrong: %d want %d", wAfter, wBefore+(gross-90))
 	}
-	assertNoDrift(t, ledgerSvc, log, "monopoly held release")
-	t.Logf("✅ held Monopoly released cleanly via SettleHeld (winner +%d, books balanced)", gross-90)
+	assertNoDrift(t, ledgerSvc, log, "held release")
+	t.Logf("✅ held table released cleanly via SettleHeld (winner +%d, books balanced)", gross-90)
 }

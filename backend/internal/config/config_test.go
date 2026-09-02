@@ -29,9 +29,6 @@ func TestLoad_HappyPath(t *testing.T) {
 	if cfg.MoveWindow.Seconds() != 45 {
 		t.Errorf("MoveWindow default = %s, want 45s", cfg.MoveWindow)
 	}
-	if cfg.MonopolyMoveWindow.Seconds() != 60 {
-		t.Errorf("MonopolyMoveWindow default = %s, want 60s", cfg.MonopolyMoveWindow)
-	}
 	// ZERO is the correct default: it selects the engine's per-phase Mafia clock.
 	// Any non-zero value flattens night/discussion/voting to one length.
 	if cfg.MafiaPhaseWindow != 0 {

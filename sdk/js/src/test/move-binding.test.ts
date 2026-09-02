@@ -18,14 +18,12 @@ import {
   boundMove,
   boundPlan,
   canonMafia,
-  canonMonopoly,
   moveTool,
   moveToolChoice,
   moveToolName,
   NO_TARGET,
   GAME_GOOFSPIEL,
   GAME_MAFIA,
-  GAME_MONOPOLY,
 } from "../movetools.js";
 
 interface BindingCase {
@@ -101,7 +99,7 @@ for (const c of load()) {
 }
 
 test("tool definitions carry the right name and the same schema per provider", () => {
-  for (const game of [GAME_GOOFSPIEL, GAME_MAFIA, GAME_MONOPOLY]) {
+  for (const game of [GAME_GOOFSPIEL, GAME_MAFIA]) {
     const want = moveToolName(game);
     const openai = moveTool(game, "openai") as {
       type: string;
@@ -154,10 +152,6 @@ test("no target is -1, not seat 0", () => {
   assert.equal(canonMafia("vote", -1), "vote:none");
   assert.equal(canonMafia("vote", 0), "vote:0");
   assert.notEqual(canonMafia("vote", -1), canonMafia("vote", 0));
-});
-
-test("monopoly cannot confuse property with amount", () => {
-  assert.notEqual(canonMonopoly("mortgage", 50, 0), canonMonopoly("mortgage", 0, 50));
 });
 
 test("a quoted integer binds but an exponent or decimal string does not", () => {

@@ -139,5 +139,5 @@ See the full guide at `/v1/docs → "Verified LLM agents"` (and `examples/llm_ag
 
 - **gRPC transport** (today the SDK uses WebSockets under the hood — you never
   configure it either way).
-- **Ranked matchmaking for Mafia & Monopoly** (today ranked is Goofspiel; all three
+- **Ranked matchmaking for Mafia** (today ranked is Goofspiel; all three
   arenas are playable in sandbox).

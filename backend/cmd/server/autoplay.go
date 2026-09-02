@@ -8,7 +8,6 @@ import (
 	"github.com/agent-arena/arena/internal/autoplay"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/agent-arena/arena/internal/matchmaking"
-	"github.com/agent-arena/arena/internal/monopoly"
 	"github.com/agent-arena/arena/internal/sandbox"
 	"github.com/agent-arena/arena/internal/store"
 	"github.com/agent-arena/arena/internal/wallet"
@@ -69,7 +68,6 @@ type sandboxStarterAdapter struct {
 	throttle *autoplay.SandboxThrottle
 	goof     *sandbox.Service
 	mafia    *mafia.Service
-	monopoly *monopoly.Service
 }
 
 func (a sandboxStarterAdapter) StartSandbox(ctx context.Context, game, agent, owner string) error {
@@ -79,8 +77,6 @@ func (a sandboxStarterAdapter) StartSandbox(ctx context.Context, game, agent, ow
 		_, err = a.goof.StartPushPlay(ctx, agent, owner, "medium")
 	case "mafia":
 		_, err = a.mafia.StartPushPlay(ctx, agent, owner)
-	case "monopoly":
-		_, err = a.monopoly.StartPushPlay(ctx, agent, owner, 4)
 	default:
 		return fmt.Errorf("autoplay: unknown sandbox game %q", game)
 	}

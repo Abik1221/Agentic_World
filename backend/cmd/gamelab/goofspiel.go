@@ -79,8 +79,6 @@ func (a *labAgent) handlePlay(w http.ResponseWriter, r *http.Request) {
 	switch probe.Game {
 	case "goofspiel", "":
 		a.playGoofspiel(w, r, raw)
-	case "monopoly":
-		a.playMonopoly(w, r, raw)
 	case "mafia":
 		a.playMafia(w, r, raw)
 	default:

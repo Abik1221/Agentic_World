@@ -3,7 +3,7 @@
 // pipeline a single, uniform way to reason about every supported game without
 // knowing any concrete engine type.
 //
-// The three shipped games — Goofspiel, Mafia, and Monopoly — each have their
+// The shipped games — Goofspiel and Mafia — each have their
 // own hand-written, deterministic engine under internal/engine/*. Those engines
 // intentionally do NOT share a Go interface (their state, actions, and seat
 // models differ). This package is the seam that unifies them: each game is
@@ -26,7 +26,6 @@ type GameID string
 const (
 	GameGoofspiel GameID = "goofspiel"
 	GameMafia     GameID = "mafia"
-	GameMonopoly  GameID = "monopoly"
 )
 
 // InfoModel classifies how information is hidden in a game. It drives the
@@ -39,7 +38,11 @@ const (
 	InfoSimultaneous InfoModel = "simultaneous_reveal"
 	// InfoHiddenRole: each seat holds a private role/knowledge set (Mafia).
 	InfoHiddenRole InfoModel = "hidden_role"
-	// InfoPerfectPlusChance: full board is public; only future dice are unknown (Monopoly).
+	// InfoPerfectPlusChance: full board is public; only future dice are unknown.
+	//
+	// No shipped game uses this today — it described Monopoly, which was withdrawn.
+	// The classification is kept because it is a property of a GAME, not of the one
+	// that happened to have it, and the next dice-driven arena will need it.
 	InfoPerfectPlusChance InfoModel = "perfect_plus_chance"
 )
 
@@ -144,6 +147,5 @@ func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register(goofspielSpec())
 	r.Register(mafiaSpec())
-	r.Register(monopolySpec())
 	return r
 }

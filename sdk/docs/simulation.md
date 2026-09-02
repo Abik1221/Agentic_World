@@ -36,7 +36,7 @@ pyyol validate --url http://localhost:9099/turn --secret dev-secret --game goofs
 
 ```
 ✓ health       200 healthy
-✓ handshake    200 accepted=True games=[goofspiel,monopoly,mafia]
+✓ handshake    200 accepted=True games=[goofspiel,mafia]
 ✓ turn         200 -> {"round": 0, "card": 5}
 ✓ initialize   200
 ✓ event        200
@@ -45,7 +45,7 @@ PASS — endpoint speaks the push protocol.
 ```
 
 Any `✗` tells you exactly which call to fix. Run `validate` for each game your
-manifest lists (`--game monopoly`, `--game mafia`).
+manifest lists (`--game mafia`).
 
 ## 3. Play a full match over HTTP (CLI `simulate`)
 

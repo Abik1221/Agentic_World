@@ -13,7 +13,7 @@ from pyyol.cli import GROUP_GAMES, queue_path_for
 
 
 def test_group_games_use_the_group_queue():
-    for game in ("mafia", "monopoly"):
+    for game in ("mafia",):
         assert queue_path_for(game) == "/v1/group-queue", game
 
 

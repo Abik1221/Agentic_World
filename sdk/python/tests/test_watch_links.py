@@ -21,7 +21,6 @@ class FakeConsole:
 def test_each_game_maps_to_its_real_viewer_route():
     d = "https://pyyol.com"
     assert cli._watch_url(d, "goofspiel", "m_1") == "https://pyyol.com/goofspiel?match=m_1"
-    assert cli._watch_url(d, "monopoly", "mn_2") == "https://pyyol.com/monopoly?match=mn_2"
     # Mafia's viewer lives under /arena — /mafia only redirects there.
     assert cli._watch_url(d, "mafia", "mf_3") == "https://pyyol.com/arena/mafia?match=mf_3"
 
@@ -52,10 +51,12 @@ def test_sandbox_matches_get_a_link_too():
     """Sandbox is where a developer spends most of their time; it is not second-class."""
     c = FakeConsole()
     args = argparse.Namespace(dashboard="https://pyyol.com", open_browser="never")
-    cli._announce_match(c, args, "monopoly", "mn_sandbox_1", "1/3")
+    # Announced on a surviving arena. This called the Monopoly path, and removing that line
+    # left the test asserting against a console nothing had been written to — which passes
+    # for no reason at all if the assertion is ever loosened.
+    cli._announce_match(c, args, "mafia", "mf_sandbox_1")
     joined = " ".join(t for _, t in c.lines)
-    assert "mn_sandbox_1" in joined
-    assert "/monopoly?match=mn_sandbox_1" in joined
+    assert "mf_sandbox_1" in joined
 
 
 def test_only_the_first_match_opens_a_tab(monkeypatch):

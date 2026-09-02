@@ -76,47 +76,6 @@ func TestMapRows_MafiaProducesAnAgentTimeline(t *testing.T) {
 
 // Monopoly rendered as two bare lines before this, and its payloads are almost all board
 // indices — the case where raw numbers are least readable.
-func TestMapRows_MonopolyNamesTheBoard(t *testing.T) {
-	t0 := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
-	rows := []MatchRow{
-		row("monopoly", "property_purchased", 0, map[string]any{"seat": 0, "property": 39, "price": 400}, t0),
-		row("monopoly", "rent_paid", 0, map[string]any{"from": 0, "to": 1, "property": 39, "amount": 50}, t0.Add(time.Second)),
-		row("monopoly", "cash_changed", 0, map[string]any{"seat": 0, "delta": -200, "balance": 1300, "reason": "income_tax"}, t0.Add(2*time.Second)),
-		row("monopoly", "bankrupt", 0, map[string]any{"seat": 0, "creditor": 1, "amount": 700, "reason": "rent"}, t0.Add(3*time.Second)),
-	}
-	got := mapRows(rows, finishedMeta(map[int]string{0: "MY_AGENT", 1: "ATLAS_PRIME"}))
-	if len(got) != len(rows) {
-		t.Fatalf("mapped %d of %d rows", len(got), len(rows))
-	}
-
-	joined := ""
-	for _, e := range got {
-		joined += summary(e) + "\n"
-	}
-	// 39 is Boardwalk. If this ever prints "square 39" the board lookup has broken and
-	// the page is back to making people memorise indices.
-	if !strings.Contains(joined, "Boardwalk") {
-		t.Errorf("board index 39 was not resolved to a name:\n%s", joined)
-	}
-	// A signed delta must read as a direction, not as a minus sign.
-	if !strings.Contains(joined, "paid $200") {
-		t.Errorf("a negative cash delta did not render as a payment:\n%s", joined)
-	}
-	// Snake_case enums are tokens, not English.
-	if !strings.Contains(joined, "income tax") {
-		t.Errorf("reason enum was not humanised:\n%s", joined)
-	}
-	// Bankruptcy ends the agent's match, so it is failure-class, not a routine note.
-	var sawOut bool
-	for _, e := range got {
-		if e.Type == TypeEliminated {
-			sawOut = true
-		}
-	}
-	if !sawOut {
-		t.Error("the agent's own bankruptcy was not marked as it going out")
-	}
-}
 
 // Goofspiel is the one game with a real per-decision clock: the gap between the prize
 // being revealed and this agent sealing its card.

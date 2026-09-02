@@ -63,14 +63,12 @@ import (
 const (
 	ToolGoofspiel = "play_card"
 	ToolMafia     = "mafia_action"
-	ToolMonopoly  = "monopoly_action"
 )
 
 // Game slugs, matching matches.game.
 const (
 	GameGoofspiel = "goofspiel"
 	GameMafia     = "mafia"
-	GameMonopoly  = "monopoly"
 )
 
 // ToolFor returns the tool name that carries a move for this game, or "" if the game has no
@@ -81,8 +79,6 @@ func ToolFor(game string) string {
 		return ToolGoofspiel
 	case GameMafia:
 		return ToolMafia
-	case GameMonopoly:
-		return ToolMonopoly
 	}
 	return ""
 }
@@ -136,14 +132,6 @@ func Canon(game string, tc ToolCall) (string, bool) {
 			target = NoTarget
 		}
 		return CanonMafia(kind, target), true
-	case GameMonopoly:
-		kind := strings.ToLower(strings.TrimSpace(stringArg(tc.Args, "kind")))
-		if kind == "" {
-			return "", false
-		}
-		property, _ := intArg(tc.Args, "property")
-		amount, _ := intArg(tc.Args, "amount")
-		return CanonMonopoly(kind, property, amount), true
 	}
 	return "", false
 }

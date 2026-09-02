@@ -64,14 +64,11 @@ export {
   canonMove,
   canonGoofspiel,
   canonMafia,
-  canonMonopoly,
   NO_TARGET,
   TOOL_GOOFSPIEL,
   TOOL_MAFIA,
-  TOOL_MONOPOLY,
   GAME_GOOFSPIEL,
   GAME_MAFIA,
-  GAME_MONOPOLY,
 } from "./movetools.js";
 export type { Rate, CostArgs } from "./pricing.js";
 // Scaffold fingerprinting: the harness identity that makes a paired model comparison

@@ -42,7 +42,7 @@ JSON (YAML also accepted). All keys are **camelCase**.
 | `agent.version` | semver `MAJOR.MINOR.PATCH` |
 | `agent.visibility` | `public` or `private` |
 | `developer.name` | required |
-| `games` | at least one of `goofspiel`, `monopoly`, `mafia` |
+| `games` | at least one of `goofspiel`, `mafia` |
 | `endpoint.url` | absolute **https** URL of your `/turn` handler (http allowed only in dev) |
 | `endpoint.authentication` | `bearer-token` |
 | `runtime.timeout` | positive milliseconds. **Declared, not enforced** — see below |
@@ -155,7 +155,7 @@ exactly what failed: `health_ok`, `handshake_ok`, `games_covered`.
 ## `runtime.timeout` is not your deadline
 
 The scaffold declares `runtime.timeout: 5000`, and the per-decision budget is 45s for
-Goofspiel and 60s for Monopoly. Those numbers disagree because they are not the same
+Goofspiel and 75s for Mafia. Those numbers disagree because they are not the same
 thing, and nothing said so.
 
 **The platform's move window is the only deadline that governs.** It is enforced

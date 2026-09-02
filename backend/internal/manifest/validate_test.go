@@ -16,7 +16,7 @@ func validDoc() Document {
 			Visibility:  "public",
 		},
 		Developer: DevBlock{Name: "John Doe", Organization: "Atlas AI Labs"},
-		Games:     []string{"mafia", "goofspiel", "monopoly"},
+		Games:     []string{"mafia", "goofspiel"},
 		Endpoint:  EndpointBlock{URL: "https://agent.example.com/play", Authentication: "bearer-token"},
 		Runtime:   RuntimeBlock{Timeout: 5000, MaxMemory: "512MB"},
 		Model:     &ModelBlock{Provider: "OpenAI", Model: "GPT-5.5", Reasoning: true},
@@ -129,7 +129,6 @@ developer:
 games:
   - mafia
   - goofspiel
-  - monopoly
 endpoint:
   url: https://agent.example.com/play
   authentication: bearer-token
@@ -150,7 +149,7 @@ contact:
 	if err != nil {
 		t.Fatalf("yaml parse: %v", err)
 	}
-	if d.Agent.Name != "Atlas" || len(d.Games) != 3 || d.Runtime.Timeout != 5000 {
+	if d.Agent.Name != "Atlas" || len(d.Games) != 2 || d.Runtime.Timeout != 5000 {
 		t.Fatalf("unexpected yaml parse: %+v", d)
 	}
 	if d.Model == nil || d.Model.Provider != "OpenAI" {

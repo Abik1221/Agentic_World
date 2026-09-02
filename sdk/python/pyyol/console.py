@@ -142,7 +142,6 @@ DEFAULT_DASHBOARD = os.environ.get("PYYOL_DASHBOARD", "").rstrip("/") or "https:
 _WATCH_ROUTE = {
     "goofspiel": "/goofspiel",
     "mafia": "/arena/mafia",
-    "monopoly": "/monopoly",
 }
 
 

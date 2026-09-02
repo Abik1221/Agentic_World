@@ -35,7 +35,7 @@ const WARN = "•";
 
 // N-player games use the group matchmaking queue; Goofspiel (1v1) uses the 2-player
 // queue. Same enqueue request shape, different endpoint.
-const GROUP_GAMES = new Set(["mafia", "monopoly"]);
+const GROUP_GAMES = new Set(["mafia"]);
 const queuePathFor = (game: string): string => (GROUP_GAMES.has(game) ? "/v1/group-queue" : "/v1/queue");
 
 // Public platform defaults. `pyyol login` with no flags hits the live platform;
@@ -57,12 +57,10 @@ const AGENT_KEY_PREFIX = "sk_arena_";
 const PLAY_PATH: Record<string, string> = {
   goofspiel: "/v1/sandbox/pushplay",
   mafia: "/v1/mafia/pushplay",
-  monopoly: "/v1/monopoly/pushplay",
 };
 const REPLAY_PATH: Record<string, string> = {
   goofspiel: "/v1/match/{id}/replay",
   mafia: "/v1/mafia/{id}/replay",
-  monopoly: "/v1/monopoly/{id}/replay",
 };
 
 // ── arg parsing (tiny, dependency-free) ───────────────────────────────────────
@@ -1545,13 +1543,6 @@ async function signedRequest(
 
 /** (view, legal, isLegalMove) for a probe turn — mirrors Python `_synthetic_turn`. */
 function syntheticTurn(game: string): [Record<string, unknown>, unknown[], (m: any) => boolean] {
-  if (game === "monopoly") {
-    const view = {
-      game: "monopoly", match_id: "validate", seat: 0, phase: "roll",
-      legal_actions: ["roll", "end_turn"], state: { players: [], phase: "roll" },
-    };
-    return [view, ["roll", "end_turn"], (m) => Boolean(m) && ["roll", "end_turn"].includes(m.action)];
-  }
   if (game === "mafia") {
     const view = {
       game: "mafia", match_id: "validate", your_seat: 1, your_role: "Villager", day: 1,
@@ -1848,7 +1839,7 @@ Commands:
   login [--with github|google|wallet] [--dashboard URL] [--token PAT]
   logout
   whoami
-  init <dir> [--arena goofspiel|mafia|monopoly] [--framework F] [--name N]
+  init <dir> [--arena goofspiel|mafia] [--framework F] [--name N]
   dev [--matches N]                 local dev loop — SANDBOX, no stakes
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
   publish --manifest <file>         certify your agent for ranked

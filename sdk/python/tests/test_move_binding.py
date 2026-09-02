@@ -61,7 +61,7 @@ def test_tool_definitions_carry_the_right_name_per_provider() -> None:
     A provider-specific wrapper that renamed the tool would produce calls the gateway ignores,
     so the agent would look instrumented and bind nothing.
     """
-    for game in (movetools.GAME_GOOFSPIEL, movetools.GAME_MAFIA, movetools.GAME_MONOPOLY):
+    for game in (movetools.GAME_GOOFSPIEL, movetools.GAME_MAFIA):
         want = movetools.tool_name(game)
         openai = movetools.tool_for(game, "openai")
         assert openai["function"]["name"] == want
@@ -108,12 +108,6 @@ def test_no_target_is_minus_one_not_zero() -> None:
     assert movetools.canon_mafia("vote", -1) == "vote:none"
     assert movetools.canon_mafia("vote", 0) == "vote:0"
     assert movetools.canon_mafia("vote", -1) != movetools.canon_mafia("vote", 0)
-
-
-def test_canon_monopoly_cannot_confuse_property_with_amount() -> None:
-    assert movetools.canon_monopoly("mortgage", 50, 0) != movetools.canon_monopoly(
-        "mortgage", 0, 50
-    )
 
 
 def test_sdk_objects_are_read_like_dicts() -> None:
