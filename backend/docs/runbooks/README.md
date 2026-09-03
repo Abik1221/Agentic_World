@@ -11,6 +11,7 @@ and ends with a verification step. Dashboards and alert definitions live in
 | [Stripe incident](stripe-incident.md) | `stripe_webhook_failures_total` spike / `reconcile_unmatched_total > 0` |
 | [Payout hold / dispute](payout-dispute.md) | `payout_holds_total` spike; dispute filed |
 | [Deploy rollback](deploy-rollback.md) | bad deploy; error-rate or latency SLO burn |
+| [Devnet end-to-end test](devnet-e2e-test.md) | not an alert — the pre-launch rehearsal: real agents, real stakes, real settlement on devnet |
 
 ## Golden rules
 1. **Never auto-correct money.** On any ledger drift: freeze writes, page, investigate
