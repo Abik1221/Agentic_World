@@ -242,6 +242,16 @@ func (s *Service) List(ctx context.Context, userPublicID string, limit int) ([]S
 	return s.repo.ListByUser(ctx, userPublicID, limit)
 }
 
+// payLabel is the name the payer sees IN THEIR WALLET when approving the transfer.
+//
+// It said "Onavion" — a name that appears nowhere else a user of this platform has ever
+// seen. Someone deposits to Pyyol, Phantom opens, and it asks them to send money to a
+// company they have never heard of. That is not a cosmetic mismatch: an unrecognised name
+// on a payment request is what a phishing attempt looks like, and cancelling is the
+// correct instinct. The brand on a payment request has to match the brand on the site
+// that produced it.
+const payLabel = "Pyyol"
+
 // PayURL builds the Solana Pay transfer URL for a session (recipient is the
 // platform owner wallet; the payer's wallet derives the USDC ATA).
 func (s *Service) PayURL(sess Session) string {
@@ -249,8 +259,8 @@ func (s *Service) PayURL(sess Session) string {
 	q.Set("amount", s.formatUSDC(sess.AmountExpected))
 	q.Set("spl-token", s.cfg.USDCMint)
 	q.Set("reference", sess.Reference)
-	q.Set("label", "Onavion")
-	q.Set("message", "Onavion deposit "+sess.PublicID)
+	q.Set("label", payLabel)
+	q.Set("message", payLabel+" deposit "+sess.PublicID)
 	return "solana:" + s.cfg.PlatformOwner + "?" + q.Encode()
 }
 

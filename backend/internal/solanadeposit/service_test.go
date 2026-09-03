@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,5 +346,38 @@ func TestDetectedSessionSurvivesLongGrace(t *testing.T) {
 	svc.Poll(context.Background())
 	if got, _ := repo.GetSession(context.Background(), s.PublicID); got.Status != StatusDetected {
 		t.Fatalf("detected session expired too early: status = %q, want detected", got.Status)
+	}
+}
+
+// The payment request carries the PLATFORM'S OWN NAME.
+//
+// It carried "Onavion" — a name that appears nowhere else a user of this platform has
+// seen. The deposit succeeds, the URL is valid, and every test passed: the only place it
+// was visible was inside the payer's wallet at the moment they were asked to approve
+// sending money. An unrecognised company on a payment request is indistinguishable from a
+// phishing attempt, and cancelling is the correct instinct — so this was a wrong brand in
+// the one screen where being trusted matters most.
+//
+// Pinned because nothing else would catch it: no endpoint returns the label, and the
+// string is only rendered by third-party wallet software.
+func TestPayURLIsBrandedPyyol(t *testing.T) {
+	svc := newSvc(newFakeRepo(), &fakeChain{}, newFakeCrediter(), time.Unix(1_700_000_000, 0))
+	raw := svc.PayURL(Session{PublicID: "dep_1", AmountExpected: 10_000_000, Reference: "ref_1"})
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("pay url does not parse: %v", err)
+	}
+	q := u.Query()
+
+	if got := q.Get("label"); got != "Pyyol" {
+		t.Errorf("wallet shows label %q — the payer sees this instead of Pyyol", got)
+	}
+	if got := q.Get("message"); !strings.Contains(got, "Pyyol") {
+		t.Errorf("wallet shows message %q, which never names Pyyol", got)
+	}
+	// The old name must not survive anywhere in the request the payer approves.
+	if strings.Contains(raw, "Onavion") {
+		t.Errorf("pay url still carries the retired brand: %s", raw)
 	}
 }
