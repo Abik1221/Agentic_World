@@ -248,3 +248,55 @@ def test_no_bare_open_remains(mod):
         and not re.search(r'"[rw]b"|\'[rw]b\'|urlopen|webbrowser', ln)
     ]
     assert not bare, f"text open() without encoding= in {mod}: {bare}"
+
+
+def test_serve_normalizes_an_adapter_before_calling_run(tmp_path, monkeypatch):
+    """`pyyol serve` on the scaffold must not raise AttributeError.
+
+    The SAME defect as cmd_run above, in the command that plays RANKED. cmd_run was
+    fixed and its own comment recorded that "every other load path already normalized";
+    serve was the one it missed, so the crash landed at the END of a developer's setup —
+    after login, certification, funding and queueing — with an internal-error banner
+    reading `'MinimalAgent' object has no attribute 'run'`, which looks like the
+    developer's mistake on an agent our own quickstart scaffolded.
+    """
+    from pyyol import cli, credentials
+    from pyyol.server import Agent
+
+    (tmp_path / "agent.py").write_text(SCAFFOLD_STYLE_AGENT, encoding="utf-8")
+
+    called = {}
+
+    def fake_run(self, **kw):
+        called["ok"] = True
+
+    monkeypatch.setattr(Agent, "run", fake_run, raising=False)
+    monkeypatch.setattr(credentials, "load", lambda: None)
+    monkeypatch.setattr(cli, "_connection_token", lambda a, c: ("test-token", True))
+    monkeypatch.setattr(cli, "_log_file_handler", lambda: None)
+    # The autoplay call is a real HTTP request; the connection is held either way, so
+    # its outcome must not decide whether the agent is normalized.
+    monkeypatch.setattr(cli, "_autoplay_set", lambda *a, **k: (0, {"error": "offline"}))
+
+    args = SimpleNamespace(
+        url="ws://127.0.0.1:9",
+        api="http://127.0.0.1:9",
+        agent="ag_test",
+        token="",
+        file=str(tmp_path / "agent.py"),
+        var="agent",
+        ranked=True,
+        mode="",
+        bid=500,
+        games="goofspiel",
+        json=False,
+        quiet=True,
+        no_color=True,
+    )
+    rc = cli.cmd_serve(args)
+
+    assert rc == 0, "cmd_serve should have run the normalized agent"
+    assert called.get("ok"), (
+        "Agent.run was never reached — cmd_serve handed the raw Adapter through, which "
+        "is the AttributeError developers hit when trying to play ranked"
+    )

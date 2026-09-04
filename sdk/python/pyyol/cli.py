@@ -1582,6 +1582,27 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if agent is None:
         return 2
 
+    # Normalize an Adapter subclass into something with .run().
+    #
+    # `pyyol init` scaffolds an Adapter SUBCLASS and an Adapter has no .run(), so handing
+    # one to `serve` raised `AttributeError: 'X' object has no attribute 'run'` — an
+    # internal-error banner that reads like the developer broke something, on the agent
+    # our own quickstart wrote for them.
+    #
+    # This is the SAME defect already fixed for `pyyol run`, whose comment notes that
+    # "every other load path already normalized; this one alone did a raw getattr".
+    # `serve` was the one it missed — and it is the command that plays ranked, so the
+    # crash landed at the end of the setup rather than the start.
+    from .server import as_agent
+
+    try:
+        agent = as_agent(agent)
+    except TypeError as e:
+        # TypeError names `entry`, so a genuinely wrong export still gets the friendly
+        # explanation instead of a stack trace.
+        print(f"{BAD} {e}", file=sys.stderr)
+        return 2
+
     _warn_insecure_transport(api, bool(token))
     st, resp = _autoplay_set(api, token, enabled=True, mode=mode, bid=args.bid, games=games)
     if st and 200 <= st < 300:
