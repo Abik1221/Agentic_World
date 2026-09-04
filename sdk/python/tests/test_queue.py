@@ -111,6 +111,7 @@ def test_queue_requires_a_stake(capsys, monkeypatch, tmp_path):
 # explicitly, which short-circuits the credential choice. Nothing exercised the path a
 # real developer takes: `pyyol login`, then `pyyol queue`.
 
+
 class _AuthCapturingHandler(_Handler):
     seen_auth: list[str] = []
 
@@ -159,9 +160,7 @@ def test_queue_still_honours_an_explicit_token(monkeypatch, tmp_path):
     # whatever happens to be stored on the machine.
     _no_keyring(monkeypatch, tmp_path)
     srv, base = _serve_capturing()
-    credentials.save(
-        credentials.Credentials(url=base, agent_id="ag_1", api_key="sk_arena_stored")
-    )
+    credentials.save(credentials.Credentials(url=base, agent_id="ag_1", api_key="sk_arena_stored"))
     try:
         rc = cli.cmd_queue(_args(api=base, tier="mid", token="sk_arena_explicit"))
     finally:
