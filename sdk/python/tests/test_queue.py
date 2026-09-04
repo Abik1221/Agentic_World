@@ -93,3 +93,79 @@ def test_queue_requires_a_stake(capsys, monkeypatch, tmp_path):
     finally:
         srv.shutdown()
     assert rc == 2  # usage error: must choose --tier or --bid
+
+
+# ── Which credential the queue sends ────────────────────────────────────────
+#
+# /v1/queue is registered server-side with RequireScope(ScopeAgent), so it needs the
+# AGENT key. cmd_queue sent the dashboard session token instead, and every ranked queue
+# attempt came back:
+#
+#   403 forbidden_scope: This credential is not allowed to access this resource
+#
+# For every developer, every time — and `pyyol queue <game> --tier low` is the command
+# the scaffold prints as THE way to play ranked, so ranked matchmaking was unreachable
+# from the CLI.
+#
+# It was invisible because every existing test above passes token="agent-secret"
+# explicitly, which short-circuits the credential choice. Nothing exercised the path a
+# real developer takes: `pyyol login`, then `pyyol queue`.
+
+
+class _AuthCapturingHandler(_Handler):
+    seen_auth: list[str] = []
+
+    def do_POST(self):
+        _AuthCapturingHandler.seen_auth.append(self.headers.get("Authorization", ""))
+        super().do_POST()
+
+
+def _serve_capturing():
+    _AuthCapturingHandler.seen_auth = []
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _AuthCapturingHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+def test_queue_sends_the_agent_key_not_the_dashboard_token(monkeypatch, tmp_path):
+    _no_keyring(monkeypatch, tmp_path)
+    srv, base = _serve_capturing()
+    credentials.save(
+        credentials.Credentials(
+            url=base,
+            agent_id="ag_1",
+            access_token="dashboard-jwt-NOT-agent-scope",
+            api_key="sk_arena_theagentkey",
+        )
+    )
+    try:
+        # No explicit token: exactly what a developer gets after `pyyol login`.
+        rc = cli.cmd_queue(_args(api=base, tier="mid"))
+    finally:
+        srv.shutdown()
+
+    assert rc == 0
+    sent = " ".join(_AuthCapturingHandler.seen_auth)
+    assert "sk_arena_theagentkey" in sent, (
+        "the queue call did not carry the agent key — the server requires agent scope "
+        f"and will answer 403 forbidden_scope. Sent: {sent!r}"
+    )
+    assert "dashboard-jwt-NOT-agent-scope" not in sent, (
+        "the queue call carried the dashboard session token, which the server rejects"
+    )
+
+
+def test_queue_still_honours_an_explicit_token(monkeypatch, tmp_path):
+    # CI and scripted runs pass a credential directly; that must keep winning over
+    # whatever happens to be stored on the machine.
+    _no_keyring(monkeypatch, tmp_path)
+    srv, base = _serve_capturing()
+    credentials.save(credentials.Credentials(url=base, agent_id="ag_1", api_key="sk_arena_stored"))
+    try:
+        rc = cli.cmd_queue(_args(api=base, tier="mid", token="sk_arena_explicit"))
+    finally:
+        srv.shutdown()
+
+    assert rc == 0
+    sent = " ".join(_AuthCapturingHandler.seen_auth)
+    assert "sk_arena_explicit" in sent and "sk_arena_stored" not in sent
