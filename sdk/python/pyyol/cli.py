@@ -810,13 +810,24 @@ def cmd_queue(args: argparse.Namespace) -> int:
             )
         return 0
 
-    # Queuing needs a session — auto-launch login on this device if absent.
-    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
+    # Queuing is an AGENT action, so it needs the AGENT key.
+    #
+    # /v1/queue is registered with RequireScope(ScopeAgent). This sent the dashboard
+    # session token instead, so every ranked queue attempt came back
+    # `forbidden_scope: This credential is not allowed to access this resource` — for
+    # every developer, every time. It is the command the scaffold prints as THE way to
+    # play ranked ("pyyol queue <game> --tier low"), so ranked matchmaking was
+    # unreachable from the CLI.
+    #
+    # _connection_token already encodes the right preference (agent key first, falling
+    # back to the dashboard JWT) and is what the play/dev commands use to reach the same
+    # agent-scoped surface.
+    token, _ = _connection_token(args, creds)
     if not token:
         creds = _ensure_login(args)
         if creds is None:
             return 2
-        token = creds.access_token or creds.api_key or ""
+        token, _ = _connection_token(args, creds)
 
     body: dict[str, object] = {"game": game}
     if args.tier:
@@ -891,12 +902,15 @@ def cmd_room(args: argparse.Namespace) -> int:
         print(f"{BAD} no arena to talk to — run `pyyol login`, or pass --api.", file=sys.stderr)
         return 2
 
-    token = args.token or (creds.access_token if creds else "") or os.environ.get("PYYOL_TOKEN", "")
+    # Rooms are AGENT actions, like the queue: /v1/room/create and /v1/lobby/join are
+    # both registered with RequireScope(ScopeAgent). Sending the dashboard session token
+    # here fails with `forbidden_scope` for the same reason queueing did.
+    token, _ = _connection_token(args, creds)
     if not token:
         creds = _ensure_login(args)
         if creds is None:
             return 2
-        token = creds.access_token or creds.api_key or ""
+        token, _ = _connection_token(args, creds)
 
     if args.action == "join":
         if not args.id:

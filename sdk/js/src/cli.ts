@@ -798,12 +798,21 @@ async function cmdQueue(a: Args): Promise<number> {
     for (const t of tiers) console.log(`  ${String(t.key ?? "").padEnd(8)} ${String(Number(t.coins ?? 0)).padStart(8)} coins  ${t.label ?? ""}`);
     return 0;
   }
-  // Queuing needs a session — auto-launch login on this device if absent.
-  let token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  // Queuing is an AGENT action, so it needs the AGENT key.
+  //
+  // /v1/queue is registered with RequireScope(ScopeAgent). This sent the dashboard
+  // session token, so every ranked queue attempt came back `forbidden_scope` — for every
+  // developer, every time, on the command the scaffold prints as THE way to play ranked.
+  //
+  // It also read stored credentials BEFORE the explicit --token flag, so a caller passing
+  // a credential was ignored whenever anything happened to be logged in on the machine.
+  // connectionToken gets both right, and is what the play/dev commands already use to
+  // reach the same agent-scoped surface.
+  let { token } = connectionToken(a, c);
   if (!token) {
     const got = await ensureLogin(a);
     if (!got) return 2;
-    token = got.accessToken || got.apiKey || "";
+    ({ token } = connectionToken(a, got));
   }
   const body: Record<string, unknown> = { game };
   if (str(a, "tier")) body.tier = str(a, "tier");
@@ -848,12 +857,13 @@ async function cmdRoom(a: Args): Promise<number> {
     console.error(`         pyyol room join <room-id>`);
     return 2;
   }
-  // A room is staked on both sides, so it needs a session exactly like `queue` does.
-  let token = c?.accessToken || str(a, "token") || process.env.PYYOL_TOKEN || "";
+  // A room is an AGENT action exactly like `queue`: /v1/room/create and /v1/lobby/join
+  // are both agent-scoped, so the dashboard session token fails with `forbidden_scope`.
+  let { token } = connectionToken(a, c);
   if (!token) {
     const got = await ensureLogin(a);
     if (!got) return 2;
-    token = got.accessToken || got.apiKey || "";
+    ({ token } = connectionToken(a, got));
   }
 
   if (action === "join") {

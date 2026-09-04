@@ -509,3 +509,68 @@ test("queue posts the tier and reports the match", async () => {
   assert.match(out, /queued for goofspiel \(tier mid\)/);
   assert.match(out, /mt_9f3/);
 });
+
+// ── Which credential `queue` and `room` send ────────────────────────────────
+//
+// /v1/queue, /v1/room/create and /v1/lobby/join are all registered server-side with
+// RequireScope(ScopeAgent), so they need the AGENT key. Both commands sent the dashboard
+// session token instead, and every attempt came back:
+//
+//   403 forbidden_scope: This credential is not allowed to access this resource
+//
+// For every developer, every time — on the command the scaffold prints as THE way to play
+// ranked. connectionToken was already tested and already correct; these commands simply
+// did not call it.
+//
+// They also read stored credentials BEFORE the explicit --token flag, so a caller passing
+// a credential was ignored whenever anything happened to be logged in on the machine.
+
+function authHeadersOf(calls: Array<[string, RequestInit | undefined]>): string {
+  return calls
+    .map(([, init]) => String((init?.headers as Record<string, string>)?.Authorization ?? ""))
+    .join(" ");
+}
+
+test("queue sends the agent key, not the dashboard session token", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-queue-"));
+  seedCreds(home, { apiKey: "sk_arena_theagentkey", accessToken: "dashboard-jwt" });
+  const calls: Array<[string, RequestInit | undefined]> = [];
+  const fetchStub = (async (url: unknown, init?: RequestInit) => {
+    calls.push([String(url), init]);
+    if (String(url).includes("/stakes")) {
+      return json({ game: "goofspiel", tiers: [{ key: "low", label: "Low", coins: 100 }] });
+    }
+    return json({ status: "waiting" }, 202);
+  }) as unknown as typeof fetch;
+
+  await run(["queue", "goofspiel", "--tier", "low", "--api", "http://x"], { fetch: fetchStub, home });
+
+  const sent = authHeadersOf(calls);
+  assert.ok(
+    sent.includes("sk_arena_theagentkey"),
+    `queue did not carry the agent key — the server answers 403 forbidden_scope. Sent: ${sent}`,
+  );
+  assert.ok(!sent.includes("dashboard-jwt"), "queue carried the dashboard token, which the server rejects");
+});
+
+test("an explicit --token beats whatever is stored on the machine", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-queue-tok-"));
+  seedCreds(home, { apiKey: "sk_arena_stored", accessToken: "dashboard-jwt" });
+  const calls: Array<[string, RequestInit | undefined]> = [];
+  const fetchStub = (async (url: unknown, init?: RequestInit) => {
+    calls.push([String(url), init]);
+    if (String(url).includes("/stakes")) {
+      return json({ game: "goofspiel", tiers: [{ key: "low", label: "Low", coins: 100 }] });
+    }
+    return json({ status: "waiting" }, 202);
+  }) as unknown as typeof fetch;
+
+  await run(
+    ["queue", "goofspiel", "--tier", "low", "--api", "http://x", "--token", "sk_arena_explicit"],
+    { fetch: fetchStub, home },
+  );
+
+  const sent = authHeadersOf(calls);
+  assert.ok(sent.includes("sk_arena_explicit"), `an explicit --token was ignored. Sent: ${sent}`);
+  assert.ok(!sent.includes("sk_arena_stored"), "stored credentials overrode the explicit --token");
+});
