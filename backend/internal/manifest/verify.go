@@ -121,6 +121,43 @@ func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, mani
 		return VerificationReport{}, ErrNoManifest
 	}
 
+	// CONNECTED-RANKED: a manifest that declares no endpoint is certified without a probe.
+	//
+	// There is nothing to probe. Falling through sent an empty URL to the client, which
+	// answered "invalid endpoint url" — so a developer following the SDK's own scaffold
+	// (which omits the endpoint and prints "certifies you; no endpoint required") could
+	// never get certified, and ranked play was impossible without hosting.
+	//
+	// Every other part of the platform already handles this shape: PlayTarget returns "no
+	// target" and lets the socket drive the seat, and match entry requires the agent to be
+	// CONNECTED RIGHT NOW. This gate was the only one that did not, and it is the one that
+	// decides whether the account may play at all.
+	//
+	// Skipping the probe loses nothing. A probe proves an endpoint answered at publish
+	// time, which says nothing about whether it answers during a match an hour later — for
+	// a connected agent that guarantee is enforced at match entry instead, where it is
+	// actually load-bearing. The attempt is still recorded, so the audit trail shows a
+	// certification happened and on what basis.
+	if strings.TrimSpace(m.EndpointURL) == "" {
+		report = VerificationReport{
+			ManifestID:   manifestPublicID,
+			Verified:     true,
+			GamesCovered: true,
+			Reason:       "connected-ranked: no endpoint declared, the agent plays over its socket",
+		}
+		attempt := VerificationAttempt{
+			ManifestPublicID: manifestPublicID,
+			HandshakeGames:   m.Games,
+		}
+		if err := s.repo.RecordVerification(ctx, attempt); err != nil {
+			return report, err
+		}
+		if err := s.repo.MarkVerifiedAndActivate(ctx, agentPublicID, manifestPublicID); err != nil {
+			return report, err
+		}
+		return report, nil
+	}
+
 	// Resolve the bearer token (required for bearer-token endpoints).
 	token, err := s.resolveToken(ctx, m)
 	if err != nil {
