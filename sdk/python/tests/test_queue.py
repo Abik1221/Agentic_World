@@ -169,3 +169,28 @@ def test_queue_still_honours_an_explicit_token(monkeypatch, tmp_path):
     assert rc == 0
     sent = " ".join(_AuthCapturingHandler.seen_auth)
     assert "sk_arena_explicit" in sent and "sk_arena_stored" not in sent
+
+
+def test_every_queue_flag_cmd_queue_reads_is_actually_defined(monkeypatch, tmp_path):
+    """Parse REAL argv, don't hand-build the Namespace.
+
+    cmd_queue polls for a pairing and read `args.wait`, but nothing ever defined the
+    flag — so the command crashed on every single run with
+    `AttributeError: 'Namespace' object has no attribute 'wait'`, printed immediately
+    after "✓ queued". The enqueue had already succeeded, so the agent was genuinely in
+    the queue while the developer was told the tool had broken.
+
+    Every other test in this file builds a Namespace by hand and supplies wait=5.0
+    itself, an attribute the parser never produced. That is exactly why this shipped:
+    the fixture invented the interface it was testing.
+
+    So this one goes through the real parser.
+    """
+    from pyyol.cli import build_parser
+
+    ns = build_parser().parse_args(["queue", "goofspiel", "--tier", "low"])
+    for attr in ("game", "tier", "bid", "list", "wait", "token", "api"):
+        assert hasattr(ns, attr), (
+            f"cmd_queue reads args.{attr}, but the parser does not define it — "
+            f"the command will crash with AttributeError on every run"
+        )

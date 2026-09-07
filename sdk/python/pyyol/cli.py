@@ -3147,6 +3147,21 @@ def build_parser() -> argparse.ArgumentParser:
     pq.add_argument("--list", action="store_true", help="show the game's stake tiers and exit")
     pq.add_argument("--tier", default="", help="stake tier key (see --list)")
     pq.add_argument("--bid", type=int, default=0, help="explicit coin stake for a tier-less game")
+    # cmd_queue polls for a pairing after enqueueing, and read args.wait to bound it — but
+    # nothing ever defined the flag, so the command CRASHED on every run with
+    # `AttributeError: 'Namespace' object has no attribute 'wait'`, immediately after
+    # printing "✓ queued". The enqueue had already succeeded, so the agent really was in
+    # the queue and the developer was told the tool was broken.
+    #
+    # It survived because the tests build a Namespace by hand and supply wait=5.0
+    # themselves — an attribute the real parser never produced. Nothing exercised the
+    # actual argv path.
+    pq.add_argument(
+        "--wait",
+        type=float,
+        default=30.0,
+        help="seconds to wait for a pairing before returning (the agent plays regardless)",
+    )
     pq.add_argument("--token", default="")
     pq.set_defaults(func=cmd_queue)
 

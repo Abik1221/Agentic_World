@@ -46,6 +46,10 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
+# A TERMINAL connector failure is a decision about the developer's credential, not a
+# fault in pyyol, so the boundary treats it as an ordinary error rather than a crash.
+from .runtime import ConnectorError
+
 # EX_SOFTWARE from sysexits.h. Distinct from 1 on purpose: "the command ran and told you it
 # failed" and "the command itself broke" are different events, and a CI pipeline should be able
 # to tell them apart without scraping stderr.
@@ -131,6 +135,23 @@ def guard(
         print(file=sys.stderr)
         print("Stopped.", file=sys.stderr)
         return EXIT_INTERRUPTED
+    except ConnectorError as exc:
+        # A TERMINAL connector failure is a decision the server made about this
+        # credential — "this agent key was revoked, run `pyyol login`" — not a fault in
+        # pyyol. Its message is already written for the developer and says exactly what
+        # to do.
+        #
+        # Routing it through the crash report buried that message under "pyyol hit an
+        # internal error / This is a bug in pyyol, not in your agent / Report it", which
+        # tells someone to file a bug for a ten-second fix and to distrust a tool that is
+        # working correctly. A developer hit this mid-setup and reasonably read it as
+        # another platform failure.
+        #
+        # Exit 1, not EXIT_INTERNAL: the command ran and told you it failed, which is a
+        # different event from the command breaking — the distinction EXIT_INTERNAL exists
+        # to preserve.
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
     except BrokenPipeError:
         # `pyyol leaderboard | head` closes the pipe early. That is the pipeline working, not a
         # failure, and Python would otherwise print "BrokenPipeError ... Exception ignored" at
