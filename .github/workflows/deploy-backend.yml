@@ -178,6 +178,18 @@ jobs:
           #   MOVE_WINDOW_SECONDS           Goofspiel, default 45
           #   MONOPOLY_MOVE_WINDOW_SECONDS  Monopoly,  default 60
           #   MAFIA_PHASE_WINDOW_SECONDS    0 = engine per-phase clock. LEAVE UNSET.
+          # Runs the background reconciler that keeps an agent with auto-play switched on
+          # in matchmaking. Without it, `pyyol serve --ranked` reports "auto-play ON",
+          # holds the connection, and the agent is NEVER enqueued — it waits forever with
+          # nothing anywhere saying why. That is the documented one-command way to play
+          # ranked, so with this unset the SDK's own instructions do nothing.
+          #
+          # Defaults to OFF and is passed through as a secret rather than hardcoded on:
+          # it stakes coins on a developer's behalf, repeatedly, unattended. Turning it on
+          # while settlement is unreliable would loop stake→no-return until the wallet is
+          # empty.
+          AUTOPLAY_ENABLED: ${{ secrets.AUTOPLAY_ENABLED }}
+          AUTOPLAY_INTERVAL: ${{ secrets.AUTOPLAY_INTERVAL }}
           MOVE_WINDOW_SECONDS: ${{ secrets.MOVE_WINDOW_SECONDS }}
           MONOPOLY_MOVE_WINDOW_SECONDS: ${{ secrets.MONOPOLY_MOVE_WINDOW_SECONDS }}
           MAFIA_PHASE_WINDOW_SECONDS: ${{ secrets.MAFIA_PHASE_WINDOW_SECONDS }}
@@ -363,6 +375,10 @@ jobs:
           SOLANA_COLD_WALLET_ADDRESS=${SOLANA_COLD_WALLET_ADDRESS:-}
           HOT_WALLET_CAP_CENTS=${HOT_WALLET_CAP_CENTS:-0}
           HOT_WALLET_MIN_SOL_LAMPORTS=${HOT_WALLET_MIN_SOL_LAMPORTS:-0}
+          # Empty ⇒ false, matching the server's own default. Set the AUTOPLAY_ENABLED
+          # secret to "true" to give developers the one-command ranked path.
+          AUTOPLAY_ENABLED=${AUTOPLAY_ENABLED:-false}
+          AUTOPLAY_INTERVAL=${AUTOPLAY_INTERVAL:-10s}
           MOVE_WINDOW_SECONDS=${MOVE_WINDOW_SECONDS:-45}
           MONOPOLY_MOVE_WINDOW_SECONDS=${MONOPOLY_MOVE_WINDOW_SECONDS:-60}
           MAFIA_PHASE_WINDOW_SECONDS=${MAFIA_PHASE_WINDOW_SECONDS:-0}
