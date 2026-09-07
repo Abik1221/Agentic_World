@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from pyyol import _crash
+from pyyol import _crash, runtime
 
 
 def test_an_internal_fault_exits_70_and_says_whose_bug_it_is(capsys, tmp_path, monkeypatch):
@@ -237,3 +237,48 @@ def test_the_wordmark_is_dropped_when_the_stream_cannot_draw_it():
 
     assert shell.wordmark_for(Stream("utf-8")), "a UTF-8 stream should get the wordmark"
     assert shell.wordmark_for(Stream("ascii")) == "", "an ASCII stream must get nothing at all"
+
+
+def test_a_revoked_credential_is_an_error_not_a_crash(capsys, monkeypatch, tmp_path):
+    """A terminal connector failure must not wear the "report a bug" banner.
+
+    ConnectorError is a decision the SERVER made about this credential — "this agent key
+    was revoked, run `pyyol login`" — and its message already tells the developer exactly
+    what to do. Routing it through the crash report buried that message under "pyyol hit
+    an internal error / This is a bug in pyyol, not in your agent / Report it", which asks
+    someone to file a bug for a ten-second fix and to distrust a tool behaving correctly.
+
+    Hit for real mid-setup, where it read as yet another platform failure.
+    """
+    monkeypatch.delenv("PYYOL_DEBUG", raising=False)
+    monkeypatch.setenv("PYYOL_STATE_HOME", str(tmp_path))
+
+    def revoked(_args):
+        raise runtime.ConnectorError("this agent key was revoked — run `pyyol login`")
+
+    code = _crash.guard(revoked, None, version="1", argv=["serve"])
+    err = capsys.readouterr().err
+
+    assert "this agent key was revoked" in err, "the actionable message must survive"
+    assert "internal error" not in err, "a revoked credential is not an internal fault"
+    assert "bug in pyyol" not in err, "this asks the developer to report a working tool"
+    assert code == 1, (
+        "exit 1 — the command ran and told you it failed. EXIT_INTERNAL means the command "
+        "itself broke, and CI should be able to tell those apart"
+    )
+    assert code != _crash.EXIT_INTERNAL
+
+
+def test_a_genuine_fault_still_reports_as_a_bug(capsys, monkeypatch, tmp_path):
+    """The other half: narrowing the boundary must not swallow real crashes."""
+    monkeypatch.delenv("PYYOL_DEBUG", raising=False)
+    monkeypatch.setenv("PYYOL_STATE_HOME", str(tmp_path))
+
+    def broken(_args):
+        raise AttributeError("'MinimalAgent' object has no attribute 'run'")
+
+    code = _crash.guard(broken, None, version="1", argv=["serve"])
+    err = capsys.readouterr().err
+
+    assert code == _crash.EXIT_INTERNAL
+    assert "internal error" in err and "bug in pyyol" in err
