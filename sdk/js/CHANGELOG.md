@@ -4,6 +4,14 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.12.1](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.0...js-v1.12.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **monopoly:** regenerate the docs and repair two things the removal broke ([b87401d](https://github.com/Abik1221/Agentic_World/commit/b87401d8f67dc2d2fb64118d1777a518ccb6179a))
+* **sdk:** queue and room send the AGENT key, not the dashboard token ([#90](https://github.com/Abik1221/Agentic_World/issues/90)) ([50728d0](https://github.com/Abik1221/Agentic_World/commit/50728d00c3cfd28171723703221d8a992e9501f1))
+
 ## [1.12.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.11.0...js-v1.12.0) (2026-08-31)
 
 
