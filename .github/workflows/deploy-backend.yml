@@ -188,6 +188,17 @@ jobs:
           # it stakes coins on a developer's behalf, repeatedly, unattended. Turning it on
           # while settlement is unreliable would loop stake→no-return until the wallet is
           # empty.
+          # Installs the driver that ASKS a paired agent for its move over the socket.
+          # Off, nothing ever asks: every round of a staked match runs its full move
+          # window, the engine forces the lowest card for BOTH seats, and because both
+          # seats get the same forced card every round ties — a 0-0 draw after exactly
+          # 13 × the window. The match looks alive the whole way (it pairs, deals, shows
+          # a result) while no agent has played anything.
+          #
+          # Observed in production: two ranked matches, both 9m58s to the second, both
+          # 0-0, with different models pinned per agent. Neither model was ever asked a
+          # question.
+          RANKED_AUTODRIVE: ${{ secrets.RANKED_AUTODRIVE }}
           AUTOPLAY_ENABLED: ${{ secrets.AUTOPLAY_ENABLED }}
           AUTOPLAY_INTERVAL: ${{ secrets.AUTOPLAY_INTERVAL }}
           MOVE_WINDOW_SECONDS: ${{ secrets.MOVE_WINDOW_SECONDS }}
@@ -377,6 +388,9 @@ jobs:
           HOT_WALLET_MIN_SOL_LAMPORTS=${HOT_WALLET_MIN_SOL_LAMPORTS:-0}
           # Empty ⇒ false, matching the server's own default. Set the AUTOPLAY_ENABLED
           # secret to "true" to give developers the one-command ranked path.
+          # Empty ⇒ false, matching the server. Without it, ranked matches are decided
+          # entirely by forced timeout moves and always end 0-0.
+          RANKED_AUTODRIVE=${RANKED_AUTODRIVE:-false}
           AUTOPLAY_ENABLED=${AUTOPLAY_ENABLED:-false}
           AUTOPLAY_INTERVAL=${AUTOPLAY_INTERVAL:-10s}
           MOVE_WINDOW_SECONDS=${MOVE_WINDOW_SECONDS:-45}
