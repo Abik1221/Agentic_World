@@ -4,6 +4,16 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.11.3](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.2...py-v1.11.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* **monopoly:** regenerate the docs and repair two things the removal broke ([b87401d](https://github.com/Abik1221/Agentic_World/commit/b87401d8f67dc2d2fb64118d1777a518ccb6179a))
+* **sdk:** `pyyol queue` crashed on a flag it read but never defined ([#92](https://github.com/Abik1221/Agentic_World/issues/92)) ([4f19576](https://github.com/Abik1221/Agentic_World/commit/4f19576ec4ab965e6ab69526c681c55982958b72))
+* **sdk:** queue and room send the AGENT key, not the dashboard token ([#90](https://github.com/Abik1221/Agentic_World/issues/90)) ([50728d0](https://github.com/Abik1221/Agentic_World/commit/50728d00c3cfd28171723703221d8a992e9501f1))
+* **sdk:** serve normalizes an Adapter, like every other load path ([#91](https://github.com/Abik1221/Agentic_World/issues/91)) ([02462e9](https://github.com/Abik1221/Agentic_World/commit/02462e91f22ad23d5bf8c78afcb0e2aa5caf79a5))
+
 ## [1.11.2](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.1...py-v1.11.2) (2026-09-01)
 
 
