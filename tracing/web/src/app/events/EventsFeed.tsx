@@ -1,6 +1,7 @@
 "use client";
 
-import { useDeferredValue, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { EventRow } from "@/lib/pyyol-lens-api";
 
 export default function EventsFeed({
@@ -10,25 +11,32 @@ export default function EventsFeed({
   initialRows: EventRow[];
   initialQuery: string;
 }) {
+  const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
-  const deferred = useDeferredValue(query);
-  const rows = initialRows.filter((row) => {
-    const value = deferred.trim().toLowerCase();
-    if (!value) return true;
-    return (
-      row.event_type.toLowerCase().includes(value) ||
-      row.trace_id.toLowerCase().includes(value) ||
-      (row.model ?? "").toLowerCase().includes(value) ||
-      (row.tool_name ?? "").toLowerCase().includes(value) ||
-      (row.error_message ?? "").toLowerCase().includes(value)
-    );
-  });
+
+  // Drive the actual search on the SERVER: push the term to ?q= (debounced) so the
+  // page re-runs its /v1/search/events query for it. Previously the box only filtered
+  // the rows already fetched for the default query, so searching any other term showed
+  // nothing. Skip the first run (query still equals what the server just used) to avoid
+  // a redundant refetch on mount.
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const handle = setTimeout(() => {
+      const term = query.trim();
+      router.replace(term ? `/events?q=${encodeURIComponent(term)}` : "/events", { scroll: false });
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [query, router]);
 
   return (
     <div className="panel">
       <h2>Event Search</h2>
       <p className="table-count">
-        Showing {rows.length.toLocaleString()} of {initialRows.length.toLocaleString()} events
+        Showing {initialRows.length.toLocaleString()} event{initialRows.length === 1 ? "" : "s"}
       </p>
       <input
         className="feed-search"
@@ -48,8 +56,8 @@ export default function EventsFeed({
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((row, index) => (
+            {initialRows.length ? (
+              initialRows.map((row, index) => (
                 <tr key={`${row.event_id}-${index}`}>
                   <td>{new Date(row.event_time).toLocaleString()}</td>
                   <td>
@@ -68,7 +76,7 @@ export default function EventsFeed({
             ) : (
               <tr>
                 <td colSpan={5} className="empty-state">
-                  No matching events for this filter.
+                  {query.trim() ? "No matching events for this search." : "No events yet."}
                 </td>
               </tr>
             )}
