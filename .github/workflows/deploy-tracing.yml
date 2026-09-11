@@ -197,6 +197,9 @@ jobs:
           echo "Pulling Lens images from the private registry (no build on the server)..."
           echo "$DHTOKEN" | docker login -u "$DHUSER" --password-stdin
           $COMPOSE pull ingest-api query-api control-api processor web
+          # Logout before `up` (do not leave the Hub token on disk). `up` must use
+          # the images just pulled — not re-pull. pull_policy: always after logout
+          # failed with: pull access denied for the private repo.
           docker logout >/dev/null 2>&1 || true
 
           echo "Starting stack (volumes persist; app containers recreated from pulled tags)..."
@@ -210,9 +213,12 @@ jobs:
           # --no-deps on the app recreate matches Super Admin: do not stall `up` on
           # compose healthchecks (the historical "pyyol-lens-control is unhealthy"
           # abort). Infra first, then apps, then a final up for anything missing.
+          # --pull never on app `up`: overlay also sets pull_policy: missing; both
+          # stop `up` from hitting the private registry after logout. Infra images
+          # are public and may still need a first-time pull.
           $COMPOSE up -d clickhouse postgres nats minio
-          $COMPOSE up -d --force-recreate --no-deps ingest-api processor query-api control-api web
-          if ! $COMPOSE up -d --remove-orphans; then
+          $COMPOSE up -d --pull never --force-recreate --no-deps ingest-api processor query-api control-api web
+          if ! $COMPOSE up -d --pull never --remove-orphans; then
             echo "❌ compose up failed. State and logs follow:"
             dump_logs
             exit 1

@@ -9,6 +9,9 @@
 #
 # What it changes vs the base compose:
 #   • Pins registry images (same pattern as Super Admin ADMIN_*_IMAGE).
+#     pull_policy is `missing` (not `always`): CI `compose pull`s while logged in,
+#     then logs out so the Hub token is not left on the VPS. `always` made the
+#     following `up` re-pull the private repo unauthenticated → "pull access denied".
 #   • Attaches ingest-api + query-api to the shared external `pyyol` network so
 #     the arena (arena-server) can POST telemetry to pyyol-lens-ingest:8081 and
 #     the Super_Admin API + this web app can read pyyol-lens-query:8082.
@@ -23,7 +26,7 @@
 services:
   ingest-api:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
-    pull_policy: always
+    pull_policy: missing
     build: !reset
 
     # Reached by the arena via pyyol (pyyol-lens-ingest:8081); loopback publish is
@@ -45,7 +48,7 @@ services:
 
   query-api:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
-    pull_policy: always
+    pull_policy: missing
     build: !reset
 
     # Reached by the admin + web via pyyol (pyyol-lens-query:8082); loopback only.
@@ -61,7 +64,7 @@ services:
 
   processor:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
-    pull_policy: always
+    pull_policy: missing
     build: !reset
 
     environment:
@@ -82,7 +85,7 @@ services:
     ports: !override []
   control-api:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
-    pull_policy: always
+    pull_policy: missing
     build: !reset
 
     ports: !override []
@@ -93,7 +96,7 @@ services:
 
   web:
     image: ${LENS_WEB_IMAGE:-pyyol-lens-web:latest}
-    pull_policy: always
+    pull_policy: missing
     build: !reset
 
     ports: !override
