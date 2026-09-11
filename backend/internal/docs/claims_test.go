@@ -160,6 +160,12 @@ func TestDocumentedCLICommandsExist(t *testing.T) {
 	for _, m := range regexp.MustCompile(`(?s)add_parser\(\s*"([a-z][a-z0-9-]*)"`).FindAllStringSubmatch(cli, -1) {
 		real[m[1]] = true
 	}
+	// `help` is dispatched in main() before argparse so `pyyol help` / `pyyol /help`
+	// are not invalid-choice errors. The docs advertise that on purpose; treating
+	// it as missing is what kept CI (and therefore deploy) red after the slash fix.
+	if strings.Contains(cli, `"help", "h", "?"`) {
+		real["help"] = true
+	}
 	if len(real) < 10 {
 		t.Fatalf("only found %d CLI commands — the parser pattern is wrong, and this test "+
 			"would report every real command as missing", len(real))
