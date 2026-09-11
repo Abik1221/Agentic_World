@@ -124,3 +124,34 @@ func (r *AutoplayRepo) ListEnabled(ctx context.Context) ([]autoplay.Setting, err
 	}
 	return out, rows.Err()
 }
+
+// ListByOwner returns every auto-play setting owned by the user, including
+// disabled rows, so a multi-agent roster can show an accurate on/off per agent.
+func (r *AutoplayRepo) ListByOwner(ctx context.Context, ownerPublicID string) ([]autoplay.Setting, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id, ap.owner_public_id, ap.enabled, ap.mode, ap.bid, ap.games,
+		        ap.active_from_utc, ap.active_until_utc, ap.daily_match_cap,
+		        ap.daily_token_budget, ap.take_profit_coins, ap.daily_loss_stop,
+		        ap.last_status, ap.last_status_reason, ap.last_status_at
+		   FROM agent_autoplay ap JOIN agents a ON a.id = ap.agent_id
+		  WHERE ap.owner_public_id = $1
+		  ORDER BY a.public_id`, ownerPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []autoplay.Setting
+	for rows.Next() {
+		var s autoplay.Setting
+		var mode string
+		if err := rows.Scan(&s.AgentPublicID, &s.OwnerPublicID, &s.Enabled, &mode, &s.Bid, &s.Games,
+			&s.ActiveFromUTC, &s.ActiveUntilUTC, &s.DailyMatchCap,
+			&s.DailyTokenBudget, &s.TakeProfitCoins, &s.DailyLossStop,
+			&s.LastStatus, &s.LastStatusReason, &s.LastStatusAt); err != nil {
+			return nil, err
+		}
+		s.Mode = autoplay.Mode(mode)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}

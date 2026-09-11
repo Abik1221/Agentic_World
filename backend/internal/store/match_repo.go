@@ -143,7 +143,8 @@ func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 		        -- the Mafia loader: a seat is an agent, and reading only the owner's profile
 		        -- picture left every house bot faceless and gave a developer's agents all the
 		        -- same face. See store/mafia_repo.go for the full note.
-		        COALESCE(NULLIF(ag.avatar_url, ''), NULLIF(u.avatar_url, ''), '')
+		        COALESCE(NULLIF(ag.avatar_url, ''), NULLIF(u.avatar_url, ''), ''),
+		        COALESCE(ag.kind, '') = 'house'
 		 FROM match_players mp
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 JOIN users  u  ON u.id  = mp.owner_user_id
@@ -157,7 +158,7 @@ func (r *MatchRepo) loadPlayers(ctx context.Context, matchPublicID string) ([]ma
 	for rows.Next() {
 		var p match.Player
 		if err := rows.Scan(&p.AgentPublicID, &p.OwnerPublicID, &p.Seat, &p.FinalScore, &p.CoinsDelta,
-			&p.Name, &p.OwnerName, &p.AvatarURL); err != nil {
+			&p.Name, &p.OwnerName, &p.AvatarURL, &p.IsHouse); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

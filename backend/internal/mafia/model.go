@@ -3,6 +3,7 @@ package mafia
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
@@ -92,6 +93,18 @@ type RosterSeat struct {
 	Owner     string `json:"owner,omitempty"`
 	AvatarURL string `json:"avatar_url,omitempty"`
 	Alive     bool   `json:"alive"`
+	// House/Bot tell the table this seat is a platform agent. Both keys exist
+	// because older clients only read `bot` and newer ones prefer `house`.
+	House bool `json:"house"`
+	Bot   bool `json:"bot"`
+}
+
+func playerIsHouse(p Player) bool {
+	if p.IsHouse {
+		return true
+	}
+	id := strings.ToLower(p.AgentPublicID)
+	return strings.HasPrefix(id, "ag_house")
 }
 
 // RosterOf projects the seated players into their public identities, ordered by
@@ -105,9 +118,11 @@ func RosterOf(players []Player, alive map[int]bool) []RosterSeat {
 				a = v
 			}
 		}
+		house := playerIsHouse(p)
 		out = append(out, RosterSeat{
 			Seat: p.Seat, AgentID: p.AgentPublicID, Name: p.Name,
 			Owner: p.OwnerName, AvatarURL: p.AvatarURL, Alive: a,
+			House: house, Bot: house,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seat < out[j].Seat })

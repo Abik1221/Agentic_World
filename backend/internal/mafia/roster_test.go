@@ -22,6 +22,16 @@ func TestRosterNeverLeaksRoles(t *testing.T) {
 	if seats[0].Name != "cascade" || seats[0].Owner != "nahom" {
 		t.Fatalf("display identity missing: %+v", seats[0])
 	}
+	if seats[0].House || seats[1].House {
+		t.Fatalf("ordinary seats must not be marked house: %+v", seats)
+	}
+
+	house := RosterOf([]Player{
+		{Seat: 3, AgentPublicID: "ag_house_mafia_01", Name: "Vale", IsHouse: true, Alive: true},
+	}, nil)
+	if !house[0].House || !house[0].Bot {
+		t.Fatalf("kind=house seat must set house+bot: %+v", house[0])
+	}
 	// Live alive-map wins over the stale per-player flag.
 	if seats[1].Alive {
 		t.Fatalf("seat 2 is dead in the alive map but roster says alive: %+v", seats[1])

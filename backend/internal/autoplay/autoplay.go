@@ -121,6 +121,10 @@ func withinActiveHours(s Setting, hourUTC int) bool {
 type Repo interface {
 	// ListEnabled returns every agent with auto-play currently switched on.
 	ListEnabled(ctx context.Context) ([]Setting, error)
+	// ListByOwner returns every auto-play row for the owner's agents, enabled or
+	// not. The dashboard roster is user-scoped; the agent-key GET cannot answer
+	// for siblings.
+	ListByOwner(ctx context.Context, ownerPublicID string) ([]Setting, error)
 	Get(ctx context.Context, agentPublicID string) (Setting, bool, error)
 	Set(ctx context.Context, s Setting) error
 	// SetStatus records the reconciler's last observed status + reason for an agent

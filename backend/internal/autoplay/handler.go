@@ -38,9 +38,27 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
+		user := auth.RequireScope(auth.ScopeUser)
 		r.With(agent).Get("/v1/agent/autoplay", h.get)
 		r.With(agent).Put("/v1/agent/autoplay", h.set)
+		// Owner-scoped map: the agent-key GET can only speak for one row, so a
+		// multi-agent roster was stuck showing "on" for the key in the session
+		// and inventing "idle" for every sibling.
+		r.With(user).Get("/v1/user/autoplay", h.listOwner)
 	})
+}
+
+func (h *Handler) listOwner(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	list, err := h.repo.ListByOwner(r.Context(), p.UserPublicID)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if list == nil {
+		list = []Setting{}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"agents": list})
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {

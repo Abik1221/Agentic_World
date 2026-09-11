@@ -13,6 +13,15 @@ type fakeRepo struct {
 }
 
 func (f *fakeRepo) ListEnabled(context.Context) ([]Setting, error) { return f.settings, nil }
+func (f *fakeRepo) ListByOwner(_ context.Context, owner string) ([]Setting, error) {
+	var out []Setting
+	for _, s := range f.settings {
+		if s.OwnerPublicID == owner {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
 func (f *fakeRepo) Get(context.Context, string) (Setting, bool, error) {
 	return Setting{}, false, nil
 }

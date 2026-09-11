@@ -7,10 +7,11 @@ package match
 
 import (
 	"context"
-	"github.com/agent-arena/arena/internal/integrity"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/agent-arena/arena/internal/integrity"
 	gs "github.com/agent-arena/arena/internal/engine/goofspiel"
 )
 
@@ -53,6 +54,9 @@ type Player struct {
 	Name      string
 	OwnerName string
 	AvatarURL string
+	// IsHouse is true when agents.kind = 'house' (or the public id is a seeded
+	// house bot). The live table must never treat these seats as developers.
+	IsHouse bool
 }
 
 // TimedEvent is a logged event plus the instant it was written, so a replay can
@@ -71,15 +75,32 @@ type RosterSeat struct {
 	Name      string `json:"name"`
 	Owner     string `json:"owner,omitempty"`
 	AvatarURL string `json:"avatar_url,omitempty"`
+	// House/Bot tell the table this seat is a platform agent. Both keys exist
+	// because older clients only read `bot` and newer ones prefer `house`.
+	House bool `json:"house"`
+	Bot   bool `json:"bot"`
+}
+
+// playerIsHouse reports a platform house seat from the persisted kind flag or
+// the seeded public-id convention (ag_house_*). Used when a sandbox player was
+// built in memory and never reloaded from agents.kind.
+func playerIsHouse(p Player) bool {
+	if p.IsHouse {
+		return true
+	}
+	id := strings.ToLower(p.AgentPublicID)
+	return strings.HasPrefix(id, "ag_house")
 }
 
 // RosterOf projects the seated players into their public identities, ordered by seat.
 func RosterOf(players []Player) []RosterSeat {
 	out := make([]RosterSeat, 0, len(players))
 	for _, p := range players {
+		house := playerIsHouse(p)
 		out = append(out, RosterSeat{
 			Seat: p.Seat, AgentID: p.AgentPublicID, Name: p.Name,
 			Owner: p.OwnerName, AvatarURL: p.AvatarURL,
+			House: house, Bot: house,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seat < out[j].Seat })

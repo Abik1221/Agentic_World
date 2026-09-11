@@ -961,7 +961,7 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 		Bid: 0, RakePct: 0, TotalRounds: s.cfg.Rounds, EngineVersion: gs.Version,
 		Commit: gs.Commit(seed), FairnessMode: gs.FairnessShuffled, Seed: seed,
 		SeatA: Player{AgentPublicID: humanAgent, OwnerPublicID: humanOwner, Seat: gs.SeatA},
-		SeatB: Player{AgentPublicID: houseAgent, OwnerPublicID: houseOwner, Seat: HouseSeat},
+		SeatB: Player{AgentPublicID: houseAgent, OwnerPublicID: houseOwner, Seat: HouseSeat, IsHouse: true},
 		State: state, Deadline: deadline, Events: events,
 	}
 	if err := s.repo.CreatePairedActive(ctx, in); err != nil {
