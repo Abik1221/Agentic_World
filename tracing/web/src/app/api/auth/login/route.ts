@@ -6,13 +6,14 @@ export async function POST(request: Request): Promise<Response> {
   if (!authEnabled()) {
     return Response.json({ ok: false, error: "auth_disabled" }, { status: 400 });
   }
-  let body: { user?: unknown; password?: unknown } = {};
+  let body: { user?: unknown; email?: unknown; password?: unknown } = {};
   try {
     body = await request.json();
   } catch {
     /* empty body → invalid below */
   }
-  const user = typeof body.user === "string" && body.user ? body.user : "admin";
+  const rawUser = typeof body.user === "string" ? body.user : typeof body.email === "string" ? body.email : "";
+  const user = rawUser.trim() || "admin";
   const password = typeof body.password === "string" ? body.password : "";
 
   if (!checkCredentials(user, password)) {

@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 export default function LoginScreen() {
-  const [user, setUser] = useState("admin");
+  const [user, setUser] = useState("founders@pyyol.com");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -23,7 +23,7 @@ export default function LoginScreen() {
         return;
       }
       const data = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(data.error === "invalid_credentials" ? "Invalid username or password." : "Sign-in failed.");
+      setError(data.error === "invalid_credentials" ? "Invalid email or password." : "Sign-in failed.");
     } catch {
       setError("Could not reach the server.");
     } finally {
@@ -42,10 +42,11 @@ export default function LoginScreen() {
           </div>
         </div>
         <h1 className="login-title">Sign in</h1>
-        <label className="login-label" htmlFor="user">Username</label>
+        <label className="login-label" htmlFor="user">Email</label>
         <input
           id="user"
           className="login-input"
+          type="email"
           value={user}
           onChange={(e) => setUser(e.target.value)}
           autoComplete="username"

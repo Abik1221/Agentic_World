@@ -188,6 +188,43 @@ write_into_container() {
   docker exec -i "$id" sh -c "cat > \"$dest\"" < "$src"
 }
 
+MAP_SRC="$ROOT/deploy/nginx/websocket-upgrade.conf"
+
+# $connection_upgrade must exist in http{} or `nginx -t` rejects the Eye vhost
+# (unknown variable) and login stays on Connection: upgrade → CF 522/524.
+# Admin already ships this map; skip if nginx -T already defines it.
+ensure_upgrade_map_host() {
+  if nginx -T 2>/dev/null | grep -q 'map \$http_upgrade \$connection_upgrade'; then
+    echo "    \$connection_upgrade already defined on host nginx"
+    return 0
+  fi
+  if [[ ! -f "$MAP_SRC" ]]; then
+    echo "⚠️  missing $MAP_SRC — vhost needs \$connection_upgrade"
+    return 1
+  fi
+  mkdir -p /etc/nginx/conf.d
+  cp "$MAP_SRC" /etc/nginx/conf.d/websocket-upgrade.conf
+  echo "    installed /etc/nginx/conf.d/websocket-upgrade.conf"
+}
+
+ensure_upgrade_map_container() {
+  local id="$1"
+  if nginx_dump "$id" | grep -q 'map $http_upgrade $connection_upgrade'; then
+    echo "    \$connection_upgrade already defined in $id"
+    return 0
+  fi
+  if [[ ! -f "$MAP_SRC" ]]; then
+    echo "⚠️  missing $MAP_SRC"
+    return 1
+  fi
+  docker exec "$id" mkdir -p /etc/nginx/conf.d || true
+  if write_into_container "$id" /etc/nginx/conf.d/websocket-upgrade.conf "$MAP_SRC"; then
+    echo "    installed websocket-upgrade.conf into $id:/etc/nginx/conf.d/"
+  else
+    docker cp "$MAP_SRC" "$id:/etc/nginx/conf.d/websocket-upgrade.conf"
+  fi
+}
+
 # Add `include <vhost>;` to nginx.conf without deleting Mega Hub server blocks.
 # Prefers in-container cat; falls back to the host bind-mount source.
 inject_trace_include() {
@@ -422,6 +459,7 @@ install_into_docker_edge() {
 
     echo "    resolving Mega Hub upstreams so nginx -t can reload (site files untouched)…"
     resolve_all_missing_upstreams "$id" || true
+    ensure_upgrade_map_container "$id" || true
 
     if nginx_test_reload "$id" && nginx_has_server_name "$id" "trace.pyyol.com"; then
       echo "✅ reloaded $name with trace.pyyol.com → ${upstream} (in running nginx -T)"
@@ -522,6 +560,7 @@ if command -v nginx >/dev/null 2>&1; then
       cp "$tmp" "$dest"
     fi
     rm -f "$tmp"
+    ensure_upgrade_map_host || true
     if reload_host_nginx; then
       echo "✅ host nginx vhost trace.pyyol.com → 127.0.0.1:3100 reloaded (not default_server)"
       HOST_INSTALLED=1

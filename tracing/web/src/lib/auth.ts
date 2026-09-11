@@ -43,7 +43,7 @@ function safeEqual(a: string, b: string): boolean {
 
 export function checkCredentials(user: string, password: string): boolean {
   if (!authEnabled()) return false;
-  return safeEqual(user, configuredUser()) && safeEqual(password, configuredPassword());
+  return safeEqual(user.trim(), configuredUser().trim()) && safeEqual(password, configuredPassword());
 }
 
 /** Sign a session token for user (base64url(payload).base64url(hmac)). */
