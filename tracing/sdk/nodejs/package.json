@@ -1,6 +1,6 @@
 {
-  "name": "@pyyol-lens/nodejs",
-  "version": "0.1.0",
+  "name": "pyyol-lens",
+  "version": "0.1.1",
   "description": "TypeScript client for Pyyol Eye / Lens ingest (traces, spans, cost events)",
   "license": "MIT",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 name: release-lens
 
-# Publishes @pyyol-lens/nodejs to npm on a `lens-vX.Y.Z` tag using NPM_TOKEN.
+# Publishes pyyol-lens to npm on a `lens-vX.Y.Z` tag using NPM_TOKEN.
 # workflow_dispatch with dry_run (default true) only runs npm publish --dry-run.
 on:
   push:

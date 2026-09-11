@@ -1,9 +1,9 @@
-# @pyyol-lens/nodejs
+# pyyol-lens
 
 TypeScript client for [Pyyol Eye](https://trace.pyyol.com) (Lens ingest).
 
 ```ts
-import { initPyyolLens } from "@pyyol-lens/nodejs";
+import { initPyyolLens } from "pyyol-lens";
 
 const lens = initPyyolLens({
   apiKey: process.env.PYYOL_LENS_API_KEY!,
