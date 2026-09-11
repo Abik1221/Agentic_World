@@ -70,7 +70,7 @@ func (r *AdminRepo) ListAgents(ctx context.Context, limit, offset int) ([]admina
 
 func (r *AdminRepo) ListMatches(ctx context.Context, status string, limit, offset int) ([]adminapi.Match, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT m.public_id, m.game, m.status, m.bid, COALESCE(win.public_id, ''),
+		`SELECT m.public_id, m.game, m.status, m.mode, m.bid, COALESCE(win.public_id, ''),
 		        m.created_at, m.started_at, m.finished_at
 		 FROM matches m
 		 LEFT JOIN agents win ON win.id = m.winner_agent_id
@@ -84,7 +84,7 @@ func (r *AdminRepo) ListMatches(ctx context.Context, status string, limit, offse
 	var out []adminapi.Match
 	for rows.Next() {
 		var m adminapi.Match
-		if err := rows.Scan(&m.PublicID, &m.Game, &m.Status, &m.Bid, &m.WinnerAgent,
+		if err := rows.Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.Bid, &m.WinnerAgent,
 			&m.CreatedAt, &m.StartedAt, &m.FinishedAt); err != nil {
 			return nil, err
 		}

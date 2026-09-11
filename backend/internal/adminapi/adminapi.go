@@ -53,7 +53,13 @@ type Agent struct {
 type Match struct {
 	PublicID    string     `json:"public_id"`
 	Game        string     `json:"game"`
-	Status      string     `json:"status"`
+	Status string `json:"status"`
+	// Mode decides whether a finished match settles at all: finalize skips the whole
+	// settlement block for a sandbox table. A match carrying a BID but sitting in
+	// sandbox mode therefore takes both stakes and never pays anyone, which is
+	// invisible from every other admin read — the row looks like a normal finished
+	// match. Surfaced here so that state can be seen rather than inferred.
+	Mode        string     `json:"mode"`
 	Bid         int64      `json:"bid"`
 	WinnerAgent string     `json:"winner_agent,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
