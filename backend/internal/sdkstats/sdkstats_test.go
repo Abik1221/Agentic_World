@@ -129,13 +129,16 @@ func TestIngest_GeoIPOfForwardedClient(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/telemetry/install", strings.NewReader(`{"sdk":"js","version":"1.12.1"}`))
 	req.RemoteAddr = "10.0.0.4:8080" // nginx
-	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+	// 8.8.8.8 is the same probe as TestIngest_SpoofedCFHeaderIsIgnored (iploc → US).
+	// 1.1.1.1 is Cloudflare anycast and iploc currently maps it to AU, which made
+	// deploy-backend's race tests fail after this GeoIP path landed on main.
+	req.Header.Set("X-Forwarded-For", "8.8.8.8")
 	router(h).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("code=%d", rec.Code)
 	}
 	if len(f.installs) != 1 || f.installs[0][2] != "US" {
-		t.Errorf("want GeoIP of 1.1.1.1 → US (the nginx hop, not the container), got %v", f.installs)
+		t.Errorf("want GeoIP of 8.8.8.8 → US (the nginx hop, not the container), got %v", f.installs)
 	}
 }
 

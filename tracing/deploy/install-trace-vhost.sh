@@ -70,8 +70,10 @@ pick_cert_files() {
 
 render_vhost() {
   local cert="$1" key="$2" dest="$3"
+  local upstream="${4:-127.0.0.1}"
   sed -e "s|/etc/letsencrypt/live/trace.pyyol.com/fullchain.pem|$cert|" \
       -e "s|/etc/letsencrypt/live/trace.pyyol.com/privkey.pem|$key|" \
+      -e "s|http://127.0.0.1:3100|http://${upstream}:3100|" \
       "$SRC" > "$dest"
   if grep -q default_server "$dest"; then
     echo "❌ refusing to install a default_server vhost (would steal Mega Hub / other hosts)"
@@ -89,26 +91,66 @@ reload_host_nginx() {
   fi
 }
 
+nginx_dump() {
+  local id="$1"
+  docker exec "$id" nginx -T 2>/dev/null \
+    || docker exec "$id" /usr/sbin/nginx -T 2>/dev/null \
+    || docker exec "$id" openresty -T 2>/dev/null \
+    || true
+}
+
+nginx_test_reload() {
+  local id="$1"
+  docker exec "$id" nginx -t 2>/dev/null \
+    || docker exec "$id" /usr/sbin/nginx -t 2>/dev/null \
+    || docker exec "$id" openresty -t 2>/dev/null \
+    || return 1
+  docker exec "$id" nginx -s reload 2>/dev/null \
+    || docker exec "$id" /usr/sbin/nginx -s reload 2>/dev/null \
+    || docker exec "$id" openresty -s reload 2>/dev/null \
+    || return 1
+}
+
+container_publishes_edge() {
+  local id="$1"
+  docker inspect -f '{{json .NetworkSettings.Ports}} {{.HostConfig.NetworkMode}}' "$id" 2>/dev/null \
+    | grep -qE '80/tcp|443/tcp|"host"'
+}
+
 # Shared-edge docker nginx: already routes pyyol.com / admin.pyyol.com, so adding
 # one more named vhost is the same pattern as those hosts. We never replace
 # another project's file.
+#
+# Prior deploy (34603382234) never printed "Found shared-edge": `docker exec sh -c
+# 'command -v nginx && nginx -T'` missed images with no sh, nginx only at
+# /usr/sbin, or server_name on the line after the directive. docker-proxy owns
+# :80/:443 — those publishers ARE the origin Cloudflare talks to.
 install_into_docker_edge() {
   local cert="$1" key="$2"
   command -v docker >/dev/null 2>&1 || return 1
-  local id name cfg dest_in injected=0
+  echo "Docker edge candidates:"
+  docker ps --format '  {{.Names}}  ports={{.Ports}}' 2>/dev/null || true
+  local id name cfg dest_in injected=0 upstream netmode
   while read -r id name; do
     [[ -n "$id" ]] || continue
-    cfg="$(docker exec "$id" sh -c 'command -v nginx >/dev/null && nginx -T' 2>/dev/null || true)"
-    [[ -n "$cfg" ]] || continue
-    echo "$cfg" | grep -qE 'server_name[^;]*(admin\.pyyol\.com|pyyol\.com)' || continue
+    cfg="$(nginx_dump "$id")"
+    if [[ -z "$cfg" ]]; then
+      if container_publishes_edge "$id"; then
+        echo "⚠️  $name publishes :80/:443 (or host net) but has no nginx/openresty -T"
+      fi
+      continue
+    fi
+    if ! echo "$cfg" | grep -qE 'pyyol\.com' && ! container_publishes_edge "$id"; then
+      echo "    skip $name (nginx, but not the :80/:443 origin and no pyyol.com vhost)"
+      continue
+    fi
     echo "Found shared-edge nginx in container $name ($id)"
 
     # Host file already visible (bind-mount of /etc/nginx) — just reload.
     if docker exec "$id" test -f /etc/nginx/sites-enabled/trace.pyyol.com.conf \
       || docker exec "$id" test -f /etc/nginx/conf.d/trace.pyyol.com.conf \
       || docker exec "$id" test -f /etc/nginx/sites-available/trace.pyyol.com.conf; then
-      if docker exec "$id" nginx -t; then
-        docker exec "$id" nginx -s reload
+      if nginx_test_reload "$id"; then
         echo "✅ reloaded $name (vhost already on the host mount)"
         injected=1
       fi
@@ -125,22 +167,40 @@ install_into_docker_edge() {
       continue
     fi
 
+    upstream="127.0.0.1"
+    netmode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id" 2>/dev/null || true)"
+    if [[ "$netmode" != "host" ]] && ! echo "$cfg" | grep -qE 'proxy_pass https?://127\.0\.0\.1:'; then
+      upstream="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "$id" 2>/dev/null | awk '{print $1}')"
+      upstream="${upstream:-172.17.0.1}"
+      echo "    $name is not host-network; proxying Eye via ${upstream}:3100"
+    fi
+
     docker exec "$id" mkdir -p /etc/nginx/ssl /var/www/certbot
     docker cp "$cert" "$id:/etc/nginx/ssl/trace.pyyol.com.crt"
     docker cp "$key" "$id:/etc/nginx/ssl/trace.pyyol.com.key"
     local tmp_in
     tmp_in="$(mktemp)"
-    render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in"
+    render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"
     docker cp "$tmp_in" "$id:$dest_in"
     rm -f "$tmp_in"
 
-    if docker exec "$id" nginx -t; then
-      docker exec "$id" nginx -s reload
-      echo "✅ reloaded $name with trace.pyyol.com → 127.0.0.1:3100"
+    if nginx_test_reload "$id"; then
+      echo "✅ reloaded $name with trace.pyyol.com → ${upstream}:3100"
       injected=1
     else
-      echo "❌ nginx -t failed in $name — removing the vhost we just added"
-      docker exec "$id" rm -f "$dest_in" || true
+      echo "⚠️  nginx -t failed in $name (http2 on?) — retrying without http2"
+      tmp_in="$(mktemp)"
+      render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"
+      sed -i 's/http2 on;//g' "$tmp_in" 2>/dev/null || sed -i '' 's/http2 on;//g' "$tmp_in"
+      docker cp "$tmp_in" "$id:$dest_in"
+      rm -f "$tmp_in"
+      if nginx_test_reload "$id"; then
+        echo "✅ reloaded $name with trace.pyyol.com → ${upstream}:3100"
+        injected=1
+      else
+        echo "❌ nginx -t still failing in $name — removing the vhost we just added"
+        docker exec "$id" rm -f "$dest_in" || true
+      fi
     fi
   done < <(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null || true)
   [[ "$injected" -eq 1 ]]
