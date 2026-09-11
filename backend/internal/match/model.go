@@ -115,6 +115,10 @@ type Match struct {
 	Mode          string // ModeCompetitive | ModeSandbox
 	BotPolicy     string // house strategy for a sandbox match; "" for competitive
 	Bid           int64
+	// Private hides a waiting match from the open lobby. Also selects the
+	// room money check: the sitting agent must cover the stake, without a
+	// leftover owner-treasury balance or a reserve stacked on top.
+	Private bool
 	RakePct       int
 	TotalRounds   int
 	EngineVersion string

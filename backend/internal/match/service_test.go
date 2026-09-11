@@ -77,8 +77,7 @@ type fakeRepo struct {
 	finishCalls   int
 	signingKeys   map[string]string // agentPublicID → registered Ed25519 pubkey ("" = none)
 	advances      []advanceCall     // every Advance, in order — see the round-start guard
-	// lastCreate is the most recent CreateWaitingMatch input, so a test can assert on
-	// fields match.Match does not carry back — Private in particular.
+	// lastCreate is the most recent CreateWaitingMatch input.
 	lastCreate match.CreateMatchInput
 }
 
@@ -92,6 +91,7 @@ func (r *fakeRepo) CreateWaitingMatch(_ context.Context, in match.CreateMatchInp
 	r.lastCreate = in
 	m := match.Match{
 		PublicID: in.PublicID, Game: in.Game, Status: match.StatusWaiting, Bid: in.Bid,
+		Private: in.Private,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
 		Commit: in.Commit, FairnessMode: in.FairnessMode, Seed: in.Seed,
 		Players: []match.Player{in.Creator},

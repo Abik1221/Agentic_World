@@ -131,6 +131,50 @@ func TestRoomCanBeCancelledByItsCreator(t *testing.T) {
 }
 
 // Somebody who is not the creator cannot cancel the room out from under them.
+// A host who funded the sitting agent with exactly the stake must be able to
+// open the room. Ranked CheckJoin still wants a leftover reserve; rooms must
+// not inherit that, or leftover owner-treasury coins look like the thing that
+// failed.
+func TestCreateRoomAcceptsAnAgentThatHoldsExactlyTheStake(t *testing.T) {
+	lim := &coveringLimits{}
+	svc := svcWithLimits(lim)
+	if _, err := svc.CreateRoom(context.Background(), "ag_a", "usr_a", 500); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if lim.covering != 1 {
+		t.Fatalf("room consulted CheckJoinCoveringStake %d times, want 1", lim.covering)
+	}
+	if lim.ranked != 0 {
+		t.Fatalf("room used ranked CheckJoin (%d) — that is the reserve that blocked a funded agent", lim.ranked)
+	}
+}
+
+func TestCreateOpenStillUsesTheRankedReserveCheck(t *testing.T) {
+	lim := &coveringLimits{}
+	svc := svcWithLimits(lim)
+	if _, err := svc.CreateOpen(context.Background(), "ag_a", "usr_a", 500); err != nil {
+		t.Fatalf("CreateOpen: %v", err)
+	}
+	if lim.ranked != 1 {
+		t.Fatalf("open lobby consulted CheckJoin %d times, want 1", lim.ranked)
+	}
+	if lim.covering != 0 {
+		t.Fatalf("open lobby used the room money check")
+	}
+}
+
+type coveringLimits struct{ covering, ranked int }
+
+func (c *coveringLimits) CheckJoin(context.Context, string, int64) error {
+	c.ranked++
+	return nil
+}
+func (c *coveringLimits) CheckJoinCoveringStake(context.Context, string, int64) error {
+	c.covering++
+	return nil
+}
+func (c *coveringLimits) CheckConcurrency(context.Context, string) error { return nil }
+
 func TestRoomCancelRefusesANonCreator(t *testing.T) {
 	svc := newSvc()
 	ctx := context.Background()

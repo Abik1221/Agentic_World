@@ -734,6 +734,25 @@ func (s *Service) checkStake(ctx context.Context, bid int64) error {
 	return nil
 }
 
+// checkSeat runs the spending limits for the agent that will sit.
+//
+// A private room uses CheckJoinCoveringStake when the limiter knows it: the
+// sitting agent's wallet must cover the bid, without a leftover owner-treasury
+// balance or a min_wallet_reserve stacked on top. Ranked / open lobby still
+// use the full CheckJoin (bid + reserve). Everything else — stake floor,
+// verification, same-owner refusal — stays shared.
+func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64, private bool) error {
+	if private {
+		type covering interface {
+			CheckJoinCoveringStake(context.Context, string, int64) error
+		}
+		if c, ok := s.limits.(covering); ok {
+			return c.CheckJoinCoveringStake(ctx, agentPublicID, bid)
+		}
+	}
+	return s.limits.CheckJoin(ctx, agentPublicID, bid)
+}
+
 // CreateRoom opens a PRIVATE waiting match: a room reachable only by its public id.
 //
 // # Why this delegates rather than duplicating
@@ -761,9 +780,10 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 
 // createWaiting is the one implementation behind both the open lobby and rooms.
 //
-// `private` is the ONLY difference between them. Keeping it a parameter rather than a
-// branch inside the body means a future check added here cannot be added to one path and
-// forgotten on the other.
+// `private` is the listing bit, plus the room money check (see checkSeat).
+// Every other control — the stake floor, verification, escrow on join, the
+// refusal to join your own match — stays on this one path so it cannot
+// drift between lobby and rooms.
 func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicID string, bid int64, private bool) (string, error) {
 	if err := s.checkStake(ctx, bid); err != nil {
 		return "", err
@@ -771,7 +791,7 @@ func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicI
 	if bid <= 0 {
 		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
 	}
-	if err := s.limits.CheckJoin(ctx, agentPublicID, bid); err != nil {
+	if err := s.checkSeat(ctx, agentPublicID, bid, private); err != nil {
 		return "", err
 	}
 	if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
@@ -1009,7 +1029,7 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) > 0 && m.Players[0].OwnerPublicID == ownerPublicID {
 		return AgentView{}, ErrSameOwner
 	}
-	if err := s.limits.CheckJoin(ctx, agentPublicID, m.Bid); err != nil {
+	if err := s.checkSeat(ctx, agentPublicID, m.Bid, m.Private); err != nil {
 		return AgentView{}, err
 	}
 	if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {

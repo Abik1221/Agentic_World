@@ -53,6 +53,7 @@ func (r *MatchRepo) CreateWaitingMatch(ctx context.Context, in match.CreateMatch
 	}
 	return match.Match{
 		PublicID: in.PublicID, Game: in.Game, Status: match.StatusWaiting, Bid: in.Bid,
+		Private: in.Private,
 		RakePct: in.RakePct, TotalRounds: in.TotalRounds, EngineVersion: in.EngineVersion,
 		Commit: in.Commit, FairnessMode: in.FairnessMode, Seed: in.Seed,
 		Players: []match.Player{in.Creator},
@@ -95,14 +96,14 @@ func (r *MatchRepo) Get(ctx context.Context, matchPublicID string) (match.Match,
 	var stateBytes []byte
 	var deadline, base, roundStarted, startsAt *time.Time
 	err := r.db.QueryRow(ctx,
-		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.rake_pct, m.total_rounds,
+		`SELECT m.public_id, m.game, m.status, m.mode, COALESCE(m.bot_policy, ''), m.bid, m.private, m.rake_pct, m.total_rounds,
 		        m.engine_version, m.prize_seed_commit, m.prize_seed, m.fairness_mode,
 		        COALESCE(m.state, '{}'::jsonb), m.round_deadline, m.round_deadline_base, m.round_started_at, m.starts_at,
 		        COALESCE(wa.public_id, ''), COALESCE(m.replay_hash, '')
 		 FROM matches m
 		 LEFT JOIN agents wa ON wa.id = m.winner_agent_id
 		 WHERE m.public_id = $1`, matchPublicID).
-		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.RakePct, &m.TotalRounds,
+		Scan(&m.PublicID, &m.Game, &m.Status, &m.Mode, &m.BotPolicy, &m.Bid, &m.Private, &m.RakePct, &m.TotalRounds,
 			&m.EngineVersion, &m.Commit, &m.Seed, &m.FairnessMode,
 			&stateBytes, &deadline, &base, &roundStarted, &startsAt, &m.WinnerAgent, &m.ReplayHash)
 	if err != nil {
