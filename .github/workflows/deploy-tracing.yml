@@ -3,7 +3,9 @@ name: deploy-tracing
 # CI + CD for the Pyyol Lens observability stack (tracing/) → VPS.
 # Served on the trace subdomain. nginx is installed by this workflow
 # (deploy/install-trace-vhost.sh → 127.0.0.1:3100; named vhost only — Mega Hub
-# stays default_server / its own hostname). See tracing/deploy/nginx/trace.pyyol.com.conf.
+# stays default_server / its own hostname). Same pattern as admin.pyyol.com:
+# Cloudflare orange-cloud to origin :443, Host/SNI selects the vhost.
+# See tracing/deploy/nginx/trace.pyyol.com.conf.
 #
 # Same ship pattern as Super_Admin/deploy.yml + arena deploy-backend.yml:
 #   1. test   — Go build/vet/test as a CI gate.
@@ -18,7 +20,7 @@ name: deploy-tracing
 # Stack (tracing/docker-compose.yml + deploy/docker-compose.prod.yml overlay):
 #   clickhouse, postgres, nats, minio  — internal data plane (never public)
 #   ingest-api (8081), processor, query-api (8082), control-api (8083) — backend
-#   web (3100 loopback + 3110 public) — dashboard; Mega Hub keeps :80/:443
+#   web (3100 loopback + 3110 public-if-firewall-allows) — dashboard; Mega Hub keeps its own :80/:443 vhost
 # Processor applies ClickHouse migrations in-process on boot (embedded, idempotent).
 #
 # ── Required GitHub Secrets (this repo) ────────────────────────────────────────
@@ -261,20 +263,48 @@ jobs:
               || iptables -I INPUT -p tcp --dport 3110 -j ACCEPT || true
           fi
 
-          echo "Installing nginx vhost if host nginx owns :80 (never default_server, never edit Mega Hub)…"
+          echo "Installing nginx vhost on the shared origin edge (never default_server, never edit Mega Hub)…"
           chmod +x deploy/install-trace-vhost.sh
           deploy/install-trace-vhost.sh "$REMOTE_DIR"
-          echo "✅ Pyyol Eye up on :3100/:3110."
+          echo "✅ Pyyol Eye up on :3100/:3110; named vhost must win Host trace.pyyol.com."
           ENDSSH
 
-      - name: Point Cloudflare origin for trace.pyyol.com at :3110
+      - name: Keep Cloudflare origin for trace.pyyol.com on :443
         continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           DOMAIN: ${{ vars.DOMAIN || 'pyyol.com' }}
-          TRACE_PUBLIC_PORT: "3110"
+          TRACE_PUBLIC_PORT: "443"
         run: python3 tracing/deploy/cloudflare-trace-origin.py
+
+      - name: Confirm https://trace.pyyol.com is Pyyol Eye (not Mega Hub)
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 1 8); do
+            body="$(mktemp)"
+            code="$(curl -sS -o "$body" -w '%{http_code}' -m 20 -A 'pyyol-deploy-check' https://trace.pyyol.com/ || echo 000)"
+            title="$(python3 -c 'import re,sys; t=open(sys.argv[1],errors="replace").read(); m=re.search(r"<title[^>]*>(.*?)</title>",t,re.I|re.S); print((m.group(1) if m else "")[:120])' "$body")"
+            echo "try $i: HTTP $code title=$title"
+            if grep -qiE 'Pyyol Eye|Pyyol Lens' "$body" && ! grep -qi 'Mega Hub' "$body"; then
+              echo "✅ public hostname serves Pyyol Eye"
+              rm -f "$body"
+              ok=1
+              break
+            fi
+            rm -f "$body"
+            sleep 5
+          done
+          if [[ "$ok" -ne 1 ]]; then
+            echo "::error::https://trace.pyyol.com is still not Pyyol Eye (still Mega Hub or an error page)."
+            echo "If the VPS installer logged that the named vhost won on :443, wait for Cloudflare to pick it up."
+            echo "If it did not: Cloudflare Dashboard → pyyol.com → Rules → Origin Rules is NOT the first fix;"
+            echo "the origin nginx must have server_name trace.pyyol.com (same as admin.pyyol.com)."
+            echo "Only if that nginx cannot take a vhost: Hostinger hPanel → VPS → Firewall → allow TCP 3110,"
+            echo "then Origin Rule hostname equals trace.pyyol.com → Destination port 3110, SSL mode Full (not Strict)."
+            exit 1
+          fi
 
       - name: Summary
         if: success()
@@ -283,7 +313,7 @@ jobs:
             echo "### Pyyol Eye deployed ✅"
             echo "- Images pulled (no VPS build). ClickHouse healthy, migrations applied, ingest(8081)+query(8082)+web(:3100/:3110) serving."
             echo "- On the shared \`pyyol\` network: arena → pyyol-lens-ingest:8081, admin/web → pyyol-lens-query:8082."
-            echo "- nginx named vhost (if host nginx owns :80) + Cloudflare origin-rule \`trace.pyyol.com\` → origin :3110. Mega Hub keeps :80/:443."
+            echo "- nginx named vhost \`trace.pyyol.com\` → 127.0.0.1:3100 (never default_server). Cloudflare stays on origin :443, same as admin. Mega Hub keeps its own hostname."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup key

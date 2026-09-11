@@ -44,7 +44,7 @@ Copy each vhost to `sites-available`, symlink to `sites-enabled`, and copy
 | `api.<domain>` | arena API | `:8091` | `deploy/nginx/api.pyyol.com.conf` |
 | `<domain>` (user app) | Pyyol_client | `:3000` | `Pyyol_client/deploy/nginx/pyyol.com.conf` |
 | `admin.<domain>` | admin-web | `:8095` | `Super_Admin/deploy/nginx/admin.pyyol.com.conf` |
-| `trace.<domain>` | Pyyol Eye | `:3100` loopback + **`:3110` public** | `tracing/deploy/nginx/trace.pyyol.com.conf` (named vhost, never `default_server`) + Cloudflare origin-rule to `:3110` so Mega Hub can keep `:80` |
+| `trace.<domain>` | Pyyol Eye | `:3100` loopback (+ `:3110` if the panel firewall allows it) | `tracing/deploy/nginx/trace.pyyol.com.conf` (named vhost, never `default_server`). Cloudflare orange-cloud to origin **`:443`**, same as `admin.<domain>`. Do **not** origin-rule to `:3110` unless Hostinger's firewall has TCP 3110 open — otherwise Cloudflare 522s. |
 
 Replace `pyyol.com` with your domain in each file before enabling.
 

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Point Cloudflare origin for trace.<domain> at the dedicated Eye port.
+"""Keep Cloudflare origin for trace.<domain> on :443 (same as admin/pyyol.com).
 
-Mega Hub owns :80 on the shared VPS and is the nginx default for unmatched Host
-headers. Pyyol Eye therefore publishes on its own public port (default 3110) and
-this script adds (or updates) an Origin Rule:
+A previous deploy pointed this hostname at origin :3110. That port is dropped
+by the Hostinger panel firewall (only 22/80/443 answer from the internet), so
+the override either never applied (Mega Hub on :443) or would 522.
 
-    http.host eq "trace.pyyol.com"  →  origin port 3110
+The named nginx vhost is the working path — identical to admin.pyyol.com.
+This script removes (or refuses to add) an origin-port override when
+TRACE_PUBLIC_PORT is 80 or 443. Setting TRACE_PUBLIC_PORT=3110 restores the
+old override for operators who have opened that port.
 
 Existing origin-phase rules are preserved; this never replaces the whole set
 with only our rule. Safe to re-run (idempotent).
@@ -13,7 +16,7 @@ with only our rule. Safe to re-run (idempotent).
 Env:
     CLOUDFLARE_API_TOKEN   required
     DOMAIN                 default pyyol.com
-    TRACE_PUBLIC_PORT      default 3110
+    TRACE_PUBLIC_PORT      default 443 (no override). 3110 = send to Eye's public port
     CLOUDFLARE_ZONE_ID     optional (looked up from DOMAIN if unset)
 
     --dry-run              print the intended change, do not PUT
@@ -64,13 +67,16 @@ def ok(resp, what):
 def main():
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
     domain = os.environ.get("DOMAIN", "pyyol.com").strip()
-    port = int(os.environ.get("TRACE_PUBLIC_PORT", "3110"))
+    port = int(os.environ.get("TRACE_PUBLIC_PORT", "443"))
     zone_id = os.environ.get("CLOUDFLARE_ZONE_ID", "").strip()
     if not token:
-        print("CLOUDFLARE_API_TOKEN unset — skip origin rule (human: send trace.pyyol.com to origin port 3110).")
+        print("CLOUDFLARE_API_TOKEN unset — skip origin-rule reconcile.")
         return
     host = f"trace.{domain}"
     expression = f'(http.host eq "{host}")'
+    # 80/443 is Cloudflare's default origin. An override to 3110 is only useful
+    # after the Hostinger panel firewall allows that port.
+    drop_override = port in (80, 443)
     our_rule = {
         "description": RULE_DESC,
         "expression": expression,
@@ -93,27 +99,40 @@ def main():
     )
     rules = []
     if status == 404 or not entry.get("success"):
+        if drop_override:
+            print("no origin-phase ruleset; Cloudflare already uses origin :443.")
+            return
         print("no origin-phase ruleset yet; will create one with the Eye rule only")
         rules = [our_rule]
     else:
         current = ok(entry, "get origin ruleset")
         rules = list(current.get("rules") or [])
         replaced = False
-        for i, r in enumerate(rules):
+        kept = []
+        for r in rules:
             same = (
                 r.get("description") == RULE_DESC
                 or r.get("expression") == expression
                 or host in (r.get("expression") or "")
             )
-            if same:
-                rules[i] = {**r, **our_rule}
-                # Keep Cloudflare's rule id so PUT is an update, not a duplicate.
-                if r.get("id"):
-                    rules[i]["id"] = r["id"]
+            if same and drop_override:
+                print(f"  dropping origin-port override for {host} (use default :443)")
                 replaced = True
-                break
-        if not replaced:
+                continue
+            if same:
+                merged = {**r, **our_rule}
+                if r.get("id"):
+                    merged["id"] = r["id"]
+                kept.append(merged)
+                replaced = True
+                continue
+            kept.append(r)
+        rules = kept
+        if not replaced and not drop_override:
             rules.append(our_rule)
+        if drop_override and not replaced:
+            print(f"no origin-port override for {host}; Cloudflare already uses :443.")
+            return
 
     print(f"  {'dry-run ' if DRY else ''}PUT {len(rules)} origin-phase rule(s)")
     for r in rules:
@@ -128,7 +147,10 @@ def main():
         token=token,
     )
     ok(updated, "upsert origin ruleset")
-    print(f"done. Cloudflare will send {host} to origin:{port} (Mega Hub stays on :80).")
+    if drop_override:
+        print(f"done. Cloudflare will send {host} to origin :443 (named vhost, same as admin).")
+    else:
+        print(f"done. Cloudflare will send {host} to origin:{port}.")
 
 
 if __name__ == "__main__":
