@@ -74,7 +74,8 @@ export default async function OverviewPage() {
           <h1>Overview</h1>
           <p>
             End-to-end visibility across matches, agent benchmarks, token usage, cost, and failure
-            patterns for Pyyol AI workflows.
+            patterns. Open <Link href="/games">Games</Link> to walk a match log, conversation, money
+            path, and model spend.
           </p>
         </div>
       </section>

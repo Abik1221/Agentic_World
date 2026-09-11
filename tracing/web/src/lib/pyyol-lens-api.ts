@@ -11,6 +11,7 @@ const DEFAULT_USER_ID = process.env.PYYOL_LENS_DEFAULT_USER_ID ?? "local-dev-use
 const QUERY_API_KEY = process.env.PYYOL_LENS_API_KEY ?? "";
 const keyHeader = (): Record<string, string> => (QUERY_API_KEY ? { "X-Pyyol-Key": QUERY_API_KEY } : {});
 const FETCH_TIMEOUT_MS = 8000;
+const ARENA_TIMEOUT_MS = 12000;
 
 // Optional BFF in front of query/control. Unset in production — the dashboard talks
 // to the Lens APIs directly. PYYOL_API_URL is the arena (queue health), not a BFF,
@@ -270,6 +271,7 @@ export async function fetchArena<T>(path: string): Promise<ArenaResult<T>> {
     const res = await fetch(`${base.replace(/\/$/, "")}${path}`, {
       cache: "no-store",
       headers: forwarded,
+      signal: AbortSignal.timeout(ARENA_TIMEOUT_MS),
     });
     if (res.status === 401 || res.status === 403) return { ok: false, reason: "unauthorized" };
     if (!res.ok) return { ok: false, reason: "unreachable" };
@@ -278,3 +280,133 @@ export async function fetchArena<T>(path: string): Promise<ArenaResult<T>> {
     return { ok: false, reason: "unreachable" };
   }
 }
+
+/** Public arena documents (replay, roster) — no admin session required. */
+export async function fetchArenaPublic<T>(path: string): Promise<ArenaResult<T>> {
+  if (!(await isAuthorized())) return { ok: false, reason: "unauthorized" };
+  const base = process.env.PYYOL_API_URL;
+  if (!base) return { ok: false, reason: "unconfigured" };
+  try {
+    const res = await fetch(`${base.replace(/\/$/, "")}${path}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(ARENA_TIMEOUT_MS),
+    });
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: "unauthorized" };
+    if (!res.ok) return { ok: false, reason: "unreachable" };
+    return { ok: true, data: (await res.json()) as T };
+  } catch {
+    return { ok: false, reason: "unreachable" };
+  }
+}
+
+export type MatchListItem = {
+  match_id: string;
+  game: string;
+  status: string;
+  started_at: string;
+  ended_at?: string;
+  event_count: number;
+  agents: string[];
+  winner_agent?: string;
+  bid: number;
+  tokens: number;
+  cost_usd: number;
+  decisions: number;
+  chat_lines: number;
+};
+
+export type MatchListResponse = {
+  matches: MatchListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type MatchCostAgent = {
+  agent_id: string;
+  provider: string;
+  model: string;
+  meter_source?: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  avg_latency_ms: number;
+};
+
+export type MatchCostResponse = {
+  match_id: string;
+  agents: MatchCostAgent[];
+  total_tokens: number;
+  total_cost_usd: number;
+};
+
+export type MatchLogEntry = {
+  event_id: string;
+  type: string;
+  at: string;
+  status: string;
+  agent_id?: string;
+  game?: string;
+  provider?: string;
+  model?: string;
+  tokens?: number;
+  cost_usd?: number;
+  latency_ms?: number;
+  error?: string;
+  detail?: Record<string, unknown>;
+};
+
+export type MatchMoneySeat = {
+  agent_id: string;
+  seat: number;
+  score: number;
+  coins_delta: number;
+};
+
+export type MatchMoneyResponse = {
+  match_id: string;
+  game?: string;
+  available: boolean;
+  settled?: boolean;
+  bid?: number;
+  rake_pct?: number;
+  pool?: number;
+  rake_coins?: number;
+  winner_agent?: string;
+  seats?: MatchMoneySeat[];
+};
+
+export type AppealRow = {
+  dispute_id: string;
+  match_id: string;
+  agent_id?: string;
+  kind: string;
+  status: string;
+  at: string;
+  detail?: Record<string, unknown>;
+  error?: string;
+};
+
+export type AppealListResponse = {
+  appeals: AppealRow[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type ArenaReplay = {
+  match_id: string;
+  status: string;
+  replay_hash?: string;
+  events?: { type?: string; seq?: number; [k: string]: unknown }[];
+  roster?: { seat: number; agent_id: string; name?: string; owner?: string }[];
+  timing?: { seq: number; at: string; offset_ms: number }[];
+};
+
+export type ArenaRoster = {
+  seats?: { seat: number; agent_id: string; name?: string; owner?: string }[];
+  players?: number;
+};

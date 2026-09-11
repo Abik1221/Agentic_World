@@ -8,6 +8,8 @@ const STORAGE_KEY = "pyyol-lens:sidebar-collapsed";
 
 const nav = [
   { label: "Overview", href: "/overview" },
+  { label: "Games", href: "/games" },
+  { label: "Appeals", href: "/appeals" },
   { label: "Benchmarks", href: "/benchmarks" },
   { label: "Traces", href: "/traces" },
   { label: "Tool Calls", href: "/tool-calls" },

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { Unavailable } from "@/components/Unavailable";
 import { fetchQueryResult } from "@/lib/pyyol-lens-api";
 
@@ -40,7 +42,15 @@ export default async function ToolCallsPage() {
               {rows.length ? (
                 rows.map((row, index) => (
                   <tr key={`${row.trace_id}-${row.tool_name}-${index}`}>
-                    <td className="mono">{row.trace_id}</td>
+                    <td className="mono">
+                      {row.trace_id ? (
+                        <Link className="trace-link" href={`/traces/${encodeURIComponent(row.trace_id)}`}>
+                          {row.trace_id}
+                        </Link>
+                      ) : (
+                        "-"
+                      )}
+                    </td>
                     <td>{row.tool_name || "-"}</td>
                     <td>
                       <span className={`status ${row.status === "error" ? "status-error" : "status-ok"}`}>

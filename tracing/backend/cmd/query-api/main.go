@@ -86,11 +86,16 @@ func main() {
 	app.Get("/v1/runs", h.Runs)
 	app.Get("/v1/runs/:run_id", h.RunByID)
 	app.Get("/v1/traces/:trace_id/timeline", h.TraceTimeline)
+	app.Get("/v1/matches", h.MatchList)
 	app.Get("/v1/matches/:match_id", h.MatchByID)
 	app.Get("/v1/matches/:match_id/decisions", h.MatchDecisions)
 	// The ordered trail from durable per-decision events, which — unlike the
 	// aggregate above — still exists when a match never reached settlement.
 	app.Get("/v1/matches/:match_id/timeline", h.MatchTimeline)
+	app.Get("/v1/matches/:match_id/cost", h.MatchCost)
+	app.Get("/v1/matches/:match_id/logs", h.MatchLogs)
+	app.Get("/v1/matches/:match_id/money", h.MatchMoney)
+	app.Get("/v1/appeals", h.AppealList)
 	app.Get("/v1/metrics/tools", h.ToolCalls)
 
 	// Backs the developer-facing "my agent's activity" view in the arena backend,

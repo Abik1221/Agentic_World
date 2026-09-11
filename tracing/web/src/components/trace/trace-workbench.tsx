@@ -257,8 +257,8 @@ export default function TraceWorkbench({
             {trace.trace_id.startsWith("match_") && (
               <>
                 {" · "}
-                <Link className="agent-link" href={`/matches/${encodeURIComponent(trace.trace_id)}`}>
-                  agent decision trail →
+                <Link className="agent-link" href={`/games/${encodeURIComponent(trace.trace_id.replace(/^match_/, ""))}`}>
+                  game →
                 </Link>
               </>
             )}

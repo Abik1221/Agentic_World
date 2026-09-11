@@ -7,6 +7,7 @@ import (
 	"time"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
+	eventbus "github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/mafia"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -299,7 +300,34 @@ func (r *MafiaRepo) Finish(ctx context.Context, matchPublicID string, state mf.S
 				return err
 			}
 		}
-		return insertMafiaEvents(ctx, tx, matchID, events)
+		if err := insertMafiaEvents(ctx, tx, matchID, events); err != nil {
+			return err
+		}
+		// Same match.finished fact goofspiel emits, so Eye can audit the money path.
+		var bid int64
+		var rakePct int
+		var winner string
+		if err := tx.QueryRow(ctx,
+			`SELECT bid, rake_pct, COALESCE((SELECT public_id FROM agents WHERE id = m.winner_agent_id), '')
+			 FROM matches m WHERE m.id = $1`, matchID).Scan(&bid, &rakePct, &winner); err != nil {
+			return err
+		}
+		seats := make([]map[string]any, 0, len(players))
+		for _, p := range players {
+			seats = append(seats, map[string]any{
+				"agent_id": p.AgentPublicID, "seat": p.Seat, "coins_delta": p.CoinsDelta,
+			})
+		}
+		payload, err := json.Marshal(map[string]any{
+			"match_id": matchPublicID, "game": "mafia", "winner_agent": winner,
+			"winner_team": winnerTeam, "bid": bid, "rake_pct": rakePct,
+			"pool": bid * int64(len(players)), "seats": seats,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = InsertEventTx(ctx, tx, eventbus.TypeMatchFinished, payload)
+		return err
 	})
 }
 

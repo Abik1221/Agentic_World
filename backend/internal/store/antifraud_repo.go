@@ -129,8 +129,9 @@ func (r *AntifraudRepo) OpenDispute(ctx context.Context, in antifraud.DisputeInp
 	}
 	// dispute.opened for the Super Admin mirror, in the same tx as the insert.
 	payload, err := json.Marshal(map[string]any{
-		"dispute_id": pub, "kind": in.Kind,
+		"dispute_id": pub, "kind": in.Kind, "status": "open",
 		"match": in.MatchPublicID, "agent": in.AgentPublicID,
+		"detail": in.Detail,
 	})
 	if err != nil {
 		return "", err

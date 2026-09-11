@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { EventRow } from "@/lib/pyyol-lens-api";
@@ -64,7 +65,15 @@ export default function EventsFeed({
                     <strong>{row.event_type}</strong>
                     {row.error_message ? <div className="muted row-compact">{row.error_message}</div> : null}
                   </td>
-                  <td className="mono">{row.trace_id}</td>
+                  <td className="mono">
+                    {row.trace_id ? (
+                      <Link className="trace-link" href={`/traces/${encodeURIComponent(row.trace_id)}`}>
+                        {row.trace_id}
+                      </Link>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td>
                     <span className={`status ${row.status === "error" ? "status-error" : "status-ok"}`}>
                       {row.status || "ok"}

@@ -38,6 +38,19 @@ export function badRateClass(v: number): string {
 export const GAMES = ["goofspiel", "mafia"] as const;
 export const DAY_WINDOWS = [7, 30, 90] as const;
 
+/** Stake/payout coins (integer ledger units). */
+export function coins(v: number): string {
+  if (!v) return "0";
+  return `${Math.round(v).toLocaleString()} coins`;
+}
+
+/** USD for audit tables. Tiny amounts keep extra digits so a $0.00 row is not a lie. */
+export function usd(v: number): string {
+  if (!v) return "$0";
+  if (Math.abs(v) < 0.01) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
 /** Build an href preserving the other query params (for filter chips). */
 export function withParam(
   base: string,

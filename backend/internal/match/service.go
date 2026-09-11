@@ -24,12 +24,25 @@ import (
 	"github.com/agent-arena/arena/internal/replay"
 )
 
+// matchFinishedSeat is one seat's settlement line on match.finished (Eye money path).
+type matchFinishedSeat struct {
+	AgentID    string `json:"agent_id"`
+	Seat       int    `json:"seat"`
+	Score      int    `json:"score"`
+	CoinsDelta int64  `json:"coins_delta"`
+}
+
 // matchFinishedPayload is the match.finished event body (competitive matches).
-// WinnerAgent is empty on a tie.
+// WinnerAgent is empty on a tie. Bid/pool/seats let Pyyol Eye audit the money path
+// without a second store; extra fields are ignored by older consumers.
 type matchFinishedPayload struct {
-	MatchID     string `json:"match_id"`
-	Game        string `json:"game"`
-	WinnerAgent string `json:"winner_agent"`
+	MatchID     string              `json:"match_id"`
+	Game        string              `json:"game"`
+	WinnerAgent string              `json:"winner_agent"`
+	Bid         int64               `json:"bid"`
+	RakePct     int                 `json:"rake_pct"`
+	Pool        int64               `json:"pool"`
+	Seats       []matchFinishedSeat `json:"seats,omitempty"`
 }
 
 // Config tunes the match loop.
@@ -1568,8 +1581,15 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	// nil payload => no event.
 	var finishedEvent []byte
 	if m.Mode != ModeSandbox {
+		seats := make([]matchFinishedSeat, 0, len(players))
+		for _, p := range players {
+			seats = append(seats, matchFinishedSeat{
+				AgentID: p.AgentPublicID, Seat: p.Seat, Score: p.FinalScore, CoinsDelta: p.CoinsDelta,
+			})
+		}
 		finishedEvent, err = json.Marshal(matchFinishedPayload{
 			MatchID: m.PublicID, Game: m.Game, WinnerAgent: winnerAgent,
+			Bid: m.Bid, RakePct: m.RakePct, Pool: pool, Seats: seats,
 		})
 		if err != nil {
 			return nil, err

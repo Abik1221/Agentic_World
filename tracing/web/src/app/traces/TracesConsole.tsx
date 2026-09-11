@@ -120,10 +120,10 @@ export default function TracesConsole({ traces }: Props) {
                         {" "}
                         <Link
                           className="agent-link"
-                          href={`/matches/${encodeURIComponent(trace.trace_id)}`}
-                          title="Per-move reasoning, decisions & tokens"
+                          href={`/games/${encodeURIComponent(trace.trace_id.replace(/^match_/, ""))}`}
+                          title="Game log, conversation, money, cost"
                         >
-                          decision trail →
+                          game →
                         </Link>
                       </>
                     )}

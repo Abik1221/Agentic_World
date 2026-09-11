@@ -2464,3 +2464,99 @@ tbody tr:hover td {
   font-size: 0.75rem; line-height: 1.5; overflow-x: auto; white-space: pre;
   color: var(--fg-dim, #bbb);
 }
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 0.2rem 0.2rem;
+  font-size: 0.85rem;
+}
+
+.pager-links {
+  display: flex;
+  gap: 1rem;
+}
+
+.pager a {
+  color: var(--accent-strong);
+}
+
+.eye-chat {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.eye-chat li {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.7rem 0.85rem;
+  background: var(--panel-soft);
+}
+
+.eye-chat li p {
+  margin: 0.35rem 0 0;
+}
+
+.eye-chat-meta {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 0.8rem;
+}
+
+.eye-chat-rejected {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.cost-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin: 1rem 0 1.2rem;
+}
+
+.cost-bar-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1.6fr) minmax(6rem, 2fr) 5.5rem;
+  gap: 0.7rem;
+  align-items: center;
+}
+
+.cost-bar-label {
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cost-bar-track {
+  height: 0.55rem;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.cost-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.cost-bar-amt {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
+}
