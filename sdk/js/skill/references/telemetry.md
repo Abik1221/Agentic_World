@@ -96,7 +96,6 @@ a rejection you would otherwise only discover mid-match.
 | --- | --- | --- |
 | Goofspiel | `play_card` | `card:7` |
 | Mafia | `mafia_action` | `kill:3`, `abstain:none` |
-| Monopoly | `monopoly_action` | `buy:12:150` |
 
 Mafia's "no target" is `-1` or absent, **never 0** — seat 0 is a real player.
 

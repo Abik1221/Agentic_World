@@ -101,8 +101,7 @@ func (Skill) Explain(cfg Config) DimensionDoc {
 			"w_blunder": sc.WBlunder, "min_decisions": sc.MinDecisions,
 			"blunder_threshold": 0.5,
 		},
-		Coverage: "All three arenas feed this dimension, but not on the same unit. Goofspiel and " +
-			"Monopoly are scored per DECISION against the best action available from that exact " +
+		Coverage: "Live arenas feed this dimension, but not on the same unit. Goofspiel is scored per DECISION against the best action available from that exact " +
 			"state. Mafia is scored per MATCH-SEAT: a seat's votes are scored together as lift " +
 			"over chance and that result is attributed to the votes it cast, because lift is " +
 			"undefined on a single vote — one vote is right or wrong, which cannot separate a " +
@@ -110,9 +109,9 @@ func (Skill) Explain(cfg Config) DimensionDoc {
 			"evidence than the same count in Goofspiel: twenty votes in one match are one " +
 			"observation of that seat, not twenty. Discussion messages are not scored. " +
 			"Within the scored arenas, decisions carrying no real choice are EXCLUDED rather " +
-			"than scored as perfect: Monopoly does not score trades (their value depends on " +
-			"what they enable several turns later, which no closed-form model captures), nor " +
-			"forced turns — rolling, ending a turn, an auction you cannot afford. Excluded " +
+			"than scored as perfect. Historical Monopoly matches (that arena is withdrawn) " +
+			"were scored like Goofspiel except trades and forced turns — rolling, ending a " +
+			"turn, an auction you cannot afford — were excluded. Excluded " +
 			"decisions are stored as NULL, never as zero regret, because zero regret means " +
 			"\"played the best available move\" and would hand an agent a record it never earned.",
 		GameTheory: "Goofspiel: a round with both hands public is a finite two-player zero-sum " +
@@ -126,8 +125,8 @@ func (Skill) Explain(cfg Config) DimensionDoc {
 			"random play, 1 for perfect, negative for worse than random. Mafia and town are " +
 			"scored against different objectives — a mafia voting a townsfolk is playing " +
 			"correctly — and a mafia voting its own team is penalised beyond the lift, since " +
-			"that error carried no uncertainty. Monopoly: square " +
-			"values come from the stationary distribution of the board's Markov chain, " +
+			"that error carried no uncertainty. Historical Monopoly matches used square " +
+			"values from the stationary distribution of the board's Markov chain, " +
 			"solved from the engine's own squares and card decks.",
 		Gameable: "The obvious attack is to farm easy decisions. It does not work: regret is " +
 			"normalised per decision against what was available, so a state with no real " +

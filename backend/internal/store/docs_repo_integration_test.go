@@ -173,3 +173,55 @@ func TestDocsSeedDoesNotRevertAdminEdits(t *testing.T) {
 		t.Error("an un-edited page should still carry the embedded content after a re-seed")
 	}
 }
+
+// TestDocsSeedKeepsAdminCreatedPages pins Super Admin create surviving a deploy.
+// pruneMissing used to DELETE every slug the embedded corpus does not ship, which
+// made an operator-created page vanish on the next backend restart.
+func TestDocsSeedKeepsAdminCreatedPages(t *testing.T) {
+	ctx := context.Background()
+	pool := openGroupTestDB(t)
+	repo := NewDocsRepo(pool)
+
+	pages, err := docs.Load()
+	if err != nil {
+		t.Fatalf("docs.Load: %v", err)
+	}
+	const ver = "seed-admin-create-test"
+	if err := repo.Seed(ctx, ver, pages); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM docs_pages WHERE version=$1`, ver)
+	})
+
+	created := docs.Page{
+		Slug: "concepts/operator-note", Title: "Operator note",
+		Section: "Concepts", Order: 99, Body: "# Created in the console\n",
+	}
+	if err := repo.UpsertPage(ctx, ver, created); err != nil {
+		t.Fatalf("UpsertPage: %v", err)
+	}
+
+	if err := repo.Seed(ctx, ver, pages); err != nil {
+		t.Fatalf("re-Seed: %v", err)
+	}
+
+	got, ok, err := repo.GetPage(ctx, ver, created.Slug)
+	if err != nil || !ok {
+		t.Fatalf("admin-created page was pruned on re-seed: ok=%v err=%v", ok, err)
+	}
+	if got.Body != created.Body {
+		t.Errorf("admin-created body changed on re-seed:\n got: %.60q\nwant: %.60q", got.Body, created.Body)
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO docs_pages (version, slug, title, section, ord, body_md, updated_at, admin_edited)
+		VALUES ($1, 'games/withdrawn', 'Withdrawn', 'Games', 0, 'gone', now(), false)`, ver); err != nil {
+		t.Fatalf("insert withdrawn slug: %v", err)
+	}
+	if err := repo.Seed(ctx, ver, pages); err != nil {
+		t.Fatalf("re-Seed after withdrawn insert: %v", err)
+	}
+	if _, ok, err := repo.GetPage(ctx, ver, "games/withdrawn"); err != nil || ok {
+		t.Fatalf("un-edited withdrawn slug should be pruned: ok=%v err=%v", ok, err)
+	}
+}

@@ -27,8 +27,8 @@ loop for unit‑testing your strategy:
 pyyol simulate --game goofspiel
 ```
 
-Today `simulate` supports **Goofspiel** only. For Mafia and Monopoly, use `pyyol dev`
-(sandbox) as your iteration loop until in‑process simulation lands for them.
+Today `simulate` supports **Goofspiel** only. For Mafia, use `pyyol dev`
+(sandbox) as your iteration loop until in‑process simulation lands for it.
 
 ## Seeing what telemetry captured
 

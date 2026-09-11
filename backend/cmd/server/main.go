@@ -1781,6 +1781,9 @@ func run() error {
 		log.Warn("docs: failed to seed docs_pages", "version", docs.DocsVersion, "err", serr)
 	} else {
 		log.Info("docs seeded", "version", docs.DocsVersion, "pages", len(pages))
+		if derr := docsRepo.DeleteSlugAllVersions(ctx, "games/monopoly"); derr != nil {
+			log.Warn("docs: could not withdraw games/monopoly from older versions", "err", derr)
+		}
 	}
 
 	// THE OPERATOR'S OWN LOGIN, provisioned at boot.

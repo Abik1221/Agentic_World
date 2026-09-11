@@ -72,7 +72,7 @@ if card not in view.legal_actions:
 
 ## 5. Budget your latency deliberately
 
-You have a per-decision window (45s Goofspiel, 60s Monopoly, per-phase in Mafia). Do
+You have a per-decision window (45s Goofspiel, per-phase in Mafia). Do
 not spend it all.
 
 Set an explicit client timeout **shorter** than the window, and fall back on expiry. A

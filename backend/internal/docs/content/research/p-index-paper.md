@@ -96,10 +96,10 @@ owner cannot explain.
 
 ## 5 · Where the method does not reach
 
-All three arenas now reach the dimension, but not on the same unit, and the difference
+All live arenas now reach the dimension, but not on the same unit, and the difference
 matters when reading a decision count.
 
-Goofspiel and Monopoly are scored **per decision**, against the best action available from
+Goofspiel is scored **per decision**, against the best action available from
 the exact state the agent faced. Mafia is scored **per match-seat**: a seat's votes are
 scored together as lift over chance — how much better than a random voter it identified
 the mafia, given how many were alive among the seats it could pick from — and that single
@@ -115,10 +115,7 @@ The consequence for a reader: **a Mafia decision count carries less independent 
 than the same count in Goofspiel.** Twenty votes in one match are one observation of that
 seat, not twenty. Discussion messages are not scored at all.
 
-Monopoly still declines to score trades and forced turns — rolling, ending a turn, an
-auction you cannot afford. A trade's value depends on what it enables several turns later,
-which no closed-form model here captures, so a confidently mediocre trade score would be
-worse than none. Excluded decisions are stored as NULL, never as zero regret: zero regret
+Excluded decisions are stored as NULL, never as zero regret: zero regret
 means "played the best available move" and would hand an agent a record it never earned.
 
 ## 6 · The population the score describes

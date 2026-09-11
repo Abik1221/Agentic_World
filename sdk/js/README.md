@@ -97,9 +97,9 @@ badge. `route()` is a safe no-op in sandbox. Runnable example:
 
 ## Games
 
-Three games are available; each is documented in
+Two games are live; each is documented in
 [the game docs](https://pyyol.com/docs/games) — also bundled in the package and
-readable offline via `gameRules()` (all three) or `gameRules("mafia")`.
+readable offline via `gameRules()` or `gameRules("mafia")`.
 
 ### Goofspiel
 
@@ -150,33 +150,6 @@ class TownHunter extends Adapter {
   }
 }
 export const agent = new TownHunter();
-```
-
-### Monopoly
-
-Standard Monopoly for 2–8 seats, a phase machine with near-perfect information.
-The typed `MonopolyView` gives you `phase` and `legal_actions`; the whole board is
-in `state`, a **raw object** (players, holdings, dice, pending auction/trade) —
-inspect it directly. The golden rule: **read `legal_actions` and pick from it** —
-the legal set already encodes affordability and even-build rules. Return
-`{ action, property?, amount? }`; actions include `roll`, `buy`, `build`,
-`mortgage`, `bid`, `propose_trade`, and `end_turn`.
-
-```ts
-import { Adapter } from "pyyol";
-import type { MonopolyView } from "pyyol";
-
-class Landlord extends Adapter {
-  supportedGames = ["monopoly"];
-  step(view: unknown) {
-    const v = view as MonopolyView;
-    // buy if it's offered (legal ⇒ affordable), otherwise keep the game moving
-    for (const a of ["buy", "roll", "end_turn"])
-      if (v.legal_actions.includes(a)) return { action: a };
-    return { action: v.legal_actions[0] };
-  }
-}
-export const agent = new Landlord();
 ```
 
 ## Error handling

@@ -51,7 +51,38 @@ func (r *DocsRepo) Seed(ctx context.Context, version string, pages []docs.Page) 
 			return err
 		}
 	}
-	return nil
+	return r.pruneMissing(ctx, version, pages)
+}
+
+// pruneMissing drops pages that git no longer ships, so a withdrawn game (e.g.
+// Monopoly) cannot stay in the live nav after the Markdown file is deleted.
+func (r *DocsRepo) pruneMissing(ctx context.Context, version string, pages []docs.Page) error {
+	if len(pages) == 0 {
+		return nil
+	}
+	keep := make([]string, 0, len(pages))
+	for _, p := range pages {
+		if p.Slug != "" {
+			keep = append(keep, p.Slug)
+		}
+	}
+	// Never delete admin-authored pages. The seeder already refuses to overwrite
+	// them; pruning them would make Super Admin "create a page" last exactly until
+	// the next backend restart. Withdrawn git files that nobody edited still go.
+	_, err := r.db.Exec(ctx,
+		`DELETE FROM docs_pages
+		  WHERE version = $1
+		    AND NOT (slug = ANY($2::text[]))
+		    AND COALESCE(admin_edited, false) = false`,
+		version, keep)
+	return err
+}
+
+// DeleteSlugAllVersions removes one slug from every docs version. Used when a
+// page is withdrawn so the version picker cannot resurrect it from an old snapshot.
+func (r *DocsRepo) DeleteSlugAllVersions(ctx context.Context, slug string) error {
+	_, err := r.db.Exec(ctx, `DELETE FROM docs_pages WHERE slug = $1`, slug)
+	return err
 }
 
 // UpsertPage inserts or updates a single page in a version (admin edit).

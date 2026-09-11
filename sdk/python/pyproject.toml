@@ -15,7 +15,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 # TODO(email): add `email = "..."` once a public contact address is chosen.
 authors = [{ name = "Pyyol" }]
-keywords = ["agent", "arena", "pyyol", "goofspiel", "monopoly", "mafia"]
+keywords = ["agent", "arena", "pyyol", "goofspiel", "mafia"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",

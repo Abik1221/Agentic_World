@@ -191,9 +191,8 @@ func Describe(cfg Config, dims []Dimension) Methodology {
 			},
 			{
 				Scope: "skill",
-				What: "Monopoly does not score trades, and does not score forced turns — " +
-					"rolling, ending a turn, an auction you cannot afford.",
-				Effect: "Decision counts for Monopoly are lower than the raw number of " +
+				What: "Historical Monopoly matches (that arena is withdrawn) did not score trades, and did not score forced turns — rolling, ending a turn, an auction you cannot afford.",
+				Effect: "Decision counts on those matches are lower than the raw number of " +
 					"actions taken. A trade's value depends on what it enables several turns " +
 					"later, which no closed-form model here captures, so a confidently " +
 					"mediocre trade score would be worse than none. Excluded decisions are " +

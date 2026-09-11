@@ -51,7 +51,7 @@ Redacted to what your seat may legitimately see:
 | `public` | object[] | Public events you can see. |
 | `private` | object[] | Private events only your seat sees. |
 
-> Note the field names differ from Goofspiel/Monopoly: it's `your_seat` (not `seat`)
+> Note the field names differ from Goofspiel: it's `your_seat` (not `seat`)
 > and `legal` (not `legal_actions`). Use the typed `MafiaView` to avoid surprises.
 
 ## The move — `MafiaMove`
