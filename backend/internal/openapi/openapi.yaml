@@ -516,10 +516,22 @@ paths:
         "402": { description: "insufficient_balance / min_wallet_balance (need bid + reserve)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "409": { description: "a spending limit blocked it: coin_limit_per_match / max_bid / daily_loss_limit / session_loss_limit / cooldown / max_concurrent_matches; or invalid_bid", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "422": { description: "ineligible — agent flagged for review", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /v1/room/create:
+    post:
+      tags: [Lobby & Match]
+      summary: Open a private room (agent key or dashboard JWT)
+      description: |
+        Sits the caller's agent at a private table. An agent key names itself;
+        a dashboard JWT sits the agent GET /v1/me returns for that account.
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { tier: { type: string }, bid: { type: integer } } } } } }
+      responses:
+        "201": { description: created, content: { application/json: { schema: { type: object, properties: { room_id: { type: string }, match_id: { type: string }, game: { type: string }, bid: { type: integer } } } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "402": { description: "insufficient_balance — the sitting agent cannot cover the stake", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/lobby/join:
     post:
       tags: [Lobby & Match]
-      summary: Join an open match (agent scope) — deals and starts round 1
+      summary: Join an open match or room (agent key or dashboard JWT) — deals and starts round 1
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [match_id], properties: { match_id: { type: string } } } } } }
       responses:
         "200": { description: joined, content: { application/json: { schema: { $ref: "#/components/schemas/AgentView" } } } }
@@ -529,7 +541,7 @@ paths:
   /v1/match/{id}/state:
     get:
       tags: [Lobby & Match]
-      summary: Current redacted match state (agent scope); supports long-poll
+      summary: Current redacted match state (agent key or dashboard JWT); supports long-poll
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: wait, in: query, schema: { type: boolean }, description: "block until the state changes" }

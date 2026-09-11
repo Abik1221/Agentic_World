@@ -1479,6 +1479,8 @@ func run() error {
 	// /v1/group-queue rejected free-form stakes for the same game — so tier config was
 	// unenforceable across half the ranked surface.
 	matchHandler.SetStakeResolver(gameStakesSvc)
+	// Dashboard JWT has no AgentPublicID. Rooms sit the same agent /v1/me returns.
+	matchHandler.SetPrimaryAgentLookup(idSvc)
 	// AND on the service. internal/bot/runner.go calls CreateOpen directly with a hardcoded bid,
 	// so the handler's resolver never saw it — the floor has to sit where the escrow happens.
 	matchSvc.SetStakeFloor(gameStakesSvc)

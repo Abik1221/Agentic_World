@@ -18,24 +18,41 @@ type Handler struct {
 	svc    *Service
 	authn  *auth.Authenticator
 	stakes stakeResolver
+	owners primaryAgentLookup
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
 	return &Handler{svc: svc, authn: authn}
 }
 
+// primaryAgentLookup resolves the account's sitting agent from a dashboard JWT.
+// Satisfied by identity.Service.PrimaryAgentOf — the same lookup /v1/me uses.
+type primaryAgentLookup interface {
+	PrimaryAgentOf(ctx context.Context, ownerPublicID string) (string, error)
+}
+
+// SetPrimaryAgentLookup lets an owner JWT sit the agent /v1/me says they own.
+// Without it a dashboard session is authenticated but has no AgentPublicID, so
+// room create/join would escrow nobody.
+func (h *Handler) SetPrimaryAgentLookup(l primaryAgentLookup) { h.owners = l }
+
 const maxStateWait = 15 * time.Second
 
-// Register mounts the routes. Lobby/state/action require an agent credential;
-// replay is public (anyone can verify a finished match).
+// Register mounts the routes. Playing (action/say/ready) requires an agent
+// credential — that is the process asserting it is present. Sitting a private
+// room (create/join/cancel/state) also admits the owner's dashboard JWT: the
+// coins on the agent belong to that account, and a signed-in dashboard must
+// not look logged-out just because this browser never minted an agent key.
+// Replay is public (anyone can verify a finished match).
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
+		ownerOrAgent := auth.RequireScopeAny(auth.ScopeAgent, auth.ScopeUser)
 		r.With(agent).Get("/v1/lobby", h.lobby)
 		r.With(agent).Post("/v1/lobby/create", h.create)
-		r.With(agent).Post("/v1/lobby/join", h.join)
-		r.With(agent).Post("/v1/lobby/cancel", h.cancel)
+		r.With(ownerOrAgent).Post("/v1/lobby/join", h.join)
+		r.With(ownerOrAgent).Post("/v1/lobby/cancel", h.cancel)
 		// Rooms: a private table you share by id, for two developers who want to play
 		// each other rather than whoever the queue supplies.
 		//
@@ -44,8 +61,8 @@ func (h *Handler) Register(r chi.Router) {
 		// and cancelling deliberately REUSE the lobby handlers: a room is an ordinary
 		// waiting match, and a second join path would be a second place for the escrow
 		// and same-owner checks to drift.
-		r.With(agent).Post("/v1/room/create", h.createRoom)
-		r.With(agent).Get("/v1/match/{id}/state", h.state)
+		r.With(ownerOrAgent).Post("/v1/room/create", h.createRoom)
+		r.With(ownerOrAgent).Get("/v1/match/{id}/state", h.state)
 		r.With(agent).Post("/v1/match/{id}/action", h.action)
 		// Table talk. Separate from /action on purpose: speaking is not a move, is
 		// not turn-gated, and may happen any number of times per round.
@@ -91,6 +108,37 @@ type stakeResolver interface {
 // this one was missed.
 func (h *Handler) SetStakeResolver(r stakeResolver) { h.stakes = r }
 
+// sittingAgent is the agent that will occupy the seat.
+//
+// An agent key already names itself. A dashboard JWT does not — AgentPublicID
+// is empty — so we resolve the account's primary agent the same way /v1/me
+// does. That is the agent whose wallet the owner funded, and the one the
+// dashboard is sitting.
+func (h *Handler) sittingAgent(ctx context.Context, p *auth.Principal) (string, error) {
+	if p == nil {
+		return "", httpx.ErrUnauthorized
+	}
+	if p.AgentPublicID != "" {
+		return p.AgentPublicID, nil
+	}
+	if p.Scope != auth.ScopeUser || p.UserPublicID == "" {
+		return "", httpx.ErrUnauthorized
+	}
+	if h.owners == nil {
+		return "", httpx.NewError(http.StatusBadRequest, "agent_required",
+			"This account has no agent yet. Deploy an agent before opening a room.")
+	}
+	id, err := h.owners.PrimaryAgentOf(ctx, p.UserPublicID)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		return "", httpx.NewError(http.StatusBadRequest, "agent_required",
+			"This account has no agent yet. Deploy an agent before opening a room.")
+	}
+	return id, nil
+}
+
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	var in struct {
@@ -126,6 +174,11 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 // to paste it into a chat window, and "room" is what they will call it.
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
+	agentID, err := h.sittingAgent(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var in struct {
 		Tier string `json:"tier"`
 		Bid  int64  `json:"bid"`
@@ -143,7 +196,7 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		}
 		bid = b
 	}
-	id, err := h.svc.CreateRoom(r.Context(), p.AgentPublicID, p.UserPublicID, bid)
+	id, err := h.svc.CreateRoom(r.Context(), agentID, p.UserPublicID, bid)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -155,6 +208,11 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
+	agentID, err := h.sittingAgent(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var in struct {
 		MatchID string `json:"match_id"`
 	}
@@ -162,7 +220,7 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	view, err := h.svc.Join(r.Context(), p.AgentPublicID, p.UserPublicID, in.MatchID)
+	view, err := h.svc.Join(r.Context(), agentID, p.UserPublicID, in.MatchID)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -172,6 +230,11 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
+	agentID, err := h.sittingAgent(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var in struct {
 		MatchID string `json:"match_id"`
 	}
@@ -179,7 +242,7 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.Cancel(r.Context(), p.AgentPublicID, in.MatchID); err != nil {
+	if err := h.svc.Cancel(r.Context(), agentID, in.MatchID); err != nil {
 		httpx.Error(w, err)
 		return
 	}
@@ -188,6 +251,11 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
+	agentID, err := h.sittingAgent(r.Context(), p)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	id := chi.URLParam(r, "id")
 	wait := r.URL.Query().Get("wait") == "true"
 	timeout := maxStateWait
@@ -196,7 +264,7 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 			timeout = d
 		}
 	}
-	view, err := h.svc.State(r.Context(), id, p.AgentPublicID, wait, timeout)
+	view, err := h.svc.State(r.Context(), id, agentID, wait, timeout)
 	if wait {
 		// A long-poll may have outlived the default write deadline; re-arm before
 		// writing either the state or an error.
