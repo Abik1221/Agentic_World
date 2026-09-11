@@ -75,7 +75,9 @@ render_vhost() {
       -e "s|/etc/letsencrypt/live/trace.pyyol.com/privkey.pem|$key|" \
       -e "s|http://127.0.0.1:3100|http://${upstream}:3100|" \
       "$SRC" > "$dest"
-  if grep -q default_server "$dest"; then
+  # Only refuse a listen ... default_server; comments in this file mention the
+  # phrase and used to make render_vhost abort before copying into etcontest-nginx.
+  if grep -Eq 'listen[[:space:]]+[^;]*default_server' "$dest"; then
     echo "❌ refusing to install a default_server vhost (would steal Mega Hub / other hosts)"
     rm -f "$dest"
     return 1
@@ -180,7 +182,7 @@ install_into_docker_edge() {
     upstream="127.0.0.1"
     netmode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id" 2>/dev/null || true)"
     if [[ "$netmode" != "host" ]] && ! echo "$cfg" | grep -qE 'proxy_pass https?://127\.0\.0\.1:'; then
-      upstream="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' "$id" 2>/dev/null | awk '{print $1}')"
+      upstream="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' "$id" 2>/dev/null | awk 'NF { print; exit }')"
       upstream="${upstream:-172.17.0.1}"
       echo "    $name is not host-network; proxying Eye via ${upstream}:3100"
     fi
