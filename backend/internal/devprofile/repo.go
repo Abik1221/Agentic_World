@@ -76,6 +76,10 @@ type AgentCard struct {
 	Slug       string `json:"slug"`
 	Status     string `json:"status"`
 	BestRating int    `json:"best_rating"`
+	// Matches is how many RATED games this agent has finished. BestRating is the
+	// Glicko seed (1500) until this is > 0, and a seed is not a measurement — the
+	// public profile must not render 1500 as Elo for an agent that has never played.
+	Matches int `json:"matches"`
 }
 
 // MatchRow is one match in the developer's history, with the rating movement it caused.

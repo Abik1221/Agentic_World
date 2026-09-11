@@ -163,12 +163,15 @@ func (r *DevProfileRepo) SandboxActivity(ctx context.Context, userPublicID strin
 
 func (r *DevProfileRepo) Agents(ctx context.Context, userPublicID string, season int) ([]devprofile.AgentCard, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT a.public_id, a.name, a.slug, a.status, COALESCE(MAX(rt.elo), 1500)
+		`SELECT a.public_id, a.name, a.slug, a.status,
+		        COALESCE(MAX(rt.elo), 0),
+		        COALESCE(SUM(rt.wins + rt.losses + rt.ties), 0)::int
 		 FROM agents a
 		 LEFT JOIN ratings rt ON rt.agent_id = a.id AND rt.season = $2
 		 WHERE a.owner_user_id = (SELECT id FROM users WHERE public_id = $1) AND a.kind = 'external'
 		 GROUP BY a.public_id, a.name, a.slug, a.status
-		 ORDER BY COALESCE(MAX(rt.elo), 1500) DESC`, userPublicID, season)
+		 ORDER BY COALESCE(SUM(rt.wins + rt.losses + rt.ties), 0) DESC,
+		          COALESCE(MAX(rt.elo), 0) DESC`, userPublicID, season)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +179,7 @@ func (r *DevProfileRepo) Agents(ctx context.Context, userPublicID string, season
 	var out []devprofile.AgentCard
 	for rows.Next() {
 		var c devprofile.AgentCard
-		if err := rows.Scan(&c.PublicID, &c.Name, &c.Slug, &c.Status, &c.BestRating); err != nil {
+		if err := rows.Scan(&c.PublicID, &c.Name, &c.Slug, &c.Status, &c.BestRating, &c.Matches); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
