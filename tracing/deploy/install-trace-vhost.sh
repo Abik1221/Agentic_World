@@ -178,7 +178,7 @@ PY
 
 nginx_has_server_name() {
   local id="$1" host="$2"
-  nginx_dump "$id" | grep -Eq "server_name[[:space:]]+${host}([[:space:;]|$])"
+  nginx_dump "$id" | grep -F "server_name" | grep -Fq "$host"
 }
 
 # Join pyyol-lens-web to the edge nginx networks so we can proxy by container
@@ -208,15 +208,27 @@ try_resolve_missing_upstreams() {
   local host
   host="$(printf '%s' "$err" | sed -n 's/.*host not found in upstream "\([^":]*\).*/\1/p' | head -1)"
   [[ -n "$host" ]] || return 1
-  echo "    nginx -t missing upstream $host — connecting a matching container onto this edge network (Mega Hub files untouched)"
-  local cid
+  echo "    nginx -t missing upstream $host — alias + /etc/hosts so -t can pass (Mega Hub site files untouched)"
+  local cid ip
   cid="$(docker ps --format '{{.ID}} {{.Names}}' | awk -v h="$host" 'index($2,h){print $1; exit}')"
-  [[ -n "$cid" ]] || return 1
-  local nets n
-  nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$nginx_id" 2>/dev/null || true)"
-  for n in $nets; do
-    docker network connect "$n" "$cid" 2>/dev/null || true
-  done
+  if [[ -n "$cid" ]]; then
+    local nets n
+    nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$nginx_id" 2>/dev/null || true)"
+    for n in $nets; do
+      docker network connect --alias "$host" "$n" "$cid" 2>/dev/null || true
+    done
+    ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' "$cid" | awk 'NF { print; exit }')"
+  fi
+  # Static proxy_pass hosts are resolved at `nginx -t`. Compose service name
+  # `finance-api` is not the container name `etcontest-finance-api`, so connect
+  # alone is not enough. /etc/hosts is runtime-only; we do not edit site files.
+  if [[ -n "$ip" ]]; then
+    docker exec "$nginx_id" sh -c "grep -F '$host' /etc/hosts >/dev/null 2>&1 || echo '$ip $host' >> /etc/hosts" \
+      && echo "    /etc/hosts += $ip $host"
+  else
+    echo "    ⚠️  no container matching $host; nginx -t will keep failing until that upstream exists"
+    return 1
+  fi
 }
 
 # True only when the container is bound to the host's 80 or 443 (what Cloudflare
@@ -331,7 +343,7 @@ install_into_docker_edge() {
       echo "$err"
       # Last resort: Mega Hub keeps vhosts in nginx.conf and never includes conf.d.
       # Add a one-line include (backup first). Never deletes Mega Hub server blocks.
-      if ! nginx_has_server_name "$id" "trace.pyyol.com"; then
+      if ! nginx_has_server_name "$id" "trace.pyyol.com" && [[ "$dest_dir" != *conf.d* && "$dest_dir" != *sites-enabled* ]]; then
         echo "    injecting include ${dest_in} into nginx.conf (Mega Hub server blocks kept)"
         local host_conf
         host_conf="$(mktemp)"
