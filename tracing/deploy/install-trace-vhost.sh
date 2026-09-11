@@ -181,6 +181,57 @@ nginx_has_server_name() {
   nginx_dump "$id" | grep -F "server_name" | grep -Fq "$host"
 }
 
+# docker cp replaces the inode and fails on bind-mounted nginx.conf
+# ("unlinkat: device or resource busy"). cat-overwrite keeps the mount.
+write_into_container() {
+  local id="$1" dest="$2" src="$3"
+  docker exec -i "$id" sh -c "cat > \"$dest\"" < "$src"
+}
+
+# Add `include <vhost>;` to nginx.conf without deleting Mega Hub server blocks.
+# Prefers in-container cat; falls back to the host bind-mount source.
+inject_trace_include() {
+  local id="$1" dest_in="$2"
+  local host_conf src
+  host_conf="$(mktemp)"
+  if ! docker exec "$id" cat /etc/nginx/nginx.conf > "$host_conf" 2>/dev/null; then
+    rm -f "$host_conf"
+    return 1
+  fi
+  python3 - "$host_conf" "$dest_in" <<'PY'
+import sys
+path, inc = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8", errors="replace").read()
+needle = "include %s;" % inc
+if needle not in text:
+    if "http {" in text:
+        text = text.replace("http {", "http {\n    include %s;" % inc, 1)
+    else:
+        sys.exit(2)
+    open(path, "w", encoding="utf-8").write(text)
+PY
+  if write_into_container "$id" /etc/nginx/nginx.conf "$host_conf"; then
+    echo "    include ${dest_in} written into nginx.conf (Mega Hub server blocks kept)"
+    rm -f "$host_conf"
+    return 0
+  fi
+  src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/nginx/nginx.conf"}}{{.Source}}{{end}}{{end}}' "$id")"
+  if [[ -z "$src" ]]; then
+    src="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/nginx"}}{{.Source}}{{end}}{{end}}' "$id")"
+    [[ -n "$src" ]] && src="${src%/}/nginx.conf"
+  fi
+  if [[ -n "$src" && -f "$src" ]]; then
+    cp -a "$src" "${src}.pyyol-bak" 2>/dev/null || true
+    cp "$host_conf" "$src"
+    echo "    include ${dest_in} written into host bind-mount ${src} (Mega Hub kept)"
+    rm -f "$host_conf"
+    return 0
+  fi
+  echo "    ⚠️  could not write nginx.conf (bind-mount busy, no host source)"
+  rm -f "$host_conf"
+  return 1
+}
+
 # Join pyyol-lens-web to the edge nginx networks so we can proxy by container
 # name — same as admin-web on the shared pyyol network.
 join_web_to_edge_networks() {
@@ -194,6 +245,9 @@ join_web_to_edge_networks() {
     [[ -n "$n" ]] || continue
     if docker network connect "$n" "$web" 2>/dev/null; then
       echo "    attached $web to docker network $n (same pattern as admin-web)"
+      joined=1
+    elif docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$web" 2>/dev/null | grep -qw "$n"; then
+      echo "    $web already on docker network $n"
       joined=1
     fi
   done
@@ -209,15 +263,20 @@ try_resolve_missing_upstreams() {
   host="$(printf '%s' "$err" | sed -n 's/.*host not found in upstream "\([^":]*\).*/\1/p' | head -1)"
   [[ -n "$host" ]] || return 1
   echo "    nginx -t missing upstream $host — alias + /etc/hosts so -t can pass (Mega Hub site files untouched)"
-  local cid ip
+  local cid ip nets n nip
   cid="$(docker ps --format '{{.ID}} {{.Names}}' | awk -v h="$host" 'index($2,h){print $1; exit}')"
   if [[ -n "$cid" ]]; then
-    local nets n
     nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$nginx_id" 2>/dev/null || true)"
     for n in $nets; do
       docker network connect --alias "$host" "$n" "$cid" 2>/dev/null || true
+      nip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$n\").IPAddress}}" "$cid" 2>/dev/null || true)"
+      if [[ -n "$nip" ]]; then
+        ip="$nip"
+      fi
     done
-    ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' "$cid" | awk 'NF { print; exit }')"
+    if [[ -z "$ip" ]]; then
+      ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{"\n"}}{{end}}' "$cid" | awk 'NF { print; exit }')"
+    fi
   fi
   # Static proxy_pass hosts are resolved at `nginx -t`. Compose service name
   # `finance-api` is not the container name `etcontest-finance-api`, so connect
@@ -229,6 +288,29 @@ try_resolve_missing_upstreams() {
     echo "    ⚠️  no container matching $host; nginx -t will keep failing until that upstream exists"
     return 1
   fi
+}
+
+# nginx -t can fail on several Mega Hub upstreams in a row. Resolve each one
+# (hosts/alias only — no Mega Hub site-file edits) until -t is clean or we stall.
+resolve_all_missing_upstreams() {
+  local id="$1" bin err i
+  bin="$(nginx_bin "$id")"
+  [[ -n "$bin" ]] || return 1
+  for i in 1 2 3 4 5 6 7 8; do
+    err="$(docker exec "$id" "$bin" -t 2>&1 || true)"
+    if ! printf '%s' "$err" | grep -qi 'host not found in upstream'; then
+      printf '%s\n' "$err"
+      if printf '%s' "$err" | grep -qi 'syntax is ok\|test is successful'; then
+        return 0
+      fi
+      return 1
+    fi
+    try_resolve_missing_upstreams "$id" "$err" || {
+      printf '%s\n' "$err"
+      return 1
+    }
+  done
+  docker exec "$id" "$bin" -t
 }
 
 # True only when the container is bound to the host's 80 or 443 (what Cloudflare
@@ -275,6 +357,12 @@ install_into_docker_edge() {
       continue
     fi
     echo "Found shared-edge nginx in container $name ($id)"
+    echo "    mounts:"
+    docker inspect -f '{{range .Mounts}}      {{.Type}} {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' "$id" 2>/dev/null || true
+    echo "    server_name lines (running nginx -T):"
+    printf '%s\n' "$cfg" | grep -F "server_name" | head -40 || true
+    echo "    include lines:"
+    printf '%s\n' "$cfg" | grep -E '[[:space:]]include[[:space:]]' | head -20 || true
 
     dest_dir="$(printf '%s' "$cfg" | vhost_dir_from_dump || true)"
     if [[ -z "$dest_dir" ]]; then
@@ -327,59 +415,34 @@ install_into_docker_edge() {
     fi
     # Docker nginx images are often older than 1.25 (`http2 on` is a separate directive).
     sed -i 's/http2 on;//g' "$tmp_in" 2>/dev/null || sed -i '' 's/http2 on;//g' "$tmp_in"
-    docker cp "$tmp_in" "$id:$dest_in"
+    if ! write_into_container "$id" "$dest_in" "$tmp_in"; then
+      docker cp "$tmp_in" "$id:$dest_in"
+    fi
     rm -f "$tmp_in"
 
-    err="$(docker exec "$id" "$(nginx_bin "$id")" -t 2>&1 || true)"
-    if printf '%s' "$err" | grep -qi 'host not found in upstream'; then
-      try_resolve_missing_upstreams "$id" "$err" || true
-    fi
+    echo "    resolving Mega Hub upstreams so nginx -t can reload (site files untouched)…"
+    resolve_all_missing_upstreams "$id" || true
 
     if nginx_test_reload "$id" && nginx_has_server_name "$id" "trace.pyyol.com"; then
       echo "✅ reloaded $name with trace.pyyol.com → ${upstream} (in running nginx -T)"
       injected=1
     else
       echo "⚠️  nginx -t/reload did not load server_name trace.pyyol.com in $name"
-      echo "$err"
-      # Last resort: Mega Hub keeps vhosts in nginx.conf and never includes conf.d.
-      # Add a one-line include (backup first). Never deletes Mega Hub server blocks.
-      if ! nginx_has_server_name "$id" "trace.pyyol.com" && [[ "$dest_dir" != *conf.d* && "$dest_dir" != *sites-enabled* ]]; then
+      # Mega Hub often keeps vhosts in nginx.conf and never includes conf.d.
+      # Always try a one-line include (even when dest is conf.d). Never deletes
+      # Mega Hub server blocks. cat-overwrite: docker cp fails on bind mounts.
+      if ! nginx_has_server_name "$id" "trace.pyyol.com"; then
         echo "    injecting include ${dest_in} into nginx.conf (Mega Hub server blocks kept)"
-        local host_conf
-        host_conf="$(mktemp)"
-        if docker cp "$id:/etc/nginx/nginx.conf" "$host_conf" 2>/dev/null; then
-          cp -a "$host_conf" "${host_conf}.bak"
-          python3 - "$host_conf" "$dest_in" <<'PY'
-import sys
-path, inc = sys.argv[1], sys.argv[2]
-text = open(path, encoding="utf-8", errors="replace").read()
-needle = f"include {inc};"
-if needle not in text:
-    text = text.replace("http {", "http {\n    include %s;" % inc, 1)
-    open(path, "w", encoding="utf-8").write(text)
-PY
-          docker exec "$id" cp -a /etc/nginx/nginx.conf /etc/nginx/nginx.conf.pyyol-bak || true
-          docker cp "$host_conf" "$id:/etc/nginx/nginx.conf" || true
-          rm -f "$host_conf" "${host_conf}.bak"
-        fi
+        inject_trace_include "$id" "$dest_in" || true
       fi
-      echo "    retrying after stripping http2 (older nginx)…"
-      tmp_in="$(mktemp)"
-      if ! render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"; then
-        rm -f "$tmp_in"
-        docker exec "$id" rm -f "$dest_in" || true
-        continue
-      fi
-      sed -i 's/http2 on;//g' "$tmp_in" 2>/dev/null || sed -i '' 's/http2 on;//g' "$tmp_in"
-      docker cp "$tmp_in" "$id:$dest_in"
-      rm -f "$tmp_in"
+      resolve_all_missing_upstreams "$id" || true
       if nginx_test_reload "$id" && nginx_has_server_name "$id" "trace.pyyol.com"; then
         echo "✅ reloaded $name with trace.pyyol.com → ${upstream} (in running nginx -T)"
         injected=1
       else
-        echo "❌ named vhost still not in nginx -T for $name — removing the file we added (Mega Hub untouched)"
-        docker exec "$id" rm -f "$dest_in" || true
-        docker exec "$id" sh -c 'test -f /etc/nginx/nginx.conf.pyyol-bak && mv /etc/nginx/nginx.conf.pyyol-bak /etc/nginx/nginx.conf' || true
+        echo "❌ named vhost still not in nginx -T for $name — leaving Mega Hub untouched"
+        echo "    last nginx -t:"
+        docker exec "$id" "$(nginx_bin "$id")" -t 2>&1 || true
       fi
     fi
   done < <(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null || true)
