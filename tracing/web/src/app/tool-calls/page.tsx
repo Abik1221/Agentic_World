@@ -21,7 +21,7 @@ export default async function ToolCallsPage() {
           <p>Inspect tools as first-class spans with cost and error visibility.</p>
         </div>
       </section>
-      {!result.ok ? <Unavailable title="Tool-call data unavailable" /> : null}
+      {!result.ok ? <Unavailable title="Tool-call data unavailable" /> : (
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} tool calls</p>
         <div className="table-wrap">
@@ -55,7 +55,7 @@ export default async function ToolCallsPage() {
               ) : (
                 <tr>
                   <td colSpan={6} className="empty-state">
-                    {result.ok ? "No tool call spans recorded yet." : "Waiting for the query API."}
+                    No tool call spans recorded yet.
                   </td>
                 </tr>
               )}
@@ -63,6 +63,7 @@ export default async function ToolCallsPage() {
           </table>
         </div>
       </section>
+      )}
     </div>
   );
 }

@@ -610,28 +610,36 @@ func (h Handler) ToolCalls(c *fiber.Ctx) error {
 	return c.JSON(out)
 }
 
+func notShipped(c *fiber.Ctx, feature string) error {
+	return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{
+		"error":   "not_implemented",
+		"feature": feature,
+		"message": "This query-plane feature is not shipped in this release.",
+	})
+}
+
 func (h Handler) Evaluations(c *fiber.Ctx) error {
-	return c.JSON([]fiber.Map{})
+	return notShipped(c, "evaluations")
 }
 
 func (h Handler) EvaluationByID(c *fiber.Ctx) error {
-	return c.JSON(fiber.Map{"run_id": c.Params("run_id"), "status": "pending"})
+	return notShipped(c, "evaluations")
 }
 
 func (h Handler) Prompts(c *fiber.Ctx) error {
-	return c.JSON([]fiber.Map{})
+	return notShipped(c, "prompts")
 }
 
 func (h Handler) PromptVersions(c *fiber.Ctx) error {
-	return c.JSON([]fiber.Map{})
+	return notShipped(c, "prompt-versions")
 }
 
 func (h Handler) Replays(c *fiber.Ctx) error {
-	return c.JSON([]fiber.Map{})
+	return notShipped(c, "replays")
 }
 
 func (h Handler) ReplayByID(c *fiber.Ctx) error {
-	return c.JSON(fiber.Map{"replay_id": c.Params("id"), "status": "pending"})
+	return notShipped(c, "replays")
 }
 
 func (h Handler) SearchTraces(c *fiber.Ctx) error {

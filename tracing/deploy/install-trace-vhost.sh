@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Install (or refresh) the trace.pyyol.com nginx vhost → 127.0.0.1:3100.
 #
-# Why this exists: Mega Hub is the origin default_server on this VPS. Without a
-# named vhost, Host: trace.pyyol.com is stolen by Mega Hub. This script never
-# marks the Eye vhost default_server and never edits Mega Hub's config.
+# Mega Hub shares this VPS and is the origin default on :80 (confirmed: Host
+# trace.pyyol.com on :80 returns Mega Hub). This script NEVER sets default_server
+# and NEVER edits Mega Hub's files.
 #
-# Run from the tracing tree on the host (deploy-tracing.yml does this).
+# If host nginx is the process on :80/:443, a named vhost wins that Host header.
+# If a docker-proxy owns :80 (Mega Hub container), we do not inject into that
+# project — Eye stays on its own port (3110) and Cloudflare origin-rules send
+# the hostname there. Exiting 0 in that case is deliberate so a tracing deploy
+# cannot take down Mega Hub.
 
 set -euo pipefail
 
@@ -17,79 +21,18 @@ SELF_DIR="/etc/nginx/ssl"
 SELF_CERT="$SELF_DIR/trace.pyyol.com.crt"
 SELF_KEY="$SELF_DIR/trace.pyyol.com.key"
 
-if [[ ! -f "$SRC" ]]; then
-  echo "❌ missing nginx source: $SRC"
-  exit 1
-fi
-if ! command -v nginx >/dev/null 2>&1; then
-  echo "❌ nginx is not installed on the host; cannot bind trace.pyyol.com"
-  exit 1
-fi
+looks_like_eye() {
+  grep -qiE 'Pyyol Eye|Pyyol Lens|Sign in' "$1"
+}
 
-mkdir -p /var/www/certbot
-
-cert="$LE_CERT"
-key="$LE_KEY"
-if [[ ! -f "$LE_CERT" || ! -f "$LE_KEY" ]]; then
-  mkdir -p "$SELF_DIR"
-  if [[ ! -f "$SELF_CERT" || ! -f "$SELF_KEY" ]]; then
-    echo "No Let's Encrypt cert for trace.pyyol.com yet — issuing a self-signed origin cert so SNI matches (Mega Hub stops winning 443)."
-    openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
-      -keyout "$SELF_KEY" -out "$SELF_CERT" \
-      -subj "/CN=trace.pyyol.com" \
-      -addext "subjectAltName=DNS:trace.pyyol.com" >/dev/null 2>&1 \
-    || openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
-      -keyout "$SELF_KEY" -out "$SELF_CERT" \
-      -subj "/CN=trace.pyyol.com" >/dev/null 2>&1
-    chmod 600 "$SELF_KEY"
+who_owns_port() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | grep -E ":${port}\\s" || true
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -tlnp 2>/dev/null | grep -E ":${port}\\s" || true
   fi
-  cert="$SELF_CERT"
-  key="$SELF_KEY"
-fi
-
-tmp="$(mktemp)"
-sed -e "s|/etc/letsencrypt/live/trace.pyyol.com/fullchain.pem|$cert|" \
-    -e "s|/etc/letsencrypt/live/trace.pyyol.com/privkey.pem|$key|" \
-    "$SRC" > "$tmp"
-
-if grep -q default_server "$tmp"; then
-  echo "❌ refusing to install a default_server vhost (would steal Mega Hub / other hosts)"
-  rm -f "$tmp"
-  exit 1
-fi
-
-if [[ -d /etc/nginx/sites-available ]]; then
-  dest="/etc/nginx/sites-available/trace.pyyol.com.conf"
-  cp "$tmp" "$dest"
-  mkdir -p /etc/nginx/sites-enabled
-  ln -sfn "$dest" /etc/nginx/sites-enabled/trace.pyyol.com.conf
-  # If a stale default site is also named trace.pyyol.com, leave it — exact names can coexist
-  # only if they share the same upstream; we don't delete other projects' files.
-else
-  mkdir -p /etc/nginx/conf.d
-  cp "$tmp" /etc/nginx/conf.d/trace.pyyol.com.conf
-fi
-rm -f "$tmp"
-
-nginx -t
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
-  systemctl reload nginx
-else
-  nginx -s reload
-fi
-echo "✅ nginx vhost trace.pyyol.com → 127.0.0.1:3100 reloaded"
-
-if command -v certbot >/dev/null 2>&1 && [[ ! -f "$LE_CERT" ]]; then
-  echo "Attempting Let's Encrypt for trace.pyyol.com (webroot)…"
-  certbot certonly --webroot -w /var/www/certbot -d trace.pyyol.com \
-    --non-interactive --agree-tos --keep-until-expiring \
-    --register-unsafely-without-email || true
-  if [[ -f "$LE_CERT" && -f "$LE_KEY" ]]; then
-    echo "Let's Encrypt issued — switching the vhost onto the public cert."
-    exec "$0" "$ROOT"
-  fi
-  echo "⚠️  certbot did not issue a cert (Cloudflare Full Strict may 526 until one exists). Self-signed origin cert remains."
-fi
+}
 
 echo "Waiting for Pyyol Eye on 127.0.0.1:3100…"
 ok=0
@@ -103,19 +46,79 @@ if [[ "$ok" -ne 1 ]]; then
 fi
 echo "✅ Pyyol Eye listening on loopback :3100"
 
-body="$(mktemp)"
-code="$(curl -sk -o "$body" -w '%{http_code}' -m 8 --resolve trace.pyyol.com:443:127.0.0.1 https://trace.pyyol.com/ || true)"
-if grep -qi 'Mega Hub' "$body"; then
-  echo "❌ Host: trace.pyyol.com still serves Mega Hub (HTTP $code). nginx server_name did not win."
+if [[ -f "$SRC" ]] && command -v nginx >/dev/null 2>&1; then
+  listeners80="$(who_owns_port 80)"
+  if echo "$listeners80" | grep -qi docker-proxy; then
+    echo "⚠️  :80 is docker-proxy (Mega Hub). Not writing a host vhost that cannot bind :80."
+    echo "    Eye remains on :3100 (loopback) + :3110 (public). Cloudflare origin-rule must send trace.pyyol.com → :3110."
+    exit 0
+  fi
+
+  mkdir -p /var/www/certbot
+  cert="$LE_CERT"
+  key="$LE_KEY"
+  if [[ ! -f "$LE_CERT" || ! -f "$LE_KEY" ]]; then
+    mkdir -p "$SELF_DIR"
+    if [[ ! -f "$SELF_CERT" || ! -f "$SELF_KEY" ]]; then
+      echo "No Let's Encrypt cert for trace.pyyol.com yet — issuing a self-signed origin cert."
+      openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+        -keyout "$SELF_KEY" -out "$SELF_CERT" \
+        -subj "/CN=trace.pyyol.com" \
+        -addext "subjectAltName=DNS:trace.pyyol.com" >/dev/null 2>&1 \
+      || openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+        -keyout "$SELF_KEY" -out "$SELF_CERT" \
+        -subj "/CN=trace.pyyol.com" >/dev/null 2>&1
+      chmod 600 "$SELF_KEY"
+    fi
+    cert="$SELF_CERT"
+    key="$SELF_KEY"
+  fi
+
+  tmp="$(mktemp)"
+  sed -e "s|/etc/letsencrypt/live/trace.pyyol.com/fullchain.pem|$cert|" \
+      -e "s|/etc/letsencrypt/live/trace.pyyol.com/privkey.pem|$key|" \
+      "$SRC" > "$tmp"
+
+  if grep -q default_server "$tmp"; then
+    echo "❌ refusing to install a default_server vhost (would steal Mega Hub / other hosts)"
+    rm -f "$tmp"
+    exit 1
+  fi
+
+  if [[ -d /etc/nginx/sites-available ]]; then
+    dest="/etc/nginx/sites-available/trace.pyyol.com.conf"
+    cp "$tmp" "$dest"
+    mkdir -p /etc/nginx/sites-enabled
+    ln -sfn "$dest" /etc/nginx/sites-enabled/trace.pyyol.com.conf
+  else
+    mkdir -p /etc/nginx/conf.d
+    cp "$tmp" /etc/nginx/conf.d/trace.pyyol.com.conf
+  fi
+  rm -f "$tmp"
+
+  nginx -t
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+    systemctl reload nginx
+  else
+    nginx -s reload || true
+  fi
+  echo "✅ nginx vhost trace.pyyol.com → 127.0.0.1:3100 reloaded (not default_server)"
+
+  body="$(mktemp)"
+  curl -s -o "$body" -m 8 -H "Host: trace.pyyol.com" http://127.0.0.1/ || true
+  if grep -qi 'Mega Hub' "$body"; then
+    echo "⚠️  Host: trace.pyyol.com on :80 still serves Mega Hub. Named vhost did not win;"
+    echo "    leaving Mega Hub untouched. Cloudflare origin-rule → :3110 is the surviving path."
+    rm -f "$body"
+    exit 0
+  fi
+  if looks_like_eye "$body"; then
+    echo "✅ Host: trace.pyyol.com on :80 now serves Pyyol Eye"
+  else
+    echo "⚠️  Host: trace.pyyol.com on :80 did not look like Eye; Cloudflare origin-rule → :3110 still applies."
+  fi
   rm -f "$body"
-  exit 1
+else
+  echo "⚠️  host nginx not available — Mega Hub keeps :80. Eye is on :3100/:3110."
 fi
-if ! grep -qiE 'Pyyol Eye|Pyyol Lens|Sign in' "$body"; then
-  echo "⚠️  Host: trace.pyyol.com did not look like Pyyol Eye (HTTP $code). Body follows:"
-  head -c 400 "$body" || true
-  echo
-  rm -f "$body"
-  exit 1
-fi
-rm -f "$body"
-echo "✅ trace.pyyol.com SNI/Host serves Pyyol Eye (not Mega Hub)"
+exit 0

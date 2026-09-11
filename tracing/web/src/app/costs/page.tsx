@@ -22,7 +22,7 @@ export default async function CostsPage() {
           <p>Estimated and reconciled model spend by project, environment, and model.</p>
         </div>
       </section>
-      {!result.ok ? <Unavailable title="Cost data unavailable" /> : null}
+      {!result.ok ? <Unavailable title="Cost data unavailable" /> : (
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} cost rows</p>
         <div className="table-wrap">
@@ -50,7 +50,7 @@ export default async function CostsPage() {
               ) : (
                 <tr>
                   <td colSpan={5} className="empty-state">
-                    {result.ok ? "No cost data yet." : "Waiting for the query API."}
+                    No cost data yet.
                   </td>
                 </tr>
               )}
@@ -58,6 +58,7 @@ export default async function CostsPage() {
           </table>
         </div>
       </section>
+      )}
     </div>
   );
 }

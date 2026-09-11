@@ -3,7 +3,7 @@
 #   cp .env.docker.example .env
 #   docker compose up -d --build
 #
-# Nginx (host): telemetery.pyyol.et → :3100, tel-ingest → :8081, tel-query → :8082, tel-control → :8083
+# Nginx (host): trace.pyyol.com → 127.0.0.1:3100 (prod overlay; never bind :80 — Mega Hub owns that).
 
 x-backend-env: &backend-env
   PYYOL_LENS_ENV: ${PYYOL_LENS_ENV:-production}

@@ -38,7 +38,8 @@ export default async function AgentBenchmarkPage({
         </div>
       </section>
 
-      {!byGameRes.ok ? <Unavailable title="Agent benchmark unavailable" /> : null}
+      {!byGameRes.ok ? <Unavailable title="Agent benchmark unavailable" /> : (
+      <>
       <section className="panel">
         <h2 className="panel-title">By game</h2>
         <div className="table-wrap">
@@ -149,6 +150,8 @@ export default async function AgentBenchmarkPage({
           </table>
         </div>
       </section>
+      </>
+      )}
     </div>
   );
 }

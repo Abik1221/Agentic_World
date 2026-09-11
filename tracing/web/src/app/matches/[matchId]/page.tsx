@@ -87,9 +87,9 @@ export default async function MatchDecisionsPage({
         </div>
       </section>
 
-      {queryDown ? <Unavailable title="Match trail unavailable" /> : null}
-
-      <MatchTimeline entries={entries} />
+      {queryDown ? <Unavailable title="Match trail unavailable" /> : (
+        <MatchTimeline entries={entries} />
+      )}
 
       {!queryDown && agents.length === 0 && entries.length === 0 && (
         <section className="panel">

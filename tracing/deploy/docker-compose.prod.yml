@@ -52,9 +52,26 @@ services:
       PYYOL_LENS_ENV: production
     restart: always
 
+  # Base compose publishes these on 0.0.0.0 for local dev. Compose APPENDS port
+  # lists on merge, so without !override a prod deploy would still bind ClickHouse,
+  # NATS, MinIO, and the dashboard on all interfaces — and 0.0.0.0:3100 can collide
+  # with whatever else lives on this VPS (Mega Hub is on :80/:443; we stay off those).
+  clickhouse:
+    ports: !override []
+  postgres:
+    ports: !override []
+  nats:
+    ports: !override []
+  minio:
+    ports: !override []
+  control-api:
+    ports: !override []
+    restart: always
+
   web:
-    ports:
-      - "127.0.0.1:3100:3100" # loopback only — reachable solely via the nginx vhost
+    ports: !override
+      - "127.0.0.1:3100:3100" # loopback — host nginx, if it owns :80
+      - "0.0.0.0:${TRACE_PUBLIC_PORT:-3110}:3100" # dedicated public port; Mega Hub keeps :80/:443
     environment:
       PYYOL_LENS_QUERY_URL: http://pyyol-lens-query:8082
       PYYOL_LENS_CONTROL_URL: http://pyyol-lens-control:8083

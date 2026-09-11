@@ -22,7 +22,7 @@ export default async function TokenUsagePage() {
           <p>Provider- and model-level token visibility across projects and environments.</p>
         </div>
       </section>
-      {!result.ok ? <Unavailable title="Token usage unavailable" /> : null}
+      {!result.ok ? <Unavailable title="Token usage unavailable" /> : (
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} usage rows</p>
         <div className="table-wrap">
@@ -52,7 +52,7 @@ export default async function TokenUsagePage() {
               ) : (
                 <tr>
                   <td colSpan={6} className="empty-state">
-                    {result.ok ? "No token usage yet." : "Waiting for the query API."}
+                    No token usage yet.
                   </td>
                 </tr>
               )}
@@ -60,6 +60,7 @@ export default async function TokenUsagePage() {
           </table>
         </div>
       </section>
+      )}
     </div>
   );
 }

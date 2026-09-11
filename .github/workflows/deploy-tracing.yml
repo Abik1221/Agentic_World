@@ -187,19 +187,37 @@ jobs:
             done
           done
 
-          echo "Waiting for Pyyol Eye on 127.0.0.1:3100…"
-          for i in $(seq 1 40); do
-            if curl -fsS -m 3 "http://127.0.0.1:3100/" >/dev/null 2>&1; then
-              echo "✅ web dashboard healthy on :3100."; break; fi
-            [ "$i" -eq 40 ] && { echo "❌ web dashboard never healthy."; $DC logs --tail=80 web; exit 1; }
-            sleep 3
+          echo "Waiting for Pyyol Eye on 127.0.0.1:3100 and public :3110…"
+          for p in 3100 3110; do
+            for i in $(seq 1 40); do
+              if curl -fsS -m 3 "http://127.0.0.1:${p}/" >/dev/null 2>&1; then
+                echo "✅ web dashboard healthy on :${p}."; break; fi
+              [ "$i" -eq 40 ] && { echo "❌ web dashboard never healthy on :${p}."; $DC logs --tail=80 web; exit 1; }
+              sleep 3
+            done
           done
 
-          echo "Installing nginx vhost trace.pyyol.com → 127.0.0.1:3100 (must not steal Mega Hub)…"
+          echo "Opening dedicated Eye port 3110 (Mega Hub keeps :80/:443)…"
+          if command -v ufw >/dev/null 2>&1; then ufw allow 3110/tcp || true; fi
+          if command -v iptables >/dev/null 2>&1; then
+            iptables -C INPUT -p tcp --dport 3110 -j ACCEPT 2>/dev/null \
+              || iptables -I INPUT -p tcp --dport 3110 -j ACCEPT || true
+          fi
+
+          echo "Installing nginx vhost if host nginx owns :80 (never default_server, never edit Mega Hub)…"
           chmod +x deploy/install-trace-vhost.sh
           deploy/install-trace-vhost.sh "$REMOTE_DIR"
-          echo "✅ Pyyol Eye stack up and trace.pyyol.com routed to :3100."
+          echo "✅ Pyyol Eye up on :3100/:3110."
           ENDSSH
+
+      - name: Point Cloudflare origin for trace.pyyol.com at :3110
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          DOMAIN: ${{ vars.DOMAIN || 'pyyol.com' }}
+          TRACE_PUBLIC_PORT: "3110"
+        run: python3 tracing/deploy/cloudflare-trace-origin.py
 
       - name: Summary
         if: success()
@@ -208,5 +226,5 @@ jobs:
             echo "### Pyyol Eye deployed ✅"
             echo "- ClickHouse healthy, migrations applied, ingest(8081)+query(8082)+web(:3100) serving."
             echo "- On the shared \`pyyol\` network: arena → pyyol-lens-ingest:8081, admin/web → pyyol-lens-query:8082."
-            echo "- nginx vhost \`trace.pyyol.com\` → \`127.0.0.1:3100\` (named server, not default_server; Mega Hub stays on its own vhost)."
+            echo "- nginx named vhost (if host nginx owns :80) + Cloudflare origin-rule \`trace.pyyol.com\` → origin :3110. Mega Hub keeps :80/:443."
           } >> "$GITHUB_STEP_SUMMARY"

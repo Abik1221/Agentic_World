@@ -12,12 +12,10 @@ import (
 
 func main() {
 	cfg := config.Load()
-	// Fail closed in production, matching the query-api. The control plane's routes are
-	// placeholders today, but the names say what they will serve — projects, api-keys,
-	// policies, audit-logs — and every one of those is something that must never answer
-	// an unauthenticated caller. Requiring the key now means filling a stub in cannot
-	// quietly publish it later, which is the failure mode of "we'll add auth when there
-	// is something to protect".
+	// Fail closed in production, matching the query-api. Unshipped control routes
+	// return 501 (not an empty 200) so a caller cannot mistake a stub for a live
+	// empty dataset. Requiring the key now means filling a stub in cannot quietly
+	// publish it later.
 	if cfg.Environment == "production" && cfg.QueryAPIKey == "" {
 		log.Fatal("QUERY_API_KEY must be set in production (it gates the control-api read plane)")
 	}

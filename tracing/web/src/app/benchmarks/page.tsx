@@ -97,6 +97,7 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
 
       {queryDown ? <Unavailable title="Benchmark leaderboard unavailable" /> : null}
 
+      {queryDown ? null : (
       <section className="cards">
         <article className="card">
           <p className="card-label">Ranked agents</p>
@@ -108,14 +109,17 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
         </article>
         <article className="card">
           <p className="card-label">Best win rate</p>
-          <p className="card-value">{(bestWin * 100).toFixed(1)}%</p>
+          <p className="card-value">{rows.length ? `${(bestWin * 100).toFixed(1)}%` : "—"}</p>
         </article>
         <article className="card">
           <p className="card-label">Avg fallback rate</p>
-          <p className="card-value">{(avgFallback * 100).toFixed(1)}%</p>
+          <p className="card-value">{rows.length ? `${(avgFallback * 100).toFixed(1)}%` : "—"}</p>
         </article>
       </section>
+      )}
 
+      {queryDown ? null : (
+      <>
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} agents</p>
         <div className="table-wrap">
@@ -238,6 +242,8 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
           </table>
         </div>
       </section>
+      </>
+      )}
     </div>
   );
 }

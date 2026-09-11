@@ -1,23 +1,26 @@
 # Serving Pyyol Eye at trace.pyyol.com
 
-The telemetry UI runs on a subdomain of the main product. `pyyol.com` and the
-admin app live in their own repos; **Pyyol Eye is hosted here** on `trace.pyyol.com`.
+The dashboard container listens on **127.0.0.1:3100** (loopback) and
+**0.0.0.0:3110** (dedicated public port). It never binds :80 or :443, so it
+cannot block Mega Hub.
 
-The dashboard container listens on **127.0.0.1:3100** (loopback only) so it never
-occupies :80/:443 and cannot block Mega Hub or the other Pyyol vhosts. Host nginx
-must have an exact `server_name trace.pyyol.com` vhost — without it, Mega Hub is
-the origin `default_server` and steals this Host header.
+Mega Hub is the origin default on :80 of this VPS. A request for
+`trace.pyyol.com` on :80 is stolen unless either:
 
-`deploy-tracing.yml` installs that vhost on every deploy via
-`deploy/install-trace-vhost.sh`. It never sets `default_server`.
+1. host nginx has an exact `server_name trace.pyyol.com` vhost (never
+   `default_server`) proxying to `127.0.0.1:3100`, or
+2. Cloudflare (orange-cloud) sends that hostname to origin **port 3110**.
 
-## One-time notes
+`deploy-tracing.yml` does both: installs the vhost when host nginx owns :80,
+and upserts a Cloudflare Origin Rule `trace.pyyol.com → :3110`.
 
-1. **DNS** — `A` record `trace.pyyol.com` → the VPS IP (Cloudflare orange-cloud is fine).
-2. **Secrets** — tracing deploy secrets (`QUERY_API_KEY`, `INGEST_API_KEY`,
-   `PYYOL_LENS_AUTH_PASSWORD`, `PYYOL_LENS_SESSION_SECRET`).
-3. **TLS** — the install script uses Let's Encrypt when certbot can issue;
-   otherwise a self-signed origin cert so SNI matches (needed if Cloudflare SSL
-   is Full). Full Strict needs a real cert; re-run deploy or `certbot certonly --webroot`.
+## Secrets
+
+Tracing deploy: `QUERY_API_KEY`, `INGEST_API_KEY`, `PYYOL_LENS_AUTH_PASSWORD`,
+`PYYOL_LENS_SESSION_SECRET`.
+
+Origin-rule (same repo secrets as `dns.yml`): `CLOUDFLARE_API_TOKEN`, optional
+`CLOUDFLARE_ZONE_ID`. If the token is missing, Eye is still up on :3110 and a
+human must set the Cloudflare origin port (or add the nginx vhost) once.
 
 The dashboard login (`PYYOL_LENS_AUTH_*`) is required in production.
