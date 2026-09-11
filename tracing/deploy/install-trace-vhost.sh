@@ -78,7 +78,7 @@ render_vhost() {
   if grep -q default_server "$dest"; then
     echo "❌ refusing to install a default_server vhost (would steal Mega Hub / other hosts)"
     rm -f "$dest"
-    exit 1
+    return 1
   fi
 }
 
@@ -111,10 +111,22 @@ nginx_test_reload() {
     || return 1
 }
 
-container_publishes_edge() {
+# True only when the container is bound to the host's 80 or 443 (what Cloudflare
+# hits). "80/tcp" in inspect JSON also matches admin-web exposing 80→8095 and
+# aborted the 2026-09-11 deploy before we reached etcontest-nginx (the real edge).
+host_binds_edge_ports() {
   local id="$1"
-  docker inspect -f '{{json .NetworkSettings.Ports}} {{.HostConfig.NetworkMode}}' "$id" 2>/dev/null \
-    | grep -qE '80/tcp|443/tcp|"host"'
+  docker inspect -f '{{.HostConfig.NetworkMode}} {{range $p, $b := .NetworkSettings.Ports}}{{range $b}} {{.HostPort}}{{end}}{{end}}' "$id" 2>/dev/null \
+    | grep -qE '(^| )host( |$)|(^| )80( |$)|(^| )443( |$)'
+}
+
+copy_cert_into() {
+  local src="$1" id="$2" dest="$3"
+  local real="$src"
+  if [[ -L "$src" ]]; then
+    real="$(readlink -f "$src" 2>/dev/null || python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$src")"
+  fi
+  docker cp "$real" "$id:$dest"
 }
 
 # Shared-edge docker nginx: already routes pyyol.com / admin.pyyol.com, so adding
@@ -134,14 +146,12 @@ install_into_docker_edge() {
   while read -r id name; do
     [[ -n "$id" ]] || continue
     cfg="$(nginx_dump "$id")"
-    if [[ -z "$cfg" ]]; then
-      if container_publishes_edge "$id"; then
-        echo "⚠️  $name publishes :80/:443 (or host net) but has no nginx/openresty -T"
-      fi
+    if ! host_binds_edge_ports "$id"; then
       continue
     fi
-    if ! echo "$cfg" | grep -qE 'pyyol\.com' && ! container_publishes_edge "$id"; then
-      echo "    skip $name (nginx, but not the :80/:443 origin and no pyyol.com vhost)"
+    echo "Origin :80/:443 is container $name ($id)"
+    if [[ -z "$cfg" ]]; then
+      echo "⚠️  $name binds host :80/:443 but nginx/openresty -T produced nothing (caddy/traefik?)"
       continue
     fi
     echo "Found shared-edge nginx in container $name ($id)"
@@ -175,12 +185,18 @@ install_into_docker_edge() {
       echo "    $name is not host-network; proxying Eye via ${upstream}:3100"
     fi
 
-    docker exec "$id" mkdir -p /etc/nginx/ssl /var/www/certbot
-    docker cp "$cert" "$id:/etc/nginx/ssl/trace.pyyol.com.crt"
-    docker cp "$key" "$id:/etc/nginx/ssl/trace.pyyol.com.key"
+    docker exec "$id" mkdir -p /etc/nginx/ssl /var/www/certbot || true
+    if ! copy_cert_into "$cert" "$id" /etc/nginx/ssl/trace.pyyol.com.crt \
+      || ! copy_cert_into "$key" "$id" /etc/nginx/ssl/trace.pyyol.com.key; then
+      echo "⚠️  could not copy origin cert into $name (LE live/ paths are often dangling symlinks) — skip"
+      continue
+    fi
     local tmp_in
     tmp_in="$(mktemp)"
-    render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"
+    if ! render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"; then
+      rm -f "$tmp_in"
+      continue
+    fi
     docker cp "$tmp_in" "$id:$dest_in"
     rm -f "$tmp_in"
 
@@ -190,7 +206,10 @@ install_into_docker_edge() {
     else
       echo "⚠️  nginx -t failed in $name (http2 on?) — retrying without http2"
       tmp_in="$(mktemp)"
-      render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"
+      if ! render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"; then
+        rm -f "$tmp_in"
+        continue
+      fi
       sed -i 's/http2 on;//g' "$tmp_in" 2>/dev/null || sed -i '' 's/http2 on;//g' "$tmp_in"
       docker cp "$tmp_in" "$id:$dest_in"
       rm -f "$tmp_in"
@@ -264,26 +283,30 @@ echo "Using origin cert $CERT"
 HOST_INSTALLED=0
 if command -v nginx >/dev/null 2>&1; then
   tmp="$(mktemp)"
-  render_vhost "$CERT" "$KEY" "$tmp"
-  if [[ -d /etc/nginx/sites-available ]]; then
-    dest="/etc/nginx/sites-available/trace.pyyol.com.conf"
-    cp "$tmp" "$dest"
-    mkdir -p /etc/nginx/sites-enabled
-    ln -sfn "$dest" /etc/nginx/sites-enabled/trace.pyyol.com.conf
+  if ! render_vhost "$CERT" "$KEY" "$tmp"; then
+    rm -f "$tmp"
+    echo "⚠️  host vhost render refused — will try docker shared-edge"
   else
-    mkdir -p /etc/nginx/conf.d
-    dest="/etc/nginx/conf.d/trace.pyyol.com.conf"
-    cp "$tmp" "$dest"
-  fi
-  rm -f "$tmp"
-  if reload_host_nginx; then
-    echo "✅ host nginx vhost trace.pyyol.com → 127.0.0.1:3100 reloaded (not default_server)"
-    HOST_INSTALLED=1
-  else
-    echo "⚠️  host nginx reload failed — removing our file, will try docker shared-edge"
-    rm -f "$dest"
-    if [[ -L /etc/nginx/sites-enabled/trace.pyyol.com.conf ]]; then
-      rm -f /etc/nginx/sites-enabled/trace.pyyol.com.conf
+    if [[ -d /etc/nginx/sites-available ]]; then
+      dest="/etc/nginx/sites-available/trace.pyyol.com.conf"
+      cp "$tmp" "$dest"
+      mkdir -p /etc/nginx/sites-enabled
+      ln -sfn "$dest" /etc/nginx/sites-enabled/trace.pyyol.com.conf
+    else
+      mkdir -p /etc/nginx/conf.d
+      dest="/etc/nginx/conf.d/trace.pyyol.com.conf"
+      cp "$tmp" "$dest"
+    fi
+    rm -f "$tmp"
+    if reload_host_nginx; then
+      echo "✅ host nginx vhost trace.pyyol.com → 127.0.0.1:3100 reloaded (not default_server)"
+      HOST_INSTALLED=1
+    else
+      echo "⚠️  host nginx reload failed — removing our file, will try docker shared-edge"
+      rm -f "$dest"
+      if [[ -L /etc/nginx/sites-enabled/trace.pyyol.com.conf ]]; then
+        rm -f /etc/nginx/sites-enabled/trace.pyyol.com.conf
+      fi
     fi
   fi
 else
