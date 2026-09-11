@@ -7,8 +7,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-/** Full Markdown rules for all three games, or just one game's section.
- *  @param game optional "goofspiel" | "monopoly" | "mafia" to slice one section. */
+/** Full Markdown rules for the live games, or just one game's section.
+ *  @param game optional "goofspiel" | "mafia" to slice one section. */
 export function gameRules(game = ""): string {
   // dist/rules.js → ../rules/games.md (package root). Resolved relative to this
   // module so it works regardless of the consumer's CWD.

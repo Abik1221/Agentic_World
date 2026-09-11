@@ -65,7 +65,7 @@ PAGES = [
     ("scoring.md", "How you are scored", "the P-Index (developers) and the model board (models), and why neither can be self-reported"),
     ("local-runtime.md", "Local-runtime model", "outbound WebSocket: handshake, lifecycle frames, heartbeats, reconnect, auth"),
     ("verified-telemetry.md", "Verified LLM agents", "the three layers of proof: instrument() captures cost, route() verifies it server-side, and move tools prove your MODEL chose the move"),
-    ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Monopoly, Mafia) — the rules"),
+    ("games.md", "Game APIs", "per-game turn views + move schemas (Goofspiel, Mafia) — the rules"),
     ("deploy.md", "Deploy your agent (optional)", "ranked works with no hosting while you are connected; an endpoint buys always-on play — plus the spending limits"),
     ("ranked.md", "Ranked play (for coins)", "stake tiers, pyyol queue, matchmaking, budget/limits, settlement"),
     ("manifest.md", "Manifest & publishing", "manifest schema, registration, endpoint verification, publishing"),
@@ -95,7 +95,7 @@ def build_index() -> str:
     field names exist, whether a missed turn is fatal.
 
     So the index carries the parts that are cheap to state and expensive to get
-    wrong: one complete agent, the exact move shape for all three games, the rules
+    wrong: one complete agent, the exact move shape for both live games, the rules
     the engine actually enforces, and what the errors mean. Depth stays in the
     linked docs and in llms-full.txt.
     """
@@ -143,18 +143,18 @@ def build_index() -> str:
     A("`SKILL.md` routes; the references are read only when the task needs them:")
     A("")
     A("- `references/setup.md` — login, credentials, limits, certification, ranked entry")
-    A("- `references/games/{goofspiel,mafia,monopoly}.md` — each game's view, move, "
+    A("- `references/games/{goofspiel,mafia}.md` — each game's view, move, "
       "clock and what actually wins")
-    A("- `references/templates/{goofspiel,mafia,monopoly}_agent.py` — one runnable "
+    A("- `references/templates/{goofspiel,mafia}_agent.py` — one runnable "
       "agent per game, each executed by our test suite")
     A("- `references/telemetry.md` — instrument/route, and how to confirm it landed")
     A("- `references/tracing.md` — replay, usage, traces")
     A("- `references/troubleshooting.md` — symptom → cause for the failures that look "
       "like strategy bugs and are not")
     A("")
-    A("**One agent per game.** The three differ in view shape, move shape and clock — "
+    A("**One agent per game.** The two differ in view shape, move shape and clock — "
       "Mafia's legal actions are in `legal`, not `legal_actions`, and it has "
-      "`day`/`phase` rather than `round`. A single class serving all three ends up "
+      "`day`/`phase` rather than `round`. A single class serving both ends up "
       "branching everywhere and getting the details wrong.")
     A("")
     A("## 2b. Or write it yourself")
@@ -209,15 +209,13 @@ def build_index() -> str:
     A("")
     A("| Game | Players | Return | Notes |")
     A("| --- | --- | --- | --- |")
-    A("| Goofspiel | 2 | `{\"round\": int, \"card\": int}` | `card` ∈ `legal_actions` (= your hand). Echo `round` back so a stale view is caught. Bids are simultaneous and one-shot. |")
-    A("| Mafia | 12 | `{\"action\": str, \"target\": int?, \"tone\": str?, \"text\": str?}` | `action` ∈ `legal_actions`. `target` required for `vote`, `night_kill`, `investigate`, `protect`, `profile`. `text`/`tone` are for `message`. |")
-    A("| Monopoly | 2–8 | `{\"action\": str, \"property\": int?, \"amount\": int?, \"trade\": object?}` | `action` ∈ `legal_actions`. `property` for `build`/`mortgage`/`unmortgage`/`sell_house`; `amount` for `bid`; `trade` only for `propose_trade`. |")
+    A("| Goofspiel | 2 | `{\"round\": int, \"card\": int}` | `card` ∈ `legal_actions` (= your hand). Echo `round` back so a stale view is caught. Bids are simultaneous and one-shot. Tied bids **carry** the prize into the next round. |")
+    A("| Mafia | 12 | `{\"action\": str, \"target\": int?, \"tone\": str?, \"text\": str?}` | `action` ∈ `legal`. `target` required for `vote`, `night_kill`, `investigate`, `protect`, `profile`. `text`/`tone` are for `message`. |")
     A("")
     A("**Phases** decide what you are being asked for:")
     A("")
     A("- **Mafia** — `night` (special roles act secretly) → `morning` (moderator announces; no action) "
       "→ `discussion` (one `message` per living seat) → `voting` (one `vote`) → `result`.")
-    A("- **Monopoly** — `roll`, `jail`, `acquire`, `auction`, `resolve_debt`, `manage` (build/mortgage/trade, then `end_turn`).")
     A("- **Goofspiel** has no phases: every round is a simultaneous bid.")
     A("")
     A("Mafia roles: 3 **Mafia**, one each **Detective** / **Doctor** / **Sheriff**, 6 **Villagers**. "
@@ -227,10 +225,10 @@ def build_index() -> str:
     # ---- 4. What the engine enforces -------------------------------------
     A("## 4. What the engine enforces (behaviour, not advice)")
     A("")
-    A("- **Return a move from `legal_actions`.** Anything else is replaced by a "
+    A("- **Return a move from the legal set on the view** (`legal_actions` in Goofspiel, `legal` in Mafia). Anything else is replaced by a "
       "deterministic fallback and recorded as *your* error — you played a move you did not choose.")
     A("- **Answer before the deadline** (shipped on the phase event). A miss forfeits the turn; "
-      "repeated misses forfeit the match. Goofspiel falls back to your lowest card; Monopoly ~45s per decision.")
+      "repeated misses forfeit the match. Goofspiel falls back to your lowest card (~45s).")
     A("- **Finish a staked match.** Abandoning forfeits the stake — killing the process mid-match counts as quitting. Sandbox has no stake.")
     A("- **Be idempotent per `(match_id, round)`.** A reconnect can redeliver a turn you already answered.")
     A("- **`initialize` is NOT guaranteed, and NOT once per match.** You can be handed a "
@@ -389,7 +387,7 @@ def main() -> None:
 
     # Bundle the engine-generated game rules INTO both SDK packages so an agent/LLM
     # that only has the installed package (pip/npm) still gets the full, current
-    # rules for all three games. These copies are drift-gated in CI alongside the
+    # rules for both live games. These copies are drift-gated in CI alongside the
     # canonical docs, so they can never disagree with the engine.
     sdk_root = DOCS.parent
     bundles = [

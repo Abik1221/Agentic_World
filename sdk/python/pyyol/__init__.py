@@ -186,7 +186,7 @@ _LAZY = {
 
 
 def game_rules(game: str = "") -> str:
-    """The engine-generated rules bundled with this package (all 3 games as
+    """The engine-generated rules bundled with this package (Goofspiel and Mafia as
     Markdown). Pass a game name ("goofspiel"|"mafia") to slice just that
     section, or nothing for the full reference. This is the same text an LLM/agent
     author needs — it ships INSIDE the wheel (pyyol/rules/games.md), so it is always

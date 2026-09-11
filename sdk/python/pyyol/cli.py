@@ -41,11 +41,11 @@ GROUP_GAMES = frozenset({"mafia"})
 def queue_path_for(game: str) -> str:
     """Return the matchmaking endpoint for a game.
 
-    Goofspiel is 1v1 and uses the 2-player queue; Mafia and Monopoly are N-player and
+    Goofspiel is 1v1 and uses the 2-player queue; Mafia is N-player and
     pool into a full table via the group queue. The request shape is identical, only
     the endpoint differs — which is exactly why this must not be inlined at each call
     site: `pyyol play --ranked mafia` hardcoded /v1/queue, and that queue rejects
-    every game but Goofspiel, so ranked Mafia and Monopoly could not be entered at all
+    every game but Goofspiel, so ranked Mafia could not be entered at all
     from the CLI.
     """
     return "/v1/group-queue" if game in GROUP_GAMES else "/v1/queue"

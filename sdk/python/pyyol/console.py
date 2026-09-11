@@ -131,8 +131,8 @@ WATCH_BROWSER, WATCH_TERMINAL = "browser", "terminal"
 DEFAULT_DASHBOARD = os.environ.get("PYYOL_DASHBOARD", "").rstrip("/") or "https://pyyol.com"
 
 # Where a running match is watched in the browser, per game. Verified against the client's
-# routes: Goofspiel and Monopoly take ?match= at the top level, Mafia's viewer lives under
-# /arena. A wrong path here is worse than no link — it drops the developer on a DIFFERENT
+# routes: Goofspiel and Mafia take ?match= on their Live Arena viewers.
+# A wrong path here is worse than no link — it drops the developer on a DIFFERENT
 # live match and everything they see is someone else's game.
 #
 # Lives here rather than in cli.py because the RUNTIME needs it too, and the runtime is

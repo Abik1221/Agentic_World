@@ -16,7 +16,8 @@ matchmaking** today, and the only one with offline `pyyol simulate`.
 
 - **Rounds.** Each of the 13 rounds reveals one prize card; both players commit a card
   from hand simultaneously. The higher card takes the prize's value; **an equal bid
-  splits the prize** between both players. Each card can be played only once.
+  carries the prize into the next round** (the live default `tie_rule` is `carry`).
+  Each card can be played only once.
 - **Winning.** After the last round, the higher total prize value wins; **equal totals
   are a tie** (in ranked, a tie returns each player's stake).
 - **Timeout = abstain.** If your turn times out the engine plays a fallback card for you

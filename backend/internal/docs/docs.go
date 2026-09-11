@@ -21,7 +21,7 @@ import (
 
 // DocsVersion stamps every seeded page. Bump on a docs release so the frontend can
 // pin/select a version and older snapshots stay addressable.
-const DocsVersion = "2026-08-01"
+const DocsVersion = "2026-09-11"
 
 //go:embed content
 var contentFS embed.FS
@@ -32,7 +32,7 @@ type Page struct {
 	Slug     string `json:"slug"`               // e.g. "games/goofspiel" (path-derived, stable)
 	Title    string `json:"title"`              // H1 / nav label
 	Section  string `json:"section"`            // top-level nav group, e.g. "Games"
-	Game     string `json:"game,omitempty"`     // goofspiel|mafia|monopoly, when game-specific
+	Game     string `json:"game,omitempty"`     // goofspiel|mafia, when game-specific
 	Category string `json:"category,omitempty"` // optional finer grouping within a section
 	Order    int    `json:"order"`              // sort key within the section
 	Body     string `json:"body"`               // Markdown body (frontmatter stripped)

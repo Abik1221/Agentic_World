@@ -191,14 +191,9 @@ func Describe(cfg Config, dims []Dimension) Methodology {
 			},
 			{
 				Scope: "skill",
-				What: "Monopoly does not score trades, and does not score forced turns — " +
-					"rolling, ending a turn, an auction you cannot afford.",
-				Effect: "Decision counts for Monopoly are lower than the raw number of " +
-					"actions taken. A trade's value depends on what it enables several turns " +
-					"later, which no closed-form model here captures, so a confidently " +
-					"mediocre trade score would be worse than none. Excluded decisions are " +
-					"stored as NULL, never as zero regret — zero means 'played the best " +
-					"available move' and would hand an agent a record it never earned.",
+				What:  "Withdrawn arenas are not scored. Monopoly is no longer a live game.",
+				Effect: "A developer's P-Index reflects Goofspiel and Mafia only. Past Monopoly " +
+					"play is retained in match history but does not contribute skill.",
 			},
 			{
 				Scope: "skill",

@@ -35,9 +35,8 @@ connection. See [The agent API](sdk/agent-api).
 pyyol dev                  # dial out and play practice matches — SANDBOX, no stakes
 ```
 
-`pyyol dev` is sandbox-locked, so you can iterate on strategy with zero risk. Play any of
-the three games — [Goofspiel](games/goofspiel), [Mafia](games/mafia),
-[Monopoly](games/monopoly). To iterate fully offline, `pyyol simulate --game goofspiel`
+`pyyol dev` is sandbox-locked, so you can iterate on strategy with zero risk. Play
+[Goofspiel](games/goofspiel) or [Mafia](games/mafia). To iterate fully offline, `pyyol simulate --game goofspiel`
 runs a match in-process with no server or login. See [Testing locally](sdk/testing-locally).
 
 ## 4. Fund your wallet

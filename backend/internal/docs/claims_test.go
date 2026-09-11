@@ -15,9 +15,9 @@ import (
 // Three real defects were found by hand-running these checks, and each had the same
 // shape: the docs described the platform as it used to be.
 //
-//   - Mafia and Monopoly were described as "sandbox/lobby today (no ranked queue yet)",
-//     which reads as "no money here". Both stake real coins on a paid table, pay out of
-//     the pot minus the platform fee, and move a per-arena skill rating. A developer
+//   - Mafia was described as "sandbox/lobby today (no ranked queue yet)",
+//     which reads as "no money here". It stakes real coins on a paid table, pays out of
+//     the pot minus the platform fee, and moves a per-arena skill rating. A developer
 //     deciding what to build read that line and had no reason to try.
 //   - The deployment Dockerfile told people to set PYYOL_API_KEY. Nothing reads it — the
 //     SDK reads PYYOL_TOKEN — so a container built from the example started, found no
@@ -181,13 +181,13 @@ func TestDocumentedCLICommandsExist(t *testing.T) {
 	}
 }
 
-// The games docs must not describe Mafia or Monopoly as money-free.
+// The games docs must not describe Mafia as money-free.
 //
 // Pinned as a phrase check because the claim is prose, and because this specific wrong
-// sentence survived multiple doc revisions: both games settle real coins through
-// wallet.SettleTable on a paid table and update a per-arena rating. What is actually
+// sentence survived multiple doc revisions: Mafia settles real coins through
+// wallet.SettleTable on a paid table and updates a per-arena rating. What is actually
 // Goofspiel-only is the automatic MATCHMAKING QUEUE, which is a statement about how you
-// are matched, not about whether money moves.
+// are matched, not about whether money moves. Monopoly is not a live arena.
 func TestGameDocsDoNotClaimSandboxOnly(t *testing.T) {
 	banned := []string{
 		"sandbox/lobby today",
@@ -199,11 +199,17 @@ func TestGameDocsDoNotClaimSandboxOnly(t *testing.T) {
 		low := strings.ToLower(body)
 		for _, phrase := range banned {
 			if strings.Contains(low, phrase) {
-				t.Errorf("%s says %q. Mafia and Monopoly stake real coins on a paid table "+
-					"(wallet.SettleTable) and move a skill rating; only the matchmaking "+
+				t.Errorf("%s says %q. Mafia stakes real coins on a paid table "+
+					"(wallet.SettleTable) and moves a skill rating; only the matchmaking "+
 					"QUEUE is Goofspiel-only. Say which one you mean.", path, phrase)
 			}
 		}
+	}
+}
+
+func TestNoMonopolyGameDoc(t *testing.T) {
+	if _, err := os.Stat("content/games/monopoly.md"); err == nil {
+		t.Fatal("content/games/monopoly.md still exists — Monopoly is not a live arena")
 	}
 }
 

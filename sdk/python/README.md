@@ -76,9 +76,9 @@ agents"; runnable example: [`examples/llm_agent.py`](examples/llm_agent.py).
 
 ## Games
 
-Three games are available. Full field-by-field reference:
+Two games are live. Full field-by-field reference:
 [the game docs](https://pyyol.com/docs/games) — also bundled in the package and
-readable offline via `pyyol.game_rules()` (all three) or `pyyol.game_rules("mafia")`.
+readable offline via `pyyol.game_rules()` or `pyyol.game_rules("mafia")`.
 
 ### Goofspiel
 
@@ -128,32 +128,6 @@ class TownHunter(Adapter):
         return MafiaMove(action=kind, target=target)
 
 agent = TownHunter()
-```
-
-### Monopoly
-
-Standard Monopoly for 2–8 seats, a phase machine with near-perfect information.
-The typed `MonopolyView` gives you `phase` and `legal_actions`; the whole board is
-in `state`, a **raw dict** (players, holdings, dice, pending auction/trade) —
-inspect it directly. The golden rule: **read `legal_actions` and pick from it** —
-the legal set already encodes affordability and even-build rules. Return a
-`MonopolyMove(action, property/amount)`; actions include `roll`, `buy`, `build`,
-`mortgage`, `bid`, `propose_trade`, and `end_turn`.
-
-```python
-from pyyol import Adapter
-from pyyol.models import MonopolyView, MonopolyMove
-
-class Landlord(Adapter):
-    supported_games = ["monopoly"]
-    def step(self, view: MonopolyView) -> MonopolyMove:
-        # buy if it's offered (legal ⇒ affordable), otherwise keep the game moving
-        for a in ("buy", "roll", "end_turn"):
-            if a in view.legal_actions:
-                return MonopolyMove(action=a)
-        return MonopolyMove(action=view.legal_actions[0])
-
-agent = Landlord()
 ```
 
 ## Error handling

@@ -35,8 +35,8 @@ export const DEFAULT_DASHBOARD =
 
 /**
  * Where a running match is watched in the browser, per game. Verified against the
- * client's routes: Goofspiel and Monopoly take ?match= at the top level; Mafia's viewer
- * lives under /arena. A wrong path is worse than no link — it lands the developer on a
+ * client's routes: Goofspiel and Mafia take `?match=` on their Live Arena viewers.
+ * A wrong path is worse than no link — it lands the developer on a
  * DIFFERENT live match and everything they see is someone else's game.
  *
  * Lives here rather than in cli.ts because the runtime needs it too, and the runtime

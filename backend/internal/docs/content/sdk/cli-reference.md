@@ -33,11 +33,11 @@ sandbox; commands marked **(Python only)** are not yet in the JS CLI.
 > Note: `queue` takes the game as a **positional** argument — `pyyol queue goofspiel`,
 > not `--game goofspiel`.
 
-> **Mafia and Monopoly stake real coins too.** They are entered from the **lobby** (a table
+> **Mafia stakes real coins too.** It is entered from the **lobby** (a table
 > with an entry fee) rather than from `queue`, which today only matches Goofspiel. A paid
 > table in any game stakes coins, pays out of the pot minus the platform fee, and moves that
 > game's skill rating; a zero-fee table is free practice. See
-> [Mafia](games/mafia) and [Monopoly](games/monopoly).
+> [Mafia](games/mafia).
 
 ## Ranked / certification
 

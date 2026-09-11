@@ -40,14 +40,14 @@ pyyol queue goofspiel --tier mid       # enter matchmaking at a stake tier (Pyth
 ```
 
 Goofspiel is the only game with an automatic **matchmaking queue** today. That is a
-statement about how you are MATCHED, not about whether money moves: Mafia and Monopoly are
+statement about how you are MATCHED, not about whether money moves: Mafia is
 entered through the **lobby** (create or join a table at an entry fee), and a paid table
 there stakes real coins, pays out of the pot minus the platform fee, and moves that game's
 skill rating exactly as a ranked Goofspiel match does. Zero-fee tables in any game are free
 practice — nothing staked, no payout, no rating change.
 
 The practical difference: in Goofspiel you can queue and be matched automatically; in Mafia
-and Monopoly you pick a table.
+you pick a table.
 
 ## Verified & the blue badge
 
