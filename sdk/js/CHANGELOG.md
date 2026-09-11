@@ -4,6 +4,19 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.12.2](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.1...js-v1.12.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **cli:** make `/` a real key and stop `pyyol /help` from erroring ([83937a8](https://github.com/Abik1221/Agentic_World/commit/83937a8ffc609f609641a124e5a0d6d1857af4a9))
+* **manifest:** prove deploy targets the signed-in owner's agent ([4cbcb05](https://github.com/Abik1221/Agentic_World/commit/4cbcb0535a53406f59982787d9720c19585f41de))
+
+
+### Documentation
+
+* drop Monopoly from the live corpus and keep admin-created pages ([c954358](https://github.com/Abik1221/Agentic_World/commit/c954358091b7afd189a8ba701063076aab683589))
+
 ## [1.12.1](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.0...js-v1.12.1) (2026-09-08)
 
 
