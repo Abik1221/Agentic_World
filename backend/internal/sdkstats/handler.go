@@ -40,8 +40,8 @@ func (h *Handler) Register(r chi.Router) {
 	})
 }
 
-// ingest records one first-run ping. Country comes from the CDN's CF-IPCountry header
-// (Cloudflare) when present — we resolve to a COUNTRY and never store the raw IP.
+// ingest records one first-run ping. Country is GeoIP of the real client (or a
+// CDN country header only when the request actually came through that CDN).
 func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		SDK     string `json:"sdk"`
@@ -51,7 +51,7 @@ func (h *Handler) ingest(w http.ResponseWriter, r *http.Request) {
 		httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "bad_json"})
 		return
 	}
-	country := NormalizeCountry(r.Header.Get("CF-IPCountry"))
+	country := CountryFromRequest(r)
 	if err := h.svc.RecordInstall(r.Context(), in.SDK, in.Version, country); err != nil {
 		if errors.Is(err, ErrBadSDK) {
 			httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "unknown_sdk"})

@@ -45,7 +45,9 @@ func (f *fakeStore) Summary(_ context.Context) (Summary, error) { return f.summa
 
 func TestNormalizeCountry(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"us", "US"}, {"GB", "GB"}, {"  de ", "DE"}, {"", "XX"}, {"USA", "XX"}, {"1A", "XX"}, {"u1", "XX"},
+		{"us", "US"}, {"GB", "GB"}, {"  de ", "DE"},
+		{"", "XX"}, {"USA", "XX"}, {"1A", "XX"}, {"u1", "XX"},
+		{"XX", "XX"}, {"T1", "XX"}, {"A1", "XX"}, {"ZZ", "XX"},
 	}
 	for _, c := range cases {
 		if got := NormalizeCountry(c.in); got != c.want {
@@ -88,12 +90,64 @@ func TestIngest_CountryFromCFHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/telemetry/install", strings.NewReader(`{"sdk":"python","version":"1.2.0"}`))
 	req.Header.Set("CF-IPCountry", "de")
+	req.Header.Set("CF-Ray", "8a1b2c3d4e5f6a7b-FRA")
+	req.Header.Set("CF-Connecting-IP", "203.0.113.9")
 	router(h).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("code=%d", rec.Code)
 	}
 	if len(f.installs) != 1 || f.installs[0] != [3]string{"python", "1.2.0", "DE"} {
 		t.Errorf("install recorded wrong: %v", f.installs)
+	}
+}
+
+func TestIngest_SpoofedCFHeaderIsIgnored(t *testing.T) {
+	f := newFake()
+	h := &Handler{svc: New(f)}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/telemetry/install", strings.NewReader(`{"sdk":"js","version":"1.0.0"}`))
+	req.Header.Set("CF-IPCountry", "de") // client-settable when we are NOT behind Cloudflare
+	req.RemoteAddr = "8.8.8.8:44321"
+	router(h).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if len(f.installs) != 1 {
+		t.Fatalf("installs=%v", f.installs)
+	}
+	if f.installs[0][2] == "DE" {
+		t.Fatalf("spoofed CF-IPCountry was trusted without a Cloudflare provenance header: %v", f.installs)
+	}
+	if f.installs[0][2] != "US" {
+		t.Errorf("want GeoIP of 8.8.8.8 → US, got %v", f.installs)
+	}
+}
+
+func TestIngest_GeoIPOfForwardedClient(t *testing.T) {
+	f := newFake()
+	h := &Handler{svc: New(f)}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/telemetry/install", strings.NewReader(`{"sdk":"js","version":"1.12.1"}`))
+	req.RemoteAddr = "10.0.0.4:8080" // nginx
+	req.Header.Set("X-Forwarded-For", "1.1.1.1")
+	router(h).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if len(f.installs) != 1 || f.installs[0][2] != "US" {
+		t.Errorf("want GeoIP of 1.1.1.1 → US (the nginx hop, not the container), got %v", f.installs)
+	}
+}
+
+func TestIngest_PrivateIPIsUnknown(t *testing.T) {
+	f := newFake()
+	h := &Handler{svc: New(f)}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/telemetry/install", strings.NewReader(`{"sdk":"python","version":"1.0"}`))
+	req.RemoteAddr = "10.0.0.9:4000"
+	router(h).ServeHTTP(rec, req)
+	if len(f.installs) != 1 || f.installs[0][2] != "XX" {
+		t.Errorf("private IP should stay XX, got %v", f.installs)
 	}
 }
 

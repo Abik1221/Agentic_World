@@ -6,8 +6,9 @@
 //     numbers but are DAILY (never real-time) and carry NO geography — npm exposes
 //     none, and PyPI country data only exists in a separate BigQuery batch dataset.
 //   - Install pings (near-real-time, geo): the SDK pings the arena on first run; we
-//     GeoIP the request to a COUNTRY (we store the country code, never the raw IP)
-//     and count it. This is what gives the per-country table + fresh numbers.
+//     GeoIP the request to a COUNTRY via CountryFromRequest (CDN header when the
+//     request actually came through that CDN, otherwise an IP-to-country lookup of
+//     the trusted client address). We store the country code, never the raw IP.
 //
 // The admin sees both: authoritative registry totals + a self-tracked per-country /
 // near-real-time view. See docs/... and SDK_DOWNLOAD_ANALYTICS_PLAN.md.
@@ -117,21 +118,6 @@ func (s *Service) Countries(ctx context.Context, page, pageSize int) (rows []Cou
 }
 
 func (s *Service) Summary(ctx context.Context) (Summary, error) { return s.store.Summary(ctx) }
-
-// NormalizeCountry upper-cases and validates a 2-letter ISO country code; anything
-// else becomes UnknownCountry ("XX"). Keeps the per-country table clean.
-func NormalizeCountry(c string) string {
-	c = strings.ToUpper(strings.TrimSpace(c))
-	if len(c) != 2 {
-		return UnknownCountry
-	}
-	for i := 0; i < 2; i++ {
-		if c[i] < 'A' || c[i] > 'Z' {
-			return UnknownCountry
-		}
-	}
-	return c
-}
 
 // ErrBadSDK is returned for an install ping with an unrecognized sdk.
 var ErrBadSDK = errBadSDK{}
