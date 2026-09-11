@@ -70,10 +70,10 @@ pick_cert_files() {
 
 render_vhost() {
   local cert="$1" key="$2" dest="$3"
-  local upstream="${4:-127.0.0.1}"
+  local upstream="${4:-127.0.0.1:3100}"
   sed -e "s|/etc/letsencrypt/live/trace.pyyol.com/fullchain.pem|$cert|" \
       -e "s|/etc/letsencrypt/live/trace.pyyol.com/privkey.pem|$key|" \
-      -e "s|http://127.0.0.1:3100|http://${upstream}:3100|" \
+      -e "s|http://127.0.0.1:3100|http://${upstream}|" \
       "$SRC" > "$dest"
   # Only refuse a listen ... default_server; comments in this file mention the
   # phrase and used to make render_vhost abort before copying into etcontest-nginx.
@@ -101,16 +101,29 @@ nginx_dump() {
     || true
 }
 
-nginx_test_reload() {
+nginx_bin() {
   local id="$1"
-  docker exec "$id" nginx -t 2>/dev/null \
-    || docker exec "$id" /usr/sbin/nginx -t 2>/dev/null \
-    || docker exec "$id" openresty -t 2>/dev/null \
-    || return 1
-  docker exec "$id" nginx -s reload 2>/dev/null \
-    || docker exec "$id" /usr/sbin/nginx -s reload 2>/dev/null \
-    || docker exec "$id" openresty -s reload 2>/dev/null \
-    || return 1
+  if docker exec "$id" nginx -v >/dev/null 2>&1; then
+    echo nginx
+  elif docker exec "$id" /usr/sbin/nginx -v >/dev/null 2>&1; then
+    echo /usr/sbin/nginx
+  else
+    echo ""
+  fi
+}
+
+nginx_test_reload() {
+  local id="$1" bin out
+  bin="$(nginx_bin "$id")"
+  if [[ -z "$bin" ]]; then
+    echo "⚠️  no nginx binary in $id"
+    return 1
+  fi
+  out="$(docker exec "$id" "$bin" -t 2>&1)" || {
+    echo "$out"
+    return 1
+  }
+  docker exec "$id" "$bin" -s reload 2>/dev/null || docker exec "$id" "$bin" -s reload
 }
 
 # True only when the container is bound to the host's 80 or 443 (what Cloudflare
@@ -179,12 +192,16 @@ install_into_docker_edge() {
       continue
     fi
 
-    upstream="127.0.0.1"
+    upstream="127.0.0.1:3100"
     netmode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id" 2>/dev/null || true)"
-    if [[ "$netmode" != "host" ]] && ! echo "$cfg" | grep -qE 'proxy_pass https?://127\.0\.0\.1:'; then
-      upstream="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' "$id" 2>/dev/null | awk 'NF { print; exit }')"
-      upstream="${upstream:-172.17.0.1}"
-      echo "    $name is not host-network; proxying Eye via ${upstream}:3100"
+    if [[ "$netmode" != "host" ]]; then
+      # 3100 is published 127.0.0.1-only; 3110 is 0.0.0.0 on the host so a
+      # bridged edge container can reach Eye. Take the first docker network gateway.
+      local gw
+      gw="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' "$id" 2>/dev/null | awk 'NF { print; exit }')"
+      gw="${gw:-172.17.0.1}"
+      upstream="${gw}:3110"
+      echo "    $name is not host-network; proxying Eye via http://${upstream}"
     fi
 
     docker exec "$id" mkdir -p /etc/nginx/ssl /var/www/certbot || true
@@ -199,11 +216,13 @@ install_into_docker_edge() {
       rm -f "$tmp_in"
       continue
     fi
+    # Docker nginx images are often older than 1.25 (`http2 on` is a separate directive).
+    sed -i 's/http2 on;//g' "$tmp_in" 2>/dev/null || sed -i '' 's/http2 on;//g' "$tmp_in"
     docker cp "$tmp_in" "$id:$dest_in"
     rm -f "$tmp_in"
 
     if nginx_test_reload "$id"; then
-      echo "✅ reloaded $name with trace.pyyol.com → ${upstream}:3100"
+      echo "✅ reloaded $name with trace.pyyol.com → ${upstream}"
       injected=1
     else
       echo "⚠️  nginx -t failed in $name (http2 on?) — retrying without http2"
@@ -216,7 +235,7 @@ install_into_docker_edge() {
       docker cp "$tmp_in" "$id:$dest_in"
       rm -f "$tmp_in"
       if nginx_test_reload "$id"; then
-        echo "✅ reloaded $name with trace.pyyol.com → ${upstream}:3100"
+        echo "✅ reloaded $name with trace.pyyol.com → ${upstream}"
         injected=1
       else
         echo "❌ nginx -t still failing in $name — removing the vhost we just added"
