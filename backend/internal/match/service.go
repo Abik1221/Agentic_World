@@ -1509,6 +1509,27 @@ func (s *Service) playHouse(eng *gs.Engine, policy string, state *gs.State) ([]g
 	return ev, true
 }
 
+// mustSettle reports whether a finished match has to disburse its escrow.
+//
+// The question is NOT "is this a sandbox table" but "was money actually staked". Those
+// are the same thing only while every sandbox match has a zero bid, which is an
+// assumption about the data rather than a guarantee the code enforces — and production
+// produced the counterexample: six matches carrying a 500-coin bid that took both stakes
+// and never settled, because the mode said sandbox and the whole settlement block was
+// skipped. The CLI reported a +420 win the ledger never posted, and ~3,000 coins per
+// agent sat in escrow with nothing to release them.
+//
+// Keying on the bid closes that hole regardless of HOW a staked match ends up mis-moded,
+// which matters because the mis-moding itself has not been found yet. Staking already
+// keys on the bid; this makes the disbursement agree with it. Escrow in and escrow out
+// are now decided by the same fact.
+//
+// A genuine sandbox table is unaffected: its bid is 0, nothing was staked, and there is
+// nothing to pay back.
+func mustSettle(mode string, bid int64) bool {
+	return mode != ModeSandbox || bid > 0
+}
+
 // finalize settles the match: compute winner + per-player deltas, settle coins,
 // hash the full log, and persist the terminal state. Returns the players with their
 // final scores + coin deltas so the caller can render the result without re-reading.
@@ -1536,7 +1557,7 @@ func (s *Service) finalize(ctx context.Context, m Match, state gs.State, newEven
 	// with the first and leave a seat refunded but rated.
 	integrityFailed, integrityAgent := false, ""
 
-	if m.Mode != ModeSandbox {
+	if mustSettle(m.Mode, m.Bid) {
 		// A ranked match that cannot show it was played by an LLM is VOIDED rather
 		// than settled: both stakes go back and nobody is paid. Refund and Settle
 		// share one idempotency key, so exactly one of them can ever take effect —
