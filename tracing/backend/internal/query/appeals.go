@@ -86,6 +86,9 @@ func (h Handler) AppealList(c *fiber.Ctx) error {
 			a.Kind = "other"
 		}
 		a.Status = "open"
+		if s, ok := a.Detail["status"].(string); ok && s != "" {
+			a.Status = s
+		}
 		if isMonopolyID(a.MatchID) {
 			continue
 		}

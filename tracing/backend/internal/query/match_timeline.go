@@ -25,6 +25,9 @@ func (h Handler) MatchTimeline(c *fiber.Ctx) error {
 		return err
 	}
 	id := c.Params("match_id")
+	if isMonopolyID(id) {
+		return c.JSON(fiber.Map{"match_id": id, "agents": []string{}, "entries": []any{}})
+	}
 
 	// Accept the bare match id or the "match_<id>" trace id, matching MatchDecisions
 	// so links from either view resolve without prefix juggling.

@@ -79,6 +79,26 @@ export default async function GameDetailPage({
   const { view: viewRaw } = await searchParams;
   const id = decodeURIComponent(matchId);
   const view: View = VIEWS.some((v) => v.id === viewRaw) ? (viewRaw as View) : "overview";
+  const withdrawn =
+    id === "monopoly" || id.startsWith("mp_") || id.startsWith("match_mp_");
+
+  if (withdrawn) {
+    return (
+      <div className="page">
+        <section className="hero">
+          <div>
+            <p style={{ margin: 0 }}>
+              <Link className="agent-link" href="/games">
+                ← Games
+              </Link>
+            </p>
+            <h1 className="mono">Match {id}</h1>
+            <p>This match is from a withdrawn game and is not listed in Eye.</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   const [dataRes, timelineRes, logsRes, costRes, moneyRes, replayRes, rosterRes] = await Promise.all([
     fetchQueryResult<MatchDecisions>(`/v1/matches/${encodeURIComponent(id)}/decisions`),

@@ -891,6 +891,9 @@ func (h Handler) MatchByID(c *fiber.Ctx) error {
 		return err
 	}
 	id := c.Params("match_id")
+	if isMonopolyID(id) {
+		return c.JSON([]fiber.Map{})
+	}
 	rows, err := h.Store.DB.QueryContext(c.UserContext(), `
 		SELECT me.trace_id, me.event_type, me.event_time, me.status, me.error_message
 		FROM match_events me
@@ -930,6 +933,9 @@ func (h Handler) MatchDecisions(c *fiber.Ctx) error {
 		return err
 	}
 	id := c.Params("match_id")
+	if isMonopolyID(id) {
+		return c.JSON(fiber.Map{"match_id": id, "agents": []fiber.Map{}})
+	}
 	// Accept either the bare match id (run_id) or the "match_<id>" trace id, so
 	// links from the run/trace views resolve without prefix juggling.
 	rows, err := h.Store.DB.QueryContext(c.UserContext(), `
