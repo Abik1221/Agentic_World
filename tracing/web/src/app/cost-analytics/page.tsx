@@ -1,4 +1,5 @@
-import { fetchQuery } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult } from "@/lib/pyyol-lens-api";
 import PricingModeller from "./PricingModeller";
 
 export const dynamic = "force-dynamic";
@@ -100,7 +101,8 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 export default async function CostAnalyticsPage() {
   // events_raw carries a 30-day TTL, so the default window already covers all
   // retained data. (The backend defaults to the last 30 days when from/to omitted.)
-  const data = await fetchQuery<CostAnalytics>("/v1/cost-analytics");
+  const result = await fetchQueryResult<CostAnalytics>("/v1/cost-analytics");
+  const data = result.ok ? result.data : null;
 
   const rs = data?.run_stats;
   const blendedUsdPer1M =
@@ -118,11 +120,14 @@ export default async function CostAnalyticsPage() {
         </div>
       </section>
 
-      {!data && (
+      {!result.ok && (
         <section className="panel">
-          <p className="empty-state">
-            No cost data available. Is the query API running and reachable?
-          </p>
+          <Unavailable title="Cost analytics unavailable" />
+        </section>
+      )}
+      {result.ok && !rs && (
+        <section className="panel">
+          <p className="empty-state">No cost data in the retained window yet.</p>
         </section>
       )}
 

@@ -1,4 +1,5 @@
-import { fetchQuery } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult } from "@/lib/pyyol-lens-api";
 
 type UsageRow = {
   project_id: string;
@@ -11,7 +12,8 @@ type UsageRow = {
 };
 
 export default async function TokenUsagePage() {
-  const rows = (await fetchQuery<UsageRow[]>("/v1/usage/summary")) ?? [];
+  const result = await fetchQueryResult<UsageRow[]>("/v1/usage/summary");
+  const rows = result.ok ? result.data : [];
   return (
     <div className="page">
       <section className="hero">
@@ -20,6 +22,7 @@ export default async function TokenUsagePage() {
           <p>Provider- and model-level token visibility across projects and environments.</p>
         </div>
       </section>
+      {!result.ok ? <Unavailable title="Token usage unavailable" /> : null}
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} usage rows</p>
         <div className="table-wrap">
@@ -49,7 +52,7 @@ export default async function TokenUsagePage() {
               ) : (
                 <tr>
                   <td colSpan={6} className="empty-state">
-                    No token usage yet.
+                    {result.ok ? "No token usage yet." : "Waiting for the query API."}
                   </td>
                 </tr>
               )}

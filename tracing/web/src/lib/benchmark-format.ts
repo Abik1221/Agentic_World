@@ -35,7 +35,7 @@ export function badRateClass(v: number): string {
   return "status-error";
 }
 
-export const GAMES = ["goofspiel", "mafia", "monopoly"] as const;
+export const GAMES = ["goofspiel", "mafia"] as const;
 export const DAY_WINDOWS = [7, 30, 90] as const;
 
 /** Build an href preserving the other query params (for filter chips). */

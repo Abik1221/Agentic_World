@@ -58,9 +58,13 @@ services:
     environment:
       PYYOL_LENS_QUERY_URL: http://pyyol-lens-query:8082
       PYYOL_LENS_CONTROL_URL: http://pyyol-lens-control:8083
+      PYYOL_LENS_INGEST_URL: http://pyyol-lens-ingest:8081
       PYYOL_LENS_API_KEY: ${QUERY_API_KEY:?set QUERY_API_KEY}
       PYYOL_LENS_DEFAULT_ORG_ID: ${PYYOL_LENS_DEFAULT_ORG_ID:-pyyol}
       PYYOL_LENS_ALLOW_DIRECT_FALLBACK: "true"
+      # Arena admin API (queue health). Separate from Lens; this dashboard login is
+      # not an arena admin session, so the page must render unauthorized honestly.
+      PYYOL_API_URL: ${PYYOL_API_URL:-http://arena-server:8080}
       PYYOL_LENS_AUTH_USER: ${PYYOL_LENS_AUTH_USER:-admin}
       PYYOL_LENS_AUTH_PASSWORD: ${PYYOL_LENS_AUTH_PASSWORD:?set a dashboard password}
       PYYOL_LENS_SESSION_SECRET: ${PYYOL_LENS_SESSION_SECRET:?set a session secret}

@@ -1,5 +1,6 @@
 import EventsFeed from "./EventsFeed";
-import { fetchQuery, type EventRow } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult, type EventRow } from "@/lib/pyyol-lens-api";
 
 export default async function EventsPage({
   searchParams,
@@ -10,7 +11,7 @@ export default async function EventsPage({
   // Empty query returns the full recent stream (the search matches everything),
   // so the page lands on all recent events rather than only errors.
   const query = q?.trim() || "";
-  const rows = (await fetchQuery<EventRow[]>(`/v1/search/events?q=${encodeURIComponent(query)}`)) ?? [];
+  const result = await fetchQueryResult<EventRow[]>(`/v1/search/events?q=${encodeURIComponent(query)}`);
 
   return (
     <div className="page">
@@ -20,7 +21,11 @@ export default async function EventsPage({
           <p>Free-form search across the canonical event stream.</p>
         </div>
       </section>
-      <EventsFeed initialRows={rows} initialQuery={query} />
+      {result.ok ? (
+        <EventsFeed initialRows={result.data} initialQuery={query} />
+      ) : (
+        <Unavailable title="Event stream unavailable" />
+      )}
     </div>
   );
 }

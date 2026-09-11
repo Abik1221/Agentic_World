@@ -144,7 +144,9 @@ export default function TracesConsole({ traces }: Props) {
             ) : (
               <tr>
                 <td colSpan={8} className="empty-state">
-                  No traces match the current filters.
+                  {traces.length
+                    ? "No traces match the current filters."
+                    : "No traces yet. The query API answered; ingest has not recorded any executions."}
                 </td>
               </tr>
             )}

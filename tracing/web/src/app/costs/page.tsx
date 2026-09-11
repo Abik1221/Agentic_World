@@ -1,4 +1,5 @@
-import { fetchQuery } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult } from "@/lib/pyyol-lens-api";
 
 type CostRow = {
   project_id: string;
@@ -11,7 +12,8 @@ type CostRow = {
 };
 
 export default async function CostsPage() {
-  const rows = (await fetchQuery<CostRow[]>("/v1/costs/summary")) ?? [];
+  const result = await fetchQueryResult<CostRow[]>("/v1/costs/summary");
+  const rows = result.ok ? result.data : [];
   return (
     <div className="page">
       <section className="hero">
@@ -20,6 +22,7 @@ export default async function CostsPage() {
           <p>Estimated and reconciled model spend by project, environment, and model.</p>
         </div>
       </section>
+      {!result.ok ? <Unavailable title="Cost data unavailable" /> : null}
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} cost rows</p>
         <div className="table-wrap">
@@ -47,7 +50,7 @@ export default async function CostsPage() {
               ) : (
                 <tr>
                   <td colSpan={5} className="empty-state">
-                    No cost data yet.
+                    {result.ok ? "No cost data yet." : "Waiting for the query API."}
                   </td>
                 </tr>
               )}

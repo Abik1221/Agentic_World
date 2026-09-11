@@ -6,8 +6,11 @@ import { fetchServiceHealth } from "@/lib/pyyol-lens-api";
 import { authEnabled, currentUser } from "@/lib/auth";
 
 export const metadata: Metadata = {
-  title: "Pyyol Lens",
+  title: "Pyyol Eye",
   description: "Traces, agent benchmarks, and cost observability for the Pyyol arena.",
+  applicationName: "Pyyol Eye",
+  icons: { icon: "/favicon.svg" },
+  robots: { index: false, follow: false },
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

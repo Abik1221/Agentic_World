@@ -1,8 +1,9 @@
-import { fetchQuery, type TraceSummary } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult, type TraceSummary } from "@/lib/pyyol-lens-api";
 import TracesConsole from "./TracesConsole";
 
 export default async function TracesPage() {
-  const traces = (await fetchQuery<TraceSummary[]>("/v1/traces")) ?? [];
+  const result = await fetchQueryResult<TraceSummary[]>("/v1/traces");
 
   return (
     <div className="page">
@@ -13,7 +14,11 @@ export default async function TracesPage() {
         </div>
       </section>
 
-      <TracesConsole traces={traces} />
+      {result.ok ? (
+        <TracesConsole traces={result.data} />
+      ) : (
+        <Unavailable title="Trace list unavailable" />
+      )}
     </div>
   );
 }

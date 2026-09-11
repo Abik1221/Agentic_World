@@ -44,7 +44,7 @@ Copy each vhost to `sites-available`, symlink to `sites-enabled`, and copy
 | `api.<domain>` | arena API | `:8091` | `deploy/nginx/api.pyyol.com.conf` |
 | `<domain>` (user app) | Pyyol_client | `:3000` | `Pyyol_client/deploy/nginx/pyyol.com.conf` |
 | `admin.<domain>` | admin-web | `:8095` | `Super_Admin/deploy/nginx/admin.pyyol.com.conf` |
-| `trace.<domain>` | Lens dashboard | `:3100` | `tracing/deploy/nginx/trace.pyyol.com.conf` |
+| `trace.<domain>` | Pyyol Eye | `:3100` | `tracing/deploy/nginx/trace.pyyol.com.conf` (installed by `deploy-tracing.yml`) |
 
 Replace `pyyol.com` with your domain in each file before enabling.
 

@@ -1,6 +1,6 @@
-// Self-contained dashboard auth for Pyyol Lens: a signed, HttpOnly session
-// cookie gated on an env-configured credential. No external service — the Lens
-// panel authenticates for itself.
+// Self-contained dashboard auth for Pyyol Eye: a signed, HttpOnly session
+// cookie gated on an env-configured credential. No external service — the
+// telemetry panel authenticates for itself.
 //
 // Enabled when PYYOL_LENS_AUTH_PASSWORD is set. When unset, the dashboard is
 // open (documented dev/behind-VPN mode). Session tokens are HMAC-SHA256 signed

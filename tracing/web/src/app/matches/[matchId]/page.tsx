@@ -1,6 +1,7 @@
 import Link from "next/link";
 
-import { fetchQuery } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult } from "@/lib/pyyol-lens-api";
 import { ktoks, ms } from "@/lib/benchmark-format";
 import { MatchTimeline, type TimelineEntry } from "./MatchTimeline";
 
@@ -61,12 +62,13 @@ export default async function MatchDecisionsPage({
   // totals the trail cannot know; `timeline` is the durable per-decision trail and
   // survives a match that never settled. Fetched together so a match that crashed
   // mid-way still renders something rather than an empty page.
-  const [data, timeline] = await Promise.all([
-    fetchQuery<MatchDecisions>(`/v1/matches/${encodeURIComponent(id)}/decisions`),
-    fetchQuery<MatchTimelineResponse>(`/v1/matches/${encodeURIComponent(id)}/timeline`),
+  const [dataRes, timelineRes] = await Promise.all([
+    fetchQueryResult<MatchDecisions>(`/v1/matches/${encodeURIComponent(id)}/decisions`),
+    fetchQueryResult<MatchTimelineResponse>(`/v1/matches/${encodeURIComponent(id)}/timeline`),
   ]);
-  const agents = data?.agents ?? [];
-  const entries = timeline?.entries ?? [];
+  const agents = dataRes.ok ? (dataRes.data.agents ?? []) : [];
+  const entries = timelineRes.ok ? (timelineRes.data.entries ?? []) : [];
+  const queryDown = !dataRes.ok && !timelineRes.ok;
 
   return (
     <div className="page">
@@ -85,9 +87,11 @@ export default async function MatchDecisionsPage({
         </div>
       </section>
 
+      {queryDown ? <Unavailable title="Match trail unavailable" /> : null}
+
       <MatchTimeline entries={entries} />
 
-      {agents.length === 0 && entries.length === 0 && (
+      {!queryDown && agents.length === 0 && entries.length === 0 && (
         <section className="panel">
           <p className="empty-state">
             No events recorded for this match. Decisions appear as each move happens;

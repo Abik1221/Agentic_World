@@ -1,8 +1,9 @@
 name: deploy-tracing
 
 # CI + CD for the Pyyol Lens observability stack (tracing/) → VPS.
-# Served privately on the trace subdomain (nginx fronts the web dashboard on
-# 127.0.0.1:3100; see tracing/deploy/nginx/trace.pyyol.com.conf).
+# Served on the trace subdomain. nginx is installed by this workflow
+# (deploy/install-trace-vhost.sh → 127.0.0.1:3100; named vhost only — Mega Hub
+# stays default_server / its own hostname). See tracing/deploy/nginx/trace.pyyol.com.conf.
 #
 # Stack (tracing/docker-compose.yml + deploy/docker-compose.prod.yml overlay):
 #   clickhouse, postgres, nats, minio  — internal data plane (never public)
@@ -185,15 +186,27 @@ jobs:
               sleep 2
             done
           done
-          echo "✅ Pyyol Lens stack up. Front the web dashboard on the trace subdomain via nginx (deploy/nginx/trace.pyyol.com.conf)."
+
+          echo "Waiting for Pyyol Eye on 127.0.0.1:3100…"
+          for i in $(seq 1 40); do
+            if curl -fsS -m 3 "http://127.0.0.1:3100/" >/dev/null 2>&1; then
+              echo "✅ web dashboard healthy on :3100."; break; fi
+            [ "$i" -eq 40 ] && { echo "❌ web dashboard never healthy."; $DC logs --tail=80 web; exit 1; }
+            sleep 3
+          done
+
+          echo "Installing nginx vhost trace.pyyol.com → 127.0.0.1:3100 (must not steal Mega Hub)…"
+          chmod +x deploy/install-trace-vhost.sh
+          deploy/install-trace-vhost.sh "$REMOTE_DIR"
+          echo "✅ Pyyol Eye stack up and trace.pyyol.com routed to :3100."
           ENDSSH
 
       - name: Summary
         if: success()
         run: |
           {
-            echo "### Pyyol Lens deployed ✅"
-            echo "- ClickHouse healthy, migrations applied, ingest(8081)+query(8082) serving."
+            echo "### Pyyol Eye deployed ✅"
+            echo "- ClickHouse healthy, migrations applied, ingest(8081)+query(8082)+web(:3100) serving."
             echo "- On the shared \`pyyol\` network: arena → pyyol-lens-ingest:8081, admin/web → pyyol-lens-query:8082."
-            echo "- Dashboard: front \`127.0.0.1:3100\` with the trace-subdomain nginx vhost + TLS."
+            echo "- nginx vhost \`trace.pyyol.com\` → \`127.0.0.1:3100\` (named server, not default_server; Mega Hub stays on its own vhost)."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,5 @@
-import { fetchQuery } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult } from "@/lib/pyyol-lens-api";
 
 type ToolRow = {
   trace_id: string;
@@ -10,7 +11,8 @@ type ToolRow = {
 };
 
 export default async function ToolCallsPage() {
-  const rows = (await fetchQuery<ToolRow[]>("/v1/tool-calls")) ?? [];
+  const result = await fetchQueryResult<ToolRow[]>("/v1/tool-calls");
+  const rows = result.ok ? result.data : [];
   return (
     <div className="page">
       <section className="hero">
@@ -19,6 +21,7 @@ export default async function ToolCallsPage() {
           <p>Inspect tools as first-class spans with cost and error visibility.</p>
         </div>
       </section>
+      {!result.ok ? <Unavailable title="Tool-call data unavailable" /> : null}
       <section className="panel">
         <p className="table-count">{rows.length.toLocaleString()} tool calls</p>
         <div className="table-wrap">
@@ -52,7 +55,7 @@ export default async function ToolCallsPage() {
               ) : (
                 <tr>
                   <td colSpan={6} className="empty-state">
-                    No tool call spans recorded yet.
+                    {result.ok ? "No tool call spans recorded yet." : "Waiting for the query API."}
                   </td>
                 </tr>
               )}

@@ -92,10 +92,10 @@ export default function Shell({
             </button>
           </div>
           <div className="brand">
-            <div className="brand-mark">PL</div>
+            <div className="brand-mark">PE</div>
             <div>
-              <p className="brand-title">Pyyol Lens</p>
-              <p className="brand-subtitle">AI observability engine</p>
+              <p className="brand-title">Pyyol Eye</p>
+              <p className="brand-subtitle">Arena telemetry</p>
             </div>
           </div>
           <nav className="nav">
@@ -109,7 +109,7 @@ export default function Shell({
             ))}
           </nav>
           <div className="sidebar-footer">
-            <p>Standalone engine</p>
+            <p>Pyyol Eye</p>
             <p>ClickHouse + Go + Next.js</p>
           </div>
         </aside>
@@ -127,7 +127,7 @@ export default function Shell({
                 <span aria-hidden>{mobileOpen ? "✕" : "☰"}</span>
               </button>
               <span className="workspace-pill">Workspace: Pyyol Production</span>
-              <span className="workspace-pill subtle">Project: pyyol-lens</span>
+              <span className="workspace-pill subtle">Project: pyyol-eye</span>
             </div>
             <div className="topbar-right">
               <StatusChip label="Query API" up={health?.query} />

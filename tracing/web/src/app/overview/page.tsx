@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { RateCell } from "@/components/benchmark/bench-cells";
-import { fetchQuery, type BenchmarkStat } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult, type BenchmarkStat } from "@/lib/pyyol-lens-api";
 import { ms } from "@/lib/benchmark-format";
 
 type Overview = {
@@ -51,19 +52,20 @@ function healthClass(status: string): string {
 }
 
 export default async function OverviewPage() {
-  const [overview, usage, costs, health, top] = await Promise.all([
-    fetchQuery<Overview>("/v1/metrics/overview"),
-    fetchQuery<UsageRow[]>("/v1/usage/summary"),
-    fetchQuery<CostRow[]>("/v1/costs/summary"),
-    fetchQuery<PipelineSummary>("/v1/projections/status/summary"),
-    fetchQuery<{ agents: BenchmarkStat[] }>("/v1/benchmarks/agents?days=30&limit=5"),
+  const [overviewRes, usageRes, costsRes, healthRes, topRes] = await Promise.all([
+    fetchQueryResult<Overview>("/v1/metrics/overview"),
+    fetchQueryResult<UsageRow[]>("/v1/usage/summary"),
+    fetchQueryResult<CostRow[]>("/v1/costs/summary"),
+    fetchQueryResult<PipelineSummary>("/v1/projections/status/summary"),
+    fetchQueryResult<{ agents: BenchmarkStat[] }>("/v1/benchmarks/agents?days=30&limit=5"),
   ]);
 
-  const topUsage = (usage ?? []).slice(0, 6);
-  const topCosts = (costs ?? []).slice(0, 6);
-  const topAgents = top?.agents ?? [];
-  const pipeline = health?.pipeline;
-  const pipelineStatus = pipeline?.status ?? "unknown";
+  const overview = overviewRes.ok ? overviewRes.data : null;
+  const topUsage = usageRes.ok ? usageRes.data.slice(0, 6) : [];
+  const topCosts = costsRes.ok ? costsRes.data.slice(0, 6) : [];
+  const topAgents = topRes.ok ? (topRes.data.agents ?? []) : [];
+  const pipeline = healthRes.ok ? healthRes.data.pipeline : undefined;
+  const pipelineStatus = pipeline?.status ?? (healthRes.ok ? "unknown" : "unreachable");
 
   return (
     <div className="page">
@@ -86,47 +88,54 @@ export default async function OverviewPage() {
               <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>{pipeline.status_reason}</span>
             ) : (
               <span style={{ color: "var(--muted)", fontSize: "0.8rem" }}>
-                {health ? "ingest → processor → ClickHouse" : "pipeline status unavailable"}
+                {healthRes.ok ? "ingest → processor → ClickHouse" : "pipeline status unavailable"}
               </span>
             )}
           </div>
           <div className="filter-group">
             <span className="workspace-pill subtle">
-              backlog {(pipeline?.estimated_backlog_events ?? 0).toLocaleString()}
+              backlog {healthRes.ok ? (pipeline?.estimated_backlog_events ?? 0).toLocaleString() : "—"}
             </span>
             <span className="workspace-pill subtle">
-              lag {pipeline?.estimated_lag_seconds != null ? `${pipeline.estimated_lag_seconds}s` : "—"}
+              lag {healthRes.ok && pipeline?.estimated_lag_seconds != null ? `${pipeline.estimated_lag_seconds}s` : "—"}
             </span>
           </div>
         </div>
       </section>
 
-      <section className="cards">
-        <div className="card">
-          <div className="card-label">Total Traces</div>
-          <div className="card-value">{(overview?.traces_total ?? 0).toLocaleString()}</div>
-        </div>
-        <div className="card">
-          <div className="card-label">Total Events</div>
-          <div className="card-value">{(overview?.events_total ?? 0).toLocaleString()}</div>
-        </div>
-        <div className="card">
-          <div className="card-label">Errors</div>
-          <div className="card-value">{(overview?.errors ?? 0).toLocaleString()}</div>
-        </div>
-        <div className="card">
-          <div className="card-label">P95 Latency</div>
-          <div className="card-value">{Math.round(overview?.p95_latency_ms ?? 0)}ms</div>
-        </div>
-        <div className="card">
-          <div className="card-label">Tokens</div>
-          <div className="card-value">{(overview?.total_tokens ?? 0).toLocaleString()}</div>
-        </div>
-        <div className="card">
-          <div className="card-label">Estimated Cost</div>
-          <div className="card-value">${(overview?.estimated_cost ?? 0).toFixed(2)}</div>
-        </div>
-      </section>
+      {overview ? (
+        <section className="cards">
+          <div className="card">
+            <div className="card-label">Total Traces</div>
+            <div className="card-value">{overview.traces_total.toLocaleString()}</div>
+          </div>
+          <div className="card">
+            <div className="card-label">Total Events</div>
+            <div className="card-value">{overview.events_total.toLocaleString()}</div>
+          </div>
+          <div className="card">
+            <div className="card-label">Errors</div>
+            <div className="card-value">{overview.errors.toLocaleString()}</div>
+          </div>
+          <div className="card">
+            <div className="card-label">P95 Latency</div>
+            <div className="card-value">{Math.round(overview.p95_latency_ms)}ms</div>
+          </div>
+          <div className="card">
+            <div className="card-label">Tokens</div>
+            <div className="card-value">{overview.total_tokens.toLocaleString()}</div>
+          </div>
+          <div className="card">
+            <div className="card-label">Estimated Cost</div>
+            <div className="card-value">${overview.estimated_cost.toFixed(2)}</div>
+          </div>
+        </section>
+      ) : (
+        <Unavailable title="Overview metrics unavailable" />
+      )}
+      {overview && overview.traces_total === 0 ? (
+        <p className="empty-state">No telemetry ingested yet. Zeros above are real, not placeholders.</p>
+      ) : null}
 
       <section className="panel">
         <div className="filter-row" style={{ justifyContent: "space-between" }}>

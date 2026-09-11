@@ -35,10 +35,10 @@ export default function LoginScreen() {
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <div className="brand-mark">PL</div>
+          <div className="brand-mark">PE</div>
           <div>
-            <p className="brand-title">Pyyol Lens</p>
-            <p className="brand-subtitle">AI observability engine</p>
+            <p className="brand-title">Pyyol Eye</p>
+            <p className="brand-subtitle">Arena telemetry</p>
           </div>
         </div>
         <h1 className="login-title">Sign in</h1>

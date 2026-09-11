@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { RateCell, WLD } from "@/components/benchmark/bench-cells";
-import { fetchQuery, type BenchmarkStat, type ProviderBenchmark } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult, type BenchmarkStat, type ProviderBenchmark } from "@/lib/pyyol-lens-api";
 import { DAY_WINDOWS, GAMES, ktoks, ms, withParam } from "@/lib/benchmark-format";
 
 const MODES = ["ranked", "sandbox", "practice"] as const;
@@ -29,12 +30,13 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
   if (game) provQs.set("game", game);
   provQs.set("days", days);
 
-  const [data, provData] = await Promise.all([
-    fetchQuery<{ agents: BenchmarkStat[] }>(`/v1/benchmarks/agents?${qs.toString()}`),
-    fetchQuery<{ providers: ProviderBenchmark[] }>(`/v1/benchmarks/providers?${provQs.toString()}`),
+  const [dataRes, provRes] = await Promise.all([
+    fetchQueryResult<{ agents: BenchmarkStat[] }>(`/v1/benchmarks/agents?${qs.toString()}`),
+    fetchQueryResult<{ providers: ProviderBenchmark[] }>(`/v1/benchmarks/providers?${provQs.toString()}`),
   ]);
-  const rows = data?.agents ?? [];
-  const providers = provData?.providers ?? [];
+  const rows = dataRes.ok ? (dataRes.data.agents ?? []) : [];
+  const providers = provRes.ok ? (provRes.data.providers ?? []) : [];
+  const queryDown = !dataRes.ok;
 
   const totalMatches = rows.reduce((n, r) => n + r.matches, 0);
   const bestWin = rows.length ? Math.max(...rows.map((r) => r.win_rate)) : 0;
@@ -92,6 +94,8 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
           </div>
         </div>
       </section>
+
+      {queryDown ? <Unavailable title="Benchmark leaderboard unavailable" /> : null}
 
       <section className="cards">
         <article className="card">
@@ -172,7 +176,7 @@ export default async function BenchmarksPage({ searchParams }: { searchParams: S
               ) : (
                 <tr>
                   <td colSpan={12} className="empty-state">
-                    No benchmark data yet. Run matches with Pyyol Lens telemetry enabled
+                    No benchmark data yet. Run matches with telemetry enabled
                     (PYYOL_LENS_ENABLED=true) to populate the leaderboard.
                   </td>
                 </tr>

@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { RateCell, WLD } from "@/components/benchmark/bench-cells";
-import { fetchQuery, type BenchmarkStat } from "@/lib/pyyol-lens-api";
+import { Unavailable } from "@/components/Unavailable";
+import { fetchQueryResult, type BenchmarkStat } from "@/lib/pyyol-lens-api";
 import { ktoks, ms } from "@/lib/benchmark-format";
 
 export default async function AgentBenchmarkPage({
@@ -12,16 +13,16 @@ export default async function AgentBenchmarkPage({
   const { agentId } = await params;
   const id = decodeURIComponent(agentId);
 
-  const [byGame, byVersion] = await Promise.all([
-    fetchQuery<{ agent_id: string; games: BenchmarkStat[] }>(
+  const [byGameRes, byVersionRes] = await Promise.all([
+    fetchQueryResult<{ agent_id: string; games: BenchmarkStat[] }>(
       `/v1/benchmarks/agents/${encodeURIComponent(id)}`,
     ),
-    fetchQuery<{ agent_id: string; versions: BenchmarkStat[] }>(
+    fetchQueryResult<{ agent_id: string; versions: BenchmarkStat[] }>(
       `/v1/benchmarks/agents/${encodeURIComponent(id)}/versions?days=90`,
     ),
   ]);
-  const games = byGame?.games ?? [];
-  const versions = byVersion?.versions ?? [];
+  const games = byGameRes.ok ? (byGameRes.data.games ?? []) : [];
+  const versions = byVersionRes.ok ? (byVersionRes.data.versions ?? []) : [];
 
   return (
     <div className="page">
@@ -37,6 +38,7 @@ export default async function AgentBenchmarkPage({
         </div>
       </section>
 
+      {!byGameRes.ok ? <Unavailable title="Agent benchmark unavailable" /> : null}
       <section className="panel">
         <h2 className="panel-title">By game</h2>
         <div className="table-wrap">

@@ -1,10 +1,6 @@
 import { headers } from "next/headers";
 import { isAuthorized } from "./auth";
 
-const EXPLICIT_API_URL = process.env.PYYOL_API_URL;
-const API_URL_CANDIDATES = EXPLICIT_API_URL
-  ? [EXPLICIT_API_URL]
-  : ["http://localhost:3001", "http://localhost:4000"];
 const QUERY_URL = process.env.PYYOL_LENS_QUERY_URL ?? "http://localhost:8082";
 const CONTROL_URL = process.env.PYYOL_LENS_CONTROL_URL ?? "http://localhost:8083";
 const INGEST_URL = process.env.PYYOL_LENS_INGEST_URL ?? "http://localhost:8081";
@@ -14,6 +10,13 @@ const DEFAULT_USER_ID = process.env.PYYOL_LENS_DEFAULT_USER_ID ?? "local-dev-use
 // backend's QUERY_API_KEY; empty when the APIs are unsecured (localhost dev).
 const QUERY_API_KEY = process.env.PYYOL_LENS_API_KEY ?? "";
 const keyHeader = (): Record<string, string> => (QUERY_API_KEY ? { "X-Pyyol-Key": QUERY_API_KEY } : {});
+const FETCH_TIMEOUT_MS = 8000;
+
+// Optional BFF in front of query/control. Unset in production — the dashboard talks
+// to the Lens APIs directly. PYYOL_API_URL is the arena (queue health), not a BFF,
+// and must never be probed as /pyyol-lens/... (that hang-then-fallback made every
+// page wait on a dead localhost:3001/4000).
+const LENS_BFF_URL = process.env.PYYOL_LENS_BFF_URL;
 const ALLOW_DIRECT_FALLBACK = process.env.PYYOL_LENS_ALLOW_DIRECT_FALLBACK
   ? process.env.PYYOL_LENS_ALLOW_DIRECT_FALLBACK === "true"
   : process.env.NODE_ENV !== "production";
@@ -28,63 +31,61 @@ async function buildForwardHeaders() {
   return out;
 }
 
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T | null> {
+export type LensResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: "unauthorized" | "unavailable" | "not_found" };
+
+async function fetchJSONResult<T>(url: string, init?: RequestInit): Promise<LensResult<T>> {
   try {
     const res = await fetch(url, {
       cache: "no-store",
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       ...init,
     });
-    if (!res.ok) return null;
-    return res.json() as Promise<T>;
+    if (res.status === 401 || res.status === 403) return { ok: false, reason: "unauthorized" };
+    if (res.status === 404) return { ok: false, reason: "not_found" };
+    if (!res.ok) return { ok: false, reason: "unavailable" };
+    return { ok: true, data: (await res.json()) as T };
   } catch {
-    return null;
+    return { ok: false, reason: "unavailable" };
   }
 }
 
-async function fetchViaProxy<T>(path: string, surface: "query" | "control", headers: Record<string, string>): Promise<T | null> {
-  for (const base of API_URL_CANDIDATES) {
-    const res = await fetchJSON<T>(`${base}/pyyol-lens/${surface}${path}`, {
-      headers,
+async function fetchLens<T>(path: string, surface: "query" | "control"): Promise<LensResult<T>> {
+  if (!(await isAuthorized())) return { ok: false, reason: "unauthorized" };
+  const directHeaders = {
+    "x-organization-id": DEFAULT_ORG_ID,
+    "x-user-id": DEFAULT_USER_ID,
+    ...keyHeader(),
+  };
+  const directBase = surface === "query" ? QUERY_URL : CONTROL_URL;
+
+  if (LENS_BFF_URL) {
+    const proxied = await fetchJSONResult<T>(`${LENS_BFF_URL.replace(/\/$/, "")}/pyyol-lens/${surface}${path}`, {
+      headers: await buildForwardHeaders(),
     });
-    if (res !== null) return res;
+    if (proxied.ok || !ALLOW_DIRECT_FALLBACK) return proxied;
   }
-  return null;
+
+  return fetchJSONResult<T>(`${directBase}${path}`, { headers: directHeaders });
+}
+
+export async function fetchQueryResult<T>(path: string): Promise<LensResult<T>> {
+  return fetchLens<T>(path, "query");
 }
 
 export async function fetchQuery<T>(path: string): Promise<T | null> {
-  // Defense-in-depth: never fetch telemetry for an unauthenticated request, even
-  // if a page renders server-side behind the login gate.
-  if (!(await isAuthorized())) return null;
-  const forwarded = await buildForwardHeaders();
-  const proxied = await fetchViaProxy<T>(path, "query", forwarded);
-  if (proxied !== null || !ALLOW_DIRECT_FALLBACK) {
-    return proxied;
-  }
+  const result = await fetchQueryResult<T>(path);
+  return result.ok ? result.data : null;
+}
 
-  return fetchJSON<T>(`${QUERY_URL}${path}`, {
-    headers: {
-      "x-organization-id": DEFAULT_ORG_ID,
-      "x-user-id": DEFAULT_USER_ID,
-      ...keyHeader(),
-    },
-  });
+export async function fetchControlResult<T>(path: string): Promise<LensResult<T>> {
+  return fetchLens<T>(path, "control");
 }
 
 export async function fetchControl<T>(path: string): Promise<T | null> {
-  if (!(await isAuthorized())) return null;
-  const forwarded = await buildForwardHeaders();
-  const proxied = await fetchViaProxy<T>(path, "control", forwarded);
-  if (proxied !== null || !ALLOW_DIRECT_FALLBACK) {
-    return proxied;
-  }
-
-  return fetchJSON<T>(`${CONTROL_URL}${path}`, {
-    headers: {
-      "x-organization-id": DEFAULT_ORG_ID,
-      "x-user-id": DEFAULT_USER_ID,
-      ...keyHeader(),
-    },
-  });
+  const result = await fetchControlResult<T>(path);
+  return result.ok ? result.data : null;
 }
 
 export type ServiceHealth = {
