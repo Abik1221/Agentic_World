@@ -82,3 +82,11 @@ def test_illegal_move_fails_loudly():
 
     with pytest.raises(SimulationError):
         simulate_goofspiel(a, hand_size=5)
+
+
+def test_handshake_echoes_agent_id_and_challenge():
+    a = Agent(supported_games=["goofspiel"], name="lowball", agent_id="agt_me", verify=False)
+    status, body = a.handle("POST", "/handshake", {}, b'{"challenge":"ch_1"}')
+    assert status == 200
+    assert body["agent_id"] == "agt_me"
+    assert body["challenge"] == "ch_1"

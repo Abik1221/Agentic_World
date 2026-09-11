@@ -174,6 +174,52 @@ func TestVerify_RequiresSecretForBearer(t *testing.T) {
 	}
 }
 
+func TestVerify_EndpointClaimsOtherAgent(t *testing.T) {
+	cipher, _ := secretbox.New("key")
+	sealed, _ := cipher.Seal([]byte("tok"))
+	repo := &fakeRepo{owned: true, manifest: baseManifest(), found: true, token: sealed}
+	probe := &fakeProbe{
+		health: healthy(),
+		hs: agentclient.HandshakeResult{
+			OK: true, Accepted: true, AgentID: "ag_OTHER",
+			SupportedGames: []string{"mafia", "goofspiel"},
+		},
+	}
+	svc := New(repo, probe, cipher)
+
+	rep, err := svc.Verify(context.Background(), "usr_1", "ag_1", "man_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verified || rep.IdentityOK || rep.HandshakeOK {
+		t.Fatalf("must not verify a foreign agent identity: %+v", rep)
+	}
+	if repo.activated {
+		t.Fatal("must not activate when the endpoint claims another agent")
+	}
+}
+
+func TestVerify_HealthClaimsOtherAgent(t *testing.T) {
+	cipher, _ := secretbox.New("key")
+	sealed, _ := cipher.Seal([]byte("tok"))
+	repo := &fakeRepo{owned: true, manifest: baseManifest(), found: true, token: sealed}
+	h := healthy()
+	h.Body.Agent = "agt_someone_else"
+	probe := &fakeProbe{health: h}
+	svc := New(repo, probe, cipher)
+
+	rep, err := svc.Verify(context.Background(), "usr_1", "ag_1", "man_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verified || rep.HandshakeOK {
+		t.Fatalf("must not handshake after a foreign health identity: %+v", rep)
+	}
+	if repo.activated {
+		t.Fatal("must not activate when health names another agent")
+	}
+}
+
 func TestVerify_NotOwned(t *testing.T) {
 	cipher, _ := secretbox.New("key")
 	repo := &fakeRepo{owned: false, manifest: baseManifest(), found: true}

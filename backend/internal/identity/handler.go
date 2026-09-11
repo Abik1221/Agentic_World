@@ -622,9 +622,19 @@ func (h *Handler) SetStakeSource(src StakeSource) { h.stakes = src }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
+	// A dashboard JWT is user-scope: AgentPublicID is empty. The cookie the
+	// browser wrote at login is not proof of ownership — it is display. Resolve
+	// the account's primary agent from the user id the token actually carries
+	// so deploy/verify always address THIS owner's agent.
+	agentID := p.AgentPublicID
+	if agentID == "" && p.UserPublicID != "" {
+		if id, err := h.svc.PrimaryAgentOf(r.Context(), p.UserPublicID); err == nil {
+			agentID = id
+		}
+	}
 	out := map[string]any{
 		"user_id":  p.UserPublicID,
-		"agent_id": p.AgentPublicID, // empty when using dashboard token only
+		"agent_id": agentID,
 	}
 	// Security preference: whether the user has opted into 2FA (never defaulted on).
 	if h.twoFAStatus != nil {

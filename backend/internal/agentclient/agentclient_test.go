@@ -127,6 +127,26 @@ func TestHandshake_AcceptedWithBearer(t *testing.T) {
 	}
 }
 
+func TestHandshake_ChallengeMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"accepted":true,"challenge":"not-the-challenge-we-sent"}`))
+	}))
+	defer srv.Close()
+
+	res, err := devClient(Config{}).Handshake(context.Background(),
+		Target{EndpointURL: srv.URL + "/play", Token: "test-token", AgentID: "ag_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK {
+		t.Fatalf("expected challenge mismatch to fail handshake, got %+v", res)
+	}
+	if res.Err == "" {
+		t.Fatal("expected a challenge-mismatch error")
+	}
+}
+
 func TestHandshake_Rejected(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(200)

@@ -71,10 +71,12 @@ class Agent:
         name: str = "pyyol-agent",
         skew_seconds: int = 300,
         verify: bool | None = None,
+        agent_id: str = "",
     ):
         self.secret = secret
         self.supported_games = list(supported_games or SUPPORTED_GAMES)
         self.name = name
+        self.agent_id = agent_id or os.environ.get("PYYOL_AGENT_ID", "")
         self._skew = skew_seconds
         self._verify = bool(secret) if verify is None else verify
         self._replay = ReplayGuard()
@@ -147,11 +149,18 @@ class Agent:
         data = _load_json(body)
 
         if suffix == "handshake":
-            return 200, {
+            body: dict[str, Any] = {
                 "accepted": True,
                 "sdkVersion": __version__,
                 "supportedGames": self.supported_games,
             }
+            if self.agent_id:
+                body["agent_id"] = self.agent_id
+                body["agentId"] = self.agent_id
+            challenge = (data or {}).get("challenge") if isinstance(data, dict) else None
+            if challenge:
+                body["challenge"] = challenge
+            return 200, body
 
         if suffix == "initialize":
             req = InitializeRequest.from_dict(data)

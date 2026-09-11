@@ -33,6 +33,8 @@ type VerificationReport struct {
 	HandshakeOK    bool     `json:"handshake_ok"`
 	SDKVersion     string   `json:"handshake_sdk_version,omitempty"`
 	SupportedGames []string `json:"handshake_supported_games,omitempty"`
+	HandshakeAgent string   `json:"handshake_agent_id,omitempty"`
+	IdentityOK     bool     `json:"identity_ok"`
 	GamesCovered   bool     `json:"games_covered"`
 	Reason         string   `json:"reason,omitempty"`
 }
@@ -142,6 +144,7 @@ func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, mani
 		report = VerificationReport{
 			ManifestID:   manifestPublicID,
 			Verified:     true,
+			IdentityOK:   true, // JWT ownership is the proof; there is no host to impersonate
 			GamesCovered: true,
 			Reason:       "connected-ranked: no endpoint declared, the agent plays over its socket",
 		}
@@ -165,7 +168,7 @@ func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, mani
 	}
 
 	report = VerificationReport{ManifestID: manifestPublicID}
-	target := agentclient.Target{EndpointURL: m.EndpointURL, Token: token}
+	target := agentclient.Target{EndpointURL: m.EndpointURL, Token: token, AgentID: agentPublicID}
 	attempt := VerificationAttempt{ManifestPublicID: manifestPublicID}
 
 	// 1. Health.
@@ -180,12 +183,19 @@ func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, mani
 		_ = s.repo.RecordVerification(ctx, attempt)
 		return report, nil
 	}
+	if claimed := strings.TrimSpace(health.Body.Agent); looksLikeAgentPublicID(claimed) && !sameAgentID(claimed, agentPublicID) {
+		report.Reason = "endpoint health identified as a different agent"
+		attempt.Error = report.Reason
+		_ = s.repo.RecordVerification(ctx, attempt)
+		return report, nil
+	}
 
 	// 2. Handshake.
 	hs, hserr := s.probe.Handshake(ctx, target)
 	report.HandshakeOK = hs.OK
 	report.SDKVersion = hs.SDKVersion
 	report.SupportedGames = hs.SupportedGames
+	report.HandshakeAgent = hs.AgentID
 	attempt.HandshakeOK = hs.OK
 	attempt.HandshakeSDKVersion = hs.SDKVersion
 	attempt.HandshakeGames = hs.SupportedGames
@@ -195,6 +205,14 @@ func (s *Service) Verify(ctx context.Context, ownerPublicID, agentPublicID, mani
 		_ = s.repo.RecordVerification(ctx, attempt)
 		return report, nil
 	}
+	if hs.AgentID != "" && !sameAgentID(hs.AgentID, agentPublicID) {
+		report.HandshakeOK = false
+		report.Reason = "endpoint identified as a different agent"
+		attempt.Error = report.Reason
+		_ = s.repo.RecordVerification(ctx, attempt)
+		return report, nil
+	}
+	report.IdentityOK = hs.AgentID == "" || sameAgentID(hs.AgentID, agentPublicID)
 
 	// 3. Games cross-check: the endpoint must support every declared game.
 	missing := missingGames(m.Games, hs.SupportedGames)
@@ -324,4 +342,13 @@ func joinComma(vals []string) string {
 		out += v
 	}
 	return out
+}
+
+func looksLikeAgentPublicID(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.HasPrefix(s, "ag_") || strings.HasPrefix(s, "agt_")
+}
+
+func sameAgentID(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }

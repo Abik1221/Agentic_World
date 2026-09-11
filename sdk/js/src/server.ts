@@ -38,6 +38,8 @@ export interface AgentOptions {
   secret?: string;
   supportedGames?: string[];
   name?: string;
+  /** Public agent id echoed on /handshake so the platform can confirm identity. */
+  agentId?: string;
   skewSeconds?: number;
   /** Force verification on/off; defaults to on iff a secret is set. */
   verify?: boolean;
@@ -54,6 +56,7 @@ export class Agent {
   readonly secret: string;
   readonly supportedGames: string[];
   readonly name: string;
+  readonly agentId: string;
   private skew: number;
   private verify: boolean;
   private replay = new ReplayGuard();
@@ -68,6 +71,7 @@ export class Agent {
     this.secret = opts.secret ?? "";
     this.supportedGames = opts.supportedGames ?? [...SUPPORTED_GAMES];
     this.name = opts.name ?? "pyyol-agent";
+    this.agentId = opts.agentId ?? process.env.PYYOL_AGENT_ID ?? "";
     this.skew = opts.skewSeconds ?? 300;
     this.verify = opts.verify ?? Boolean(this.secret);
   }
@@ -108,7 +112,18 @@ export class Agent {
     const data = loadJson(body);
 
     if (suffix === "handshake") {
-      return { status: 200, body: { accepted: true, sdkVersion: SDK_VERSION, supportedGames: this.supportedGames } };
+      const body: Record<string, unknown> = {
+        accepted: true,
+        sdkVersion: SDK_VERSION,
+        supportedGames: this.supportedGames,
+      };
+      if (this.agentId) {
+        body.agent_id = this.agentId;
+        body.agentId = this.agentId;
+      }
+      const challenge = typeof data?.challenge === "string" ? data.challenge : "";
+      if (challenge) body.challenge = challenge;
+      return { status: 200, body };
     }
     if (suffix === "initialize") {
       const ack = this.initHandler ? await this.initHandler(data as unknown as InitializeRequest) : undefined;

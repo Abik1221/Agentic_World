@@ -68,3 +68,11 @@ test("replayed nonce is rejected", () => {
     (e: unknown) => e instanceof VerificationError && e.reason === "replayed_nonce",
   );
 });
+
+test("handshake echoes agent id and challenge", async () => {
+  const a = new Agent({ supportedGames: ["goofspiel"], name: "lowball", agentId: "agt_me", verify: false });
+  const { status, body } = await a.handle("POST", "/handshake", {}, Buffer.from('{"challenge":"ch_1"}'));
+  assert.equal(status, 200);
+  assert.equal((body as any).agent_id, "agt_me");
+  assert.equal((body as any).challenge, "ch_1");
+});

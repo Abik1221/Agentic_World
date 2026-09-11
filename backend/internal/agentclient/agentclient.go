@@ -194,10 +194,12 @@ func New(cfg Config) *Client {
 }
 
 // Target is the resolved endpoint the platform will call. Token is the decrypted
-// bearer credential (empty if the developer set none).
+// bearer credential (empty if the developer set none). AgentID is the owner’s
+// agent public id — sent on handshake so the endpoint can prove it is that agent.
 type Target struct {
 	EndpointURL string
 	Token       string
+	AgentID     string
 }
 
 // HealthBody is the expected GET /health payload.
@@ -221,6 +223,9 @@ type HandshakeBody struct {
 	Accepted       bool     `json:"accepted"`
 	SDKVersion     string   `json:"sdkVersion"`
 	SupportedGames []string `json:"supportedGames"`
+	AgentID        string   `json:"agent_id"`
+	AgentIDCamel   string   `json:"agentId"`
+	Challenge      string   `json:"challenge"`
 }
 
 // HandshakeResult is the outcome of a handshake.
@@ -231,6 +236,8 @@ type HandshakeResult struct {
 	Accepted       bool
 	SDKVersion     string
 	SupportedGames []string
+	AgentID        string
+	Challenge      string
 	Err            string
 }
 
@@ -259,15 +266,21 @@ func (c *Client) Health(ctx context.Context, t Target) (HealthResult, error) {
 }
 
 // Handshake POSTs to {origin}/handshake with the bearer token. A successful
-// handshake is HTTP 200 with accepted=true.
+// handshake is HTTP 200 with accepted=true. The request carries the owner's
+// agent_id and a one-time challenge; if the endpoint echoes a different
+// challenge, the handshake is rejected. A missing echo is tolerated (older
+// SDKs); a mismatched agent_id is left for the caller to reject.
 func (c *Client) Handshake(ctx context.Context, t Target) (HandshakeResult, error) {
 	u, err := siblingURL(t.EndpointURL, "handshake")
 	if err != nil {
 		return HandshakeResult{}, err
 	}
+	challenge := newRequestID()
 	payload, _ := json.Marshal(map[string]any{
-		"platform": "agent-arena",
-		"protocol": "1.0",
+		"platform":  "agent-arena",
+		"protocol":  "1.0",
+		"agent_id":  t.AgentID,
+		"challenge": challenge,
 	})
 	start := nowFromCtx(ctx)
 	status, raw, err := c.do(ctx, http.MethodPost, u, t.Token, payload)
@@ -284,6 +297,16 @@ func (c *Client) Handshake(ctx context.Context, t Target) (HandshakeResult, erro
 	res.Accepted = body.Accepted
 	res.SDKVersion = body.SDKVersion
 	res.SupportedGames = body.SupportedGames
+	if id := strings.TrimSpace(body.AgentID); id != "" {
+		res.AgentID = id
+	} else {
+		res.AgentID = strings.TrimSpace(body.AgentIDCamel)
+	}
+	res.Challenge = strings.TrimSpace(body.Challenge)
+	if res.Challenge != "" && res.Challenge != challenge {
+		res.Err = "handshake challenge mismatch"
+		return res, nil
+	}
 	res.OK = status == http.StatusOK && body.Accepted
 	return res, nil
 }
