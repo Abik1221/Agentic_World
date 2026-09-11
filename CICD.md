@@ -85,8 +85,8 @@ repos. **One private repo holds every service image, one tag per service** so th
 never builds (big win on a small VPS); CI builds + pushes, the server logs in, pulls the
 pinned `<sha>` tag, logs out:
 `arena-<sha>` (backend) · `admin-api-<sha>` + `admin-web-<sha>` (Super_Admin) ·
-`landing-<sha>` (Pyyol_client), each with a moving `-latest`. Tracing (5 Lens images)
-still builds on the server — not user-facing, not worth the extra plumbing yet.
+`landing-<sha>` (Pyyol_client) · `lens-backend-<sha>` + `lens-web-<sha>` (tracing),
+each with a moving `-latest`. The VPS never builds these — CI pushes, the server pulls.
 **DNS/Cloudflare (used by `dns.yml`):** `CLOUDFLARE_API_TOKEN`, `SERVER_IP`, `CLOUDFLARE_ZONE_ID`.
 
 ### `Agentic_World` — tracing (`deploy-tracing.yml`)

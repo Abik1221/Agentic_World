@@ -4,7 +4,11 @@
 #   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml \
 #     --env-file deploy/.env up -d
 #
+# Images are built + pushed by CI (deploy-tracing.yml) and pulled here — never
+# built on the server. LENS_BACKEND_IMAGE / LENS_WEB_IMAGE are pinned SHA tags.
+#
 # What it changes vs the base compose:
+#   • Pins registry images (same pattern as Super Admin ADMIN_*_IMAGE).
 #   • Attaches ingest-api + query-api to the shared external `pyyol` network so
 #     the arena (arena-server) can POST telemetry to pyyol-lens-ingest:8081 and
 #     the Super_Admin API + this web app can read pyyol-lens-query:8082.
@@ -18,6 +22,8 @@
 
 services:
   ingest-api:
+    image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
+    pull_policy: always
     # Reached by the arena via pyyol (pyyol-lens-ingest:8081); loopback publish is
     # only for host-side health checks — never world-exposed.
     ports: !override
@@ -36,6 +42,8 @@ services:
     restart: always
 
   query-api:
+    image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
+    pull_policy: always
     # Reached by the admin + web via pyyol (pyyol-lens-query:8082); loopback only.
     ports: !override
       - "127.0.0.1:8082:8082"
@@ -48,6 +56,8 @@ services:
     restart: always
 
   processor:
+    image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
+    pull_policy: always
     environment:
       PYYOL_LENS_ENV: production
     restart: always
@@ -65,10 +75,17 @@ services:
   minio:
     ports: !override []
   control-api:
+    image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
+    pull_policy: always
     ports: !override []
+    environment:
+      PYYOL_LENS_ENV: production
+      QUERY_API_KEY: ${QUERY_API_KEY:?set QUERY_API_KEY}
     restart: always
 
   web:
+    image: ${LENS_WEB_IMAGE:-pyyol-lens-web:latest}
+    pull_policy: always
     ports: !override
       - "127.0.0.1:3100:3100" # loopback — host nginx, if it owns :80
       - "0.0.0.0:${TRACE_PUBLIC_PORT:-3110}:3100" # dedicated public port; Mega Hub keeps :80/:443

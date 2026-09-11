@@ -5,21 +5,26 @@ name: deploy-tracing
 # (deploy/install-trace-vhost.sh → 127.0.0.1:3100; named vhost only — Mega Hub
 # stays default_server / its own hostname). See tracing/deploy/nginx/trace.pyyol.com.conf.
 #
+# Same ship pattern as Super_Admin/deploy.yml + arena deploy-backend.yml:
+#   1. test   — Go build/vet/test as a CI gate.
+#   2. build  — backend + web images in GitHub Actions, push to the private
+#      Docker Hub repo (DOCKERHUB_REPO:lens-backend-<sha> / lens-web-<sha>).
+#   3. ship   — compose files + generated .env + nginx installer over SSH.
+#   4. deploy — server logs in, `compose pull`s the pinned tags, `up -d` (NO
+#      --build). Building Next.js + four Go binaries on the VPS is why this
+#      workflow used to hang/fail while Super Admin succeeded: admin never
+#      compiles on the host.
+#
 # Stack (tracing/docker-compose.yml + deploy/docker-compose.prod.yml overlay):
 #   clickhouse, postgres, nats, minio  — internal data plane (never public)
 #   ingest-api (8081), processor, query-api (8082), control-api (8083) — backend
-#   web (3100, loopback) — the dashboard nginx fronts on the subdomain
-# The processor applies ClickHouse migrations in-process on boot (idempotent), so
-# ClickHouse comes up healthy → processor migrates → ingest/query serve.
-#
-# The stack joins the shared external `pyyol` network so the arena (arena-server)
-# POSTs telemetry to pyyol-lens-ingest:8081 and the admin + web read
-# pyyol-lens-query:8082 — all by container name, nothing else public.
+#   web (3100 loopback + 3110 public) — dashboard; Mega Hub keeps :80/:443
+# Processor applies ClickHouse migrations in-process on boot (embedded, idempotent).
 #
 # ── Required GitHub Secrets (this repo) ────────────────────────────────────────
 #   SSH:  DEPLOY_SSH_KEY, SSH_HOST, SSH_USER (default root), SSH_PORT (default 22)
-#   App:  QUERY_API_KEY            gate for the query-api (MUST equal admin LENS_API_KEY
-#                                  and the web's key; arena reads Lens with it)
+#   Registry (same as arena): DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, DOCKERHUB_REPO
+#   App:  QUERY_API_KEY            gate for the query-api (MUST equal admin LENS_API_KEY)
 #         INGEST_API_KEY           gate for ingest (MUST equal the arena PYYOL_LENS_API_KEY)
 #         PYYOL_LENS_AUTH_PASSWORD dashboard login password
 #         PYYOL_LENS_SESSION_SECRET dashboard session-signing secret
@@ -54,7 +59,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version-file: tracing/backend/go.mod
           cache: true
           cache-dependency-path: tracing/backend/go.sum
       - run: go build ./...
@@ -67,6 +72,30 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v5
+
+      - name: Build + push Lens images to Docker Hub (private)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_REPO }}
+        run: |
+          set -euo pipefail
+          : "${DOCKERHUB_REPO:?DOCKERHUB_REPO secret is required}"
+          SHA="${GITHUB_SHA::12}"
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          docker build -f tracing/backend/Dockerfile \
+            -t "$DOCKERHUB_REPO:lens-backend-$SHA" -t "$DOCKERHUB_REPO:lens-backend-latest" \
+            tracing/backend
+          docker build -f tracing/web/Dockerfile \
+            -t "$DOCKERHUB_REPO:lens-web-$SHA" -t "$DOCKERHUB_REPO:lens-web-latest" \
+            tracing/web
+          docker push "$DOCKERHUB_REPO:lens-backend-$SHA"
+          docker push "$DOCKERHUB_REPO:lens-backend-latest"
+          docker push "$DOCKERHUB_REPO:lens-web-$SHA"
+          docker push "$DOCKERHUB_REPO:lens-web-latest"
+          docker logout
+          echo "LENS_BACKEND_IMAGE=$DOCKERHUB_REPO:lens-backend-$SHA" >> "$GITHUB_ENV"
+          echo "LENS_WEB_IMAGE=$DOCKERHUB_REPO:lens-web-$SHA" >> "$GITHUB_ENV"
 
       - name: Generate prod .env from secrets
         env:
@@ -91,6 +120,9 @@ jobs:
           PYYOL_LENS_AUTH_PASSWORD=${PYYOL_LENS_AUTH_PASSWORD}
           PYYOL_LENS_SESSION_SECRET=${PYYOL_LENS_SESSION_SECRET}
           PYYOL_LENS_DEFAULT_ORG_ID=${PYYOL_LENS_DEFAULT_ORG_ID:-pyyol}
+          TRACE_PUBLIC_PORT=3110
+          LENS_BACKEND_IMAGE=${LENS_BACKEND_IMAGE}
+          LENS_WEB_IMAGE=${LENS_WEB_IMAGE}
           EOF
           echo "Generated tracing/deploy/.env ($(wc -l < tracing/deploy/.env) lines)"
 
@@ -105,7 +137,7 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Ship the tracing stack source + .env to the server
+      - name: Ship compose + .env + vhost installer to the server (images come from the registry)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -113,49 +145,74 @@ jobs:
         run: |
           set -euo pipefail
           PORT="${SSH_PORT:-22}"; USER="${SSH_USER:-root}"
-          # Ship source (multi-stage Dockerfiles build on the host); exclude heavy
-          # build artifacts. The generated .env rides along under deploy/.
-          tar czf /tmp/tracing.tar.gz -C tracing \
-            --exclude=web/node_modules --exclude=web/.next --exclude=web/.next-dev \
-            --exclude=backend/server .
-          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no "$USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
-          scp -i ~/.ssh/id_deploy -P "$PORT" -o StrictHostKeyChecking=no \
-            /tmp/tracing.tar.gz "$USER@$SSH_HOST:$REMOTE_DIR/tracing.tar.gz"
+          # Compose bind-mounts clickhouse-config + SQL init scripts; nginx installer
+          # lives under deploy/. App source stays off the VPS — images were pushed above.
+          tar czf /tmp/tracing-deploy.tar.gz -C tracing \
+            docker-compose.yml deploy clickhouse-config backend/migrations
+          retry_ssh() {
+            local n=1
+            until "$@"; do
+              if [ "$n" -ge 4 ]; then
+                echo "::error::ssh/scp failed after $n attempts — check the VPS is reachable on port $PORT (sshd up? firewall? fail2ban ban on the runner IP?)"
+                return 1
+              fi
+              echo "attempt $n failed; retrying in $((n * 15))s..."
+              sleep $((n * 15))
+              n=$((n + 1))
+            done
+          }
+          SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20 -o ServerAliveInterval=15"
+          retry_ssh ssh -i ~/.ssh/id_deploy -p "$PORT" $SSH_OPTS "$USER@$SSH_HOST" "mkdir -p $REMOTE_DIR"
+          retry_ssh scp -i ~/.ssh/id_deploy -P "$PORT" $SSH_OPTS \
+            /tmp/tracing-deploy.tar.gz "$USER@$SSH_HOST:$REMOTE_DIR/tracing-deploy.tar.gz"
 
-      - name: Deploy (build + up + ClickHouse-healthy + migrate-on-boot)
+      - name: Deploy (pull images + up + migrate-on-boot + health)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
           PORT="${SSH_PORT:-22}"; USER="${SSH_USER:-root}"
           ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=no \
-            "$USER@$SSH_HOST" "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'ENDSSH'
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            "$USER@$SSH_HOST" \
+            "REMOTE_DIR='$REMOTE_DIR' DHUSER='$DOCKERHUB_USERNAME' DHTOKEN='$DOCKERHUB_TOKEN' bash -s" <<'ENDSSH'
           set -euo pipefail
           cd "$REMOTE_DIR"
           if ! command -v docker >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sh; fi
           DC="docker compose"; docker compose version >/dev/null 2>&1 || DC="docker-compose"
 
-          tar xzf tracing.tar.gz && rm -f tracing.tar.gz
+          tar xzf tracing-deploy.tar.gz && rm -f tracing-deploy.tar.gz
 
           # Shared cross-repo network (arena + admin attach to it). Idempotent.
           docker network create pyyol 2>/dev/null || true
 
-          echo "Building + starting the Lens stack (ClickHouse → processor migrates → ingest/query)..."
           COMPOSE="$DC -f docker-compose.yml -f deploy/docker-compose.prod.yml --env-file deploy/.env"
-          # `up` is the step that actually fails, and under `set -e` it used to abort the
-          # script before a single container log was printed. All CI showed was
-          # "container pyyol-lens-control is unhealthy" — which does not say whether the
-          # process crashed at boot, failed its healthcheck, or never got a dependency.
-          # A deploy that can fail undiagnosably costs more than the deploy it protects.
-          if ! $COMPOSE up -d --build --remove-orphans; then
-            echo "❌ compose up failed. State and logs follow:"
+
+          echo "Pulling Lens images from the private registry (no build on the server)..."
+          echo "$DHTOKEN" | docker login -u "$DHUSER" --password-stdin
+          $COMPOSE pull ingest-api query-api control-api processor web
+          docker logout >/dev/null 2>&1 || true
+
+          echo "Starting stack (volumes persist; app containers recreated from pulled tags)..."
+          dump_logs() {
             $COMPOSE ps || true
-            for svc in control-api query-api ingest-api processor web; do
+            for svc in clickhouse postgres nats minio control-api query-api ingest-api processor web; do
               echo "───────── $svc ─────────"
               $COMPOSE logs --tail=80 "$svc" 2>&1 || true
             done
+          }
+          # --no-deps on the app recreate matches Super Admin: do not stall `up` on
+          # compose healthchecks (the historical "pyyol-lens-control is unhealthy"
+          # abort). Infra first, then apps, then a final up for anything missing.
+          $COMPOSE up -d clickhouse postgres nats minio
+          $COMPOSE up -d --force-recreate --no-deps ingest-api processor query-api control-api web
+          if ! $COMPOSE up -d --remove-orphans; then
+            echo "❌ compose up failed. State and logs follow:"
+            dump_logs
             exit 1
           fi
           docker image prune -f >/dev/null 2>&1 || true
@@ -164,7 +221,7 @@ jobs:
           for i in $(seq 1 40); do
             if docker exec pyyol-lens-clickhouse clickhouse-client -q "SELECT 1" >/dev/null 2>&1; then
               echo "✅ ClickHouse healthy."; break; fi
-            [ "$i" -eq 40 ] && { echo "❌ ClickHouse never healthy."; $DC logs --tail=60 clickhouse; exit 1; }
+            [ "$i" -eq 40 ] && { echo "❌ ClickHouse never healthy."; dump_logs; exit 1; }
             sleep 3
           done
 
@@ -173,7 +230,7 @@ jobs:
             if docker exec pyyol-lens-clickhouse clickhouse-client --database pyyol_lens \
                  -q "SELECT count() FROM schema_migrations" 2>/dev/null | grep -qE '[1-9]'; then
               echo "✅ Migrations applied ($(docker exec pyyol-lens-clickhouse clickhouse-client --database pyyol_lens -q 'SELECT count() FROM schema_migrations') tracked)."; break; fi
-            [ "$i" -eq 30 ] && { echo "❌ Migrations never applied."; $DC logs --tail=60 processor; exit 1; }
+            [ "$i" -eq 30 ] && { echo "❌ Migrations never applied."; dump_logs; exit 1; }
             sleep 2
           done
 
@@ -182,7 +239,7 @@ jobs:
             name="${svc%%:*}"; p="${svc##*:}"
             for i in $(seq 1 30); do
               if curl -fsS "http://127.0.0.1:${p}/health" >/dev/null 2>&1; then echo "✅ ${name}-api healthy on :${p}."; break; fi
-              [ "$i" -eq 30 ] && { echo "❌ ${name}-api never healthy."; $DC logs --tail=60 "${name}-api"; exit 1; }
+              [ "$i" -eq 30 ] && { echo "❌ ${name}-api never healthy."; dump_logs; exit 1; }
               sleep 2
             done
           done
@@ -192,7 +249,7 @@ jobs:
             for i in $(seq 1 40); do
               if curl -fsS -m 3 "http://127.0.0.1:${p}/" >/dev/null 2>&1; then
                 echo "✅ web dashboard healthy on :${p}."; break; fi
-              [ "$i" -eq 40 ] && { echo "❌ web dashboard never healthy on :${p}."; $DC logs --tail=80 web; exit 1; }
+              [ "$i" -eq 40 ] && { echo "❌ web dashboard never healthy on :${p}."; dump_logs; exit 1; }
               sleep 3
             done
           done
@@ -224,7 +281,11 @@ jobs:
         run: |
           {
             echo "### Pyyol Eye deployed ✅"
-            echo "- ClickHouse healthy, migrations applied, ingest(8081)+query(8082)+web(:3100) serving."
+            echo "- Images pulled (no VPS build). ClickHouse healthy, migrations applied, ingest(8081)+query(8082)+web(:3100/:3110) serving."
             echo "- On the shared \`pyyol\` network: arena → pyyol-lens-ingest:8081, admin/web → pyyol-lens-query:8082."
             echo "- nginx named vhost (if host nginx owns :80) + Cloudflare origin-rule \`trace.pyyol.com\` → origin :3110. Mega Hub keeps :80/:443."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/id_deploy tracing/deploy/.env /tmp/tracing-deploy.tar.gz
