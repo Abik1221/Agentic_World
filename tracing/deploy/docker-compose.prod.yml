@@ -24,6 +24,8 @@ services:
   ingest-api:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
     pull_policy: always
+    build: !reset
+
     # Reached by the arena via pyyol (pyyol-lens-ingest:8081); loopback publish is
     # only for host-side health checks — never world-exposed.
     ports: !override
@@ -44,6 +46,8 @@ services:
   query-api:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
     pull_policy: always
+    build: !reset
+
     # Reached by the admin + web via pyyol (pyyol-lens-query:8082); loopback only.
     ports: !override
       - "127.0.0.1:8082:8082"
@@ -58,6 +62,8 @@ services:
   processor:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
     pull_policy: always
+    build: !reset
+
     environment:
       PYYOL_LENS_ENV: production
     restart: always
@@ -77,6 +83,8 @@ services:
   control-api:
     image: ${LENS_BACKEND_IMAGE:-pyyol-lens-backend:latest}
     pull_policy: always
+    build: !reset
+
     ports: !override []
     environment:
       PYYOL_LENS_ENV: production
@@ -86,6 +94,8 @@ services:
   web:
     image: ${LENS_WEB_IMAGE:-pyyol-lens-web:latest}
     pull_policy: always
+    build: !reset
+
     ports: !override
       - "127.0.0.1:3100:3100" # loopback — host nginx, if it owns :80
       - "0.0.0.0:${TRACE_PUBLIC_PORT:-3110}:3100" # dedicated public port; Mega Hub keeps :80/:443
