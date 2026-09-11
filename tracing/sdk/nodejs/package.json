@@ -1,10 +1,28 @@
 {
   "name": "@pyyol-lens/nodejs",
   "version": "0.1.0",
+  "description": "TypeScript client for Pyyol Eye / Lens ingest (traces, spans, cost events)",
+  "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/*.js",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abik1221/Agentic_World.git",
+    "directory": "tracing/sdk/nodejs"
   },
   "dependencies": {
     "uuid": "^11.1.0"

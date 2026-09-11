@@ -126,6 +126,99 @@ nginx_test_reload() {
   docker exec "$id" "$bin" -s reload 2>/dev/null || docker exec "$id" "$bin" -s reload
 }
 
+# nginx -T prefixes each file with:  # configuration file /path:
+# Super Admin / landing already live as named vhosts in this same edge. Put
+# trace.pyyol.com in THAT directory (the one nginx actually includes), not
+# whichever of sites-enabled/conf.d happens to exist on disk.
+vhost_dir_from_dump() {
+  python3 - <<'PY'
+import os, re, sys
+text = sys.stdin.read()
+current = ""
+chosen = ""
+for line in text.splitlines():
+    m = re.match(r"^# configuration file (.+):$", line.rstrip())
+    if m:
+        current = m.group(1)
+        continue
+    if re.search(r"server_name\s+.*(admin\.pyyol\.com|\bpyyol\.com)\b", line):
+        if current and not current.endswith("/nginx.conf"):
+            chosen = current
+            break
+        if current:
+            chosen = current
+includes = re.findall(r"include\s+([^;]+);", text)
+if chosen and not chosen.endswith("/nginx.conf"):
+    print(os.path.dirname(chosen))
+    sys.exit(0)
+for inc in includes:
+    inc = inc.strip().strip("'\"")
+    if "conf.d" in inc or "sites-enabled" in inc or "sites-available" in inc:
+        print(inc.rsplit("/", 1)[0])
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+admin_proxy_pass_from_dump() {
+  python3 - <<'PY'
+import re, sys
+text = sys.stdin.read()
+blocks = re.split(r"(?=server\s*\{)", text)
+for b in blocks:
+    if not re.search(r"server_name\s+.*admin\.pyyol\.com", b):
+        continue
+    m = re.search(r"proxy_pass\s+http://([^;]+);", b)
+    if m:
+        print(m.group(1).strip())
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+nginx_has_server_name() {
+  local id="$1" host="$2"
+  nginx_dump "$id" | grep -Eq "server_name[[:space:]]+${host}([[:space:;]|$])"
+}
+
+# Join pyyol-lens-web to the edge nginx networks so we can proxy by container
+# name — same as admin-web on the shared pyyol network.
+join_web_to_edge_networks() {
+  local nginx_id="$1"
+  local web="pyyol-lens-web"
+  docker inspect "$web" >/dev/null 2>&1 || return 1
+  local nets
+  nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$nginx_id" 2>/dev/null || true)"
+  local n joined=0
+  for n in $nets; do
+    [[ -n "$n" ]] || continue
+    if docker network connect "$n" "$web" 2>/dev/null; then
+      echo "    attached $web to docker network $n (same pattern as admin-web)"
+      joined=1
+    fi
+  done
+  [[ "$joined" -eq 1 ]]
+}
+
+# nginx -t in this edge has failed on Mega Hub's own `finance-api` hostname.
+# Connecting that container onto the nginx network (no site-file edits) lets
+# -t pass so a new named vhost can be reloaded. Does not remove Mega Hub.
+try_resolve_missing_upstreams() {
+  local nginx_id="$1" err="$2"
+  local host
+  host="$(printf '%s' "$err" | sed -n 's/.*host not found in upstream "\([^":]*\).*/\1/p' | head -1)"
+  [[ -n "$host" ]] || return 1
+  echo "    nginx -t missing upstream $host — connecting a matching container onto this edge network (Mega Hub files untouched)"
+  local cid
+  cid="$(docker ps --format '{{.ID}} {{.Names}}' | awk -v h="$host" 'index($2,h){print $1; exit}')"
+  [[ -n "$cid" ]] || return 1
+  local nets n
+  nets="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$nginx_id" 2>/dev/null || true)"
+  for n in $nets; do
+    docker network connect "$n" "$cid" 2>/dev/null || true
+  done
+}
+
 # True only when the container is bound to the host's 80 or 443 (what Cloudflare
 # hits). "80/tcp" in inspect JSON also matches admin-web exposing 80→8095 and
 # aborted the 2026-09-11 deploy before we reached etcontest-nginx (the real edge).
@@ -157,7 +250,7 @@ install_into_docker_edge() {
   command -v docker >/dev/null 2>&1 || return 1
   echo "Docker edge candidates:"
   docker ps --format '  {{.Names}}  ports={{.Ports}}' 2>/dev/null || true
-  local id name cfg dest_in injected=0 upstream netmode
+  local id name cfg dest_dir dest_in injected=0 upstream netmode admin_up err
   while read -r id name; do
     [[ -n "$id" ]] || continue
     cfg="$(nginx_dump "$id")"
@@ -171,40 +264,44 @@ install_into_docker_edge() {
     fi
     echo "Found shared-edge nginx in container $name ($id)"
 
-    # Host file already visible (bind-mount of /etc/nginx) — just reload.
-    if docker exec "$id" test -f /etc/nginx/sites-enabled/trace.pyyol.com.conf \
-      || docker exec "$id" test -f /etc/nginx/conf.d/trace.pyyol.com.conf \
-      || docker exec "$id" test -f /etc/nginx/sites-available/trace.pyyol.com.conf; then
-      if nginx_test_reload "$id"; then
-        echo "✅ reloaded $name (vhost already on the host mount)"
-        injected=1
+    dest_dir="$(printf '%s' "$cfg" | vhost_dir_from_dump || true)"
+    if [[ -z "$dest_dir" ]]; then
+      if docker exec "$id" test -d /etc/nginx/conf.d 2>/dev/null; then
+        dest_dir="/etc/nginx/conf.d"
+      elif docker exec "$id" test -d /etc/nginx/sites-enabled 2>/dev/null; then
+        dest_dir="/etc/nginx/sites-enabled"
+      else
+        echo "⚠️  $name has nginx but no included vhost directory — skip"
+        continue
       fi
-      continue
     fi
+    dest_in="${dest_dir%/}/trace.pyyol.com.conf"
+    echo "    placing named vhost next to admin/pyyol: $dest_in"
 
-    dest_in=""
-    if docker exec "$id" test -d /etc/nginx/sites-enabled 2>/dev/null; then
-      dest_in="/etc/nginx/sites-enabled/trace.pyyol.com.conf"
-    elif docker exec "$id" test -d /etc/nginx/conf.d 2>/dev/null; then
-      dest_in="/etc/nginx/conf.d/trace.pyyol.com.conf"
-    else
-      echo "⚠️  $name has nginx but no sites-enabled/conf.d — skip"
-      continue
-    fi
-
+    # Same reachability pattern as admin-web: container name on a shared network.
     upstream="127.0.0.1:3100"
     netmode="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$id" 2>/dev/null || true)"
     if [[ "$netmode" != "host" ]]; then
-      # 3100 is published 127.0.0.1-only; 3110 is 0.0.0.0 on the host so a
-      # bridged edge container can reach Eye. Take the first docker network gateway.
-      local gw
-      gw="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' "$id" 2>/dev/null | awk 'NF { print; exit }')"
-      gw="${gw:-172.17.0.1}"
-      upstream="${gw}:3110"
-      echo "    $name is not host-network; proxying Eye via http://${upstream}"
+      if join_web_to_edge_networks "$id"; then
+        upstream="pyyol-lens-web:3100"
+        echo "    proxy_pass http://${upstream} (container name, like admin-web)"
+      else
+        admin_up="$(printf '%s' "$cfg" | admin_proxy_pass_from_dump || true)"
+        local gw
+        gw="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{"\n"}}{{end}}' "$id" 2>/dev/null | awk 'NF { print; exit }')"
+        gw="${gw:-172.17.0.1}"
+        if [[ "$admin_up" == 127.0.0.1:* || "$admin_up" == host.docker.internal:* ]]; then
+          local hostpart="${admin_up%%:*}"
+          upstream="${hostpart}:3110"
+          echo "    admin uses ${admin_up}; mirroring host for Eye at http://${upstream}"
+        else
+          upstream="${gw}:3110"
+          echo "    $name is not host-network; proxying Eye via http://${upstream}"
+        fi
+      fi
     fi
 
-    docker exec "$id" mkdir -p /etc/nginx/ssl /var/www/certbot || true
+    docker exec "$id" mkdir -p "$dest_dir" /etc/nginx/ssl /var/www/certbot || true
     if ! copy_cert_into "$cert" "$id" /etc/nginx/ssl/trace.pyyol.com.crt \
       || ! copy_cert_into "$key" "$id" /etc/nginx/ssl/trace.pyyol.com.key; then
       echo "⚠️  could not copy origin cert into $name (LE live/ paths are often dangling symlinks) — skip"
@@ -221,25 +318,56 @@ install_into_docker_edge() {
     docker cp "$tmp_in" "$id:$dest_in"
     rm -f "$tmp_in"
 
-    if nginx_test_reload "$id"; then
-      echo "✅ reloaded $name with trace.pyyol.com → ${upstream}"
+    err="$(docker exec "$id" "$(nginx_bin "$id")" -t 2>&1 || true)"
+    if printf '%s' "$err" | grep -qi 'host not found in upstream'; then
+      try_resolve_missing_upstreams "$id" "$err" || true
+    fi
+
+    if nginx_test_reload "$id" && nginx_has_server_name "$id" "trace.pyyol.com"; then
+      echo "✅ reloaded $name with trace.pyyol.com → ${upstream} (in running nginx -T)"
       injected=1
     else
-      echo "⚠️  nginx -t failed in $name (http2 on?) — retrying without http2"
+      echo "⚠️  nginx -t/reload did not load server_name trace.pyyol.com in $name"
+      echo "$err"
+      # Last resort: Mega Hub keeps vhosts in nginx.conf and never includes conf.d.
+      # Add a one-line include (backup first). Never deletes Mega Hub server blocks.
+      if ! nginx_has_server_name "$id" "trace.pyyol.com"; then
+        echo "    injecting include ${dest_in} into nginx.conf (Mega Hub server blocks kept)"
+        local host_conf
+        host_conf="$(mktemp)"
+        if docker cp "$id:/etc/nginx/nginx.conf" "$host_conf" 2>/dev/null; then
+          cp -a "$host_conf" "${host_conf}.bak"
+          python3 - "$host_conf" "$dest_in" <<'PY'
+import sys
+path, inc = sys.argv[1], sys.argv[2]
+text = open(path, encoding="utf-8", errors="replace").read()
+needle = f"include {inc};"
+if needle not in text:
+    text = text.replace("http {", "http {\n    include %s;" % inc, 1)
+    open(path, "w", encoding="utf-8").write(text)
+PY
+          docker exec "$id" cp -a /etc/nginx/nginx.conf /etc/nginx/nginx.conf.pyyol-bak || true
+          docker cp "$host_conf" "$id:/etc/nginx/nginx.conf" || true
+          rm -f "$host_conf" "${host_conf}.bak"
+        fi
+      fi
+      echo "    retrying after stripping http2 (older nginx)…"
       tmp_in="$(mktemp)"
       if ! render_vhost /etc/nginx/ssl/trace.pyyol.com.crt /etc/nginx/ssl/trace.pyyol.com.key "$tmp_in" "$upstream"; then
         rm -f "$tmp_in"
+        docker exec "$id" rm -f "$dest_in" || true
         continue
       fi
       sed -i 's/http2 on;//g' "$tmp_in" 2>/dev/null || sed -i '' 's/http2 on;//g' "$tmp_in"
       docker cp "$tmp_in" "$id:$dest_in"
       rm -f "$tmp_in"
-      if nginx_test_reload "$id"; then
-        echo "✅ reloaded $name with trace.pyyol.com → ${upstream}"
+      if nginx_test_reload "$id" && nginx_has_server_name "$id" "trace.pyyol.com"; then
+        echo "✅ reloaded $name with trace.pyyol.com → ${upstream} (in running nginx -T)"
         injected=1
       else
-        echo "❌ nginx -t still failing in $name — removing the vhost we just added"
+        echo "❌ named vhost still not in nginx -T for $name — removing the file we added (Mega Hub untouched)"
         docker exec "$id" rm -f "$dest_in" || true
+        docker exec "$id" sh -c 'test -f /etc/nginx/nginx.conf.pyyol-bak && mv /etc/nginx/nginx.conf.pyyol-bak /etc/nginx/nginx.conf' || true
       fi
     fi
   done < <(docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null || true)
