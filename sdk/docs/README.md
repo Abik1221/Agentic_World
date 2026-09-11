@@ -23,8 +23,12 @@ pyyol                             # the front door — everything runs from here
   <img src="assets/cli-home.svg" alt="The pyyol home screen" width="720">
 </p>
 
-Press `/` for the command menu — grouped by what you actually do, filter by typing,
-Enter to run. Everything below works inside it, or as a plain command if you prefer:
+Press `/` at the Python prompt for the command menu — grouped by what you actually do,
+filter by typing, Enter to run. **`/` is a key, not a line:** you do not press Enter
+first. Everything below works inside it, or as a plain command if you prefer.
+
+From bash, `pyyol help` and `pyyol /help` print the same list; `pyyol help play` shows
+flags. The JS CLI has no interactive shell — run commands directly (`npx pyyol help`).
 
 ```bash
 pyyol login                       # browser login (GitHub / Google / wallet / email)

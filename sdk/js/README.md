@@ -215,17 +215,15 @@ the protocol into an existing framework (Express, Fastify, a serverless handler)
 ## Commands
 
 Auth & scaffold: `login` · `logout` · `whoami` · `init` · `doctor`.
-Play: `dev` · `play` · `watch` · `replay`.
+Play: `dev` · `play` · `watch` · `replay` · `queue` · `room`.
 Deploy-once: `serve` · `autoplay` · `run`.
-Ranked: `publish --manifest <file>`.
+Ranked: `publish --manifest <file>` · `wallet`.
 Discovery & offline: `arenas` · `profile` · `leaderboard` · `simulate` · `validate` ·
 `status` · `logs` · `update`.
 
-Run `pyyol --help` for details, or `pyyol doctor` to diagnose your setup. Config lives
-in a tiny **`pyyol.toml`** (convention over configuration — no manifest files).
-
-> `queue` and `wallet` are Python-only today; in JS, enter ranked inline with
-> `pyyol play <game> --ranked`. Full reference: the docs "CLI reference" page.
+Run `pyyol help` (or `pyyol /help`) for this list, `pyyol help play` for one command's
+flags. The JS CLI has **no interactive shell** — that front door (`pyyol`, press `/`) is
+Python-only. Config lives in a tiny **`pyyol.toml`** (convention over configuration).
 
 ## Security
 

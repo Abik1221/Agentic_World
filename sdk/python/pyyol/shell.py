@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import shlex
 import sys
 import threading
@@ -137,6 +138,10 @@ class _LiveStrip:
         self._thread: threading.Thread | None = None
         # Set while a command owns the terminal. See `quiet` and `_redraw`.
         self._muted = threading.Event()
+        # Set while the prompt is holding typed characters. The custom `/` reader
+        # does not use readline, so `_typing()` cannot infer "busy" from the
+        # input buffer — this flag is what stops the ticker eating a half-typed line.
+        self._input_dirty = threading.Event()
 
     # -- rendering -------------------------------------------------------------
     def _render(self, games: list[dict[str, Any]]) -> str:
@@ -194,12 +199,20 @@ class _LiveStrip:
 
     # -- the idle refresh ------------------------------------------------------
     def _typing(self) -> bool:
+        if self._input_dirty.is_set():
+            return True
         try:
             import readline
 
             return bool(readline.get_line_buffer())
         except Exception:  # noqa: BLE001 - no readline, or an uninitialised one, just means "not typing"
             return False
+
+    def set_typing(self, busy: bool) -> None:
+        if busy:
+            self._input_dirty.set()
+        else:
+            self._input_dirty.clear()
 
     def _loop(self) -> None:
         # The FIRST fetch happens here, not on the open path. Blocking the door on a network
@@ -363,14 +376,74 @@ def _help_of(action: Any, name: str) -> str:
     return ""
 
 
-def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
+def _subparsers(parser: Any) -> dict[str, Any]:
+    for action in parser._actions:  # noqa: SLF001 — argparse exposes no public accessor
+        if hasattr(action, "choices") and isinstance(action.choices, dict):
+            return dict(action.choices)
+    return {}
+
+
+def _print_help(
+    s: _Style,
+    cmds: dict[str, str],
+    stream: TextIO,
+    parser: Any | None = None,
+    topic: str | None = None,
+) -> None:
     """The palette: grouped, ordered by use, and complete.
 
     Complete matters — the groups are a hand-written ORDER, not a hand-written LIST. Anything
     in the parser that no group claims still appears under "More", so a command added tomorrow
     shows up here whether or not anyone remembered this file.
+
+    `/help play` (topic) prints that command's real argparse help — flags, positionals, the
+    lot — because a wall of one-liners is how you discover a name, not how you use it.
     """
+    if topic:
+        topic = topic.lstrip("/").lower()
+        builtins = {
+            "": "open the command menu (press / at the prompt — no Enter needed)",
+            "help": "this list; `/help <command>` shows flags for one command",
+            "h": "this list; `/help <command>` shows flags for one command",
+            "?": "this list; `/help <command>` shows flags for one command",
+            "clear": "clear the screen",
+            "exit": "leave the shell (also: quit, q, Ctrl-D)",
+            "quit": "leave the shell",
+            "q": "leave the shell",
+        }
+        if topic in builtins:
+            stream.write("\n  " + s("/" + (topic or "/"), _BRAND) + "  " + s(builtins[topic], _DIM) + "\n\n")
+            return
+        subs = _subparsers(parser) if parser is not None else {}
+        if topic in subs:
+            stream.write("\n")
+            subs[topic].print_help(stream)
+            stream.write("\n")
+            return
+        stream.write(
+            s(f"  unknown command: {topic}", _ERR) + s("   /help lists them all\n", _DIM)
+        )
+        return
+
     stream.write("\n")
+    stream.write("  " + s("START HERE", _DIM) + "\n")
+    stream.write(
+        "    "
+        + s("login".ljust(12), _BRAND)
+        + s("sign in once (opens a browser)\n", _DIM)
+    )
+    stream.write(
+        "    "
+        + s("init <dir>".ljust(12), _BRAND)
+        + s("scaffold an agent + pyyol.toml\n", _DIM)
+    )
+    stream.write(
+        "    "
+        + s("dev".ljust(12), _BRAND)
+        + s("practice in SANDBOX — no stakes\n", _DIM)
+    )
+    stream.write("\n")
+
     shown: set[str] = set()
     width = max((len(c) for c in cmds), default=10) + 1
 
@@ -393,9 +466,22 @@ def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
 
     stream.write(
         "  "
-        + s("flags pass straight through", _DIM)
+        + s("press / for a filterable menu", _DIM)
+        + s("   (no Enter — / is a key, not a command)\n", _DIM)
+    )
+    stream.write(
+        "  "
+        + s("/help <command>", _BRAND)
+        + s(" for flags", _DIM)
         + s("   e.g. ", _DIM)
-        + s("/play mafia --ranked", _BOLD)
+        + s("/help play", _BOLD)
+        + "\n"
+    )
+    stream.write(
+        "  "
+        + s("flags pass through", _DIM)
+        + s("   e.g. ", _DIM)
+        + s("play mafia --ranked", _BOLD)
         + "\n"
     )
     stream.write(
@@ -409,6 +495,30 @@ def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
     )
 
 
+_HELP_BUILTINS = frozenset({"", "help", "h", "?", "clear", "exit", "quit", "q"})
+
+
+def print_developer_help(stream: TextIO | None = None, topic: str | None = None) -> int:
+    """`pyyol help` / `pyyol /help` / `pyyol /` off a TTY.
+
+    Same palette the interactive shell uses, so the two surfaces cannot disagree about
+    which commands exist. Returns a process exit code.
+    """
+    from .cli import build_parser
+
+    out = stream or sys.stdout
+    s = _Style(use_color(out))
+    parser = build_parser()
+    cmds = _commands(parser)
+    _print_help(s, cmds, out, parser=parser, topic=topic)
+    if topic is None:
+        return 0
+    name = topic.lstrip("/").lower()
+    if name in cmds or name in _HELP_BUILTINS:
+        return 0
+    return 2
+
+
 # ── The picker ──────────────────────────────────────────────────────────────────
 #
 # What "/" gives you when the terminal can do it: a list you arrow through, filter by typing,
@@ -419,6 +529,33 @@ def _print_help(s: _Style, cmds: dict[str, str], stream: TextIO) -> None:
 # terminal, a pipe) "/" prints the grouped palette instead, which is the same information
 # without the cursor. A picker that crashed on an unusual terminal would be worse than the
 # printed list it replaced.
+
+
+def _read_key(fd: int) -> str:
+    """One key from a raw/cbreak fd. Never use sys.stdin.read after setraw.
+
+    After readline the fd can be non-blocking; a zero-length read looked like EOF
+    and made the menu (or the whole shell) vanish. Wait until a byte is actually
+    there, and retry EAGAIN.
+    """
+    while True:
+        try:
+            ready, _, _ = select.select([fd], [], [])
+            if not ready:
+                continue
+            b = os.read(fd, 1)
+        except BlockingIOError:
+            continue
+        except OSError:
+            return ""
+        if not b:
+            return ""
+        if b == b"\x1b":
+            return "\x1b"
+        try:
+            return b.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
 
 
 def _pick(
@@ -523,13 +660,17 @@ def _pick(
         tty.setraw(fd)
         while True:
             draw()
-            ch = sys.stdin.read(1)
+            ch = _read_key(fd)
             hits = matches()
+            if not ch:
+                # EOF or a drained buffer after readline handed us the terminal. Treat as
+                # cancel — spinning on empty reads is how the menu painted blank.
+                return None
             if ch == "\x1b":  # escape, or an arrow key's prefix
-                nxt = sys.stdin.read(1) if sys.stdin.readable() else ""
+                nxt = _read_key(fd)
                 if nxt != "[":
                     return None
-                key = sys.stdin.read(1)
+                key = _read_key(fd)
                 if key == "A":
                     idx = max(0, idx - 1)
                 elif key == "B":
@@ -575,11 +716,109 @@ def _install_readline(cmds: dict[str, str]) -> None:
     readline.parse_and_bind("tab: complete")
 
 
+def _complete_token(text: str, cmds: dict[str, str]) -> str:
+    """Longest common prefix of matching command names, preserving a leading slash."""
+    slash = text.startswith("/")
+    stub = text[1:] if slash else text
+    if " " in stub:
+        return text
+    hits = [n for n in sorted(cmds) if n.startswith(stub)]
+    if not hits:
+        return text
+    if len(hits) == 1:
+        return ("/" if slash else "") + hits[0]
+    prefix = os.path.commonprefix(hits)
+    return ("/" if slash else "") + prefix
+
+
+def _read_line(
+    prompt: str,
+    cmds: dict[str, str],
+    out: TextIO,
+    strip: _LiveStrip | None = None,
+) -> str:
+    """Read one prompt line. `/` as the first keystroke opens the menu immediately.
+
+    Docs say "press `/`" — that is a key, not a line you submit. `input()` only
+    returned the slash after Enter, so typing `/` showed a slash and nothing else.
+    Off a TTY this falls back to `input()`, so tests and pipes keep working.
+    """
+    if not (sys.stdin.isatty() and out.isatty()):
+        return input(prompt)
+    try:
+        import termios
+        import tty
+    except ImportError:
+        return input(prompt)
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    buf: list[str] = []
+    out.write(prompt)
+    out.flush()
+
+    def paint_typing() -> None:
+        if strip is not None:
+            strip.set_typing(bool(buf))
+
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = _read_key(fd)
+            if not ch:
+                raise EOFError
+            if ch == "\x03":
+                raise KeyboardInterrupt
+            if ch == "\x04" and not buf:
+                raise EOFError
+            if ch in ("\r", "\n"):
+                out.write("\n")
+                out.flush()
+                return "".join(buf)
+            if ch in ("\x7f", "\b"):
+                if buf:
+                    buf.pop()
+                    out.write("\b \b")
+                    out.flush()
+                    paint_typing()
+                continue
+            if ch == "\t":
+                token = "".join(buf)
+                filled = _complete_token(token, cmds)
+                if filled != token:
+                    extra = filled[len(token) :]
+                    buf.extend(extra)
+                    out.write(extra)
+                    out.flush()
+                    paint_typing()
+                continue
+            if ch == "/" and not buf:
+                # THE AFFORDANCE. No Enter. The picker is what `/` means.
+                out.write("/\n")
+                out.flush()
+                return "/"
+            if ch == "\x1b":
+                # Swallow arrow keys so they don't insert garbage.
+                if _read_key(fd) == "[":
+                    _read_key(fd)
+                continue
+            if ch.isprintable():
+                buf.append(ch)
+                out.write(ch)
+                out.flush()
+                paint_typing()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        if strip is not None:
+            strip.set_typing(False)
+
+
 def run_shell(
     build_parser: Callable[[], Any],
     version: str,
     api_base: str,
     stream: TextIO | None = None,
+    start_with_menu: bool = False,
 ) -> int:
     """The prompt loop. Returns a process exit code."""
     out = stream or sys.stdout
@@ -589,7 +828,10 @@ def run_shell(
 
     out.write(_banner(s, version, api_base, _whoami(api_base)) + "\n\n")
     out.flush()
-    _install_readline(cmds)
+    # Tab completion is implemented in `_read_line`. Installing GNU/libedit readline
+    # here used to leave stdin non-blocking, so the first `os.read` after we switched
+    # to cbreak returned empty, the shell treated that as EOF, and pressing `/` showed
+    # a slash on a dead prompt — the bug this file exists to prevent.
 
     # What is happening right now, fetched once before the first prompt so the opening screen
     # already carries it, then refreshed in place while the prompt is idle.
@@ -599,7 +841,7 @@ def run_shell(
     prompt = s("pyyol", _BRAND) + s(" › ", _DIM) if s.color else "pyyol > "
 
     try:
-        return _loop(parser, cmds, s, out, prompt, strip)
+        return _loop(parser, cmds, s, out, prompt, strip, start_with_menu=start_with_menu)
     finally:
         strip.stop()
 
@@ -611,7 +853,9 @@ def _loop(
     out: TextIO,
     prompt: str,
     strip: _LiveStrip,
+    start_with_menu: bool = False,
 ) -> int:
+    menu_once = start_with_menu
     while True:
         # Reprinted each cycle so it always sits directly above the prompt — a command's
         # output scrolls the previous one away, and a strip stranded mid-scrollback is worse
@@ -619,7 +863,8 @@ def _loop(
         out.write(strip.text + "\n")
         out.flush()
         try:
-            line = input(prompt).strip()
+            line = "/" if menu_once else _read_line(prompt, cmds, out, strip).strip()
+            menu_once = False
         except (EOFError, KeyboardInterrupt):
             # Ctrl-D / Ctrl-C at an empty prompt is "I am done", not an error.
             out.write("\n")
@@ -635,9 +880,16 @@ def _loop(
             # A lone "/" is the menu — the affordance the banner advertises, and the first
             # thing anyone coming from another agent CLI reaches for. An interactive pick
             # where the terminal allows it, the printed palette where it does not.
-            chosen = _pick(s, cmds, _GROUPS, out)
+            # Muted: the live strip stepping up a line would erase the menu.
+            with strip.quiet():
+                picker_cmds = dict(cmds)
+                picker_cmds["help"] = "list commands; `help play` shows flags for one"
+                chosen = _pick(s, picker_cmds, _GROUPS, out)
             if chosen is None:
-                _print_help(s, cmds, out)
+                _print_help(s, cmds, out, parser=parser)
+                continue
+            if chosen == "help":
+                _print_help(s, cmds, out, parser=parser)
                 continue
             out.write(s("  /" + chosen, _BRAND) + "\n")
             with strip.quiet():
@@ -646,7 +898,8 @@ def _loop(
         head = bare.split()[0].lower()
 
         if head in {"help", "?", "h"}:
-            _print_help(s, cmds, out)
+            topic = bare.split()[1] if len(bare.split()) > 1 else None
+            _print_help(s, cmds, out, parser=parser, topic=topic)
             continue
         if head == "clear":
             out.write("\x1b[2J\x1b[H" if s.color else "\n" * 50)

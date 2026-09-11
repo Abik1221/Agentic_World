@@ -14,6 +14,9 @@ pip install pyyol
 ```
 
 Requires Python 3.10+ (the connector uses `websockets`, its one dependency).
+macOS system Python is still 3.9 — `pip install pyyol` there silently installs an
+old 1.9.x wheel. Use 3.10+ (`python3.12 -m pip install pyyol`, or uv).
+`python -m pyyol` is the same as the `pyyol` command.
 Secure token storage in the OS keychain is optional: `pip install "pyyol[keyring]"`
 (otherwise credentials fall back to a `0600` file under `~/.pyyol`).
 
@@ -196,10 +199,13 @@ against a running server.
 
 ## The `pyyol` CLI
 
-Installing the package puts a `pyyol` command on your PATH. The Beta path — from
-zero to a live game — is:
+Installing the package puts a `pyyol` command on your PATH (`python -m pyyol` is the
+same). The Beta path — from zero to a live game — is:
 
 ```bash
+pyyol                            # interactive shell (TTY). Press / for commands.
+pyyol help                       # the same list from bash (also: pyyol /help)
+pyyol help play                  # flags for one command
 pyyol login                          # browser login; stores credentials (~/.pyyol)
 pyyol init my-agent --lang python    # scaffold agent.py + a tiny pyyol.toml
 pyyol simulate                       # optional: full match in-process, no network

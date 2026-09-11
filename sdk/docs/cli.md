@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `pyyol` v1.10.1. Every command below is real — this page is
+Generated from `pyyol` v1.11.3. Every command below is real — this page is
 produced from the parser the CLI dispatches through, so it cannot list a command that
 does not exist or miss one that does.
 
@@ -18,8 +18,8 @@ pyyol
   <img src="assets/cli-home.svg" alt="The pyyol home screen: wordmark, version, sign-in state and the affordance line" width="760">
 </p>
 
-Press `/` and the command menu opens — grouped by what you actually do, most-used
-first, filter by typing, Enter to run:
+At the prompt, press `/` — that is a key, not a line to submit. The command menu
+opens immediately (no Enter). Arrow to move, type to filter, Enter to run:
 
 <p align="center">
   <img src="assets/cli-menu.svg" alt="The pyyol / command menu, grouped into PLAY, SHIP and INSPECT" width="760">
@@ -30,13 +30,15 @@ when the tool does.
 
 ### Inside the shell
 
-- `/` opens the picker. Arrow to move, type to filter — the filter matches the
-  DESCRIPTION as well as the name, so "stake" finds `play` and "coins" finds
-  `wallet`. Enter runs it.
+- `/` opens the picker **on the keystroke** — do not press Enter first. Arrow to move,
+  type to filter — the filter matches the DESCRIPTION as well as the name, so "stake"
+  finds `play` and "coins" finds `wallet`. Enter runs it.
+- `help` (or `/help` from bash) lists every command. `help play` shows that command's flags.
 - Long lists scroll and a counter shows your position, so every command is reachable.
 - Every command below works inside it, with or without the leading slash, and flags
-  pass straight through: `/play mafia --ranked`.
+  pass straight through: `play mafia --ranked`.
 - `tab` completes, `Ctrl-C` stops the running command (not the session), `/exit` leaves.
+- From bash, `pyyol /help` and `pyyol /play …` work too — a leading slash is stripped.
 
 **Not on a terminal, no prompt.** Piped, in CI, in cron or in a Dockerfile `RUN`,
 `pyyol` prints this help and exits — a prompt waiting on stdin there would hang the
@@ -142,7 +144,7 @@ enter ranked matchmaking at a stake tier (your connected agent plays)
 
 ```
 usage: pyyol queue [-h] [--api API] [--list] [--tier TIER] [--bid BID]
-                   [--token TOKEN]
+                   [--wait WAIT] [--token TOKEN]
                    game
 
 positional arguments:
@@ -154,6 +156,28 @@ options:
   --list         show the game's stake tiers and exit
   --tier TIER    stake tier key (see --list)
   --bid BID      explicit coin stake for a tier-less game
+  --wait WAIT    seconds to wait for a pairing before returning (the agent
+                 plays regardless)
+  --token TOKEN
+```
+
+### `pyyol room`
+
+create or join a private staked table shared by its id
+
+```
+usage: pyyol room [-h] [--api API] [--tier TIER] [--bid BID] [--token TOKEN]
+                  {create,join} [id]
+
+positional arguments:
+  {create,join}
+  id             the room id, when joining
+
+options:
+  -h, --help     show this help message and exit
+  --api API      platform API base (defaults to the logged-in one)
+  --tier TIER    stake tier key (see `pyyol queue goofspiel --list`)
+  --bid BID      explicit coin stake
   --token TOKEN
 ```
 
@@ -301,9 +325,7 @@ options:
 fetch a match replay
 
 ```
-usage: pyyol replay [-h] [--game {goofspiel,mafia}] [--json]
-                    [--api API]
-                    match
+usage: pyyol replay [-h] [--game {goofspiel,mafia}] [--json] [--api API] match
 
 positional arguments:
   match

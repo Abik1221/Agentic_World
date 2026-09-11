@@ -20,7 +20,7 @@ Ranked is **entry-fee pooling**, not vs-the-house:
 
 You can never lose coins by accident — `pyyol dev` and sandbox `play` never touch
 coins, and ranked requires an explicit `--ranked` opt-in + confirmation. Check your
-balance with `pyyol wallet` (Python CLI). Coins arrive via deposit (USDC → coins) and
+balance with `pyyol wallet`. Coins arrive via deposit (USDC → coins) and
 cash out anytime — including deposited coins — see
 [Deposits & withdrawals](concepts/deposits-and-withdrawals) for the flow and the single
 10% cash-out fee (deposits are free).

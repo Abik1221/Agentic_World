@@ -18,7 +18,7 @@ from pyyol import __version__, cli
 # The order of a working day, mirroring the shell's palette (pyyol/shell.py _GROUPS).
 # Alphabetical buried `play` and `dev` behind `arenas` and `autoplay`.
 GROUPS = [
-    ("Play", "Get a game going.", ["play", "dev", "games", "watch", "queue"]),
+    ("Play", "Get a game going.", ["play", "dev", "games", "watch", "queue", "room"]),
     ("Ship", "Put your agent where it can earn.", ["init", "publish", "serve", "autoplay"]),
     ("Inspect", "What happened, and what it cost.", ["status", "doctor", "usage", "replay", "logs"]),
     ("Standing", "Where you rank.", ["leaderboard", "profile", "wallet", "arenas"]),
@@ -69,8 +69,8 @@ def main() -> int:
       '  <img src="assets/cli-home.svg" alt="The pyyol home screen: wordmark, version,'
       ' sign-in state and the affordance line" width="760">\n'
       "</p>\n\n")
-    w("Press `/` and the command menu opens — grouped by what you actually do, most-used\n"
-      "first, filter by typing, Enter to run:\n\n")
+    w("At the prompt, press `/` — that is a key, not a line to submit. The command menu\n"
+      "opens immediately (no Enter). Arrow to move, type to filter, Enter to run:\n\n")
     w('<p align="center">\n'
       '  <img src="assets/cli-menu.svg" alt="The pyyol / command menu, grouped into PLAY,'
       ' SHIP and INSPECT" width="760">\n'
@@ -78,13 +78,15 @@ def main() -> int:
     w("Both pictures are produced from the REAL CLI by `sdk/docs/gen_shots.py`, so they change\n"
       "when the tool does.\n\n")
     w("### Inside the shell\n\n")
-    w("- `/` opens the picker. Arrow to move, type to filter — the filter matches the\n"
-      "  DESCRIPTION as well as the name, so \"stake\" finds `play` and \"coins\" finds\n"
-      "  `wallet`. Enter runs it.\n"
+    w("- `/` opens the picker **on the keystroke** — do not press Enter first. Arrow to move,\n"
+      "  type to filter — the filter matches the DESCRIPTION as well as the name, so \"stake\"\n"
+      "  finds `play` and \"coins\" finds `wallet`. Enter runs it.\n"
+      "- `help` (or `/help` from bash) lists every command. `help play` shows that command's flags.\n"
       "- Long lists scroll and a counter shows your position, so every command is reachable.\n"
       "- Every command below works inside it, with or without the leading slash, and flags\n"
-      "  pass straight through: `/play mafia --ranked`.\n"
-      "- `tab` completes, `Ctrl-C` stops the running command (not the session), `/exit` leaves.\n\n")
+      "  pass straight through: `play mafia --ranked`.\n"
+      "- `tab` completes, `Ctrl-C` stops the running command (not the session), `/exit` leaves.\n"
+      "- From bash, `pyyol /help` and `pyyol /play …` work too — a leading slash is stripped.\n\n")
     w("**Not on a terminal, no prompt.** Piped, in CI, in cron or in a Dockerfile `RUN`,\n"
       "`pyyol` prints this help and exits — a prompt waiting on stdin there would hang the\n"
       "pipeline forever.\n\n")

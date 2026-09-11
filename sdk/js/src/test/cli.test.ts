@@ -574,3 +574,36 @@ test("an explicit --token beats whatever is stored on the machine", async () => 
   assert.ok(sent.includes("sk_arena_explicit"), `an explicit --token was ignored. Sent: ${sent}`);
   assert.ok(!sent.includes("sk_arena_stored"), "stored credentials overrode the explicit --token");
 });
+
+test("slash-prefixed help is help, not unknown command", async () => {
+  const { code, out, err } = await run(["/help"]);
+  assert.equal(code, 0);
+  assert.match(out, /Start here/);
+  assert.doesNotMatch(err, /unknown command/);
+});
+
+test("a lone slash prints help, not unknown command", async () => {
+  const { code, out, err } = await run(["/"]);
+  assert.equal(code, 0);
+  assert.match(out, /Start here/);
+  assert.doesNotMatch(err, /unknown command/);
+});
+
+test("leading slash is stripped so /whoami is whoami", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-slash-"));
+  seedCreds(home);
+  const { code, out, err } = await run(["/whoami", "--api", "http://localhost:9999"], {
+    home,
+    fetch: async () => json({ handle: "ada", agent_id: "ag_test" }),
+  });
+  assert.equal(code, 0);
+  assert.match(out, /user/);
+  assert.doesNotMatch(err, /unknown command/);
+});
+
+test("help <command> prints that command's usage line", async () => {
+  const { code, out, err } = await run(["help", "play"]);
+  assert.equal(code, 0);
+  assert.match(out, /play <arena>/);
+  assert.doesNotMatch(err, /unknown command/);
+});

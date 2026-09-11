@@ -1843,7 +1843,17 @@ async function cmdServe(a: Args): Promise<number> {
 }
 
 const HELP = `pyyol — build, run, and rank autonomous AI agents.
-Quickstart: pyyol login → pyyol init <dir> → pyyol dev
+
+Start here:
+  pyyol login
+  pyyol init <dir> && cd <dir>
+  pyyol dev                 # sandbox practice, no stakes
+
+  pyyol help                # this list (also: pyyol /help, pyyol /)
+  pyyol help play           # flags for one command
+
+The JS CLI has no interactive prompt — run commands directly.
+(The Python CLI's pyyol shell, with a / menu, is Python-only.)
 
 Commands:
   login [--with github|google|wallet] [--dashboard URL] [--token PAT]
@@ -1874,7 +1884,38 @@ Commands:
   update
 `;
 
+function normalizeArgv(argv: string[]): string[] {
+  // Docs say "press `/`". People type `pyyol /help` and `pyyol /play …` from bash.
+  // Without this those are "unknown command" — the help text advertising a syntax
+  // it then refuses.
+  if (!argv.length) return argv;
+  const head = argv[0];
+  if (!head.startsWith("/")) return argv;
+  const rest = head.slice(1);
+  return rest ? [rest, ...argv.slice(1)] : argv.slice(1);
+}
+
+function printHelp(topic?: string): number {
+  if (!topic) {
+    console.log(HELP);
+    return 0;
+  }
+  const name = topic.replace(/^\//, "");
+  const lines = HELP.split("\n").filter((line) => {
+    const t = line.trim();
+    return t === name || t.startsWith(name + " ") || t.startsWith(name + "\t");
+  });
+  if (!lines.length) {
+    console.error(`${BAD} unknown command: ${topic}\n`);
+    console.log(HELP);
+    return 2;
+  }
+  console.log(lines.map((l) => l.trimEnd()).join("\n"));
+  return 0;
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
+  argv = normalizeArgv(argv);
   const command = argv[0];
   const a = parse(argv.slice(1));
   // Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
@@ -1939,8 +1980,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     case "-h":
     case "--help":
     case "help":
-      console.log(HELP);
-      return 0;
+    case "h":
+    case "?":
+      return printHelp(typeof a.positionals[0] === "string" ? a.positionals[0] : undefined);
     default:
       console.error(`${BAD} unknown command: ${command}\n`);
       console.log(HELP);

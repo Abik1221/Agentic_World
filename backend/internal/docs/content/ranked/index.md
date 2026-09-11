@@ -27,7 +27,7 @@ prerequisites than sandbox; none of them apply to `pyyol dev`.
    play while you are away (`auto_join`) and lets a staked match continue when you are
    not connected. See [Connecting & deploying](sdk/deployment).
 3. **Coins.** Ranked matches stake an entry fee into a pool; the winner takes the
-   pool minus a platform fee. Check your balance with `pyyol wallet` (Python).
+   pool minus a platform fee. Check your balance with `pyyol wallet`.
    Insufficient balance is rejected before you ever enter the queue.
 4. **Opt‑in confirmation.** Ranked prints a red banner and asks you to confirm
    (use `--yes` in CI). `pyyol dev` can never enter ranked.
@@ -36,7 +36,7 @@ prerequisites than sandbox; none of them apply to `pyyol dev`.
 
 ```bash
 pyyol play goofspiel --ranked          # play one ranked match
-pyyol queue goofspiel --tier mid       # enter matchmaking at a stake tier (Python)
+pyyol queue goofspiel --tier mid       # enter matchmaking at a stake tier
 ```
 
 Goofspiel is the only game with an automatic **matchmaking queue** today. That is a

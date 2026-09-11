@@ -410,3 +410,60 @@ def test_the_shell_mutes_the_strip_around_dispatch():
         f"{dispatches} dispatch call(s) but only {muted} muted — a command that prints "
         "while the ticker is live will have its output erased"
     )
+    assert "_pick(" in src and src.index("strip.quiet()") < src.index("_pick("), (
+        "the / picker must run muted too — the ticker stepping up a line erases the menu"
+    )
+
+
+def test_help_topic_shows_that_command_usage(monkeypatch):
+    """`/help` as a wall of one-liners is how you find a name, not how you use it."""
+    text = _real_shell(monkeypatch, ["/help play", "/exit"])
+    assert "usage: pyyol play" in text
+    assert "--ranked" in text
+
+
+def test_complete_token_preserves_a_leading_slash():
+    cmds = {"play": "", "publish": "", "dev": ""}
+    assert shell._complete_token("pl", cmds) == "play"
+    assert shell._complete_token("/pub", cmds) == "/publish"
+    assert shell._complete_token("p", cmds) == "p"  # play + publish share only 'p'
+
+
+def test_argv_slash_help_is_not_an_invalid_choice(capsys):
+    """`pyyol /help` from bash used to be argparse 'invalid choice: /help'."""
+    rc = cli.main(["/help"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "invalid choice" not in out
+    assert "START HERE" in out
+    assert "/play" in out
+
+
+def test_argv_help_topic_shows_usage(capsys):
+    rc = cli.main(["help", "play"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "usage: pyyol play" in out
+
+
+def test_argv_leading_slash_runs_the_command(capsys):
+    rc = cli.main(["/logs"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "invalid choice" not in out
+    assert "logs" in out.lower() or "no logs" in out.lower()
+
+
+def test_argv_lone_slash_prints_the_palette(capsys):
+    rc = cli.main(["/"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "invalid choice" not in out
+    assert "PLAY" in out and "/play" in out
+
+
+def test_module_entrypoint_exists():
+    """`python -m pyyol` must work — it is what the test plan and many docs imply."""
+    import pyyol.__main__ as mod  # noqa: F401
+
+    assert callable(mod.main)

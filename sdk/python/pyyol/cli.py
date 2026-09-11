@@ -732,7 +732,7 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
     path = args.file or os.path.join(credentials.config_dir(), "logs", "agent.log")
     if not os.path.exists(path):
-        print(f"no logs yet at {path} (run `pyyol run` to generate them)")
+        print(f"no logs yet at {path} (run `pyyol dev` to generate them)")
         return 0
     # errors="replace", not just encoding="utf-8". A log is arbitrary agent output: it can
     # hold a half-written line from a killed process, or bytes from an agent that logged in
@@ -2855,7 +2855,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=banner + "  Pyyol — build, run, and rank autonomous AI agents.\n"
         "  Quickstart: pyyol login → pyyol init → pyyol dev",
         epilog="Run `pyyol` with no arguments to open the interactive shell:\n"
-        "  a command menu on `/`, tab completion, and every command below available inside it.",
+        "  press `/` for the command menu (no Enter), or `pyyol help` / `pyyol /help` from bash.",
     )
     p.add_argument("--version", action="version", version=f"pyyol {__version__}")
     # GLOBAL --api, accepted before the command as well as after it.
@@ -3223,6 +3223,21 @@ def _make_output_unicode_safe() -> None:
             pass
 
 
+def _normalize_argv(args: list[str]) -> tuple[list[str], bool]:
+    """Strip a leading slash so `pyyol /help` and `pyyol /play …` work outside the shell.
+
+    Docs say "press `/`". People type `pyyol /` and `pyyol /help` from bash. Without this
+    those are invalid-choice errors — the command menu advertising itself, then refusing
+    the syntax it advertised. Returns (args, open_menu).
+    """
+    if not args or not args[0].startswith("/"):
+        return args, False
+    rest = args[0][1:]
+    if not rest:
+        return args[1:], True
+    return [rest, *args[1:]], False
+
+
 def main(argv: list[str] | None = None) -> int:
     # FIRST, before anything can print: a cp1252 console must not turn our own output into a
     # traceback. See _make_output_unicode_safe.
@@ -3239,27 +3254,48 @@ def main(argv: list[str] | None = None) -> int:
     # Dockerfile RUN must print help and exit; a prompt waiting on stdin there hangs the
     # pipeline forever, in exactly the places nobody is watching. argv is checked rather than
     # sys.argv so a programmatic main([]) keeps its old behaviour.
-    if argv is None and not sys.argv[1:]:
+    invoked_from_cli = argv is None
+    args = sys.argv[1:] if invoked_from_cli else list(argv)
+    args, open_menu = _normalize_argv(args)
+
+    if invoked_from_cli and not args:
         if sys.stdin.isatty() and sys.stdout.isatty():
             from . import shell
 
-            return shell.run_shell(build_parser, __version__, DEFAULT_API_BASE)
-        build_parser().print_help()
-        return 0
+            return shell.run_shell(
+                build_parser, __version__, DEFAULT_API_BASE, start_with_menu=open_menu
+            )
+        from . import shell
 
-    args = build_parser().parse_args(argv)
+        return shell.print_developer_help() if open_menu else (build_parser().print_help() or 0)
+
+    if open_menu and not args:
+        from . import shell
+
+        return shell.print_developer_help()
+
+    if args and args[0].lower() in {"help", "h", "?"}:
+        from . import shell
+
+        topic = args[1] if len(args) > 1 else None
+        return shell.print_developer_help(topic=topic)
+
+    args_ns = build_parser().parse_args(args)
     # Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
     # PYYOL_NO_TELEMETRY / DO_NOT_TRACK). Never blocks or affects the command.
     from . import install_ping
 
-    install_ping.maybe_ping(getattr(args, "api", "") or DEFAULT_API_BASE, __version__)
+    install_ping.maybe_ping(getattr(args_ns, "api", "") or DEFAULT_API_BASE, __version__)
     # THE ERROR BOUNDARY. This call used to be bare, so any unexpected exception printed a raw
     # traceback — our file paths, our line numbers — to a developer who only wanted to know
     # whether their agent was ranked. Ctrl-C did the same. See pyyol/_crash.py.
     from ._crash import guard
 
     return guard(
-        args.func, args, version=__version__, argv=argv if argv is not None else sys.argv[1:]
+        args_ns.func,
+        args_ns,
+        version=__version__,
+        argv=args,
     )
 
 
