@@ -1,4 +1,8 @@
 import { ms } from "@/lib/benchmark-format";
+import {
+  colorForEventType,
+  uniqueSpanTypes,
+} from "@/lib/span-colors";
 
 // The match, drawn as it happened.
 //
@@ -30,10 +34,7 @@ function detailStr(d: Record<string, unknown> | undefined, k: string): string {
 }
 
 function markColor(e: TimelineEntry): string {
-  if (e.status === "error") return "var(--danger)";
-  if (e.type === "agent_say_rejected") return "#f59e0b";
-  if (e.type === "agent_said") return "var(--accent-strong)";
-  return "var(--success)";
+  return colorForEventType(e.type, e.status);
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -42,18 +43,29 @@ const TYPE_LABEL: Record<string, string> = {
   agent_say_rejected: "silenced",
 };
 
+function parseEntryMs(at: string): number {
+  const t = Date.parse(at);
+  return Number.isFinite(t) ? t : Number.NaN;
+}
+
 export function MatchTimeline({ entries }: { entries: TimelineEntry[] }) {
   if (entries.length === 0) return null;
 
-  const times = entries.map((e) => new Date(e.at).getTime());
-  const start = Math.min(...times);
-  const end = Math.max(...times);
+  const times = entries.map((e) => parseEntryMs(e.at)).filter((t) => Number.isFinite(t));
+  const start = times.length ? Math.min(...times) : 0;
+  const end = times.length ? Math.max(...times) : start + 1;
   // Guard the degenerate case: every event in the same millisecond (a replayed or
   // simulated match) would otherwise divide by zero and collapse the axis.
   const span = Math.max(end - start, 1);
 
   const lanes = Array.from(new Set(entries.map((e) => e.agent_id))).sort();
   const durationLabel = ms(span);
+  const tickCount = 4;
+  const ticks = Array.from({ length: tickCount + 1 }, (_, i) => ({
+    frac: i / tickCount,
+    label: i === 0 ? "0" : ms((span * i) / tickCount),
+  }));
+  const legendTypes = uniqueSpanTypes(entries.map((e) => e.type));
 
   return (
     <section className="panel">
@@ -61,10 +73,18 @@ export function MatchTimeline({ entries }: { entries: TimelineEntry[] }) {
         Match timeline <span className="muted">· {durationLabel} · {entries.length} events</span>
       </h2>
       <p className="muted" style={{ marginTop: 0, fontSize: "0.8rem" }}>
-        One lane per agent, positioned by when each event actually occurred. Green is a
-        decision, violet is table talk, amber is a line the phase rules refused, red is an
-        error.
+        One lane per agent, positioned by when each event actually occurred. Marks are
+        colored by event type (red is an error).
       </p>
+
+      <div className="mt-legend">
+        {legendTypes.map((t) => (
+          <span key={t} className="mt-legend-item">
+            <span className="mt-legend-swatch" style={{ background: colorForEventType(t) }} />
+            {t}
+          </span>
+        ))}
+      </div>
 
       <div className="mt-timeline">
         {lanes.map((agent) => {
@@ -76,15 +96,17 @@ export function MatchTimeline({ entries }: { entries: TimelineEntry[] }) {
               </div>
               <div className="mt-lane-track">
                 {own.map((e) => {
-                  const left = ((new Date(e.at).getTime() - start) / span) * 100;
+                  const atMs = parseEntryMs(e.at);
+                  const left = Number.isFinite(atMs) ? ((atMs - start) / span) * 100 : 0;
                   const label = TYPE_LABEL[e.type] ?? e.type;
                   const action = detailStr(e.detail, "action");
                   const text = detailStr(e.detail, "text");
                   const rationale = detailStr(e.detail, "rationale");
+                  const offsetLabel = Number.isFinite(atMs) ? ms(Math.max(0, atMs - start)) : "";
                   // Everything worth knowing about the mark is in its tooltip, so the
                   // diagram stays readable while nothing is actually hidden.
                   const tip = [
-                    `${label}${action ? ` · ${action}` : ""}`,
+                    `${label}${action ? ` · ${action}` : ""} · ${offsetLabel}`,
                     e.latency_ms ? `latency ${ms(e.latency_ms)}` : "",
                     text ? `“${text}”` : "",
                     rationale,
@@ -98,7 +120,9 @@ export function MatchTimeline({ entries }: { entries: TimelineEntry[] }) {
                       className="mt-mark"
                       style={{ left: `${left}%`, background: markColor(e) }}
                       title={tip}
-                    />
+                    >
+                      <span className="mt-mark-time">{offsetLabel}</span>
+                    </span>
                   );
                 })}
               </div>
@@ -106,11 +130,19 @@ export function MatchTimeline({ entries }: { entries: TimelineEntry[] }) {
           );
         })}
 
-        {/* Axis. Only the ends are labelled — intermediate ticks on a variable-length
-            match invite reading precision into positions that do not carry it. */}
         <div className="mt-axis">
-          <span>0</span>
-          <span>{durationLabel}</span>
+          <span className="mt-axis-gutter" />
+          <div className="mt-axis-track">
+            {ticks.map((t) => (
+              <span
+                key={t.frac}
+                className="mt-axis-tick"
+                style={{ left: `${t.frac * 100}%` }}
+              >
+                {t.label}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
     </section>

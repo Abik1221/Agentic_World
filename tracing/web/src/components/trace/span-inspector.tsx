@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { EventRow, SpanNode } from "@/lib/pyyol-lens-api";
+import { colorForEventType, spanTypeChipStyle } from "@/lib/span-colors";
 import {
   formatOffsetFromStart,
   sortEventsByTime,
@@ -221,9 +222,13 @@ export default function SpanInspector({
           <span className={`wb-status wb-status-${span.status === "error" ? "err" : "ok"}`}>
             {span.status || "ok"}
           </span>
-          {role ? <span className="wb-chip accent">{role}</span> : null}
+          {role ? (
+            <span className="wb-chip" style={spanTypeChipStyle(span.span_type)}>
+              {role}
+            </span>
+          ) : null}
           {span.span_type ? (
-            <span className="wb-chip dim" title="Span type">
+            <span className="wb-chip" style={spanTypeChipStyle(span.span_type)} title="Span type">
               {span.span_type}
             </span>
           ) : null}
@@ -342,7 +347,11 @@ export default function SpanInspector({
                     <span className="wb-child-seq">{cSeq != null ? `#${cSeq}` : "—"}</span>
                     <span className={`wb-dot wb-dot-${ch.status === "error" ? "err" : "ok"}`} />
                     <span className="wb-child-label">{ch.step_name || ch.span_type}</span>
-                    {cRole ? <span className="wb-chip dim tiny">{cRole}</span> : null}
+                    {cRole ? (
+                      <span className="wb-chip tiny" style={spanTypeChipStyle(ch.span_type)}>
+                        {cRole}
+                      </span>
+                    ) : null}
                     <span className="wb-child-meta">
                       {cOff ?? ""}
                       {cOff ? " · " : ""}
@@ -402,7 +411,9 @@ export default function SpanInspector({
           {meteringEvents.map((ev) => (
             <div key={ev.event_id} className="wb-subcard wb-subcard-muted">
               <div className="wb-subcard-head">
-                <span className="mono">{ev.event_type}</span>
+                <span className="mono" style={{ color: colorForEventType(ev.event_type, ev.status) }}>
+                  {ev.event_type}
+                </span>
                 <span className="wb-muted">{usageTokensLine(ev) || "—"}</span>
               </div>
             </div>
@@ -441,7 +452,9 @@ export default function SpanInspector({
             return (
               <div key={ev.event_id} className="wb-subcard">
                 <div className="wb-subcard-head">
-                  <span className="mono">{ev.event_type}</span>
+                  <span className="mono" style={{ color: colorForEventType(ev.event_type, ev.status) }}>
+                    {ev.event_type}
+                  </span>
                   <span className="wb-event-time">{ev.event_time}</span>
                 </div>
                 <dl className="wb-dl compact single">
@@ -578,7 +591,7 @@ function LlmAttemptCard({
   return (
     <div className="wb-subcard" style={{ marginTop: 8 }}>
       <div className="wb-subcard-head">
-        <span className="mono">
+        <span className="mono" style={{ color: colorForEventType(ev.event_type, ev.status) }}>
           {attemptLabel != null ? `Attempt ${attemptLabel} · ` : ""}
           {ev.event_type}
         </span>
@@ -723,7 +736,7 @@ function ToolAttemptCard({
   return (
     <div className="wb-subcard" style={{ marginTop: 8 }}>
       <div className="wb-subcard-head">
-        <span className="mono">
+        <span className="mono" style={{ color: colorForEventType(ev.event_type, ev.status) }}>
           {attemptLabel != null ? `Attempt ${attemptLabel} · ` : ""}
           {ev.event_type}
         </span>

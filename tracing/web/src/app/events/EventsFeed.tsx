@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { EventRow } from "@/lib/pyyol-lens-api";
+import { colorForEventType } from "@/lib/span-colors";
 
 export default function EventsFeed({
   initialRows,
@@ -62,7 +63,9 @@ export default function EventsFeed({
                 <tr key={`${row.event_id}-${index}`}>
                   <td>{new Date(row.event_time).toLocaleString()}</td>
                   <td>
-                    <strong>{row.event_type}</strong>
+                    <strong style={{ color: colorForEventType(row.event_type, row.status) }}>
+                      {row.event_type}
+                    </strong>
                     {row.error_message ? <div className="muted row-compact">{row.error_message}</div> : null}
                   </td>
                   <td className="mono">

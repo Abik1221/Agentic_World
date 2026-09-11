@@ -8,6 +8,7 @@ import SpanInspector from "@/components/trace/span-inspector";
 import TraceLineageGraph from "@/components/trace/trace-lineage-graph";
 import TraceLiveRefresh from "@/components/trace/trace-live-refresh";
 import TraceExportMenu from "@/components/trace/trace-export-menu";
+import { colorForEventType, spanTypeChipStyle } from "@/lib/span-colors";
 import {
   formatOffsetFromStart,
   parseTraceStartMs,
@@ -109,7 +110,7 @@ export default function TraceWorkbench({
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => initialCollapsed);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
-  const [centerTab, setCenterTab] = useState<"graph" | "timeline">("graph");
+  const [centerTab, setCenterTab] = useState<"graph" | "timeline">("timeline");
   const [rightTab, setRightTab] = useState<"span" | "events">("span");
   const railRef = useRef<HTMLDivElement>(null);
 
@@ -368,7 +369,7 @@ export default function TraceWorkbench({
                         />
                         <span className="wb-rail-label">{span.step_name || span.span_type}</span>
                         {role ? (
-                          <span className="wb-chip accent tiny" title="Span role">
+                          <span className="wb-chip tiny" style={spanTypeChipStyle(span.span_type)} title="Span role">
                             {role}
                           </span>
                         ) : null}
@@ -384,7 +385,11 @@ export default function TraceWorkbench({
                             {span.children!.length}↓
                           </span>
                         ) : null}
-                        {span.task_kind ? <span className="wb-chip">{span.task_kind}</span> : null}
+                        {span.task_kind ? (
+                          <span className="wb-chip" style={spanTypeChipStyle(span.span_type)}>
+                            {span.task_kind}
+                          </span>
+                        ) : null}
                         {span.archetype ? <span className="wb-chip dim">{span.archetype}</span> : null}
                       </div>
                     </div>
@@ -520,7 +525,9 @@ export default function TraceWorkbench({
                       >
                         <td className="mono wb-muted wb-col-seq">{i + 1}</td>
                         <td className="mono wb-muted wb-event-when">{ev.event_time}</td>
-                        <td>{ev.event_type}</td>
+                        <td style={{ color: colorForEventType(ev.event_type, ev.status), fontWeight: 600 }}>
+                          {ev.event_type}
+                        </td>
                         <td className="wb-event-mt">{mt || "—"}</td>
                         <td className="mono wb-muted">{delta ?? "—"}</td>
                         <td className="mono">

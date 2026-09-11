@@ -38,10 +38,21 @@ export function spanRoleLabel(span: SpanNode): string | undefined {
   if (tk) return span.task_kind;
 
   const st = (span.span_type || "").toLowerCase();
-  if (st === "tool" || st === "function") return "Tool";
-  if (st === "llm" || st.includes("model")) return "LLM";
+  if (st === "tool" || st === "function" || st === "tool_call") return "Tool";
+  if (st === "llm" || st === "model_call" || st.includes("model")) return "LLM";
   if (st === "retrieval") return "Read";
   if (st === "embedding") return "Embed";
+  if (st === "agent_call") return "Agent";
+  if (st === "match") return "Match";
+  if (st === "decision") return "Decision";
+  if (st === "trace_completion") return "Done";
+  if (st === "chat") return "Chat";
+  if (st === "lifecycle") return "Lifecycle";
+  if (st === "log") return "Log";
+  if (st === "agent_notify") return "Notify";
+  if (st === "benchmark") return "Benchmark";
+  if (st === "domain_event") return "Event";
+  if (st === "agent_turn") return "Turn";
   return undefined;
 }
 

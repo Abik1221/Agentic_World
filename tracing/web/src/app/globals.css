@@ -214,7 +214,7 @@ a {
 }
 .login-error {
   margin: 0.4rem 0 0;
-  color: #b91c1c;
+  color: #fca5a5;
   font-size: 0.82rem;
 }
 
@@ -678,7 +678,7 @@ tbody tr:hover td {
   font-weight: 700;
 }
 .wld .l {
-  color: #b91c1c;
+  color: #f87171;
 }
 .wld .d {
   color: var(--muted);
@@ -2401,18 +2401,96 @@ tbody tr:hover td {
   gap: 0.75rem;
   font-family: var(--font-mono);
   font-size: 0.68rem;
-  color: var(--muted);
+  color: #e2e8f0;
 }
 
-.mt-axis > span:first-child {
-  grid-column: 2;
+.mt-axis-gutter {
+  min-width: 0;
 }
 
-.mt-axis > span:last-child {
-  grid-column: 2;
-  justify-self: end;
-  /* Both labels share cell 2; the first is start-aligned, this one end-aligned. */
-  grid-row: 1;
+.mt-axis-track {
+  position: relative;
+  height: 1.35rem;
+}
+
+.mt-axis-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.mt-axis-tick:first-child {
+  transform: translateX(0);
+}
+
+.mt-axis-tick:last-child {
+  transform: translateX(-100%);
+}
+
+.mt-axis-tick::before {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 6px;
+  margin: 0 auto 3px;
+  background: #94a3b8;
+}
+
+.mt-axis-tick:first-child::before {
+  margin-left: 0;
+}
+
+.mt-axis-tick:last-child::before {
+  margin-left: auto;
+  margin-right: 0;
+}
+
+.mt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  margin: 0.35rem 0 0.15rem;
+}
+
+.mt-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.mt-legend-swatch {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.mt-mark-time {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 4px);
+  transform: translateX(-50%);
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 0 0.22rem;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.mt-mark:hover .mt-mark-time,
+.mt-mark:focus-visible .mt-mark-time {
+  opacity: 1;
 }
 
 /* ── Queue health (src/app/queue) ──────────────────────────────────────────── */

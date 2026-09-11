@@ -9,7 +9,12 @@ export const metadata: Metadata = {
   title: "Pyyol Eye",
   description: "Traces, agent benchmarks, and cost observability for the Pyyol arena.",
   applicationName: "Pyyol Eye",
-  icons: { icon: "/favicon.svg" },
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.svg", type: "image/svg+xml" },
+    ],
+  },
   robots: { index: false, follow: false },
 };
 

@@ -3,6 +3,11 @@
 import { useMemo, useState } from "react";
 import type { EventRow, SpanNode } from "@/lib/pyyol-lens-api";
 import {
+  colorForSpanType,
+  labelColorForFill,
+  uniqueSpanTypes,
+} from "@/lib/span-colors";
+import {
   normalizedAssistantOutput,
   normalizedParallelCalls,
   normalizedPromptMessages,
@@ -21,19 +26,13 @@ type FlatNode = {
   childCount: number;
 };
 
-const SPAN_COLORS: Record<string, string> = {
-  llm: "#7c3aed",
-  request: "#0ea5e9",
-  function: "#22c55e",
-  tool: "#f59e0b",
-  retrieval: "#10b981",
-  embedding: "#06b6d4",
-  operation: "#94a3b8",
-};
-
 function colorFor(span: SpanNode): string {
-  if (span.status === "error") return "#ef4444";
-  return SPAN_COLORS[span.span_type] ?? "#64748b";
+  return colorForSpanType(span.span_type, span.status);
+}
+
+function parseMs(iso: string): number {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : Number.NaN;
 }
 
 /** Walk the tree once to compute the trace's earliest start and latest end. */
@@ -41,8 +40,8 @@ function computeBounds(nodes: SpanNode[]): { startMs: number; endMs: number } {
   let startMs = Number.POSITIVE_INFINITY;
   let endMs = Number.NEGATIVE_INFINITY;
   const visit = (n: SpanNode) => {
-    const s = Date.parse(n.started_at);
-    const e = Date.parse(n.ended_at);
+    const s = parseMs(n.started_at);
+    const e = parseMs(n.ended_at);
     if (!Number.isNaN(s)) startMs = Math.min(startMs, s);
     if (!Number.isNaN(e)) endMs = Math.max(endMs, e);
     for (const c of n.children ?? []) visit(c);
@@ -79,8 +78,12 @@ function flatten(
   const out: FlatNode[] = [];
   const clipRel = Math.max(1, clipEndAbs - baseMs);
   for (const node of nodes) {
-    const relStart = Math.max(0, Date.parse(node.started_at) - baseMs);
-    const relEndRaw = Date.parse(node.ended_at) - baseMs;
+    const parsedStart = parseMs(node.started_at);
+    const parsedEnd = parseMs(node.ended_at);
+    const startAbs = Number.isFinite(parsedStart) ? parsedStart : baseMs;
+    const endAbs = Number.isFinite(parsedEnd) ? parsedEnd : startAbs + 1;
+    const relStart = Math.max(0, startAbs - baseMs);
+    const relEndRaw = endAbs - baseMs;
     const startMs = Math.min(relStart, Math.max(0, clipRel - 1));
     const endMs = Math.min(Math.max(startMs + 1, relEndRaw), clipRel);
     const hasChildren = (node.children?.length ?? 0) > 0;
@@ -176,7 +179,9 @@ type Props = {
 const ROW_HEIGHT = 22;
 const ROW_GAP = 2;
 const LEFT_GUTTER = 220;
+const TIME_TRACK_RIGHT = 8;
 const MIN_BAR_PX = 2;
+const NARROW_BAR_PCT = 10;
 
 /**
  * Zoomable trace flame graph.
@@ -288,10 +293,16 @@ export default function TraceFlameGraph({
   };
 
   const formatMs = (ms: number) => {
+    if (!Number.isFinite(ms) || ms < 0) return "0ms";
     if (ms < 1) return "<1ms";
     if (ms < 1000) return `${ms.toFixed(0)}ms`;
     return `${(ms / 1000).toFixed(2)}s`;
   };
+
+  const legendTypes = useMemo(() => {
+    if (zoom === "tree") return uniqueSpanTypes(flat.map((r) => r.span.span_type));
+    return uniqueSpanTypes(groups.map((g) => g.representativeSpanType));
+  }, [flat, groups, zoom]);
 
   return (
     <div className={`panel${showDetailPanel ? "" : " trace-timeline-embedded"}`} style={{ display: "flex", gap: 16, flexDirection: "column" }}>
@@ -349,20 +360,21 @@ export default function TraceFlameGraph({
             background: "#0f172a",
             borderRadius: 8,
             border: "1px solid #1e293b",
-            padding: "12px 8px 12px 8px",
-            overflowX: "auto",
+            padding: "8px 8px 12px 8px",
+            overflow: "auto",
             minHeight: 240,
+            maxHeight: 640,
           }}
         >
           <TimeAxis totalDurationMs={totalDurationMs} formatMs={formatMs} />
 
-          <div style={{ position: "relative", height: canvasHeight, marginTop: 28 }}>
+          <div style={{ position: "relative", height: canvasHeight, marginTop: 6 }}>
             {zoom === "tree"
               ? flat.map((row, idx) => {
-                  const leftPct = (row.startMs / totalDurationMs) * 100;
                   const widthPct = Math.max((row.durationMs / totalDurationMs) * 100, 0.2);
                   const top = idx * (ROW_HEIGHT + ROW_GAP);
-                  const isSelected = selectedSpanId === row.span.span_id;
+                  const duration = formatMs(row.durationMs);
+                  const durationInGutter = widthPct < NARROW_BAR_PCT;
                   return (
                     <div key={`${row.span.span_id}-${idx}`} style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}>
                       <div
@@ -375,7 +387,7 @@ export default function TraceFlameGraph({
                           alignItems: "center",
                           gap: 6,
                           fontSize: 12,
-                          color: "#cbd5e1",
+                          color: "#e2e8f0",
                           overflow: "hidden",
                           whiteSpace: "nowrap",
                           textOverflow: "ellipsis",
@@ -385,55 +397,21 @@ export default function TraceFlameGraph({
                         title={row.hasChildren ? `${row.isCollapsed ? "Expand" : "Collapse"} (${row.childCount} descendants)` : ""}
                       >
                         {row.hasChildren ? (
-                          <span style={{ width: 10, color: "#64748b" }}>{row.isCollapsed ? "▶" : "▼"}</span>
+                          <span style={{ width: 10, color: "#94a3b8" }}>{row.isCollapsed ? "▶" : "▼"}</span>
                         ) : (
                           <span style={{ width: 10 }} />
                         )}
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{row.span.step_name || row.span.span_type}</span>
-                      </div>
-                      <div
-                        style={{
-                          position: "absolute",
-                          left: `calc(${LEFT_GUTTER}px + ${leftPct}%)`,
-                          width: `calc(${widthPct}% - ${LEFT_GUTTER * (widthPct / 100)}px)`,
-                          minWidth: MIN_BAR_PX,
-                          height: ROW_HEIGHT - 4,
-                          top: 2,
-                          background: colorFor(row.span),
-                          opacity: row.span.status === "error" ? 0.95 : 0.85,
-                          borderRadius: 3,
-                          cursor: "pointer",
-                          outline: isSelected ? "2px solid #fde68a" : "none",
-                          boxShadow: isSelected ? "0 0 0 2px #f59e0b inset" : "none",
-                        }}
-                        title={`${row.span.step_name} · ${formatMs(row.durationMs)}`}
-                        onClick={() => setSelectedSpanId(row.span.span_id)}
-                      >
-                        <div
-                          style={{
-                            fontSize: 10,
-                            color: "#0f172a",
-                            paddingLeft: 4,
-                            lineHeight: `${ROW_HEIGHT - 4}px`,
-                            fontWeight: 600,
-                            overflow: "hidden",
-                            whiteSpace: "nowrap",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
-                          {row.isCollapsed ? `${row.span.step_name} (+${row.childCount})` : row.span.step_name}
-                          <span style={{ marginLeft: 6, fontWeight: 400, opacity: 0.85 }}>
-                            {formatMs(row.durationMs)}
+                        {durationInGutter ? (
+                          <span className="mono" style={{ marginLeft: "auto", flexShrink: 0, fontSize: 10, color: "#f8fafc" }}>
+                            {duration}
                           </span>
-                        </div>
+                        ) : null}
                       </div>
                     </div>
                   );
                 })
               : groups.map((group, idx) => {
-                  const widthPct = totalGroupLatency
-                    ? (group.totalLatencyMs / totalGroupLatency) * 100
-                    : 0;
                   const top = idx * (ROW_HEIGHT + ROW_GAP);
                   return (
                     <div key={group.key} style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}>
@@ -446,7 +424,7 @@ export default function TraceFlameGraph({
                           display: "flex",
                           alignItems: "center",
                           fontSize: 12,
-                          color: "#cbd5e1",
+                          color: "#e2e8f0",
                           overflow: "hidden",
                           whiteSpace: "nowrap",
                           textOverflow: "ellipsis",
@@ -456,23 +434,97 @@ export default function TraceFlameGraph({
                         {group.label}{" "}
                         <span className="muted" style={{ marginLeft: 6 }}>×{group.count}</span>
                       </div>
+                    </div>
+                  );
+                })}
+
+            <div
+              style={{
+                position: "absolute",
+                left: LEFT_GUTTER,
+                right: TIME_TRACK_RIGHT,
+                top: 0,
+                height: canvasHeight,
+              }}
+            >
+              {zoom === "tree"
+                ? flat.map((row, idx) => {
+                    const leftPct = (row.startMs / totalDurationMs) * 100;
+                    const widthPct = Math.max((row.durationMs / totalDurationMs) * 100, 0.2);
+                    const top = idx * (ROW_HEIGHT + ROW_GAP);
+                    const isSelected = selectedSpanId === row.span.span_id;
+                    const fill = colorFor(row.span);
+                    const labelColor = labelColorForFill(fill);
+                    const duration = formatMs(row.durationMs);
+                    const durationInGutter = widthPct < NARROW_BAR_PCT;
+                    return (
                       <div
+                        key={`bar-${row.span.span_id}-${idx}`}
                         style={{
                           position: "absolute",
-                          left: LEFT_GUTTER,
+                          top: top + 2,
+                          left: `${leftPct}%`,
+                          width: `${widthPct}%`,
+                          minWidth: MIN_BAR_PX,
+                          height: ROW_HEIGHT - 4,
+                          background: fill,
+                          opacity: row.span.status === "error" ? 0.95 : 0.9,
+                          borderRadius: 3,
+                          cursor: "pointer",
+                          outline: isSelected ? "2px solid #fde68a" : "none",
+                          boxShadow: isSelected ? "0 0 0 2px #f59e0b inset" : "none",
+                        }}
+                        title={`${row.span.step_name || row.span.span_type} · ${row.span.span_type} · ${duration}`}
+                        onClick={() => setSelectedSpanId(row.span.span_id)}
+                      >
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: labelColor,
+                            paddingLeft: 4,
+                            lineHeight: `${ROW_HEIGHT - 4}px`,
+                            fontWeight: 600,
+                            overflow: "hidden",
+                            whiteSpace: "nowrap",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {row.isCollapsed ? `${row.span.step_name} (+${row.childCount})` : row.span.step_name}
+                          {durationInGutter ? null : (
+                            <span style={{ marginLeft: 6, fontWeight: 500, opacity: 0.92 }}>
+                              {duration}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                : groups.map((group, idx) => {
+                    const widthPct = totalGroupLatency
+                      ? (group.totalLatencyMs / totalGroupLatency) * 100
+                      : 0;
+                    const top = idx * (ROW_HEIGHT + ROW_GAP);
+                    const fill = colorForSpanType(group.representativeSpanType);
+                    const labelColor = labelColorForFill(fill);
+                    return (
+                      <div
+                        key={`gbar-${group.key}`}
+                        style={{
+                          position: "absolute",
+                          top: top + 2,
+                          left: 0,
                           width: `${Math.max(widthPct, 0.5)}%`,
                           minWidth: MIN_BAR_PX,
                           height: ROW_HEIGHT - 4,
-                          top: 2,
-                          background: SPAN_COLORS[group.representativeSpanType] ?? "#475569",
-                          opacity: 0.85,
+                          background: fill,
+                          opacity: 0.9,
                           borderRadius: 3,
                         }}
                       >
                         <div
                           style={{
                             fontSize: 10,
-                            color: "#0f172a",
+                            color: labelColor,
                             paddingLeft: 4,
                             lineHeight: `${ROW_HEIGHT - 4}px`,
                             fontWeight: 600,
@@ -481,10 +533,11 @@ export default function TraceFlameGraph({
                           {formatMs(group.totalLatencyMs)} · {group.totalTokens} tok · ${group.totalCost.toFixed(4)}
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+            </div>
           </div>
+          <TypeLegend types={legendTypes} />
         </div>
 
         {showDetailPanel ? (
@@ -497,25 +550,74 @@ export default function TraceFlameGraph({
 
 function TimeAxis({ totalDurationMs, formatMs }: { totalDurationMs: number; formatMs: (ms: number) => string }) {
   const ticks = 5;
+  const safe = Number.isFinite(totalDurationMs) && totalDurationMs > 0 ? totalDurationMs : 1;
   return (
     <div
       style={{
-        position: "absolute",
-        top: 6,
-        left: LEFT_GUTTER,
-        right: 8,
-        height: 16,
+        position: "sticky",
+        top: 0,
+        zIndex: 3,
+        marginLeft: LEFT_GUTTER,
+        marginRight: TIME_TRACK_RIGHT,
+        height: 22,
         display: "flex",
         justifyContent: "space-between",
-        color: "#64748b",
-        fontSize: 10,
-        borderBottom: "1px solid #1e293b",
+        color: "#e2e8f0",
+        fontSize: 11,
+        fontWeight: 600,
+        background: "#0f172a",
+        borderBottom: "1px solid #64748b",
         paddingBottom: 4,
+        paddingTop: 2,
       }}
     >
       {Array.from({ length: ticks + 1 }).map((_, i) => (
-        <div key={i}>{formatMs((totalDurationMs * i) / ticks)}</div>
+        <div key={i}>{formatMs((safe * i) / ticks)}</div>
       ))}
+    </div>
+  );
+}
+
+function TypeLegend({ types }: { types: string[] }) {
+  if (!types.length) return null;
+  return (
+    <div
+      className="trace-type-legend"
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 10,
+        marginTop: 10,
+        paddingLeft: 4,
+      }}
+    >
+      {types.map((t) => {
+        const fill = colorForSpanType(t);
+        return (
+          <span
+            key={t}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 11,
+              color: "#f1f5f9",
+              fontWeight: 600,
+            }}
+          >
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: 2,
+                background: fill,
+                flexShrink: 0,
+              }}
+            />
+            {t}
+          </span>
+        );
+      })}
     </div>
   );
 }
