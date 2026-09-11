@@ -284,7 +284,7 @@ function DailyBars({ rows }: { rows: DailyRow[] }) {
             flex: 1,
             minWidth: 2,
             height: `${(d.total_usd / max) * 140}px`,
-            background: "#6366f1",
+            background: "#e8e9ed",
             borderRadius: "3px 3px 0 0",
           }}
         />

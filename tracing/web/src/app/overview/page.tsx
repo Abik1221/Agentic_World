@@ -73,9 +73,7 @@ export default async function OverviewPage() {
         <div>
           <h1>Overview</h1>
           <p>
-            End-to-end visibility across matches, agent benchmarks, token usage, cost, and failure
-            patterns. Open <Link href="/games">Games</Link> to walk a match log, conversation, money
-            path, and model spend.
+            Errors, latency, and spend. Open <Link href="/games">Games</Link> for a match.
           </p>
         </div>
       </section>
@@ -107,27 +105,15 @@ export default async function OverviewPage() {
       {overview ? (
         <section className="cards">
           <div className="card">
-            <div className="card-label">Total Traces</div>
-            <div className="card-value">{overview.traces_total.toLocaleString()}</div>
-          </div>
-          <div className="card">
-            <div className="card-label">Total Events</div>
-            <div className="card-value">{overview.events_total.toLocaleString()}</div>
-          </div>
-          <div className="card">
             <div className="card-label">Errors</div>
             <div className="card-value">{overview.errors.toLocaleString()}</div>
           </div>
           <div className="card">
-            <div className="card-label">P95 Latency</div>
+            <div className="card-label">P95</div>
             <div className="card-value">{Math.round(overview.p95_latency_ms)}ms</div>
           </div>
           <div className="card">
-            <div className="card-label">Tokens</div>
-            <div className="card-value">{overview.total_tokens.toLocaleString()}</div>
-          </div>
-          <div className="card">
-            <div className="card-label">Estimated Cost</div>
+            <div className="card-label">Cost</div>
             <div className="card-value">${overview.estimated_cost.toFixed(2)}</div>
           </div>
         </section>

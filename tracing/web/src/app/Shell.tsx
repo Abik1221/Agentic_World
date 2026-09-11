@@ -128,8 +128,7 @@ export default function Shell({
               >
                 <span aria-hidden>{mobileOpen ? "✕" : "☰"}</span>
               </button>
-              <span className="workspace-pill">Workspace: Pyyol Production</span>
-              <span className="workspace-pill subtle">Project: pyyol-eye</span>
+              <span className="workspace-pill">Pyyol Eye</span>
             </div>
             <div className="topbar-right">
               <StatusChip label="Query API" up={health?.query} />
