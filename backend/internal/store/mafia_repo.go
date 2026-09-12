@@ -30,11 +30,13 @@ func (r *MafiaRepo) CreateWaiting(ctx context.Context, in mafia.CreateMatchInput
 	var matchID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO matches (public_id, game, status, bid, rake_pct, total_rounds,
-		     engine_version, prize_seed_commit, prize_seed, fairness_mode, creator_owner_user_id)
+		     engine_version, prize_seed_commit, prize_seed, fairness_mode, creator_owner_user_id,
+		     private)
 		 VALUES ($1,'mafia','waiting',$2,$3,$4,$5,$6,$7,'shuffled',
-		         (SELECT id FROM users WHERE public_id=$8))
+		         (SELECT id FROM users WHERE public_id=$8), $9)
 		 RETURNING id`,
-		in.PublicID, in.EntryFee, in.RakePct, mf.RosterSize, mf.Version, in.Commit, in.Seed, in.Creator.OwnerPublicID).
+		in.PublicID, in.EntryFee, in.RakePct, mf.RosterSize, mf.Version, in.Commit, in.Seed,
+		in.Creator.OwnerPublicID, in.Private).
 		Scan(&matchID)
 	if err != nil {
 		return mafia.Match{}, err
@@ -48,7 +50,8 @@ func (r *MafiaRepo) CreateWaiting(ctx context.Context, in mafia.CreateMatchInput
 	return mafia.Match{
 		PublicID: in.PublicID, Title: in.Title, Status: mafia.StatusWaiting,
 		EntryFee: in.EntryFee, RakePct: in.RakePct, EngineVersion: mf.Version,
-		Commit: in.Commit, Seed: in.Seed, Players: []mafia.Player{in.Creator},
+		Commit: in.Commit, Seed: in.Seed, Private: in.Private,
+		Players: []mafia.Player{in.Creator},
 	}, nil
 }
 
@@ -61,6 +64,7 @@ func (r *MafiaRepo) ListWaiting(ctx context.Context, entryFee int64, excludeOwne
 		 JOIN match_players mp ON mp.match_id = m.id AND mp.seat = 1
 		 JOIN agents ag ON ag.id = mp.agent_id
 		 WHERE m.status = 'waiting' AND m.game = 'mafia'
+		   AND NOT m.private
 		   AND ($1 <= 0 OR m.bid = $1)
 		   AND m.creator_owner_user_id <> COALESCE((SELECT id FROM users WHERE public_id = $2), 0)
 		 ORDER BY m.created_at DESC
@@ -90,10 +94,10 @@ func (r *MafiaRepo) Get(ctx context.Context, matchPublicID string) (mafia.Match,
 	err := r.db.QueryRow(ctx,
 		`SELECT m.public_id, m.status, m.bid, m.rake_pct, m.engine_version,
 		        m.prize_seed_commit, m.prize_seed, COALESCE(m.state, '{}'::jsonb),
-		        m.round_deadline, m.starts_at, COALESCE(m.replay_hash, '')
+		        m.round_deadline, m.starts_at, COALESCE(m.replay_hash, ''), m.private
 		 FROM matches m WHERE m.public_id = $1 AND m.game = 'mafia'`, matchPublicID).
 		Scan(&m.PublicID, &m.Status, &m.EntryFee, &m.RakePct, &m.EngineVersion,
-			&m.Commit, &seed, &stateBytes, &deadline, &startsAt, &m.ReplayHash)
+			&m.Commit, &seed, &stateBytes, &deadline, &startsAt, &m.ReplayHash, &m.Private)
 	if err != nil {
 		return mafia.Match{}, err
 	}

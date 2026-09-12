@@ -1,4 +1,4 @@
-"""Private rooms are Goofspiel 1v1 — Mafia has no invite-room path yet."""
+"""Private rooms: Goofspiel 1v1 and Mafia (host + friend, bots fill)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,18 @@ import argparse
 import pyyol.cli as cli
 
 
-def test_room_create_refuses_mafia(capsys, monkeypatch):
-    # Do not hit the network — refuse before login/API.
+def test_room_create_accepts_mafia(capsys, monkeypatch):
+    posted: dict = {}
+
+    def fake_post(url, token, body):
+        posted["url"] = url
+        posted["body"] = body
+        return 201, {"room_id": "mf_room1", "match_id": "mf_room1", "game": "mafia", "bid": 100}
+
     monkeypatch.setattr(cli, "_http_base", lambda *_a, **_k: "https://example.invalid")
     monkeypatch.setattr(cli, "_connection_token", lambda *_a, **_k: ("tok", "agent"))
     monkeypatch.setattr(cli, "_ensure_login", lambda *_a, **_k: object())
+    monkeypatch.setattr(cli, "_api_post", fake_post)
 
     ns = argparse.Namespace(
         action="create",
@@ -23,13 +30,35 @@ def test_room_create_refuses_mafia(capsys, monkeypatch):
         token="",
     )
     code = cli.cmd_room(ns)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert posted["body"] == {"game": "mafia", "tier": "low"}
+    assert "mf_room1" in out
+    assert "house bots" in out.lower()
+
+
+def test_room_create_refuses_unknown_game(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "_http_base", lambda *_a, **_k: "https://example.invalid")
+    monkeypatch.setattr(cli, "_connection_token", lambda *_a, **_k: ("tok", "agent"))
+    monkeypatch.setattr(cli, "_ensure_login", lambda *_a, **_k: object())
+
+    ns = argparse.Namespace(
+        action="create",
+        id="",
+        game="monopoly",
+        tier="low",
+        bid=0,
+        api="https://example.invalid",
+        token="",
+    )
+    code = cli.cmd_room(ns)
     err = capsys.readouterr().err
     assert code == 2
-    assert "Goofspiel (1v1) only" in err
-    assert "12-seat" in err
+    assert "goofspiel" in err.lower()
+    assert "mafia" in err.lower()
 
 
 def test_room_parser_accepts_game_flag():
-    ns = cli.build_parser().parse_args(["room", "create", "--game", "goofspiel", "--tier", "low"])
-    assert ns.game == "goofspiel"
+    ns = cli.build_parser().parse_args(["room", "create", "--game", "mafia", "--tier", "low"])
+    assert ns.game == "mafia"
     assert ns.tier == "low"

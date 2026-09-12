@@ -675,8 +675,15 @@ func (s *Service) DriveMatchedSeats(ctx context.Context, matchPublicID string, r
 	}
 	remotes := make(map[string]agentclient.Target, len(realAgentIDs))
 	for _, id := range realAgentIDs {
-		target, found, err := s.pusher.remote.PlayTarget(ctx, id)
-		connected := s.pusher.gw != nil && s.pusher.gw.Connected(id)
+		var (
+			target    agentclient.Target
+			found     bool
+			err       error
+			connected = s.pusher.gw != nil && s.pusher.gw.Connected(id)
+		)
+		if s.pusher.remote != nil {
+			target, found, err = s.pusher.remote.PlayTarget(ctx, id)
+		}
 		switch {
 		case err != nil && !connected:
 			s.pusher.log.Debug("mafia matched-drive: no transport for seat",

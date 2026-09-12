@@ -39,6 +39,11 @@ const testSigningKey = "test-signing-key-for-room-scope"
 
 func roomRouter(t *testing.T, owners matchPrimary) (chi.Router, string, string) {
 	t.Helper()
+	return roomRouterWithMafia(t, owners, nil)
+}
+
+func roomRouterWithMafia(t *testing.T, owners matchPrimary, mafia match.MafiaRooms) (chi.Router, string, string) {
+	t.Helper()
 	jwt := auth.NewJWT(testSigningKey, time.Hour)
 	authn := auth.NewAuthenticator(
 		stubKeys{ownerID: "usr_a", agentID: "ag_a"},
@@ -50,6 +55,9 @@ func roomRouter(t *testing.T, owners matchPrimary) (chi.Router, string, string) 
 	if owners != nil {
 		h.SetPrimaryAgentLookup(owners)
 	}
+	if mafia != nil {
+		h.SetMafiaRooms(mafia)
+	}
 	r := chi.NewRouter()
 	h.Register(r)
 	userToken, err := jwt.Issue("usr_a")
@@ -57,6 +65,22 @@ func roomRouter(t *testing.T, owners matchPrimary) (chi.Router, string, string) 
 		t.Fatalf("issue user token: %v", err)
 	}
 	return r, userToken, platform.PrefixKey + "_live_room"
+}
+
+type stubMafiaRooms struct {
+	joined string
+}
+
+func (s *stubMafiaRooms) CreateRoom(context.Context, string, string, int64) (string, error) {
+	return "mf_room1", nil
+}
+func (s *stubMafiaRooms) Join(_ context.Context, _, _, matchID string) (any, error) {
+	s.joined = matchID
+	return map[string]any{"match_id": matchID, "status": "active"}, nil
+}
+func (s *stubMafiaRooms) Cancel(context.Context, string, string) error { return nil }
+func (s *stubMafiaRooms) State(context.Context, string, string, bool, time.Duration) (any, error) {
+	return map[string]any{"status": "waiting"}, nil
 }
 
 // matchPrimary is the lookup the handler accepts. Declared here so the test
@@ -103,19 +127,48 @@ func TestRoomCreateStillAdmitsAnAgentKey(t *testing.T) {
 	}
 }
 
-func TestRoomCreateRefusesMafia(t *testing.T) {
-	// Private rooms are Goofspiel 1v1. Mafia is a 12-seat game with no invite path —
-	// sending game=mafia must not silently open a Goofspiel room.
-	r, userToken, _ := roomRouter(t, stubOwners{agent: "ag_owned"})
+func TestRoomCreateAcceptsMafiaWhenWired(t *testing.T) {
+	r, userToken, _ := roomRouterWithMafia(t, stubOwners{agent: "ag_owned"}, &stubMafiaRooms{})
 	rec := postJSON(t, r, "/v1/room/create", userToken, `{"bid":50,"game":"mafia"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("mafia room create = %d %s, want 201", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"game":"mafia"`)) {
+		t.Fatalf("body = %s, want game mafia", rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("mf_room1")) {
+		t.Fatalf("body = %s, want mf_room1", rec.Body.String())
+	}
+}
+
+func TestRoomCreateRefusesUnsupportedGame(t *testing.T) {
+	r, userToken, _ := roomRouter(t, stubOwners{agent: "ag_owned"})
+	rec := postJSON(t, r, "/v1/room/create", userToken, `{"bid":50,"game":"monopoly"}`)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("mafia room create = %d %s, want 400", rec.Code, rec.Body.String())
+		t.Fatalf("monopoly room create = %d %s, want 400", rec.Code, rec.Body.String())
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("room_game_unsupported")) {
 		t.Fatalf("body = %s, want room_game_unsupported", rec.Body.String())
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte("12-seat")) {
-		t.Fatalf("body = %s, want the 12-seat reason", rec.Body.String())
+}
+
+func TestRoomCreateMafiaUnavailableWithoutWire(t *testing.T) {
+	r, userToken, _ := roomRouter(t, stubOwners{agent: "ag_owned"})
+	rec := postJSON(t, r, "/v1/room/create", userToken, `{"bid":50,"game":"mafia"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("mafia without wire = %d %s, want 503", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLobbyJoinRoutesMafiaIds(t *testing.T) {
+	mafia := &stubMafiaRooms{}
+	r, userToken, _ := roomRouterWithMafia(t, stubOwners{agent: "ag_friend"}, mafia)
+	rec := postJSON(t, r, "/v1/lobby/join", userToken, `{"match_id":"mf_room1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mafia join = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if mafia.joined != "mf_room1" {
+		t.Fatalf("joined = %q, want mf_room1", mafia.joined)
 	}
 }
 

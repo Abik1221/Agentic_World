@@ -435,7 +435,7 @@ test("room create posts the stake and prints the shareable id", async () => {
   const { code, out } = await run(["room", "create", "--tier", "mid"], { home, fetch: fetchImpl });
   assert.equal(code, 0);
   assert.match(url, /\/v1\/room\/create$/);
-  assert.deepEqual(posted, { tier: "mid" });
+  assert.deepEqual(posted, { game: "goofspiel", tier: "mid" });
   // The id must appear alone on its line — the next thing anyone does is select it to paste.
   assert.ok(out.split("\n").some((l) => l.trim() === "mt_room1"), out);
   assert.match(out, /pyyol room join mt_room1/);
@@ -451,21 +451,38 @@ test("room create refuses to open a FREE table", async () => {
   assert.match(err, /a room is staked/);
 });
 
-test("room create refuses Mafia — private rooms are Goofspiel 1v1 only", async () => {
+test("room create accepts Mafia and posts game=mafia", async () => {
   const home = mkdtempSync(join(tmpdir(), "pyyol-room-mafia-"));
+  seedCreds(home);
+  let posted: any = null;
+  const fetchImpl = (async (_u: string, init?: RequestInit) => {
+    posted = JSON.parse(String(init?.body ?? "{}"));
+    return json({ room_id: "mf_room1", match_id: "mf_room1", game: "mafia", bid: 100 }, 201);
+  }) as unknown as typeof fetch;
+  const { code, out } = await run(["room", "create", "--game", "mafia", "--tier", "low"], {
+    home,
+    fetch: fetchImpl,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(posted, { game: "mafia", tier: "low" });
+  assert.match(out, /mf_room1/);
+  assert.match(out, /house bots/i);
+});
+
+test("room create refuses an unknown game", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room-badgame-"));
   seedCreds(home);
   let called = false;
   const fetchImpl = (async () => {
     called = true;
     return json({}, 500);
   }) as unknown as typeof fetch;
-  const { code, err } = await run(["room", "create", "--game", "mafia", "--tier", "low"], {
+  const { code, err } = await run(["room", "create", "--game", "monopoly", "--tier", "low"], {
     home,
     fetch: fetchImpl,
   });
   assert.equal(code, 2);
-  assert.match(err, /Goofspiel \(1v1\) only/);
-  assert.match(err, /12-seat/);
+  assert.match(err, /goofspiel.*mafia/i);
   assert.equal(called, false);
 });
 

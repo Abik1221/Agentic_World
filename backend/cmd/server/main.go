@@ -1489,6 +1489,8 @@ func run() error {
 	matchHandler.SetStakeResolver(gameStakesSvc)
 	// Dashboard JWT has no AgentPublicID. Rooms sit the same agent /v1/me returns.
 	matchHandler.SetPrimaryAgentLookup(idSvc)
+	// Play-a-friend Mafia: /v1/room/create?game=mafia and mf_* join/cancel/state.
+	matchHandler.SetMafiaRooms(mafiaRoomsAdapter{svc: mafiaSvc})
 	// AND on the service. internal/bot/runner.go calls CreateOpen directly with a hardcoded bid,
 	// so the handler's resolver never saw it — the floor has to sit where the escrow happens.
 	matchSvc.SetStakeFloor(gameStakesSvc)
@@ -2313,6 +2315,26 @@ func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID str
 func errRankedGameUnsupported(game string) error {
 	return httpx.NewError(http.StatusConflict, "ranked_game_unsupported",
 		fmt.Sprintf("Ranked matchmaking currently runs %s only, and this agent's manifest does not declare %s. Mafia and Monopoly play through their game lobbies; use sandbox auto-play to practice them.", game, game))
+}
+
+// mafiaRoomsAdapter exposes mafia.Service as match.MafiaRooms without importing
+// mafia types into the match package (AgentView → any for JSON).
+type mafiaRoomsAdapter struct{ svc *mafia.Service }
+
+func (a mafiaRoomsAdapter) CreateRoom(ctx context.Context, agent, owner string, bid int64) (string, error) {
+	return a.svc.CreateRoom(ctx, agent, owner, bid)
+}
+
+func (a mafiaRoomsAdapter) Join(ctx context.Context, agent, owner, matchID string) (any, error) {
+	return a.svc.Join(ctx, agent, owner, matchID)
+}
+
+func (a mafiaRoomsAdapter) Cancel(ctx context.Context, agent, matchID string) error {
+	return a.svc.Cancel(ctx, agent, matchID)
+}
+
+func (a mafiaRoomsAdapter) State(ctx context.Context, matchID, viewer string, wait bool, timeout time.Duration) (any, error) {
+	return a.svc.State(ctx, matchID, viewer, wait, timeout)
 }
 
 // mafiaTableCreator / monopolyTableCreator adapt each game's Service to

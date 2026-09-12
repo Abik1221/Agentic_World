@@ -148,7 +148,10 @@ type Match struct {
 	// browser each counting down from ten drift apart within seconds, and two surfaces
 	// disagreeing about when a staked match begins is worse than showing no countdown at all.
 	// Every surface counts TO this.
-	StartsAt   *time.Time
+	StartsAt *time.Time
+	// Private is the invite-room listing bit (matches.private). An open lobby table is
+	// visible in ListWaiting; a Play-a-friend room is not — reachable only by its id.
+	Private    bool
 	Players    []Player
 	WinnerTeam string
 	ReplayHash string
@@ -327,6 +330,8 @@ type CreateMatchInput struct {
 	Seed     []byte
 	Commit   string
 	Creator  Player
+	// Private marks an invite room: omitted from the open lobby, joinable by id.
+	Private bool
 }
 
 // Locker serializes match mutations.

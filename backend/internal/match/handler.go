@@ -19,11 +19,27 @@ type Handler struct {
 	authn  *auth.Authenticator
 	stakes stakeResolver
 	owners primaryAgentLookup
+	// mafia is optional: when set, /v1/room/create accepts game=mafia and
+	// lobby join/cancel + match state route mf_* ids to the Mafia service.
+	mafia MafiaRooms
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
 	return &Handler{svc: svc, authn: authn}
 }
+
+// MafiaRooms is the Play-a-friend surface for 12-seat Mafia invite rooms.
+// Implemented by *mafia.Service (wired in cmd/server). Kept as an interface so
+// this package does not import mafia.
+type MafiaRooms interface {
+	CreateRoom(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error)
+	Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (any, error)
+	Cancel(ctx context.Context, agentPublicID, matchPublicID string) error
+	State(ctx context.Context, matchPublicID, viewerAgent string, wait bool, timeout time.Duration) (any, error)
+}
+
+// SetMafiaRooms enables game=mafia on private rooms and routes mf_* join/cancel/state.
+func (h *Handler) SetMafiaRooms(m MafiaRooms) { h.mafia = m }
 
 // primaryAgentLookup resolves the account's sitting agent from a dashboard JWT.
 // Satisfied by identity.Service.PrimaryAgentOf — the same lookup /v1/me uses.
@@ -152,9 +168,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 // and a mapping to keep correct. The alias exists because the person reading it is about
 // to paste it into a chat window, and "room" is what they will call it.
 //
-// Goofspiel only. A private room is a 1v1 waiting match in this service. Mafia is a
-// separate 12-seat game (group queue / lobby + house-bot fill) with no private invite
-// path yet — if a client sends game=mafia we refuse rather than silently open Goofspiel.
+// game=goofspiel (default): 1v1 private waiting match in this service.
+// game=mafia: 12-seat invite room (host + friend; house bots fill the rest) via MafiaRooms.
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	agentID, err := h.sittingAgent(r.Context(), p)
@@ -171,29 +186,56 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if g := strings.TrimSpace(strings.ToLower(in.Game)); g != "" && g != "goofspiel" {
-		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "room_game_unsupported",
-			"Private rooms are Goofspiel (1v1) only. Mafia needs a fixed 12-seat roster "+
-				"(group queue / lobby fill with house bots) and has no invite-room path yet."))
-		return
+	game := strings.TrimSpace(strings.ToLower(in.Game))
+	if game == "" {
+		game = "goofspiel"
 	}
-	bid := in.Bid
-	if h.stakes != nil {
-		b, err := h.stakes.ResolveStake(r.Context(), "goofspiel", in.Tier, in.Bid)
+	switch game {
+	case "goofspiel":
+		bid := in.Bid
+		if h.stakes != nil {
+			b, err := h.stakes.ResolveStake(r.Context(), "goofspiel", in.Tier, in.Bid)
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			bid = b
+		}
+		id, err := h.svc.CreateRoom(r.Context(), agentID, p.UserPublicID, bid)
 		if err != nil {
 			httpx.Error(w, err)
 			return
 		}
-		bid = b
+		httpx.JSON(w, http.StatusCreated, map[string]any{
+			"room_id": id, "match_id": id, "game": "goofspiel", "bid": bid,
+		})
+	case "mafia":
+		if h.mafia == nil {
+			httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "room_game_unavailable",
+				"Mafia private rooms are not configured on this server."))
+			return
+		}
+		bid := in.Bid
+		if h.stakes != nil {
+			b, err := h.stakes.ResolveStake(r.Context(), "mafia", in.Tier, in.Bid)
+			if err != nil {
+				httpx.Error(w, err)
+				return
+			}
+			bid = b
+		}
+		id, err := h.mafia.CreateRoom(r.Context(), agentID, p.UserPublicID, bid)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusCreated, map[string]any{
+			"room_id": id, "match_id": id, "game": "mafia", "bid": bid,
+		})
+	default:
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "room_game_unsupported",
+			"Private rooms support goofspiel (1v1) and mafia (12 seats: you + friend, house bots fill the rest)."))
 	}
-	id, err := h.svc.CreateRoom(r.Context(), agentID, p.UserPublicID, bid)
-	if err != nil {
-		httpx.Error(w, err)
-		return
-	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{
-		"room_id": id, "match_id": id, "game": "goofspiel", "bid": bid,
-	})
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +250,20 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
+		return
+	}
+	if isMafiaRoomID(in.MatchID) {
+		if h.mafia == nil {
+			httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "room_game_unavailable",
+				"Mafia private rooms are not configured on this server."))
+			return
+		}
+		view, err := h.mafia.Join(r.Context(), agentID, p.UserPublicID, in.MatchID)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, view)
 		return
 	}
 	view, err := h.svc.Join(r.Context(), agentID, p.UserPublicID, in.MatchID)
@@ -232,11 +288,30 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if isMafiaRoomID(in.MatchID) {
+		if h.mafia == nil {
+			httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "room_game_unavailable",
+				"Mafia private rooms are not configured on this server."))
+			return
+		}
+		if err := h.mafia.Cancel(r.Context(), agentID, in.MatchID); err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
 	if err := h.svc.Cancel(r.Context(), agentID, in.MatchID); err != nil {
 		httpx.Error(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// isMafiaRoomID reports a Mafia public id (prefix mf_). Goofspiel uses m_; check
+// the longer prefix first so mf_ is never treated as goofspiel.
+func isMafiaRoomID(id string) bool {
+	return strings.HasPrefix(id, "mf_")
 }
 
 func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +328,23 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		if d := time.Duration(t) * time.Second; d < maxStateWait {
 			timeout = d
 		}
+	}
+	if isMafiaRoomID(id) {
+		if h.mafia == nil {
+			httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "room_game_unavailable",
+				"Mafia private rooms are not configured on this server."))
+			return
+		}
+		view, err := h.mafia.State(r.Context(), id, agentID, wait, timeout)
+		if wait {
+			httpx.ArmWriteDeadline(w)
+		}
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, view)
+		return
 	}
 	view, err := h.svc.State(r.Context(), id, agentID, wait, timeout)
 	if wait {

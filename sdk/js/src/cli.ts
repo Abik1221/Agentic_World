@@ -837,14 +837,13 @@ async function cmdQueue(a: Args): Promise<number> {
   return 0;
 }
 
-/** `pyyol room create|join [id] [--tier low|mid|high | --bid N] [--game goofspiel]` — a PRIVATE staked Goofspiel table.
+/** `pyyol room create|join [id] [--tier low|mid|high | --bid N] [--game goofspiel|mafia]` — a PRIVATE staked table.
  *
- * The queue supplies whoever is waiting. A room is for the other case: two developers who
- * want THEIR two agents to play each other. One creates it, sends the id, the other joins.
+ * The queue supplies whoever is waiting. A room is for the other case: developers who
+ * want THEIR agents to play each other. One creates it, sends the id, the other joins.
  *
- * Goofspiel only: `/v1/room/create` is a 1v1 private waiting match. Mafia is a fixed
- * 12-seat roster filled by the group queue / lobby (with house bots) — there is no
- * private invite-room path for it yet. `--game mafia` is refused with that reason.
+ * - goofspiel (default): 1v1 private waiting match.
+ * - mafia: 12 seats — host + friend; house bots fill the rest when the friend joins.
  *
  * Deliberately the same match as everywhere else: same stake path, same escrow, same
  * refusal to seat both sides on one account. The sit gate is the same live path as
@@ -862,7 +861,7 @@ async function cmdRoom(a: Args): Promise<number> {
   }
   const action = a.positionals[0] ?? "";
   if (action !== "create" && action !== "join") {
-    console.error(`${BAD} usage: pyyol room create [--tier low|mid|high | --bid N] [--game goofspiel]`);
+    console.error(`${BAD} usage: pyyol room create [--tier low|mid|high | --bid N] [--game goofspiel|mafia]`);
     console.error(`         pyyol room join <room-id>`);
     return 2;
   }
@@ -889,22 +888,20 @@ async function cmdRoom(a: Args): Promise<number> {
   }
 
   const game = (str(a, "game") || "goofspiel").toLowerCase();
-  if (game !== "goofspiel") {
+  if (game !== "goofspiel" && game !== "mafia") {
     console.error(
-      `${BAD} private rooms are Goofspiel (1v1) only — Mafia needs a fixed 12-seat ` +
-        "roster (group queue / lobby fill with house bots) and has no invite-room " +
-        "path yet. Use `pyyol queue mafia` or the Mafia lobby / sandbox.",
+      `${BAD} private rooms support goofspiel (1v1) and mafia (12 seats: you + friend, house bots fill the rest).`,
     );
     return 2;
   }
 
-  const body: Record<string, unknown> = {};
+  const body: Record<string, unknown> = { game };
   if (str(a, "tier")) body.tier = str(a, "tier");
   else if (num(a, "bid", 0) > 0) body.bid = num(a, "bid", 0);
   else {
     console.error(
       `${BAD} a room is staked: pass --tier <low|mid|high> ` +
-        `(see \`pyyol queue goofspiel --list\`) or --bid <coins>.`,
+        `(see \`pyyol queue ${game} --list\`) or --bid <coins>.`,
     );
     return 2;
   }
@@ -914,6 +911,9 @@ async function cmdRoom(a: Args): Promise<number> {
   const roomId = String(resp.room_id ?? resp.match_id ?? "");
   console.log(`${OK} room created`);
   if (resp.bid) console.log(`    stake: ${resp.bid} coins each`);
+  if (game === "mafia") {
+    console.log("    mafia: 12 seats — house bots fill the rest when your friend joins");
+  }
   // The id gets its own line with nothing around it, because the next thing anyone does is
   // drag-select it to paste into a chat, and a line with prose on it selects badly.
   console.log();
@@ -1946,7 +1946,7 @@ Commands:
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
   publish --manifest <file>         optional: verify a hosted endpoint to play ranked while away
   queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
-  room create [--tier … | --bid N] [--game goofspiel]  private Goofspiel table (Mafia invite rooms not built)
+  room create [--tier … | --bid N] [--game goofspiel|mafia]  private invite table (Mafia: host+friend, bots fill)
   room join <room-id>               play a specific opponent by their room id
   wallet [--json]                   your coin balance + per-agent wallets
   replay <match_id> [--game] [--json]
