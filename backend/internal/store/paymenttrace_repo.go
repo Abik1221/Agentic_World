@@ -152,3 +152,30 @@ func scanEvents(rows rowScanner) ([]paymenttrace.Event, error) {
 	}
 	return out, rows.Err()
 }
+
+// MoneyTrace is the platform-wide attempt scoreboard. Failed counts are from
+// payment_events (the only place a mid-flow break is recorded). Completed
+// deposits, payouts, and open holds come from the ledger tables — the log is
+// never the authority on whether coins moved.
+func (r *PaymentTraceRepo) MoneyTrace(ctx context.Context) (paymenttrace.MoneyTrace, error) {
+	var s paymenttrace.MoneyTrace
+	err := r.db.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM payment_events WHERE status = 'failed')::int,
+		  (SELECT count(DISTINCT user_id) FROM payment_events WHERE status = 'failed')::int,
+		  (SELECT count(*) FROM payment_events WHERE status = 'failed' AND flow = 'deposit')::int,
+		  (SELECT count(*) FROM payment_events WHERE status = 'failed' AND flow = 'withdrawal')::int,
+		  (SELECT count(*) FROM payment_events WHERE status = 'failed' AND flow = 'topup')::int,
+		  (SELECT count(*) FROM ledger_transactions WHERE kind = 'topup')::bigint,
+		  (SELECT count(*) FROM withdrawals WHERE status = 'paid')::bigint,
+		  (SELECT count(*) FROM withdrawals WHERE status IN ('rejected', 'failed'))::bigint,
+		  (SELECT count(*) FROM withdrawals WHERE status IN ('requested', 'approved', 'processing', 'broadcasted'))::bigint,
+		  (SELECT count(*) FROM payout_holds WHERE status = 'held')::bigint
+	`).Scan(
+		&s.FailedAttempts, &s.UniqueUsersFailed,
+		&s.DepositFailures, &s.WithdrawalFailures, &s.TopupFailures,
+		&s.DepositsCompleted, &s.WithdrawalsPaid, &s.WithdrawalsRejected,
+		&s.WithdrawalsPending, &s.OpenPayoutHolds,
+	)
+	return s, err
+}

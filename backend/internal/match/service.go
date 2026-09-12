@@ -9,6 +9,7 @@ import (
 	"github.com/agent-arena/arena/internal/integrity"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/agent-arena/arena/internal/deadline"
@@ -77,8 +78,12 @@ type Service struct {
 	// presence; this one answers "is it answering RIGHT NOW" for one specific decision.
 	livecheck LivenessProber
 	driver    *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
-	clock     platform.Clock
-	cfg       Config
+	// driving is the set of match IDs that already have a ranked driver
+	// goroutine. maybeDrive is called from more than one activation path;
+	// two loops on the same table would double-submit turns.
+	driving sync.Map // matchID → struct{}
+	clock   platform.Clock
+	cfg     Config
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -739,8 +744,8 @@ func (s *Service) checkStake(ctx context.Context, bid int64) error {
 // A private room uses CheckJoinCoveringStake when the limiter knows it: the
 // sitting agent's wallet must cover the bid, without a leftover owner-treasury
 // balance or a min_wallet_reserve stacked on top. Ranked / open lobby still
-// use the full CheckJoin (bid + reserve). Everything else — stake floor,
-// verification, same-owner refusal — stays shared.
+// use the full CheckJoin (bid + reserve). Stake floor and same-owner
+// refusal stay shared. Playability does not — see checkPlayable.
 func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64, private bool) error {
 	if private {
 		type covering interface {
@@ -753,23 +758,40 @@ func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64
 	return s.limits.CheckJoin(ctx, agentPublicID, bid)
 }
 
+// checkPlayable is who may sit. The open lobby is ranked: it uses CheckEligible
+// (a live CLI socket, or a hosted verified endpoint for agents that are away).
+// A private room is not the ranked lobby. When the verifier exposes
+// CheckPrivateRoom, rooms use that instead — same live path as ranked (CLI
+// socket or hosted URL), not "verify your endpoint" and not auto-play-on
+// alone. Verifiers that omit the method keep the old shared gate.
+func (s *Service) checkPlayable(ctx context.Context, agentPublicID string, private bool) error {
+	if private {
+		type roomGate interface {
+			CheckPrivateRoom(context.Context, string) error
+		}
+		if g, ok := s.ver.(roomGate); ok {
+			return g.CheckPrivateRoom(ctx, agentPublicID)
+		}
+	}
+	return s.ver.CheckEligible(ctx, agentPublicID)
+}
+
 // CreateRoom opens a PRIVATE waiting match: a room reachable only by its public id.
 //
 // # Why this delegates rather than duplicating
 //
-// A room is an open match with one bit flipped. Every control that matters — the stake
-// floor, the spending limits, the verification gate, the escrow on join, the refusal to
-// join your own match — is identical, and the reason to route through the same function
-// is that this codebase has already been bitten by the alternative: the stake floor was
-// bypassed once because a second caller reached the escrow path around the check. A room
-// that reimplemented these would be a second place for that to happen, and the second
-// place is always the one nobody updates.
+// A room is an open match with one bit flipped. Stake floor, escrow on join,
+// and the refusal to join your own match stay on this path so they cannot
+// drift — this codebase has already been bitten by a second caller that
+// skipped the stake floor. Spending limits use the covering-stake check
+// (see checkSeat). Playability is the one control that must differ: rooms
+// are not the ranked lobby, so they must not inherit "verify your endpoint".
 //
 // # What the caller is buying
 //
-// Invisibility, and nothing else. The room does not skip a check, does not escape the
-// rake, and does not get a different settlement path. It is the open lobby minus the
-// listing.
+// Invisibility, plus a sit gate that accepts a local CLI agent the same way
+// it accepts a hosted verified one. The room does not escape the rake and
+// does not get a different settlement path.
 func (s *Service) CreateRoom(ctx context.Context, agentPublicID, ownerPublicID string, bid int64) (string, error) {
 	return s.createWaiting(ctx, agentPublicID, ownerPublicID, bid, true)
 }
@@ -780,10 +802,9 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 
 // createWaiting is the one implementation behind both the open lobby and rooms.
 //
-// `private` is the listing bit, plus the room money check (see checkSeat).
-// Every other control — the stake floor, verification, escrow on join, the
-// refusal to join your own match — stays on this one path so it cannot
-// drift between lobby and rooms.
+// `private` is the listing bit, plus the room money check (see checkSeat) and
+// the room playability gate (see checkPlayable). Stake floor, escrow on join,
+// and the refusal to join your own match stay shared so they cannot drift.
 func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicID string, bid int64, private bool) (string, error) {
 	if err := s.checkStake(ctx, bid); err != nil {
 		return "", err
@@ -794,7 +815,7 @@ func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicI
 	if err := s.checkSeat(ctx, agentPublicID, bid, private); err != nil {
 		return "", err
 	}
-	if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+	if err := s.checkPlayable(ctx, agentPublicID, private); err != nil {
 		return "", err
 	}
 	seed := make([]byte, 32)
@@ -1032,7 +1053,7 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if err := s.checkSeat(ctx, agentPublicID, m.Bid, m.Private); err != nil {
 		return AgentView{}, err
 	}
-	if err := s.ver.CheckEligible(ctx, agentPublicID); err != nil {
+	if err := s.checkPlayable(ctx, agentPublicID, m.Private); err != nil {
 		return AgentView{}, err
 	}
 

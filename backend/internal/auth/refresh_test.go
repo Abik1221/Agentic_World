@@ -42,6 +42,18 @@ func (m *memRepo) RevokeFamily(_ context.Context, fam string, at time.Time) erro
 	return nil
 }
 
+func (m *memRepo) RevokeAllForUser(_ context.Context, userPublicID string, at time.Time) (int, error) {
+	n := 0
+	for _, r := range m.rows {
+		if r.UserPublicID == userPublicID && r.RevokedAt == nil {
+			t := at
+			r.RevokedAt = &t
+			n++
+		}
+	}
+	return n, nil
+}
+
 func newSvc() (*RefreshService, *memRepo) {
 	repo := newMemRepo()
 	s := NewRefreshService(repo, NewJWT("test-signing-key-at-least-32-bytes-long!", time.Hour), 24*time.Hour)
@@ -113,6 +125,39 @@ func TestRefresh_TamperedSecretRejected(t *testing.T) {
 	id, _, _ := splitToken(raw)
 	if _, _, _, err := s.Rotate(ctx, id+".wrong-secret"); err != ErrRefreshInvalid {
 		t.Fatalf("expected ErrRefreshInvalid for bad secret, got %v", err)
+	}
+}
+
+func TestRefresh_RevokeAllForUserKillsEveryFamily(t *testing.T) {
+	s, _ := newSvc()
+	ctx := context.Background()
+	a, err := s.Issue(ctx, "usr_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Issue(ctx, "usr_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.Issue(ctx, "usr_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.RevokeAllForUser(ctx, "usr_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 2 {
+		t.Fatalf("revoked %d rows, want at least the two families for usr_1", n)
+	}
+	if _, _, _, err := s.Rotate(ctx, a); err != ErrRefreshInvalid {
+		t.Fatalf("first family should be dead, got %v", err)
+	}
+	if _, _, _, err := s.Rotate(ctx, b); err != ErrRefreshInvalid {
+		t.Fatalf("second family should be dead, got %v", err)
+	}
+	if _, _, _, err := s.Rotate(ctx, other); err != nil {
+		t.Fatalf("another user's session must survive: %v", err)
 	}
 }
 

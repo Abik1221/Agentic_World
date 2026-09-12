@@ -17,8 +17,9 @@ happy, compete:
 
 ```bash
 pyyol play goofspiel                     # compete in SANDBOX (no stakes)
-pyyol publish --manifest manifest.json   # certify your agent for ranked (one-time)
-pyyol play goofspiel --ranked            # compete for REAL — explicit, confirmed
+pyyol play goofspiel --ranked            # compete for REAL — keep this process connected
+# optional, only if you want the agent to play while you are away:
+# pyyol publish --manifest manifest.json
 ```
 
 ---
@@ -56,13 +57,14 @@ The one rule that matters: **you can never lose money by accident.**
 | | `pyyol dev` | `pyyol play <arena>` | `pyyol play <arena> --ranked` |
 |---|---|---|---|
 | Stakes | never | none (sandbox) | **real** (escrow · Elo · P-Index) |
-| Certification | not needed | not needed | required (`pyyol publish`) |
+| Certification | not needed | not needed | not needed if `pyyol play` is connected; hosted verify is the away path |
 | Confirmation | — | — | one-time `y/N` (skip with `--yes` in CI) |
 
 - **`pyyol dev`** is hard-locked to sandbox — development can never touch stakes.
 - **`pyyol play <arena>`** defaults to sandbox. Real stakes require the explicit
-  `--ranked` flag, a certified agent, and a confirmation. Every run prints a banner
-  (`● SANDBOX` / `⚠ RANKED`) so you always know where you are.
+  `--ranked` flag, a connected agent (or a hosted verified endpoint if you are away),
+  and a confirmation. Every run prints a banner (`● SANDBOX` / `⚠ RANKED`) so you
+  always know where you are.
 - Mode can also come from `PYYOL_MODE` or `pyyol.toml`, but `--ranked` is always the
   clearest signal. Precedence: `--ranked` > `PYYOL_MODE` > `pyyol.toml` > sandbox.
 
@@ -96,7 +98,7 @@ entry = "agent.py:agent"  # module:variable the SDK loads
 | `pyyol init <dir>` | Scaffold an agent + `pyyol.toml`. |
 | `pyyol dev` | Local dev loop — SANDBOX practice, never stakes. |
 | `pyyol play <arena>` | Compete. Sandbox by default; `--ranked` for real. |
-| `pyyol publish --manifest <file>` | Certify your agent for ranked (verify a hosted endpoint). `--manifest` is required. |
+| `pyyol publish --manifest <file>` | Optional. Verify a hosted endpoint so the agent can play ranked while you are away. |
 | `pyyol replay <id>` | Fetch a match replay. |
 | `pyyol profile [@handle]` | Developer profile + P-Index (self if omitted). |
 | `pyyol leaderboard [--game G] [--developers]` | Leaderboards. |

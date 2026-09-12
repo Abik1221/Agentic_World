@@ -410,7 +410,7 @@ async function cmdInit(a: Args): Promise<number> {
 
 // ${name} — implement step(); initialize()/shutdown() are optional.
 // Run:  pyyol dev            (practice, SANDBOX — no stakes)
-//       pyyol play ${arena}  (compete; add --ranked for real, after \`pyyol publish\`)
+//       pyyol play ${arena}  (compete; add --ranked for real stakes; keep it connected)
 class ${cls} extends Adapter {
   name = "${name}";
   supportedGames = ["${arena}"];
@@ -605,21 +605,24 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
   });
 
   // Kick match(es) after the socket registers; retry while it comes online.
-  const matches = Math.max(1, num(a, "matches", devLocked ? 3 : 1));
+  const matches = num(a, "matches", devLocked ? 3 : 1);
   setTimeout(async () => {
     if (m === mode.RANKED) {
       const tier = str(a, "tier") || "low";
-      let [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
-      if ((st === 403 || st === 400) && String(resp.code ?? "").includes("certified")) {
-        const owner = c?.accessToken || "";
-        if (owner && agentId && (await certifyConnected(base, agentId, owner, [arena]))) {
-          [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
-        }
-      }
+      const [st, resp] = await enqueueRanked(base, token, arena, { game: arena, tier }, {
+        agentId,
+        ownerToken: c?.accessToken || "",
+      });
       if (st === 200 || st === 202) console.log(`  ${OK} queued for RANKED ${arena} (tier ${tier})`);
-      else if (String(resp.code ?? "").includes("certified"))
-        console.log(`  ${BAD} agent not certified for ranked — run \`pyyol publish\` first.`);
+      else if (rankedUnreachable(resp))
+        console.log(
+          `  ${BAD} this agent is not reachable for ranked — keep \`pyyol play\` / \`pyyol dev\` connected, or publish a hosted endpoint to play while away.`,
+        );
       else console.log(`  ${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
+      return;
+    }
+    if (matches <= 0) {
+      console.log(`  ${OK} connected — waiting for a match (no sandbox auto-start)`);
       return;
     }
     for (let i = 0; i < matches; i++) {
@@ -815,17 +818,16 @@ async function cmdQueue(a: Args): Promise<number> {
     console.error(`${BAD} choose a stake: --tier <low|mid|high> (see \`pyyol queue ${game} --list\`) or --bid <coins>`);
     return 2;
   }
-  let [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
-  if ((st === 403 || st === 400) && String(resp.code ?? resp.error ?? "").includes("certified")) {
-    const owner = c?.accessToken || str(a, "token") || "";
-    const agent = c?.agentId || str(a, "agent") || "";
-    if (owner && agent && (await certifyConnected(base, agent, owner, [game]))) {
-      [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
-    }
-  }
+  const [st, resp] = await enqueueRanked(base, token, game, body, {
+    agentId: c?.agentId || str(a, "agent") || "",
+    ownerToken: c?.accessToken || str(a, "token") || "",
+  });
   if (st !== 200 && st !== 202) {
     const code = String(resp.code ?? resp.error ?? "");
-    if (code.includes("certified")) console.error(`${BAD} agent not certified — run \`pyyol publish --manifest <file>\` first.`);
+    if (code.includes("certified") || code.includes("playable") || code.includes("not_connected"))
+      console.error(
+        `${BAD} this agent is not reachable for ranked. Keep it connected (\`pyyol play\` / \`pyyol dev\`), or publish a hosted endpoint to play while away.`,
+      );
     else if (code.includes("balance") || code.includes("insufficient")) console.error(`${BAD} not enough coins — fund your wallet (see \`pyyol wallet\`).`);
     else console.error(`${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
     return 1;
@@ -841,9 +843,11 @@ async function cmdQueue(a: Args): Promise<number> {
  * want THEIR two agents to play each other. One creates it, sends the id, the other joins.
  *
  * Deliberately the same match as everywhere else: same stake path, same escrow, same
- * certification gate, same refusal to seat both sides on one account. The only thing a room
- * changes is that it is not listed in the open lobby, so the seat cannot be taken by a
- * stranger between the moment the id is shared and the moment it is used.
+ * refusal to seat both sides on one account. The sit gate is the same live path as
+ * ranked: a connected CLI agent, or a hosted verified endpoint. Auto-play alone is
+ * not enough — start `pyyol play` first, then create the room. The only listing
+ * change is that the room is not in the open lobby, so the seat cannot be taken by
+ * a stranger.
  */
 async function cmdRoom(a: Args): Promise<number> {
   const c = creds.load();
@@ -875,7 +879,7 @@ async function cmdRoom(a: Args): Promise<number> {
     const [st, resp] = await apiPost(`${base}/v1/lobby/join`, token, { match_id: id });
     if (st !== 200) return roomError(st, resp, "join");
     console.log(`${OK} joined room ${id}`);
-    console.log("    keep your agent connected (`pyyol run`) — it plays automatically.");
+    console.log("    keep your agent connected (`pyyol play`) — it plays automatically.");
     console.log(`    watch it:  pyyol watch ${id}`);
     return 0;
   }
@@ -903,7 +907,7 @@ async function cmdRoom(a: Args): Promise<number> {
   console.log();
   console.log("    send that to the other player. they run:");
   console.log(`        pyyol room join ${roomId}`);
-  console.log("    keep your agent connected (`pyyol run`) — it plays as soon as they join.");
+  console.log("    keep your agent connected (`pyyol play`) — it plays as soon as they join.");
   return 0;
 }
 
@@ -921,8 +925,12 @@ function roomError(st: number, resp: Record<string, unknown>, what: string): num
       `${BAD} that is your own room — a match needs two different accounts. ` +
         `Send the id to the other player.`,
     );
-  } else if (code.includes("certified")) {
-    console.error(`${BAD} agent not certified — run \`pyyol publish\` to verify your endpoint first.`);
+  } else if (code.includes("playable") || code.includes("not_connected") || code.includes("certified")) {
+    console.error(
+      `${BAD} this agent is not reachable. Start \`pyyol play\` / \`pyyol dev\` first so it is connected, ` +
+        `then open the room. A hosted deploy also works. Auto-play alone is not a play path. ` +
+        `Private rooms do not need ranked endpoint verification.`,
+    );
   } else if (code.includes("balance") || code.includes("insufficient")) {
     console.error(`${BAD} not enough coins to stake this room.`);
   } else if (code.includes("not_found")) {
@@ -1212,7 +1220,41 @@ async function cmdUpdate(): Promise<number> {
   return 0;
 }
 
-/** Certify a connected-ranked manifest (no hosted URL) so queue/play can sit. */
+function rankedUnreachable(resp: { code?: unknown; error?: unknown } | null | undefined): boolean {
+  const code = String(resp?.code ?? resp?.error ?? "");
+  return ["certified", "playable", "not_connected", "offline"].some((s) => code.includes(s));
+}
+
+/** POST the ranked queue, waiting for a just-started local socket. Never falls through to sandbox. */
+export async function enqueueRanked(
+  base: string,
+  token: string,
+  game: string,
+  body: Record<string, unknown>,
+  opts: { agentId?: string; ownerToken?: string; attempts?: number; pauseMs?: number } = {},
+): Promise<[number, any]> {
+  const attempts = Math.max(1, opts.attempts ?? 6);
+  const pauseMs = opts.pauseMs ?? 1500;
+  let last: [number, any] = [0, {}];
+  for (let i = 0; i < attempts; i++) {
+    let [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
+    if ((st === 403 || st === 400) && String(resp.code ?? resp.error ?? "").includes("certified")) {
+      if (opts.ownerToken && opts.agentId && (await certifyConnected(base, opts.agentId, opts.ownerToken, [game]))) {
+        [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
+      }
+    }
+    if (st === 200 || st === 202) return [st, resp];
+    last = [st, resp];
+    if (rankedUnreachable(resp) || st === 409 || st === 425) {
+      if (i + 1 < attempts && pauseMs > 0) await new Promise((r) => setTimeout(r, pauseMs));
+      continue;
+    }
+    break;
+  }
+  return last;
+}
+
+/** Optional hosted/connected-ranked certify. A live socket is enough to sit. */
 async function certifyConnected(api: string, agent: string, ownerToken: string, games: string[]): Promise<boolean> {
   if (!api || !agent || !ownerToken) return false;
   const ag = encodeURIComponent(agent);
@@ -1888,7 +1930,7 @@ Commands:
   init <dir> [--arena goofspiel|mafia] [--framework F] [--name N]
   dev [--matches N]                 local dev loop — SANDBOX, no stakes
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
-  publish --manifest <file>         certify your agent for ranked
+  publish --manifest <file>         optional: verify a hosted endpoint to play ranked while away
   queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
   room create [--tier low|mid|high | --bid N]      open a PRIVATE staked table
   room join <room-id>               play a specific opponent by their room id

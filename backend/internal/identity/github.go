@@ -74,6 +74,11 @@ func (s *Service) SignUpOrLoginGitHub(ctx context.Context, id, login, email, nam
 	if err != nil {
 		return GitHubLoginResult{}, err
 	}
+	if !res.Created {
+		if err := s.rejectIfBanned(ctx, res.UserPublicID); err != nil {
+			return GitHubLoginResult{}, err
+		}
+	}
 	dash, err := s.jwt.Issue(res.UserPublicID)
 	if err != nil {
 		return GitHubLoginResult{}, err

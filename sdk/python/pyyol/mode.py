@@ -5,8 +5,9 @@ Two modes:
 * ``sandbox`` (default, SAFE): practice / open-lobby play. No stakes, no
   certification needed. ``pyyol dev`` is hard-locked to this.
 * ``ranked`` (real stakes): escrow + Elo + P-Index. Reachable ONLY via an explicit
-  ``pyyol play <arena> --ranked``, gated on a certified agent, shown with a loud red
-  banner, and confirmed once. You can never enter ranked by accident.
+  ``pyyol play <arena> --ranked``, gated on a reachable agent (connected CLI or
+  hosted verify), shown with a loud red banner, and confirmed once. You can never
+  enter ranked by accident.
 
 Precedence for ``play`` (highest wins): ``--ranked`` flag → ``PYYOL_MODE=ranked``
 env → ``pyyol.toml [mode]`` → default ``sandbox``. This mirrors Stripe's test-vs-live

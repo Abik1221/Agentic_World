@@ -9,6 +9,10 @@ type Overview = {
   traces_total: number;
   events_total: number;
   errors: number;
+  errors_24h?: number;
+  errors_lifetime?: number;
+  errors_message_only?: number;
+  error_window?: string;
   p95_latency_ms: number;
   total_tokens: number;
   estimated_cost: number;
@@ -105,8 +109,13 @@ export default async function OverviewPage() {
       {overview ? (
         <section className="cards">
           <div className="card">
-            <div className="card-label">Errors</div>
+            <div className="card-label">Errors ({overview.error_window || "24h"})</div>
             <div className="card-value">{overview.errors.toLocaleString()}</div>
+            {overview.errors_lifetime != null && overview.errors_lifetime !== overview.errors ? (
+              <p style={{ color: "var(--muted)", fontSize: "0.75rem", margin: "0.35rem 0 0" }}>
+                {overview.errors_lifetime.toLocaleString()} lifetime terminal
+              </p>
+            ) : null}
           </div>
           <div className="card">
             <div className="card-label">P95</div>
@@ -122,6 +131,12 @@ export default async function OverviewPage() {
       )}
       {overview && overview.traces_total === 0 ? (
         <p className="empty-state">No telemetry ingested yet. Zeros above are real, not placeholders.</p>
+      ) : null}
+      {overview && (overview.errors_message_only ?? 0) > 0 ? (
+        <p className="empty-state">
+          {overview.errors_message_only!.toLocaleString()} completed traces still carry leftover error
+          text from a retried span — those are not counted as health errors.
+        </p>
       ) : null}
 
       <section className="panel">

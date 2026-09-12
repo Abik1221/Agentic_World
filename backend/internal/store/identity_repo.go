@@ -988,3 +988,77 @@ func (r *IdentityRepo) CreatePlatformAgent(ctx context.Context, in identity.Plat
 		Slug: in.AgentSlug, Description: in.Description, Status: "unverified", Limits: in.Limits,
 	}, nil
 }
+
+func (r *IdentityRepo) UserStatus(ctx context.Context, userPublicID string) (string, error) {
+	var status string
+	err := r.db.QueryRow(ctx,
+		`SELECT status FROM users WHERE public_id = $1`, userPublicID).Scan(&status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", identity.ErrNotFound
+		}
+		return "", err
+	}
+	return status, nil
+}
+
+func (r *IdentityRepo) SetUserStatus(ctx context.Context, userPublicID, next string) (prev string, err error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM users WHERE public_id = $1 FOR UPDATE`, userPublicID).Scan(&prev); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", identity.ErrNotFound
+		}
+		return "", err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE users SET status = $2, updated_at = now() WHERE public_id = $1`,
+		userPublicID, next); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return prev, nil
+}
+
+func (r *IdentityRepo) ListBannedUserIDs(ctx context.Context) ([]string, error) {
+	rows, err := r.db.Query(ctx, `SELECT public_id FROM users WHERE status = 'banned'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (r *IdentityRepo) AgentIDsByOwner(ctx context.Context, userPublicID string) ([]string, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT a.public_id FROM agents a
+		 JOIN users u ON u.id = a.owner_user_id
+		 WHERE u.public_id = $1`, userPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

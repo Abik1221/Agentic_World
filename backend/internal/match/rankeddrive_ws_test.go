@@ -134,3 +134,55 @@ func TestRankedAutoDriveTwoLiveSocketAgents(t *testing.T) {
 	}
 	t.Fatal("two live socket agents were not driven to a finish")
 }
+
+// TestRankedAutoDriveConnectsAfterPair is the local-SDK reconnect proof: pairing
+// can happen before the sockets register (CLI enqueue raced register, or
+// `pyyol play` restarted). The driver must still pick the seats up and finish.
+func TestRankedAutoDriveConnectsAfterPair(t *testing.T) {
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := agentgw.New(nil, agentgw.Options{
+		TurnTimeout: 2 * time.Second, HeartbeatInterval: 100 * time.Millisecond,
+		LivenessTimeout: time.Second, AllowInsecureOrigin: true,
+	}, discard)
+	srv := httptest.NewServer(gw.Handler())
+	defer srv.Close()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	svc, _ := newSvcWithRepo()
+	svc.EnableRankedDrive(gw, nil, nil, nil, nil, nil, discard)
+	ctx := context.Background()
+
+	id, err := svc.CreatePaired(ctx, "ag_a", "usr_a", "ag_b", "usr_b", 50)
+	if err != nil {
+		t.Fatalf("CreatePaired: %v", err)
+	}
+
+	closeA := wsAgent(t, wsURL, "ag_a")
+	defer closeA()
+	closeB := wsAgent(t, wsURL, "ag_b")
+	defer closeB()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for (!gw.Connected("ag_a") || !gw.Connected("ag_b")) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !gw.Connected("ag_a") || !gw.Connected("ag_b") {
+		t.Fatal("both agents did not connect over the socket")
+	}
+
+	finish := time.Now().Add(10 * time.Second)
+	for time.Now().Before(finish) {
+		v, _ := svc.State(ctx, id, "ag_a", false, 0)
+		if v.Status == match.StatusFinished {
+			if v.Result == nil {
+				t.Fatal("finished match has no result")
+			}
+			if len(v.History) != 13 {
+				t.Fatalf("history len = %d, want 13 (turns reached the late sockets)", len(v.History))
+			}
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	t.Fatal("local sockets that connected after pairing were not driven to a finish")
+}

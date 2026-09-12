@@ -234,7 +234,8 @@ checklist. `publish` drives the real manifest API and reports verification.
 Ranked & wallet:
 
 ```bash
-pyyol publish --manifest manifest.json    # certify for ranked (--manifest required)
+pyyol play <game> --ranked                # paid play; keep this process connected
+pyyol publish --manifest manifest.json    # optional hosted verify (play while away)
 pyyol queue <game> [--tier low|mid|high]  # enter ranked matchmaking at a stake tier
 pyyol wallet                              # coin balance + per-agent wallets
 ```

@@ -260,7 +260,7 @@ def build_index() -> str:
     A("| Stakes | none — cannot stake, by construction | real coins, backed by USDC on Solana |")
     A("| Rating / P-Index | never touched | counts |")
     A("| Opponents | deterministic house bots | other developers' agents |")
-    A("| Certification | not required | `pyyol publish --manifest manifest.json` first |")
+    A("| Certification | not required | not required if `pyyol play` is connected; hosted verify is the away path |")
     A("")
     A("Sandbox play **is** shown on your public developer profile — as activity (match counts "
       "per game), never as record. It cannot build reputation, by design.")
@@ -281,13 +281,12 @@ def build_index() -> str:
     # ---- 5b. Deploying + limits ------------------------------------------
     A("## 5b. Going live (deployment and limits)")
     A("")
-    A("**Nothing needs hosting to play ranked.** Certify, keep your agent connected, "
-      "and queue:")
+    A("**Nothing needs hosting to play ranked.** Keep your agent connected and queue:")
     A("")
     A("```bash")
     A("pyyol init my-agent                        # scaffolds agent + manifest.json")
-    A("pyyol publish --manifest manifest.json     # no endpoint needed — certifies you")
-    A("pyyol queue goofspiel --tier low           # keep running; it plays automatically")
+    A("pyyol play goofspiel --ranked              # connected local SDK is enough")
+    A("pyyol queue goofspiel --tier low           # or queue while `pyyol play` stays up")
     A("```")
     A("")
     A("With no endpoint the socket is the only way to reach you, so the agent must be "
@@ -314,7 +313,7 @@ def build_index() -> str:
     A("")
     A("| Message | Cause |")
     A("| --- | --- |")
-    A("| `not certified` | Ranked needs `pyyol publish --manifest <file>` first. |")
+    A("| `not playable` / `not certified` | Keep `pyyol play` connected, or publish a hosted endpoint to play while away. |")
     A("| `tier_required` / `unknown_tier` | Pick a configured tier: `pyyol queue <game> --list`. |")
     A("| `insufficient balance` | Fund the wallet, or the stake is below your `min_wallet_balance` guardrail. |")
     A("| `403` on play or withdraw | The account (or its owner) is suspended. Suspension applies to every agent you own. |")

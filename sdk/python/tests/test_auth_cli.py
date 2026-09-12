@@ -103,7 +103,7 @@ def _creds(tmp_path, monkeypatch, access="stale-jwt", refresh="rt"):
 
 
 def test_owner_token_refreshes_a_stale_dashboard_jwt(tmp_path, monkeypatch):
-    """`pyyol publish` is the required step before a ranked match, and it read
+    """`pyyol publish` is the optional hosted-verify step, and it read
     creds.access_token raw. The dashboard JWT is short-lived, so a developer who logged in
     in the morning and published in the afternoon sent an expired token and was told to log
     in again — on the one path that leads to competing for real."""

@@ -279,6 +279,10 @@ func run() error {
 		return err
 	}
 	authn := auth.NewAuthenticator(idSvc, jwt, platformAuth, log)
+	authn.SetAccountGate(idSvc)
+	if err := idSvc.LoadBanned(ctx); err != nil {
+		log.Warn("identity: warming ban index failed; login will still check users.status", "error", err)
+	}
 
 	// Privy is the Beta login front door (social/email/wallet). Its ES256 access
 	// token is verified here and exchanged for a dashboard JWT at /v1/auth/privy.
@@ -461,6 +465,7 @@ func run() error {
 	// over the socket via agentgw.*Decider, falling back deterministically if an
 	// agent is absent/slow — the same guarantee the HTTP push client gives.
 	agentGateway := newAgentGateway(manifestSvc, idSvc, idSvc, authn, platformCfg, lens, log, cfg.AgentReconnectGrace)
+	idHandler.SetKicker(agentGateway)
 
 	// Domain event bus (transactional outbox): producers emit facts in their own
 	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone
@@ -961,7 +966,6 @@ func run() error {
 	mafiaSvc.SetStakeFloor(gameStakesSvc)
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
-
 	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
 	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
 	// bots (seeded by migration 0063), engine-driven in the drive loop — never LLM,
@@ -1219,11 +1223,14 @@ func run() error {
 	// Match lifecycle: real engine + persistence + per-match Redis lock, real coin
 	// escrow/settlement + limit enforcement, live broadcast, ELO at finalize, and
 	// engagement hooks (clips + notifications) fired off the hot path.
+	// Pointer so autoplay can be attached after the repo exists. Rooms consult
+	// it; ranked sit uses the live socket or a hosted verify.
+	matchVer := &verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected}
 	matchSvc := match.New(
 		matchRepo,
 		store.NewLocker(st.Redis),
 		walletSvc, walletSvc, hub,
-		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected},
+		matchVer,
 		raterAdapter{ratingSvc},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
@@ -1517,12 +1524,13 @@ func run() error {
 		matchPairer{matchSvc}, goofspielRater{ratingSvc}, clock,
 		matchmaking.Config{}, log, metrics.Registry(),
 	)
-	// Ranked queue entry gate: certified AND not suspended. Enforcing suspension
-	// here (not just at CreatePaired) means a suspended agent fails fast at enqueue
-	// with a specific error, instead of getting a misleading 202 and squatting a
-	// `waiting` slot forever for a pairing that CheckEligible would always reject —
-	// the same fail-fast principle SetAffordability applies to broke/over-limit agents.
-	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel), ver: verSvc})
+	// Ranked queue entry gate: playable (local socket or hosted verify) AND not
+	// suspended. Enforcing suspension here (not just at CreatePaired) means a
+	// suspended agent fails fast at enqueue with a specific error, instead of
+	// getting a misleading 202 and squatting a `waiting` slot forever for a pairing
+	// that CheckEligible would always reject — the same fail-fast principle
+	// SetAffordability applies to broke/over-limit agents.
+	matchmakingSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, game: string(devplatform.GameGoofspiel), ver: verSvc, conn: agentGateway.Connected})
 	matchmakingSvc.SetAffordability(walletSvc) // reject unaffordable/over-limit stakes at enqueue (no stuck-waiting)
 	// Reject an offline agent at enqueue so it never gets matched and forfeit-bleeds its
 	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
@@ -1614,7 +1622,7 @@ func run() error {
 		groupmatch.Config{ShortFormAfter: cfg.GroupShortFormAfter},
 		log, metrics.Registry(),
 	)
-	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, ver: verSvc}) // certified + not suspended + not flagged (game guarded by the queue)
+	groupSvc.SetEligibility(rankedEntryGate{cert: manifestSvc, susp: platformCfg, ver: verSvc, conn: agentGateway.Connected}) // local socket or hosted verify + not suspended + not flagged
 	groupSvc.SetAffordability(walletSvc)
 	groupSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	groupHandler := groupmatch.NewHandler(groupSvc, authn)
@@ -1625,6 +1633,7 @@ func run() error {
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
+	matchVer.SetAutoplay(autoplayRepo)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
 	// Fail fast at enable time when an owner points ranked auto-play at an agent that
 	// doesn't declare the (Goofspiel-only) ranked game — instead of silently never
@@ -1727,7 +1736,7 @@ func run() error {
 			rankedQueueAdapter{mm: matchmakingSvc},
 			sandboxStarterAdapter{
 				throttle: autoplay.NewSandboxThrottle(5 * time.Minute),
-				goof: sandboxSvc, mafia: mafiaSvc,
+				goof:     sandboxSvc, mafia: mafiaSvc,
 			},
 			autoplay.Config{},
 			log,
@@ -2121,18 +2130,58 @@ func (p profileManifest) Card(ctx context.Context, agentPublicID string) (*profi
 	return card, nil
 }
 
-// verifierAdapter bridges verification.Service to match.Verifier and adds the
-// certification gate: an agent must have an active, endpoint-verified manifest to
-// enter ranked play. cert may be nil (gate disabled).
+// certLooker is the slice of manifest.Service ranked sit and the queue need:
+// is this agent hosted-verified, and (for the queue) does it declare the game?
+// *manifest.Service satisfies it; tests use a stub.
+type certLooker interface {
+	RequireCertified(ctx context.Context, agentPublicID string) error
+	PlayTarget(ctx context.Context, agentPublicID string) (agentclient.Target, bool, error)
+	SupportsGame(ctx context.Context, agentPublicID, game string) (supported, found bool, err error)
+}
+
+// sitReachable is the ranked reachability pair: a live CLI socket, or a
+// hosted verified endpoint for agents that are away. Cert gate disabled
+// (cert == nil) is not stricter than before — hostedVerified is then true.
+func sitReachable(ctx context.Context, cert certLooker, conn func(string) bool, agentPublicID string) (connected, hostedVerified bool) {
+	connected = conn != nil && conn(agentPublicID)
+	if cert == nil {
+		return connected, true
+	}
+	if err := cert.RequireCertified(ctx, agentPublicID); err != nil {
+		return connected, false
+	}
+	if _, hasEndpoint, err := cert.PlayTarget(ctx, agentPublicID); err == nil && hasEndpoint {
+		return connected, true
+	}
+	return connected, false
+}
+
+// verifierAdapter bridges verification.Service to match.Verifier. Ranked sit
+// accepts a connected local CLI socket or a hosted verified endpoint — not both.
+// cert may be nil (gate disabled).
 type verifierAdapter struct {
 	v    *verification.Service
-	cert *manifest.Service
+	cert certLooker
 	susp *platformcfg.Provider // Super Admin suspension list (may be nil)
-	// conn reports whether an agent currently holds a live socket. Needed because a
-	// CONNECTED-RANKED agent declares no hosted endpoint: its socket is the only way
-	// to reach it, so staking it while disconnected would forfeit every turn to the
-	// engine's fallback and lose the match without a decision being made.
+	// conn reports whether an agent currently holds a live socket. A connected
+	// `pyyol play` / `dev` process is enough to sit ranked; hosting is the
+	// alternative when that process is away.
 	conn func(agentPublicID string) bool
+	// autoplay is optional. Private rooms treat "auto-play on" as playable
+	// without a hosted URL — the same local path as a connected CLI agent.
+	autoplay autoplayLooker
+}
+
+// autoplayLooker is the slice of autoplay.Repo rooms need: is this agent on?
+type autoplayLooker interface {
+	Get(ctx context.Context, agentPublicID string) (autoplay.Setting, bool, error)
+}
+
+// SetAutoplay attaches auto-play lookup for the private-room sit gate.
+func (a *verifierAdapter) SetAutoplay(r autoplayLooker) {
+	if a != nil {
+		a.autoplay = r
+	}
 }
 
 func (a verifierAdapter) Record(ctx context.Context, agentPublicID string, matchPublicID *string, responseMs int) {
@@ -2146,53 +2195,76 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 	if a.susp != nil && a.susp.Get().IsSuspended(agentPublicID) {
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
 	}
-	// Certification gate (the wedge): no ranked play without a verified agent.
-	if a.cert != nil {
-		if err := a.cert.RequireCertified(ctx, agentPublicID); err != nil {
+	if a.v != nil {
+		e, err := a.v.CheckEligibility(ctx, agentPublicID)
+		if err != nil {
 			return err
 		}
-	}
-	// Connected-ranked: no endpoint means the socket is the ONLY way to reach this
-	// agent, so it must be connected right now. Hosting buys you the freedom to be
-	// away; without it, being away means losing a stake to fallback moves you never
-	// chose. Refuse the stake instead of taking it and playing the agent as a corpse.
-	if a.cert != nil && a.conn != nil {
-		if _, hasEndpoint, err := a.cert.PlayTarget(ctx, agentPublicID); err == nil && !hasEndpoint && !a.conn(agentPublicID) {
-			return httpx.NewError(http.StatusConflict, "agent_not_connected",
-				"This agent has no hosted endpoint, so it can only play ranked while connected. "+
-					"Start it (`pyyol play <game> --ranked` keeps it connected), or add an endpoint "+
-					"to your manifest to play while you are away: https://pyyol.com/docs/deploy.md")
+		if !e.Eligible {
+			return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
 		}
 	}
-	e, err := a.v.CheckEligibility(ctx, agentPublicID)
-	if err != nil {
-		return err
+	// Local CLI socket is enough. Hosted verify is the away alternative.
+	// Do not require both; refuse only when nothing can play the seat.
+	connected, hosted := sitReachable(ctx, a.cert, a.conn, agentPublicID)
+	if rankedPlayable(connected, hosted) {
+		return nil
 	}
-	if !e.Eligible {
-		return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
+	return errRankedNotPlayable()
+}
+
+// CheckPrivateRoom is the sit gate for Play a friend / `pyyol room create`.
+//
+// A private room is not the ranked lobby (JWT + covering stake is the money
+// check), but it is still a staked table. Playability is the same live path
+// as ranked: a connected CLI socket, or a hosted verified URL. A leftover
+// no-URL cert or auto-play-on without a socket used to sit the room and then
+// forfeit — "Open room before play". Reusing ErrNotCertified ("Verify your
+// agent's endpoint before entering ranked play.") is still the wrong copy.
+func (a *verifierAdapter) CheckPrivateRoom(ctx context.Context, agentPublicID string) error {
+	if a.susp != nil && a.susp.Get().IsSuspended(agentPublicID) {
+		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
 	}
-	return nil
+	if a.v != nil {
+		e, err := a.v.CheckEligibility(ctx, agentPublicID)
+		if err != nil {
+			return err
+		}
+		if !e.Eligible {
+			return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
+		}
+	}
+	connected, hosted := sitReachable(ctx, a.cert, a.conn, agentPublicID)
+	if privateRoomPlayable(connected, hosted) {
+		return nil
+	}
+	return errPrivateRoomNotPlayable()
 }
 
 // rankedEntryGate is the matchmaking.Eligibility gate: an agent may enter the
-// ranked queue only if it is not Super-Admin-suspended, is certified, and is not
-// flagged for review. The authoritative money/play gate is still CreatePaired
-// (verifierAdapter.CheckEligible); this fails those agents fast at enqueue rather than
-// letting them sit in `waiting` for a pairing that can never escrow.
+// ranked queue only if it is not Super-Admin-suspended, is playable (local
+// socket or hosted verify), and is not flagged for review. The authoritative
+// money/play gate is still CreatePaired (verifierAdapter.CheckEligible); this
+// fails those agents fast at enqueue rather than letting them sit in `waiting`
+// for a pairing that can never escrow.
 type rankedEntryGate struct {
-	cert *manifest.Service
+	cert certLooker
 	susp *platformcfg.Provider // may be nil (suspension list unavailable)
 	game string                // the only game the ranked queue matchmakes; "" ⇒ skip the game check
 	// ver is the timing/verification check. Nil ⇒ skipped, which is the previous behaviour.
 	ver *verification.Service
+	// conn is the live CLI socket. Ranked queue treats it as first-class playable
+	// — hosted endpoint verify is the away alternative, not a prerequisite.
+	conn func(agentPublicID string) bool
 }
 
 func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID string) error {
 	if g.susp != nil && g.susp.Get().IsSuspended(agentPublicID) {
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
 	}
-	if err := g.cert.RequireCertified(ctx, agentPublicID); err != nil {
-		return err
+	connected, hosted := sitReachable(ctx, g.cert, g.conn, agentPublicID)
+	if !rankedPlayable(connected, hosted) {
+		return errRankedNotPlayable()
 	}
 	// Flagged for review, checked HERE and not only at pairing time.
 	//
@@ -2221,15 +2293,15 @@ func (g rankedEntryGate) RequireCertified(ctx context.Context, agentPublicID str
 		}
 	}
 	// Ranked matchmaking runs one game (Goofspiel). Reject an agent whose manifest
-	// doesn't declare it, so a Mafia/Monopoly-only agent can't be enqueued into the
-	// Goofspiel queue and forfeit-bleed its stake. Certified ⇒ an active manifest
-	// exists, so !supported here means it genuinely lacks the game.
-	if g.game != "" {
-		supported, _, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
+	// declares a different game, so a Mafia/Monopoly-only agent can't be enqueued
+	// into the Goofspiel queue and forfeit-bleed its stake. No manifest yet
+	// (!found) is fine for a connected local SDK — the CLI already chose the game.
+	if g.game != "" && g.cert != nil {
+		supported, found, err := g.cert.SupportsGame(ctx, agentPublicID, g.game)
 		if err != nil {
 			return err
 		}
-		if !supported {
+		if found && !supported {
 			return errRankedGameUnsupported(g.game)
 		}
 	}
@@ -2322,7 +2394,6 @@ func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []group
 	c.svc.DriveMatchedSeats(ctx, id, real, all)
 	return id, nil
 }
-
 
 // autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
 // ranked auto-play for the game it would play — that its manifest declares that game
@@ -2579,7 +2650,6 @@ type awarderFunc func(ctx context.Context, agentPublicID string) error
 func (f awarderFunc) AwardVerified(ctx context.Context, agentPublicID string) error {
 	return f(ctx, agentPublicID)
 }
-
 
 // mafiaActRecorder adapts the store to the shape mafia asks for, so internal/mafia does not
 // import internal/store. Same reasoning as the game services generally: the engine never imports persistence.

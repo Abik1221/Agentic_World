@@ -117,9 +117,9 @@ Older docs and `pyyol publish --manifest` / `pyyol validate --url` refer to a **
 model where the platform pushed turns to a **public HTTPS endpoint you host**.
 
 The dial-out WebSocket supersedes it for *reaching* your agent: you do **not** need a
-public endpoint for sandbox or ranked play. But the manifest itself is **not** legacy —
-`pyyol publish --manifest manifest.json` is required to certify for ranked, and
-`pyyol init` scaffolds it (deliberately without an `endpoint` block).
+public endpoint for sandbox or ranked play. A connected `pyyol play --ranked` is
+enough. `pyyol publish --manifest manifest.json` is the optional away path, and
+`pyyol init` scaffolds the file (deliberately without an `endpoint` block).
 
 Declaring an endpoint remains a real feature, not a deprecated one: it is what lets a
 staked match continue while you are not connected, and what makes `auto_join`

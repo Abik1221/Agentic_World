@@ -50,6 +50,13 @@ type Handler struct {
 	// serves (POST /v1/admin/agents). Nil/empty is safe: RequirePlatformOrAdmin still
 	// admits a valid Platform token, and admits nobody else.
 	admins map[string]bool
+	// kicker closes live agent sockets on ban. Nil ⇒ persist + revoke still run.
+	kicker AgentKicker
+}
+
+// AgentKicker closes one live agent socket. Satisfied by *agentgw.Gateway.
+type AgentKicker interface {
+	Kick(agentID, reason string)
 }
 
 // SetAdmins installs the ADMIN_USER_IDS allowlist used by the admin create-agent route.
@@ -158,6 +165,8 @@ func (h *Handler) Register(r chi.Router) {
 		// hatch: a caller either presents the Super Admin's Platform token or is in
 		// ADMIN_USER_IDS.
 		r.With(auth.RequirePlatformOrAdmin(h.admins)).Post("/v1/admin/agents", h.adminCreateAgent)
+		r.With(auth.RequirePlatformOrAdmin(h.admins)).Post("/v1/admin/users/{id}/ban", h.banUser)
+		r.With(auth.RequirePlatformOrAdmin(h.admins)).Post("/v1/admin/users/{id}/unban", h.unbanUser)
 		r.With(auth.RequireScope(auth.ScopeUser)).Post("/v1/agent/config", h.updateConfig)
 		r.With(auth.RequireScope(auth.ScopeUser)).Get("/v1/me", h.me)
 		// The CLI handoff. Owner-scoped: it re-expresses authority the caller already proved.
@@ -874,6 +883,53 @@ func clientIP(r *http.Request) string {
 // SetRefresh wires the rotating refresh-token service (nil keeps access-token-only).
 func (h *Handler) SetRefresh(rs *auth.RefreshService) { h.refresh = rs }
 
+// SetKicker wires the agent-socket kick used when an account is banned.
+func (h *Handler) SetKicker(k AgentKicker) { h.kicker = k }
+
+// banUser persists the ban, revokes every refresh family, and kicks live sockets.
+func (h *Handler) banUser(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	prev, err := h.svc.Ban(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	revoked := 0
+	if h.refresh != nil {
+		n, rerr := h.refresh.RevokeAllForUser(r.Context(), id)
+		if rerr == nil {
+			revoked = n
+		}
+	}
+	kicked := 0
+	if h.kicker != nil {
+		for _, aid := range h.svc.AgentIDsOf(r.Context(), id) {
+			h.kicker.Kick(aid, "account banned")
+			kicked++
+		}
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"status":            "banned",
+		"previous":          prev,
+		"sessions_revoked":  revoked,
+		"sockets_kicked":    kicked,
+	})
+}
+
+// unbanUser restores access. Existing tokens stay revoked; the user signs in again.
+func (h *Handler) unbanUser(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	prev, err := h.svc.Unban(r.Context(), id)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"status":   "active",
+		"previous": prev,
+	})
+}
+
 // issueRefresh mints a refresh token for a freshly-authenticated user. Best-effort:
 // if refresh is disabled or minting fails, the session still works as a short-lived
 // access token — we never fail the login over the refresh token.
@@ -902,9 +958,14 @@ func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	access, next, _, err := h.refresh.Rotate(r.Context(), in.RefreshToken)
+	access, next, uid, err := h.refresh.Rotate(r.Context(), in.RefreshToken)
 	if err != nil {
 		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "refresh_invalid", "Your session expired. Please sign in again."))
+		return
+	}
+	if err := h.svc.rejectIfBanned(r.Context(), uid); err != nil {
+		_, _ = h.refresh.RevokeAllForUser(r.Context(), uid)
+		httpx.Error(w, err)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{

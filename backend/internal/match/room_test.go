@@ -4,17 +4,19 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/agent-arena/arena/internal/match"
+	"github.com/agent-arena/arena/internal/platform"
 )
 
 // Rooms: a private staked table two developers reach by sharing its id.
 //
 // The whole feature is one bit — the match is hidden from the open lobby — so these tests
 // are mostly about what must NOT have changed. A room that quietly skipped the stake
-// floor, the verification gate or the same-owner refusal would be a way to move coins
-// between two accounts with none of the controls the open lobby applies, and it would
-// look like a working feature the entire time.
+// floor or the same-owner refusal would be a way to move coins between two accounts
+// with none of the controls the open lobby applies. The sit gate is the one that
+// must differ: rooms are not the ranked certify-endpoint lobby.
 
 func TestCreateRoomMarksTheMatchPrivate(t *testing.T) {
 	svc, repo := newSvcWithRepo()
@@ -174,6 +176,81 @@ func (c *coveringLimits) CheckJoinCoveringStake(context.Context, string, int64) 
 	return nil
 }
 func (c *coveringLimits) CheckConcurrency(context.Context, string) error { return nil }
+
+// splitVerifier is the ranked-vs-room gate split: CheckEligible is the public
+// lobby / ranked bar; CheckPrivateRoom is the friend-invite bar.
+type splitVerifier struct {
+	ranked, rooms     int
+	rankedErr, roomErr error
+}
+
+func (s *splitVerifier) Record(context.Context, string, *string, int) {}
+func (s *splitVerifier) CheckEligible(context.Context, string) error {
+	s.ranked++
+	return s.rankedErr
+}
+func (s *splitVerifier) CheckPrivateRoom(context.Context, string) error {
+	s.rooms++
+	return s.roomErr
+}
+
+func svcWithVerifier(v match.Verifier) *match.Service {
+	return match.New(newFakeRepo(), fakeLocker{}, match.NoopLimits{}, match.NoopWallet{},
+		match.NoopBroadcaster{}, v, match.NoopRater{}, match.NoopFinishHook{},
+		platform.FixedClock{T: time.Unix(1_700_000_000, 0).UTC()},
+		match.Config{MoveWindow: 20 * time.Second, RakePct: 5, Rounds: 13, LockTTL: 5 * time.Second})
+}
+
+func TestCreateRoomDoesNotUseTheRankedCertifyGate(t *testing.T) {
+	v := &splitVerifier{rankedErr: errors.New("Verify your agent's endpoint before entering ranked play.")}
+	if _, err := svcWithVerifier(v).CreateRoom(context.Background(), "ag_a", "usr_a", 500); err != nil {
+		t.Fatalf("room refused a playable local agent: %v", err)
+	}
+	if v.rooms != 1 {
+		t.Fatalf("room consulted CheckPrivateRoom %d times, want 1", v.rooms)
+	}
+	if v.ranked != 0 {
+		t.Fatalf("room used ranked CheckEligible (%d) — that is the certify-endpoint banner", v.ranked)
+	}
+}
+
+func TestCreateOpenStillUsesTheRankedCertifyGate(t *testing.T) {
+	v := &splitVerifier{rankedErr: errors.New("Verify your agent's endpoint before entering ranked play.")}
+	if _, err := svcWithVerifier(v).CreateOpen(context.Background(), "ag_a", "usr_a", 500); err == nil {
+		t.Fatal("open lobby skipped the ranked certify gate")
+	}
+	if v.ranked != 1 {
+		t.Fatalf("open lobby consulted CheckEligible %d times, want 1", v.ranked)
+	}
+	if v.rooms != 0 {
+		t.Fatalf("open lobby used the private-room gate")
+	}
+}
+
+func TestJoinPrivateRoomUsesTheRoomPlayableGate(t *testing.T) {
+	v := &splitVerifier{rankedErr: errors.New("Verify your agent's endpoint before entering ranked play.")}
+	svc := svcWithVerifier(v)
+	id, err := svc.CreateRoom(context.Background(), "ag_a", "usr_a", 500)
+	if err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if _, err := svc.Join(context.Background(), "ag_b", "usr_b", id); err != nil {
+		t.Fatalf("joining a room hit the ranked certify gate: %v", err)
+	}
+	if v.rooms != 2 {
+		t.Fatalf("create+join consulted CheckPrivateRoom %d times, want 2", v.rooms)
+	}
+	if v.ranked != 0 {
+		t.Fatalf("room join used ranked CheckEligible (%d)", v.ranked)
+	}
+}
+
+func TestCreateRoomRefusesWhenTheRoomGateDoes(t *testing.T) {
+	v := &splitVerifier{roomErr: errors.New("agent_not_playable")}
+	if _, err := svcWithVerifier(v).CreateRoom(context.Background(), "ag_a", "usr_a", 500); err == nil {
+		t.Fatal("room accepted an unplayable agent")
+	}
+}
 
 func TestRoomCancelRefusesANonCreator(t *testing.T) {
 	svc := newSvc()

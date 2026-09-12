@@ -419,8 +419,49 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ranked_unreachable(resp: dict) -> bool:
+    code = str((resp or {}).get("code") or (resp or {}).get("error") or "")
+    return any(s in code for s in ("certified", "playable", "not_connected", "offline"))
+
+
+def _enqueue_ranked(
+    base: str,
+    token: str,
+    path: str,
+    body: dict,
+    *,
+    agent_id: str = "",
+    owner_token: str = "",
+    games: list[str] | None = None,
+    attempts: int = 6,
+    pause: float = 1.5,
+) -> tuple[int, dict]:
+    """POST the ranked queue, waiting for a just-started local socket.
+
+    `pyyol play --ranked` registers the socket and enqueues in the same process.
+    One immediate POST races register and looks like 'not playable' — then the
+    CLI used to give up. Retry the same unreachable codes sandbox already waited
+    on. Never falls through to sandbox.
+    """
+    last_st, last = 0, {}
+    for i in range(max(1, attempts)):
+        st, resp = _api_post(f"{base}{path}", token, body)
+        if st in (400, 403) and "certified" in str((resp or {}).get("code") or (resp or {}).get("error") or ""):
+            if owner_token and agent_id and _certify_connected(base, agent_id, owner_token, games or []):
+                st, resp = _api_post(f"{base}{path}", token, body)
+        if st in (200, 202):
+            return st, resp
+        last_st, last = st, resp or {}
+        if _ranked_unreachable(resp or {}) or st in (409, 425):
+            if i + 1 < attempts and pause > 0:
+                time.sleep(pause)
+            continue
+        break
+    return last_st, last
+
+
 def _certify_connected(api: str, agent: str, owner_token: str, games: list[str]) -> bool:
-    """Certify a connected-ranked manifest (no hosted URL) so queue/play can sit."""
+    """Optional hosted/connected-ranked certify. A live socket is enough to sit."""
     if not (api and agent and owner_token):
         return False
     import urllib.parse
@@ -813,7 +854,7 @@ def _http_base(args: argparse.Namespace, creds) -> str:
 
 
 def cmd_queue(args: argparse.Namespace) -> int:
-    """Enter ranked matchmaking at a stake tier. Your connected agent (pyyol run)
+    """Enter ranked matchmaking at a stake tier. Your connected agent (pyyol play)
     is driven automatically once matched; this only enqueues + reports the match."""
     from . import credentials
 
@@ -868,18 +909,22 @@ def cmd_queue(args: argparse.Namespace) -> int:
         return 2
 
     queue_path = queue_path_for(game)
-    st, resp = _api_post(f"{base}{queue_path}", token, body)
-    if st in (400, 403) and "certified" in str(resp.get("code") or resp.get("error") or ""):
-        owner = _owner_token(creds, getattr(args, "token", "") or "")
-        agent = (creds.agent_id if creds else "") or getattr(args, "agent", "") or ""
-        if owner and agent and _certify_connected(base, agent, owner, [game]):
-            st, resp = _api_post(f"{base}{queue_path}", token, body)
+    st, resp = _enqueue_ranked(
+        base,
+        token,
+        queue_path,
+        body,
+        agent_id=(creds.agent_id if creds else "") or getattr(args, "agent", "") or "",
+        owner_token=_owner_token(creds, getattr(args, "token", "") or ""),
+        games=[game],
+    )
     if st not in (200, 202):
         code = str(resp.get("code") or resp.get("error") or "")
         msg = resp.get("message") or ""
-        if "certified" in code:
+        if "certified" in code or "playable" in code or "not_connected" in code:
             print(
-                f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+                f"{BAD} this agent is not reachable for ranked. Keep it connected "
+                f"(`pyyol play` / `pyyol dev`), or publish a hosted endpoint to play while away.",
                 file=sys.stderr,
             )
         elif "tier" in code:
@@ -894,7 +939,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
         return 1
 
     print(
-        f"{OK} queued for {game}. Keep your agent connected (`pyyol run`) — it plays automatically when matched."
+        f"{OK} queued for {game}. Keep your agent connected (`pyyol play`) — it plays automatically when matched."
     )
     deadline = time.time() + args.wait
     while time.time() < deadline:
@@ -906,7 +951,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                 print(f"    watch it:  pyyol watch {mid}")
             return 0
         time.sleep(1.5)
-    print("still waiting for an opponent — leave `pyyol run` connected; check `pyyol status`.")
+    print("still waiting for an opponent — leave `pyyol play` connected; check `pyyol status`.")
     return 0
 
 
@@ -918,9 +963,10 @@ def cmd_room(args: argparse.Namespace) -> int:
     joins it.
 
     Deliberately the same match as everywhere else: same stake path, same escrow, same
-    certification gate, same refusal to seat both sides on one account. The only thing a
-    room changes is that it is not listed in the open lobby, so the seat cannot be taken
-    by a stranger between the moment the code is shared and the moment it is used.
+    refusal to seat both sides on one account.     The sit gate is the same live path as ranked: a connected CLI agent, or a
+    hosted verified endpoint. Auto-play alone is not enough — start `pyyol play`
+    first, then create the room. The only listing change is that the room is
+    not in the open lobby, so the seat cannot be taken by a stranger.
     """
     from . import credentials
 
@@ -948,7 +994,7 @@ def cmd_room(args: argparse.Namespace) -> int:
         if st != 200:
             return _room_error(st, resp, "join")
         print(f"{OK} joined room {args.id}")
-        print("    keep your agent connected (`pyyol run`) — it plays automatically.")
+        print("    keep your agent connected (`pyyol play`) — it plays automatically.")
         print(f"    watch it:  pyyol watch {args.id}")
         return 0
 
@@ -981,7 +1027,7 @@ def cmd_room(args: argparse.Namespace) -> int:
     print()
     print("    send that to the other player. they run:")
     print(f"        pyyol room join {room_id}")
-    print("    keep your agent connected (`pyyol run`) — it plays as soon as they join.")
+    print("    keep your agent connected (`pyyol play`) — it plays as soon as they join.")
     return 0
 
 
@@ -1000,9 +1046,11 @@ def _room_error(st: int, resp: dict, what: str) -> int:
             "Send the id to the other player.",
             file=sys.stderr,
         )
-    elif "certified" in code:
+    elif "playable" in code or "not_connected" in code or "certified" in code:
         print(
-            f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+            f"{BAD} this agent is not reachable. Start `pyyol play` / `pyyol dev` first so it is connected, "
+            "then open the room. A hosted deploy also works. Auto-play alone is not a play path. "
+            "Private rooms do not need ranked endpoint verification.",
             file=sys.stderr,
         )
     elif "balance" in code or "insufficient" in code:
@@ -1147,7 +1195,7 @@ def _owner_token(creds, explicit: str = "") -> str:
 
     Refreshes it first when a refresh token is held, because the access token is
     SHORT-LIVED and every owner command is one a developer runs occasionally rather
-    than continuously. `pyyol publish` — the required step before a ranked match — read
+    than continuously. `pyyol publish` — the optional hosted-away path — read
     creds.access_token directly, so a developer who logged in in the morning and
     published in the afternoon sent an expired JWT and was told to log in again, on the
     one path that leads to competing for real.
@@ -1706,7 +1754,7 @@ _PY_STARTER_GOOFSPIEL = '''\
 """{name} — a Pyyol agent. Implement step(); initialize()/shutdown() are optional.
 
 Run it:  pyyol dev            # practice locally (sandbox, no stakes)
-         pyyol play goofspiel # compete (add --ranked for real stakes, after `pyyol publish`)
+         pyyol play goofspiel # compete (add --ranked for real stakes; keep it connected)
 """
 from pyyol import Adapter
 from pyyol.models import GoofspielView, GoofspielMove
@@ -1760,7 +1808,7 @@ _PY_STARTER_GENERIC = '''\
 """{name} — a Pyyol agent for {arena}. Implement step(); the SDK owns everything else.
 
 Run it:  pyyol dev            # practice locally (sandbox, no stakes)
-         pyyol play {arena}   # compete (add --ranked for real stakes, after `pyyol publish`)
+         pyyol play {arena}   # compete (add --ranked for real stakes; keep it connected)
 """
 from pyyol import Adapter
 
@@ -1857,14 +1905,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     with open(path, "w", encoding="utf-8") as f:
         f.write(code)
 
-    # A manifest scaffold, because ranked REQUIRES one and there was no way to get a
-    # correct schema: _MANIFEST_TMPL below was defined and never referenced, so the
-    # only accurate copy of the schema in the whole product was dead code. Developers
-    # had to reverse-engineer it from the source or guess.
-    #
-    # Written with placeholders rather than left out: the endpoint URL is the one
-    # field only the developer can supply, and seeing it named makes the hosted-
-    # endpoint requirement obvious at scaffold time rather than at the 403.
+    # A manifest scaffold for the optional hosted-away path. Ranked itself does
+    # not require one: a connected `pyyol play --ranked` is enough. _MANIFEST_TMPL
+    # below was defined and never referenced, so the only accurate copy of the
+    # schema in the whole product was dead code.
     manifest = json.loads(json.dumps(_MANIFEST_TMPL))  # deep copy — never mutate the template
     manifest["agent"]["name"] = name
     manifest["games"] = [arena]
@@ -1893,19 +1937,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"{OK} created {lang} agent in {d}/")
     print(f"    {path}")
     print(f"    {cfg_path}")
-    print(f"    {manifest_path}   (for ranked — see below)")
+    print(f"    {manifest_path}   (optional hosted-away path — see below)")
     print("\nNext:")
     print("    pip install pyyol" if lang == "python" else "    npm install pyyol")
     print(f"    cd {d} && pyyol dev            # practice locally (sandbox — no stakes)")
     print(f"    pyyol play {arena}             # compete (sandbox)")
     print("\nTo play ranked for real coins — no hosting needed:")
-    print("    pyyol publish --manifest manifest.json   # certifies you; no endpoint required")
-    print(
-        f"    pyyol queue {arena} --tier low            # keep it running; it plays automatically"
-    )
-    print("\n    Your agent must stay CONNECTED to play ranked this way.")
-    print("    Want it to play while you're away? Add a hosted https endpoint to")
-    print("    manifest.json and re-publish:  https://pyyol.com/docs/deploy.md")
+    print(f"    pyyol play {arena} --ranked            # keep this process connected")
+    print("\n    A connected local SDK is enough. Want it to play while you're away?")
+    print("    Add a hosted https endpoint to manifest.json and run:")
+    print("        pyyol publish --manifest manifest.json")
+    print("    See https://pyyol.com/docs/deploy.md")
     print("\n    Set your limits first:  https://pyyol.com/guardrails")
     print("    (stop-loss, max bid, daily cap — server-enforced)")
     return 0
@@ -2084,9 +2126,14 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     def kicker():
         # Give the socket a moment to register, then start match(es). pushplay/queue
         # drive the just-connected agent; retry briefly while it comes online.
-        matches = max(1, getattr(args, "matches", 1))
         if m == mode.RANKED:
             _start_ranked(base, token, arena, args, console, agent_id=agent_id, owner_token=_owner_token(creds))
+            return
+        matches = getattr(args, "matches", 1)
+        if matches is None:
+            matches = 1
+        if matches <= 0:
+            console.emit("match", "connected — waiting for a match (no sandbox auto-start)")
             return
         for i in range(matches):
             if stop.is_set():
@@ -2260,10 +2307,15 @@ def _start_ranked(base, token, arena, args, console, agent_id="", owner_token=""
     body: dict[str, object] = {"game": arena}
     tier = getattr(args, "tier", "") or "low"
     body["tier"] = tier
-    st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
-    if st in (400, 403) and "certified" in str(resp.get("code") or resp.get("error") or ""):
-        if owner_token and agent_id and _certify_connected(base, agent_id, owner_token, [arena]):
-            st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
+    st, resp = _enqueue_ranked(
+        base,
+        token,
+        queue_path_for(arena),
+        body,
+        agent_id=agent_id,
+        owner_token=owner_token,
+        games=[arena],
+    )
     if st in (200, 202):
         # The queue can pair instantly, in which case the response already names the
         # match — link it, exactly like sandbox. Ranked is where real coins are on the
@@ -2277,10 +2329,11 @@ def _start_ranked(base, token, arena, args, console, agent_id="", owner_token=""
             )
         return
     code = str(resp.get("code") or resp.get("error") or "")
-    if "certified" in code:
+    if "certified" in code or "playable" in code or "not_connected" in code:
         console.emit(
             "error",
-            "agent not certified for ranked — run `pyyol publish` first (ranked needs a verified endpoint).",
+            "this agent is not reachable for ranked — keep `pyyol play` / `pyyol dev` connected, "
+            "or publish a hosted endpoint to play while away.",
         )
     else:
         console.emit("error", f"could not queue ranked{_status(st)}: {resp}")
@@ -2991,10 +3044,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pp.add_argument("arena", choices=["goofspiel", "mafia"])
     pp.add_argument(
-        "--ranked", action="store_true", help="REAL stakes (needs `pyyol publish`; confirmed)"
+        "--ranked", action="store_true", help="REAL stakes (connected CLI is enough; hosted verify is the away path)"
     )
     pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
-    pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start")
+    pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start (0 = connect only)")
     pp.add_argument("--yes", action="store_true", help="skip the ranked confirmation (CI)")
     pp.add_argument("--url", default="")
     pp.add_argument("--agent", default="")
@@ -3028,7 +3081,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.set_defaults(func=cmd_play)
 
     ppub = sub.add_parser(
-        "publish", help="certify your agent for RANKED play (verify a hosted endpoint)"
+        "publish", help="optional: verify a hosted endpoint so the agent can play ranked while away"
     )
     ppub.add_argument("--api", default=argparse.SUPPRESS, help="platform API base (or from login)")
     ppub.add_argument("--agent", default="", help="agent public id (or from login)")

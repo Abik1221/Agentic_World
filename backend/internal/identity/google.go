@@ -81,6 +81,11 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 	if err != nil {
 		return GoogleLoginResult{}, err
 	}
+	if !res.Created {
+		if err := s.rejectIfBanned(ctx, res.UserPublicID); err != nil {
+			return GoogleLoginResult{}, err
+		}
+	}
 	dash, err := s.jwt.Issue(res.UserPublicID)
 	if err != nil {
 		return GoogleLoginResult{}, err

@@ -200,21 +200,27 @@ type goofspielTurnMove struct {
 	Usage     *benchmark.TokenUsage `json:"usage,omitempty"`
 }
 
-// maybeDrive spawns the auto-driver for a freshly-paired match when auto-driving is
-// enabled and at least one seat's agent is connected over the socket.
+// maybeDrive spawns the auto-driver for a freshly-paired match.
+//
+// Always start it, even when neither seat is reachable yet. A local `pyyol play`
+// can register a moment after pairing (enqueue raced the socket, or the process
+// restarted). seatFor is consulted every turn, so the first connected socket
+// gets the same path hosted HTTP already had. Skipping here left local paid
+// seats on self-drive timeouts — second-class versus a hosted URL.
+//
+// Single-flight per match: Join, CreatePaired, and the ready path can all reach
+// this; two loops would double-submit.
 func (s *Service) maybeDrive(matchID, aAgent, bAgent string) {
 	if s.driver == nil {
 		return
 	}
-	// Spawn only if at least one seat is drivable (socket or hosted endpoint);
-	// otherwise both self-drive and there's nothing for the loop to do.
-	ctx := context.Background()
-	_, okA := s.driver.seatFor(ctx, aAgent, matchID)
-	_, okB := s.driver.seatFor(ctx, bAgent, matchID)
-	if !okA && !okB {
+	if _, loaded := s.driving.LoadOrStore(matchID, struct{}{}); loaded {
 		return
 	}
-	go s.driver.run(s, matchID, aAgent, bAgent)
+	go func() {
+		defer s.driving.Delete(matchID)
+		s.driver.run(s, matchID, aAgent, bAgent)
+	}()
 }
 
 func (d *driver) run(s *Service, matchID, aAgent, bAgent string) {

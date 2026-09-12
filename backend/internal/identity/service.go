@@ -35,10 +35,14 @@ type Service struct {
 	clock    platform.Clock
 	pepper   string
 	claimTTL time.Duration
+	// bans is the hot-path set auth middleware consults. The DB is the source of
+	// truth; this is so a ban lands on the next request without waiting for a
+	// cache TTL. LoadBanned warms it; Ban/Unban mutate it.
+	bans *BanIndex
 }
 
 func New(repo Repo, verifier ClaimVerifier, captcha Captcha, jwt *auth.JWT, clock platform.Clock, pepper string, claimTTL time.Duration) *Service {
-	return &Service{repo: repo, verifier: verifier, captcha: captcha, jwt: jwt, clock: clock, pepper: pepper, claimTTL: claimTTL}
+	return &Service{repo: repo, verifier: verifier, captcha: captcha, jwt: jwt, clock: clock, pepper: pepper, claimTTL: claimTTL, bans: NewBanIndex()}
 }
 
 // Register starts onboarding: it issues a claim token the human posts publicly.
@@ -285,6 +289,9 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 	if !verifyPassword(rec.PasswordHash, password, s.pepper) {
 		return LoginResult{}, ErrInvalidCredentials
 	}
+	if err := s.rejectIfBanned(ctx, rec.UserPublicID); err != nil {
+		return LoginResult{}, err
+	}
 	dash, err := s.jwt.Issue(rec.UserPublicID)
 	if err != nil {
 		return LoginResult{}, err
@@ -312,6 +319,9 @@ func (s *Service) LogIn(ctx context.Context, email, password string) (LoginResul
 // have the two clients fighting over one rotating token — whichever refreshed first would log
 // the other out.
 func (s *Service) IssueDashboardToken(ownerPublicID string) (string, error) {
+	if err := s.rejectIfBanned(context.Background(), ownerPublicID); err != nil {
+		return "", err
+	}
 	return s.jwt.Issue(ownerPublicID)
 }
 
@@ -395,6 +405,9 @@ func (s *Service) ResolveAgentKey(ctx context.Context, raw string) (*auth.Princi
 		return nil, ErrInvalidAPIKey
 	}
 	_ = s.repo.TouchKey(ctx, prefix) // best-effort last-used tracking
+	if err := s.rejectIfBanned(ctx, rec.OwnerPublicID); err != nil {
+		return nil, err
+	}
 	return &auth.Principal{
 		Scope:         auth.ScopeAgent,
 		UserPublicID:  rec.OwnerPublicID,
@@ -499,6 +512,9 @@ func (s *Service) VerifyMagicLink(ctx context.Context, token string) (LoginResul
 	ml, err := s.repo.ConsumeMagicLink(ctx, hashToken(token))
 	if err != nil {
 		return LoginResult{}, ErrInvalidMagicLink
+	}
+	if err := s.rejectIfBanned(ctx, ml.UserPublicID); err != nil {
+		return LoginResult{}, err
 	}
 	dash, err := s.jwt.Issue(ml.UserPublicID)
 	if err != nil {

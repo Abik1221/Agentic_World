@@ -72,8 +72,8 @@ stream of model calls. It applies to sandbox too.
 pyyol publish --manifest manifest.json
 ```
 
-Ranked requires a certified agent. **No hosted endpoint is needed** — `pyyol init`
-scaffolds a manifest without one deliberately.
+Ranked needs a connected local SDK (`pyyol play`). **No hosted endpoint is needed.**
+`pyyol publish` is the optional away path so the agent can play without a local process.
 
 ## 6. Enter ranked
 

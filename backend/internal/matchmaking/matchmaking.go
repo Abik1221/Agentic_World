@@ -28,7 +28,7 @@ var ErrNotQueued = httpx.NewError(http.StatusNotFound, "not_queued", "This agent
 // endpoint — so a match would only forfeit-and-bleed its stake. Callers surface it as
 // "connect your agent first"; the auto-play reconciler simply skips and retries the
 // next tick, so the agent resumes automatically once it reconnects.
-var ErrAgentOffline = httpx.NewError(http.StatusConflict, "agent_offline", "This agent is not currently reachable (no live connection and no verified endpoint). Connect it (pyyol run) or fix its endpoint before entering ranked.")
+var ErrAgentOffline = httpx.NewError(http.StatusConflict, "agent_offline", "This agent is not currently reachable (no live connection and no hosted verified endpoint). Connect it (`pyyol play` / `pyyol dev`) or publish a hosted URL to play while away. Ranked does not require both.")
 
 // Status values for a queue entry.
 const (
@@ -154,9 +154,9 @@ type StakeFloor interface {
 // SetStakeFloor wires tier enforcement into the queue itself.
 func (s *Service) SetStakeFloor(f StakeFloor) { s.stakes = f }
 
-// Eligibility gates who may enter the ranked queue — e.g. the certification gate
-// (agent must have an active, endpoint-verified manifest). Satisfied by
-// manifest.Service. Injected via SetEligibility so New stays unchanged.
+// Eligibility gates who may enter the ranked queue — playable now (a live CLI
+// socket or a hosted verified endpoint) and not suspended / flagged. Satisfied
+// by the server's rankedEntryGate. Injected via SetEligibility so New stays unchanged.
 type Eligibility interface {
 	RequireCertified(ctx context.Context, agentPublicID string) error
 }
@@ -222,8 +222,8 @@ func (s *Service) Enqueue(ctx context.Context, agentPublicID, ownerPublicID stri
 				fmt.Sprintf("A stake of %d coins is not offered for goofspiel. The lowest available stake is %d coins.", bid, lowest))
 		}
 	}
-	// Certification gate: only verified agents enter the ranked queue (fail fast so
-	// uncertified agents never pollute pairing).
+	// Playable gate: a connected local SDK or a hosted verified endpoint (fail
+	// fast so an unreachable agent never pollutes pairing).
 	if s.elig != nil {
 		if err := s.elig.RequireCertified(ctx, agentPublicID); err != nil {
 			return Entry{}, err

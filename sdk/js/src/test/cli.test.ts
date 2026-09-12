@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { apiGet, apiPost, apiRequest, connectionToken, main, type Args } from "../cli.js";
+import { apiGet, apiPost, apiRequest, connectionToken, enqueueRanked, main, type Args } from "../cli.js";
 import type { Credentials } from "../credentials.js";
 
 /**
@@ -476,6 +476,17 @@ test("room join posts the match id", async () => {
   assert.match(out, /joined room mt_room1/);
 });
 
+test("room does not tell a local CLI agent to verify a ranked endpoint", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room-playable-"));
+  seedCreds(home);
+  const fetchImpl = (async () => json({ code: "agent_not_certified" }, 403)) as unknown as typeof fetch;
+  const { code, err } = await run(["room", "create", "--tier", "low"], { home, fetch: fetchImpl });
+  assert.equal(code, 1);
+  assert.match(err, /pyyol play/);
+  assert.match(err, /Private rooms do not need ranked endpoint verification/);
+  assert.doesNotMatch(err, /pyyol publish/);
+});
+
 test("room reports the arena's refusal in terms a developer can act on", async () => {
   // same_owner is the FIRST failure most people hit: they create a room and then try to
   // join it themselves. The raw JSON says what was refused and never what to do about it.
@@ -559,6 +570,47 @@ test("queue sends the dashboard JWT when there is no agent key", async () => {
 
   const sent = authHeadersOf(calls);
   assert.ok(sent.includes("dashboard-jwt-only"), `a dashboard-only login must still be able to queue. Sent: ${sent}`);
+});
+
+test("enqueueRanked retries playable until the socket is up", async () => {
+  let n = 0;
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    n += 1;
+    return n === 1 ? json({ code: "agent_not_playable" }, 409) : json({ status: "waiting" }, 202);
+  }) as typeof fetch;
+  try {
+    const [st, resp] = await enqueueRanked(
+      "http://x",
+      "tok",
+      "goofspiel",
+      { tier: "low" },
+      { attempts: 3, pauseMs: 0 },
+    );
+    assert.equal(st, 202);
+    assert.equal(resp.status, "waiting");
+    assert.equal(n, 2);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("enqueueRanked refuses when nothing is ever reachable", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async () => json({ code: "agent_not_playable" }, 409)) as typeof fetch;
+  try {
+    const [st, resp] = await enqueueRanked(
+      "http://x",
+      "tok",
+      "goofspiel",
+      { tier: "low" },
+      { attempts: 3, pauseMs: 0 },
+    );
+    assert.equal(st, 409);
+    assert.equal(resp.code, "agent_not_playable");
+  } finally {
+    globalThis.fetch = orig;
+  }
 });
 
 test("queue certifies a connected manifest then retries", async () => {

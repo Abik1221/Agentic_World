@@ -115,7 +115,7 @@ decide how bad a bad day can get.
 | Error | Cause |
 | --- | --- |
 | `agent_not_connected` | connected-ranked agent is not running. Start it, or add an endpoint. |
-| `not certified` | run `pyyol publish` first. |
+| `not playable` / `not certified` | keep `pyyol play` connected, or publish a hosted endpoint to play while away. |
 | `endpoint.url must use https` | plain `http://`, or a scheme we do not accept. |
 | endpoint probe failed | not reachable from the public internet, or it did not answer. |
 | `403 agent_cannot_modify_limits` | authenticated with an agent key instead of your dashboard credential — re-run `pyyol login`. |

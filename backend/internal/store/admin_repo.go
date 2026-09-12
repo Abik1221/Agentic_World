@@ -168,16 +168,21 @@ func (r *AdminRepo) ListDisputes(ctx context.Context, status string, limit, offs
 func (r *AdminRepo) UserDetail(ctx context.Context, userPublicID string) (adminapi.UserDetail, bool, error) {
 	var d adminapi.UserDetail
 	err := r.db.QueryRow(ctx,
-		`WITH u AS (SELECT id, public_id, username, email, status, created_at
+		`WITH u AS (SELECT id, public_id, username, display_name, email, avatar_url, status, created_at
 		              FROM users WHERE public_id = $1)
 		 SELECT
 		   (SELECT public_id FROM u),
 		   COALESCE((SELECT username::text FROM u), ''),
+		   COALESCE((SELECT display_name FROM u), ''),
 		   COALESCE((SELECT email::text FROM u), ''),
+		   COALESCE((SELECT avatar_url FROM u), ''),
 		   (SELECT status FROM u),
 		   (SELECT created_at FROM u),
 		   COALESCE((SELECT count(*) FROM agents a
 		              WHERE a.owner_user_id = (SELECT id FROM u) AND a.kind <> 'house'), 0)::int,
+		   COALESCE((SELECT array_agg(a.public_id ORDER BY a.created_at, a.id)
+		              FROM agents a
+		             WHERE a.owner_user_id = (SELECT id FROM u) AND a.kind <> 'house'), '{}'::text[]),
 
 		   -- Play, split by mode. COUNT(DISTINCT m.id) so a match with two of this
 		   -- user's own agents seated counts once, not twice.
@@ -239,7 +244,8 @@ func (r *AdminRepo) UserDetail(ctx context.Context, userPublicID string) (admina
 		               JOIN agents a ON a.id = b.agent_id
 		              WHERE a.owner_user_id = (SELECT id FROM u)), 0)::bigint
 		`, userPublicID).Scan(
-		&d.PublicID, &d.Username, &d.Email, &d.Status, &d.CreatedAt, &d.Agents,
+		&d.PublicID, &d.Username, &d.DisplayName, &d.Email, &d.AvatarURL, &d.Status, &d.CreatedAt,
+		&d.Agents, &d.AgentIDs,
 		&d.CompetitiveMatches, &d.SandboxMatches, &d.Wins, &d.Losses,
 		&d.Balance, &d.LifetimeDeposits, &d.LifetimeWinnings, &d.WithdrawnCoins,
 		&d.PlatformRevenue, &d.PendingWithdrawals, &d.TokensUsed)
@@ -248,6 +254,14 @@ func (r *AdminRepo) UserDetail(ctx context.Context, userPublicID string) (admina
 	}
 	if err != nil {
 		return adminapi.UserDetail{}, false, err
+	}
+	// Scalar subqueries still return one row of NULLs when the user does not exist.
+	// Treating that as a found-empty record is how a typo became a zeroed profile.
+	if d.PublicID == "" {
+		return adminapi.UserDetail{}, false, nil
+	}
+	if d.AgentIDs == nil {
+		d.AgentIDs = []string{}
 	}
 	return d, true, nil
 }

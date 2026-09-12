@@ -16,6 +16,7 @@ const nav = [
   { label: "Token Usage", href: "/token-usage" },
   { label: "Costs", href: "/costs" },
   { label: "Cost Analytics", href: "/cost-analytics" },
+  { label: "Payments", href: "/payments" },
   { label: "Events", href: "/events" },
   { label: "Queue Health", href: "/queue" },
   // Alerts + Settings are hidden until the control-api backs them with real data
