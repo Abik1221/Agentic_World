@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"errors"
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -92,6 +93,20 @@ const maxKeyLabelLen = 40
 // Control characters are stripped rather than rejected: they arrive from hostnames
 // and shell interpolation, not from a person, and failing a login over an invisible
 // byte would be the more confusing outcome.
+// NormalizeKeyPrefix trims and URL-unescapes the public lookup prefix used to
+// revoke a key. The dashboard sends encodeURIComponent(prefix); a double-encoded
+// or padded value must still hit the same row, or delete looks like a no-op.
+func NormalizeKeyPrefix(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if u, err := url.PathUnescape(s); err == nil {
+		s = strings.TrimSpace(u)
+	}
+	return s
+}
+
 func NormalizeKeyLabel(raw string) (string, error) {
 	var b strings.Builder
 	lastSpace := false

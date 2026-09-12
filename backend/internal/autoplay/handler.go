@@ -3,6 +3,7 @@ package autoplay
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
@@ -45,6 +46,9 @@ func (h *Handler) Register(r chi.Router) {
 		// multi-agent roster was stuck showing "on" for the key in the session
 		// and inventing "idle" for every sibling.
 		r.With(user).Get("/v1/user/autoplay", h.listOwner)
+		// Dashboard deploy: a JWT is enough. Requiring an agent key here is how
+		// opening /strategy/deploy pushed people to mint leftover unused keys.
+		r.With(user).Put("/v1/user/autoplay", h.setOwner)
 	})
 }
 
@@ -75,24 +79,48 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, s)
 }
 
+type autoplayIn struct {
+	AgentID          string   `json:"agent_id"`
+	Enabled          bool     `json:"enabled"`
+	Mode             string   `json:"mode"`
+	Bid              int64    `json:"bid"`
+	Games            []string `json:"games"`
+	ActiveFromUTC    int      `json:"active_from_utc"`
+	ActiveUntilUTC   int      `json:"active_until_utc"`
+	DailyMatchCap    int      `json:"daily_match_cap"`
+	DailyTokenBudget int64    `json:"daily_token_budget"`
+	TakeProfitCoins  int64    `json:"take_profit_coins"`
+	DailyLossStop    int64    `json:"daily_loss_stop"`
+}
+
 func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	var in struct {
-		Enabled          bool     `json:"enabled"`
-		Mode             string   `json:"mode"`
-		Bid              int64    `json:"bid"`
-		Games            []string `json:"games"`
-		ActiveFromUTC    int      `json:"active_from_utc"`
-		ActiveUntilUTC   int      `json:"active_until_utc"`
-		DailyMatchCap    int      `json:"daily_match_cap"`
-		DailyTokenBudget int64    `json:"daily_token_budget"`
-		TakeProfitCoins  int64    `json:"take_profit_coins"`
-		DailyLossStop    int64    `json:"daily_loss_stop"`
-	}
+	var in autoplayIn
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
 		return
 	}
+	h.writeSetting(w, r, p.AgentPublicID, p.UserPublicID, in)
+}
+
+// setOwner writes auto-play for an agent the dashboard JWT owns. agent_id is
+// required so a cookie cannot retarget another developer's agent.
+func (h *Handler) setOwner(w http.ResponseWriter, r *http.Request) {
+	p := auth.PrincipalFromContext(r.Context())
+	var in autoplayIn
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	agentID := strings.TrimSpace(in.AgentID)
+	if agentID == "" {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "invalid", "agent_id is required"))
+		return
+	}
+	h.writeSetting(w, r, agentID, p.UserPublicID, in)
+}
+
+func (h *Handler) writeSetting(w http.ResponseWriter, r *http.Request, agentID, ownerID string, in autoplayIn) {
 	mode := Mode(in.Mode)
 	if mode != ModeRanked && mode != ModeSandbox {
 		mode = ModeSandbox // default to the free, no-stakes arena
@@ -101,7 +129,7 @@ func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 	// (Goofspiel-only today) — fail fast with a clear message rather than accepting
 	// the setting and then never staking a match.
 	if in.Enabled && mode == ModeRanked && h.ranked != nil {
-		if err := h.ranked.CheckRankedGame(r.Context(), p.AgentPublicID, rankedGameOf(in.Games)); err != nil {
+		if err := h.ranked.CheckRankedGame(r.Context(), agentID, rankedGameOf(in.Games)); err != nil {
 			httpx.Error(w, err)
 			return
 		}
@@ -128,8 +156,8 @@ func (h *Handler) set(w http.ResponseWriter, r *http.Request) {
 		games = []string{}
 	}
 	s := Setting{
-		AgentPublicID:    p.AgentPublicID,
-		OwnerPublicID:    p.UserPublicID,
+		AgentPublicID:    agentID,
+		OwnerPublicID:    ownerID,
 		Enabled:          in.Enabled,
 		Mode:             mode,
 		Bid:              in.Bid,

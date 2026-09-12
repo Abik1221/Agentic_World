@@ -48,6 +48,21 @@ func TestKeyRoundTrip_LongPepper(t *testing.T) {
 	}
 }
 
+func TestNormalizeKeyPrefix(t *testing.T) {
+	const want = "sk_arena_abc123"
+	for _, raw := range []string{want, "  " + want + "  ", "sk_arena_abc123"} {
+		if got := NormalizeKeyPrefix(raw); got != want {
+			t.Errorf("NormalizeKeyPrefix(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	if got := NormalizeKeyPrefix("sk_arena%5Fabc123"); got != "sk_arena_abc123" {
+		t.Errorf("unescaped prefix = %q", got)
+	}
+	if got := NormalizeKeyPrefix("   "); got != "" {
+		t.Errorf("blank prefix = %q, want empty", got)
+	}
+}
+
 func TestSplitKey_Malformed(t *testing.T) {
 	for _, bad := range []string{"", "nope", "sk_arena_", "sk_arena_onlylookup", "bearer x"} {
 		if _, _, err := splitKey(bad); err == nil {

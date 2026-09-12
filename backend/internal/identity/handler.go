@@ -733,12 +733,18 @@ func (h *Handler) setSigningKey(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) revokeKey(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	prefix := chi.URLParam(r, "prefix")
+	prefix := NormalizeKeyPrefix(chi.URLParam(r, "prefix"))
+	if prefix == "" {
+		httpx.Error(w, ErrNotFound)
+		return
+	}
 	if err := h.svc.RevokeKey(r.Context(), p.UserPublicID, prefix); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusNoContent, nil)
+	// 200 + JSON, not 204: some BFF hops treat an empty 204 as a failed parse
+	// and the dashboard then keeps the row. The client keys off `revoked`.
+	httpx.JSON(w, http.StatusOK, map[string]any{"revoked": true, "prefix": prefix})
 }
 
 // updateProfile persists the owner's agent display identity. Fields are optional

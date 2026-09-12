@@ -327,6 +327,10 @@ func (s *Service) IssueKey(ctx context.Context, ownerPublicID, agentPublicID, la
 
 // RevokeKey revokes one of the caller's keys by its public prefix.
 func (s *Service) RevokeKey(ctx context.Context, ownerPublicID, prefix string) error {
+	prefix = NormalizeKeyPrefix(prefix)
+	if prefix == "" {
+		return ErrNotFound
+	}
 	return s.repo.RevokeKey(ctx, ownerPublicID, prefix)
 }
 

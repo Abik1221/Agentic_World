@@ -196,6 +196,42 @@ func TestIssueKeyReplacesOnlyTheSameLabel(t *testing.T) {
 	}
 }
 
+func TestRevokeKeyRemovesOnlyThatPrefix(t *testing.T) {
+	pool := testPool(t)
+	repo := NewIdentityRepo(pool)
+	ctx := context.Background()
+	owner, agent := seedOwnerWithAgent(t, pool, "revoke")
+
+	if err := repo.IssueKey(ctx, agent, owner, "sk_arena_keep1", "h1", "laptop", 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.IssueKey(ctx, agent, owner, "sk_arena_drop1", "h2", "unused", 20); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RevokeKey(ctx, owner, "sk_arena_drop1"); err != nil {
+		t.Fatalf("RevokeKey: %v", err)
+	}
+	keys, err := repo.ListKeys(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := map[string]bool{}
+	for _, k := range keys {
+		if k.RevokedAt == nil {
+			live[k.Prefix] = true
+		}
+	}
+	if live["sk_arena_drop1"] {
+		t.Fatal("revoked prefix is still live")
+	}
+	if !live["sk_arena_keep1"] {
+		t.Fatal("the other key was revoked too")
+	}
+	if err := repo.RevokeKey(ctx, owner, "sk_arena_nope"); err == nil {
+		t.Fatal("revoking an unknown prefix succeeded")
+	}
+}
+
 // The live-key cap is enforced INSIDE the issuing transaction, so two concurrent issues
 // cannot both squeeze past it. Verified here because the counting is done in SQL.
 func TestIssueKeyEnforcesTheLiveCap(t *testing.T) {

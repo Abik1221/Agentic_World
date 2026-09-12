@@ -28,7 +28,8 @@ func (r *AutoplayRepo) Set(ctx context.Context, s autoplay.Setting) error {
 	tag, err := r.db.Exec(ctx,
 		`INSERT INTO agent_autoplay (agent_id, owner_public_id, enabled, mode, bid, games,
 		   active_from_utc, active_until_utc, daily_match_cap, daily_token_budget, take_profit_coins, daily_loss_stop, updated_at)
-		 VALUES ((SELECT id FROM agents WHERE public_id = $1), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+		 VALUES ((SELECT a.id FROM agents a JOIN users u ON u.id = a.owner_user_id
+		           WHERE a.public_id = $1 AND u.public_id = $2), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
 		 ON CONFLICT (agent_id) DO UPDATE SET
 		   owner_public_id    = EXCLUDED.owner_public_id,
 		   enabled            = EXCLUDED.enabled,
