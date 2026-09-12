@@ -754,11 +754,12 @@ func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64
 }
 
 // checkPlayable is who may sit. The open lobby is ranked: it uses CheckEligible
-// (certified manifest, hosted-URL verify when one is declared). A private room
-// is not the ranked lobby. When the verifier exposes CheckPrivateRoom, rooms
-// use that instead — local CLI / connected-ranked / autoplay-without-URL, or a
-// hosted verified endpoint — so "verify your endpoint for ranked" cannot block
-// a friend invite. Verifiers that omit the method keep the old shared gate.
+// (a live CLI socket, or a hosted verified endpoint for agents that are away).
+// A private room is not the ranked lobby. When the verifier exposes
+// CheckPrivateRoom, rooms use that instead — local CLI / connected-ranked /
+// autoplay-without-URL, or a hosted verified endpoint — so "verify your
+// endpoint for ranked" cannot block a friend invite. Verifiers that omit the
+// method keep the old shared gate.
 func (s *Service) checkPlayable(ctx context.Context, agentPublicID string, private bool) error {
 	if private {
 		type roomGate interface {

@@ -877,9 +877,10 @@ def cmd_queue(args: argparse.Namespace) -> int:
     if st not in (200, 202):
         code = str(resp.get("code") or resp.get("error") or "")
         msg = resp.get("message") or ""
-        if "certified" in code:
+        if "certified" in code or "playable" in code or "not_connected" in code:
             print(
-                f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+                f"{BAD} this agent is not reachable for ranked. Keep it connected "
+                f"(`pyyol play` / `pyyol dev`), or publish a hosted endpoint to play while away.",
                 file=sys.stderr,
             )
         elif "tier" in code:
@@ -1708,7 +1709,7 @@ _PY_STARTER_GOOFSPIEL = '''\
 """{name} — a Pyyol agent. Implement step(); initialize()/shutdown() are optional.
 
 Run it:  pyyol dev            # practice locally (sandbox, no stakes)
-         pyyol play goofspiel # compete (add --ranked for real stakes, after `pyyol publish`)
+         pyyol play goofspiel # compete (add --ranked for real stakes; keep it connected)
 """
 from pyyol import Adapter
 from pyyol.models import GoofspielView, GoofspielMove
@@ -1762,7 +1763,7 @@ _PY_STARTER_GENERIC = '''\
 """{name} — a Pyyol agent for {arena}. Implement step(); the SDK owns everything else.
 
 Run it:  pyyol dev            # practice locally (sandbox, no stakes)
-         pyyol play {arena}   # compete (add --ranked for real stakes, after `pyyol publish`)
+         pyyol play {arena}   # compete (add --ranked for real stakes; keep it connected)
 """
 from pyyol import Adapter
 
@@ -2279,10 +2280,11 @@ def _start_ranked(base, token, arena, args, console, agent_id="", owner_token=""
             )
         return
     code = str(resp.get("code") or resp.get("error") or "")
-    if "certified" in code:
+    if "certified" in code or "playable" in code or "not_connected" in code:
         console.emit(
             "error",
-            "agent not certified for ranked — run `pyyol publish` first (ranked needs a verified endpoint).",
+            "this agent is not reachable for ranked — keep `pyyol play` / `pyyol dev` connected, "
+            "or publish a hosted endpoint to play while away.",
         )
     else:
         console.emit("error", f"could not queue ranked{_status(st)}: {resp}")
@@ -2993,7 +2995,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pp.add_argument("arena", choices=["goofspiel", "mafia"])
     pp.add_argument(
-        "--ranked", action="store_true", help="REAL stakes (needs `pyyol publish`; confirmed)"
+        "--ranked", action="store_true", help="REAL stakes (connected CLI or hosted verify; confirmed)"
     )
     pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
     pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start")

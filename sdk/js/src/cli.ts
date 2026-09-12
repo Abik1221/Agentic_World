@@ -410,7 +410,7 @@ async function cmdInit(a: Args): Promise<number> {
 
 // ${name} — implement step(); initialize()/shutdown() are optional.
 // Run:  pyyol dev            (practice, SANDBOX — no stakes)
-//       pyyol play ${arena}  (compete; add --ranked for real, after \`pyyol publish\`)
+//       pyyol play ${arena}  (compete; add --ranked for real stakes; keep it connected)
 class ${cls} extends Adapter {
   name = "${name}";
   supportedGames = ["${arena}"];
@@ -617,8 +617,14 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
         }
       }
       if (st === 200 || st === 202) console.log(`  ${OK} queued for RANKED ${arena} (tier ${tier})`);
-      else if (String(resp.code ?? "").includes("certified"))
-        console.log(`  ${BAD} agent not certified for ranked — run \`pyyol publish\` first.`);
+      else if (
+        String(resp.code ?? "").includes("certified") ||
+        String(resp.code ?? "").includes("playable") ||
+        String(resp.code ?? "").includes("not_connected")
+      )
+        console.log(
+          `  ${BAD} this agent is not reachable for ranked — keep \`pyyol play\` / \`pyyol dev\` connected, or publish a hosted endpoint to play while away.`,
+        );
       else console.log(`  ${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
       return;
     }
@@ -825,7 +831,10 @@ async function cmdQueue(a: Args): Promise<number> {
   }
   if (st !== 200 && st !== 202) {
     const code = String(resp.code ?? resp.error ?? "");
-    if (code.includes("certified")) console.error(`${BAD} agent not certified — run \`pyyol publish --manifest <file>\` first.`);
+    if (code.includes("certified") || code.includes("playable") || code.includes("not_connected"))
+      console.error(
+        `${BAD} this agent is not reachable for ranked. Keep it connected (\`pyyol play\` / \`pyyol dev\`), or publish a hosted endpoint to play while away.`,
+      );
     else if (code.includes("balance") || code.includes("insufficient")) console.error(`${BAD} not enough coins — fund your wallet (see \`pyyol wallet\`).`);
     else console.error(`${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
     return 1;

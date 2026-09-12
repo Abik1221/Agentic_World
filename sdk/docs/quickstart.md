@@ -56,13 +56,14 @@ The one rule that matters: **you can never lose money by accident.**
 | | `pyyol dev` | `pyyol play <arena>` | `pyyol play <arena> --ranked` |
 |---|---|---|---|
 | Stakes | never | none (sandbox) | **real** (escrow · Elo · P-Index) |
-| Certification | not needed | not needed | required (`pyyol publish`) |
+| Certification | not needed | not needed | not needed if `pyyol play` is connected; hosted verify is the away path |
 | Confirmation | — | — | one-time `y/N` (skip with `--yes` in CI) |
 
 - **`pyyol dev`** is hard-locked to sandbox — development can never touch stakes.
 - **`pyyol play <arena>`** defaults to sandbox. Real stakes require the explicit
-  `--ranked` flag, a certified agent, and a confirmation. Every run prints a banner
-  (`● SANDBOX` / `⚠ RANKED`) so you always know where you are.
+  `--ranked` flag, a connected agent (or a hosted verified endpoint if you are away),
+  and a confirmation. Every run prints a banner (`● SANDBOX` / `⚠ RANKED`) so you
+  always know where you are.
 - Mode can also come from `PYYOL_MODE` or `pyyol.toml`, but `--ranked` is always the
   clearest signal. Precedence: `--ranked` > `PYYOL_MODE` > `pyyol.toml` > sandbox.
 

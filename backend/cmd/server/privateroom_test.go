@@ -31,6 +31,28 @@ func TestPrivateRoomPlayableAcceptsLocalOrHosted(t *testing.T) {
 	}
 }
 
+func TestRankedPlayableAcceptsLocalOrHosted(t *testing.T) {
+	cases := []struct {
+		name                      string
+		connected, hostedVerified bool
+		want                      bool
+	}{
+		{"cli socket, no cert", true, false, true},
+		{"hosted verified, no socket", false, true, true},
+		{"nothing reachable", false, false, false},
+		{"socket and hosted", true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rankedPlayable(tc.connected, tc.hostedVerified)
+			if got != tc.want {
+				t.Fatalf("rankedPlayable(%v,%v)=%v, want %v",
+					tc.connected, tc.hostedVerified, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrivateRoomRefusalIsNotTheRankedEndpointCopy(t *testing.T) {
 	var api *httpx.APIError
 	if !errors.As(errPrivateRoomNotPlayable(), &api) {

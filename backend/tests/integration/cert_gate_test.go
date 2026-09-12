@@ -32,7 +32,8 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 		t.Fatalf("signup: %d", code)
 	}
 
-	// 1. Uncertified agent → ranked queue is CLOSED (403 agent_not_certified).
+	// 1. Unreachable agent (no live socket, no hosted verify) → ranked queue is
+	// CLOSED. A connected local SDK can sit without certify; this signup has neither.
 	var errBody struct {
 		Error struct {
 			Code string `json:"code"`
@@ -40,12 +41,12 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 	}
 	// goofspiel is a tiered game (migration 0038 seeds Low/Mid/High), so the queue
 	// takes a `tier`, not a free-form bid. A valid tier is sent so the ONLY reason
-	// for rejection is non-certification (the cert gate runs before affordability).
-	if code := c.do(http.MethodPost, "/v1/queue", su.DashboardToken, map[string]any{"tier": "low"}, &errBody); code != http.StatusForbidden {
-		t.Fatalf("uncertified enqueue: expected 403, got %d", code)
+	// for rejection is reachability (the playable gate runs before affordability).
+	if code := c.do(http.MethodPost, "/v1/queue", su.DashboardToken, map[string]any{"tier": "low"}, &errBody); code != http.StatusConflict && code != http.StatusForbidden {
+		t.Fatalf("unreachable enqueue: expected 409 or 403, got %d", code)
 	}
-	if errBody.Error.Code != "agent_not_certified" {
-		t.Fatalf("expected agent_not_certified, got %q", errBody.Error.Code)
+	if errBody.Error.Code != "agent_not_playable" && errBody.Error.Code != "agent_not_certified" {
+		t.Fatalf("expected agent_not_playable, got %q", errBody.Error.Code)
 	}
 
 	// 2. Certify the agent (manifest → secret → verify).
@@ -111,5 +112,5 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 			code, enqErr.Error.Code, enqErr.Error.Message, enqErr.Error.Details)
 	}
 	_ = c.do(http.MethodDelete, "/v1/queue", su.DashboardToken, nil, nil) // cleanup
-	t.Logf("gate OK: uncertified blocked, certified admitted (agent=%s)", su.AgentID)
+	t.Logf("gate OK: unreachable blocked, hosted-certified admitted (agent=%s)", su.AgentID)
 }

@@ -64,7 +64,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --ranked              REAL stakes (needs `pyyol publish`; confirmed)
+  --ranked              REAL stakes (connected CLI or hosted verify; confirmed)
   --tier TIER           ranked stake tier: low|mid|high
   --matches MATCHES     sandbox matches to start
   --yes                 skip the ranked confirmation (CI)
