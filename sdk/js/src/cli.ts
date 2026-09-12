@@ -841,9 +841,10 @@ async function cmdQueue(a: Args): Promise<number> {
  * want THEIR two agents to play each other. One creates it, sends the id, the other joins.
  *
  * Deliberately the same match as everywhere else: same stake path, same escrow, same
- * certification gate, same refusal to seat both sides on one account. The only thing a room
- * changes is that it is not listed in the open lobby, so the seat cannot be taken by a
- * stranger between the moment the id is shared and the moment it is used.
+ * refusal to seat both sides on one account. The sit gate is not the ranked lobby:
+ * a connected CLI agent, certified connected-ranked / autoplay without a URL, or a
+ * hosted verified endpoint is enough. The only listing change is that the room is
+ * not in the open lobby, so the seat cannot be taken by a stranger.
  */
 async function cmdRoom(a: Args): Promise<number> {
   const c = creds.load();
@@ -921,8 +922,11 @@ function roomError(st: number, resp: Record<string, unknown>, what: string): num
       `${BAD} that is your own room — a match needs two different accounts. ` +
         `Send the id to the other player.`,
     );
-  } else if (code.includes("certified")) {
-    console.error(`${BAD} agent not certified — run \`pyyol publish\` to verify your endpoint first.`);
+  } else if (code.includes("playable") || code.includes("not_connected") || code.includes("certified")) {
+    console.error(
+      `${BAD} this agent is not reachable. Keep it connected with \`pyyol play\` / \`pyyol dev\`, ` +
+        `turn on auto-play, or use a hosted deploy. Private rooms do not need ranked endpoint verification.`,
+    );
   } else if (code.includes("balance") || code.includes("insufficient")) {
     console.error(`${BAD} not enough coins to stake this room.`);
   } else if (code.includes("not_found")) {

@@ -1224,11 +1224,14 @@ func run() error {
 	// Match lifecycle: real engine + persistence + per-match Redis lock, real coin
 	// escrow/settlement + limit enforcement, live broadcast, ELO at finalize, and
 	// engagement hooks (clips + notifications) fired off the hot path.
+	// Pointer so autoplay can be attached after the repo exists. Rooms consult
+	// it; the ranked CheckEligible path does not.
+	matchVer := &verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected}
 	matchSvc := match.New(
 		matchRepo,
 		store.NewLocker(st.Redis),
 		walletSvc, walletSvc, hub,
-		verifierAdapter{v: verSvc, cert: manifestSvc, susp: platformCfg, conn: agentGateway.Connected},
+		matchVer,
 		raterAdapter{ratingSvc},
 		finishHook{clips: clipsSvc, social: socialSvc},
 		clock,
@@ -1630,6 +1633,7 @@ func run() error {
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
+	matchVer.SetAutoplay(autoplayRepo)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
 	// Fail fast at enable time when an owner points ranked auto-play at an agent that
 	// doesn't declare the (Goofspiel-only) ranked game — instead of silently never
@@ -2138,6 +2142,21 @@ type verifierAdapter struct {
 	// to reach it, so staking it while disconnected would forfeit every turn to the
 	// engine's fallback and lose the match without a decision being made.
 	conn func(agentPublicID string) bool
+	// autoplay is optional. Private rooms treat "auto-play on" as playable
+	// without a hosted URL — the same local path as a connected CLI agent.
+	autoplay autoplayLooker
+}
+
+// autoplayLooker is the slice of autoplay.Repo rooms need: is this agent on?
+type autoplayLooker interface {
+	Get(ctx context.Context, agentPublicID string) (autoplay.Setting, bool, error)
+}
+
+// SetAutoplay attaches auto-play lookup for the private-room sit gate.
+func (a *verifierAdapter) SetAutoplay(r autoplayLooker) {
+	if a != nil {
+		a.autoplay = r
+	}
 }
 
 func (a verifierAdapter) Record(ctx context.Context, agentPublicID string, matchPublicID *string, responseMs int) {
@@ -2177,6 +2196,50 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 		return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
 	}
 	return nil
+}
+
+// CheckPrivateRoom is the sit gate for Play a friend / `pyyol room create`.
+//
+// Ranked CheckEligible requires a verified manifest and, when no URL is
+// declared, a live socket. That is the right bar for the public queue. A
+// private room is not that queue: JWT + covering stake is the money check,
+// and playability is local CLI / certified connected-ranked / autoplay-on
+// without a URL, or a hosted verified endpoint. Reusing ErrNotCertified
+// ("Verify your agent's endpoint before entering ranked play.") blocked
+// friend invites for agents that were already playable locally.
+func (a *verifierAdapter) CheckPrivateRoom(ctx context.Context, agentPublicID string) error {
+	if a.susp != nil && a.susp.Get().IsSuspended(agentPublicID) {
+		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
+	}
+	if a.v != nil {
+		e, err := a.v.CheckEligibility(ctx, agentPublicID)
+		if err != nil {
+			return err
+		}
+		if !e.Eligible {
+			return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
+		}
+	}
+	connected := a.conn != nil && a.conn(agentPublicID)
+	certified := false
+	if a.cert != nil {
+		if err := a.cert.RequireCertified(ctx, agentPublicID); err == nil {
+			certified = true
+		}
+	} else {
+		// Ranked cert gate disabled — rooms are not stricter than the lobby.
+		certified = true
+	}
+	autoplayOn := false
+	if a.autoplay != nil {
+		if s, ok, err := a.autoplay.Get(ctx, agentPublicID); err == nil && ok && s.Enabled {
+			autoplayOn = true
+		}
+	}
+	if privateRoomPlayable(connected, certified, autoplayOn) {
+		return nil
+	}
+	return errPrivateRoomNotPlayable()
 }
 
 // rankedEntryGate is the matchmaking.Eligibility gate: an agent may enter the

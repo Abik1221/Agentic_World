@@ -476,6 +476,17 @@ test("room join posts the match id", async () => {
   assert.match(out, /joined room mt_room1/);
 });
 
+test("room does not tell a local CLI agent to verify a ranked endpoint", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room-playable-"));
+  seedCreds(home);
+  const fetchImpl = (async () => json({ code: "agent_not_certified" }, 403)) as unknown as typeof fetch;
+  const { code, err } = await run(["room", "create", "--tier", "low"], { home, fetch: fetchImpl });
+  assert.equal(code, 1);
+  assert.match(err, /pyyol play/);
+  assert.match(err, /Private rooms do not need ranked endpoint verification/);
+  assert.doesNotMatch(err, /pyyol publish/);
+});
+
 test("room reports the arena's refusal in terms a developer can act on", async () => {
   // same_owner is the FIRST failure most people hit: they create a room and then try to
   // join it themselves. The raw JSON says what was refused and never what to do about it.

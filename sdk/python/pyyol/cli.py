@@ -918,9 +918,10 @@ def cmd_room(args: argparse.Namespace) -> int:
     joins it.
 
     Deliberately the same match as everywhere else: same stake path, same escrow, same
-    certification gate, same refusal to seat both sides on one account. The only thing a
-    room changes is that it is not listed in the open lobby, so the seat cannot be taken
-    by a stranger between the moment the code is shared and the moment it is used.
+    refusal to seat both sides on one account. The sit gate is not the ranked lobby:
+    a connected CLI agent, certified connected-ranked / autoplay without a URL, or a
+    hosted verified endpoint is enough. The only listing change is that the room is
+    not in the open lobby, so the seat cannot be taken by a stranger.
     """
     from . import credentials
 
@@ -1000,9 +1001,10 @@ def _room_error(st: int, resp: dict, what: str) -> int:
             "Send the id to the other player.",
             file=sys.stderr,
         )
-    elif "certified" in code:
+    elif "playable" in code or "not_connected" in code or "certified" in code:
         print(
-            f"{BAD} agent not certified — run `pyyol publish` to verify your endpoint first.",
+            f"{BAD} this agent is not reachable. Keep it connected with `pyyol play` / `pyyol dev`, "
+            "turn on auto-play, or use a hosted deploy. Private rooms do not need ranked endpoint verification.",
             file=sys.stderr,
         )
     elif "balance" in code or "insufficient" in code:
