@@ -4,6 +4,14 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.12.3](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.5...py-v1.12.3) (2026-09-12)
+
+
+Align the Python package version with npm `pyyol@1.12.3`. Python never
+published 1.12.0–1.12.2: JS jumped at 1.12.0 for `pyyol room`, which
+Python already had. The 1.11.3–1.11.5 Python patches match JS 1.12.1–1.12.3.
+No code change from 1.11.5.
+
 ## [1.11.5](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.4...py-v1.11.5) (2026-09-12)
 
 
