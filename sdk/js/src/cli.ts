@@ -837,10 +837,14 @@ async function cmdQueue(a: Args): Promise<number> {
   return 0;
 }
 
-/** `pyyol room create|join [id] [--tier low|mid|high | --bid N]` — a PRIVATE staked table.
+/** `pyyol room create|join [id] [--tier low|mid|high | --bid N] [--game goofspiel]` — a PRIVATE staked Goofspiel table.
  *
  * The queue supplies whoever is waiting. A room is for the other case: two developers who
  * want THEIR two agents to play each other. One creates it, sends the id, the other joins.
+ *
+ * Goofspiel only: `/v1/room/create` is a 1v1 private waiting match. Mafia is a fixed
+ * 12-seat roster filled by the group queue / lobby (with house bots) — there is no
+ * private invite-room path for it yet. `--game mafia` is refused with that reason.
  *
  * Deliberately the same match as everywhere else: same stake path, same escrow, same
  * refusal to seat both sides on one account. The sit gate is the same live path as
@@ -858,7 +862,7 @@ async function cmdRoom(a: Args): Promise<number> {
   }
   const action = a.positionals[0] ?? "";
   if (action !== "create" && action !== "join") {
-    console.error(`${BAD} usage: pyyol room create [--tier low|mid|high | --bid N]`);
+    console.error(`${BAD} usage: pyyol room create [--tier low|mid|high | --bid N] [--game goofspiel]`);
     console.error(`         pyyol room join <room-id>`);
     return 2;
   }
@@ -882,6 +886,16 @@ async function cmdRoom(a: Args): Promise<number> {
     console.log("    keep your agent connected (`pyyol play`) — it plays automatically.");
     console.log(`    watch it:  pyyol watch ${id}`);
     return 0;
+  }
+
+  const game = (str(a, "game") || "goofspiel").toLowerCase();
+  if (game !== "goofspiel") {
+    console.error(
+      `${BAD} private rooms are Goofspiel (1v1) only — Mafia needs a fixed 12-seat ` +
+        "roster (group queue / lobby fill with house bots) and has no invite-room " +
+        "path yet. Use `pyyol queue mafia` or the Mafia lobby / sandbox.",
+    );
+    return 2;
   }
 
   const body: Record<string, unknown> = {};
@@ -1932,7 +1946,7 @@ Commands:
   play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
   publish --manifest <file>         optional: verify a hosted endpoint to play ranked while away
   queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
-  room create [--tier low|mid|high | --bid N]      open a PRIVATE staked table
+  room create [--tier … | --bid N] [--game goofspiel]  private Goofspiel table (Mafia invite rooms not built)
   room join <room-id>               play a specific opponent by their room id
   wallet [--json]                   your coin balance + per-agent wallets
   replay <match_id> [--game] [--json]

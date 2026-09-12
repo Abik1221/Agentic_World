@@ -151,6 +151,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 // a room IS a match, and inventing a second identifier would mean two ids for one thing
 // and a mapping to keep correct. The alias exists because the person reading it is about
 // to paste it into a chat window, and "room" is what they will call it.
+//
+// Goofspiel only. A private room is a 1v1 waiting match in this service. Mafia is a
+// separate 12-seat game (group queue / lobby + house-bot fill) with no private invite
+// path yet — if a client sends game=mafia we refuse rather than silently open Goofspiel.
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	agentID, err := h.sittingAgent(r.Context(), p)
@@ -161,9 +165,16 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Tier string `json:"tier"`
 		Bid  int64  `json:"bid"`
+		Game string `json:"game"`
 	}
 	if err := httpx.DecodeJSON(w, r, &in); err != nil {
 		httpx.Error(w, err)
+		return
+	}
+	if g := strings.TrimSpace(strings.ToLower(in.Game)); g != "" && g != "goofspiel" {
+		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "room_game_unsupported",
+			"Private rooms are Goofspiel (1v1) only. Mafia needs a fixed 12-seat roster "+
+				"(group queue / lobby fill with house bots) and has no invite-room path yet."))
 		return
 	}
 	bid := in.Bid

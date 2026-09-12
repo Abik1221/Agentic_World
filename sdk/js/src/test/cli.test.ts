@@ -451,6 +451,24 @@ test("room create refuses to open a FREE table", async () => {
   assert.match(err, /a room is staked/);
 });
 
+test("room create refuses Mafia — private rooms are Goofspiel 1v1 only", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-room-mafia-"));
+  seedCreds(home);
+  let called = false;
+  const fetchImpl = (async () => {
+    called = true;
+    return json({}, 500);
+  }) as unknown as typeof fetch;
+  const { code, err } = await run(["room", "create", "--game", "mafia", "--tier", "low"], {
+    home,
+    fetch: fetchImpl,
+  });
+  assert.equal(code, 2);
+  assert.match(err, /Goofspiel \(1v1\) only/);
+  assert.match(err, /12-seat/);
+  assert.equal(called, false);
+});
+
 test("room join needs an id", async () => {
   const home = mkdtempSync(join(tmpdir(), "pyyol-room3-"));
   seedCreds(home);

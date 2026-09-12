@@ -103,6 +103,22 @@ func TestRoomCreateStillAdmitsAnAgentKey(t *testing.T) {
 	}
 }
 
+func TestRoomCreateRefusesMafia(t *testing.T) {
+	// Private rooms are Goofspiel 1v1. Mafia is a 12-seat game with no invite path —
+	// sending game=mafia must not silently open a Goofspiel room.
+	r, userToken, _ := roomRouter(t, stubOwners{agent: "ag_owned"})
+	rec := postJSON(t, r, "/v1/room/create", userToken, `{"bid":50,"game":"mafia"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("mafia room create = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("room_game_unsupported")) {
+		t.Fatalf("body = %s, want room_game_unsupported", rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("12-seat")) {
+		t.Fatalf("body = %s, want the 12-seat reason", rec.Body.String())
+	}
+}
+
 func TestRoomCreateRejectsAnonymousWithAuthenticationRequired(t *testing.T) {
 	r, _, _ := roomRouter(t, stubOwners{agent: "ag_owned"})
 	rec := postJSON(t, r, "/v1/room/create", "", `{"bid":50}`)

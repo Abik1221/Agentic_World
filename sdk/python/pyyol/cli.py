@@ -956,11 +956,16 @@ def cmd_queue(args: argparse.Namespace) -> int:
 
 
 def cmd_room(args: argparse.Namespace) -> int:
-    """Create or join a PRIVATE staked table, shared by its id.
+    """Create or join a PRIVATE staked Goofspiel table, shared by its id.
 
     The queue supplies whoever is waiting. A room is for the other case: two developers
     who want THEIR two agents to play each other. One creates it, sends the id, the other
     joins it.
+
+    Goofspiel only: `/v1/room/create` is a 1v1 private waiting match. Mafia is a fixed
+    12-seat roster filled by the group queue / lobby (with house bots) — there is no
+    private invite-room path for it yet. Pass `--game mafia` and the CLI refuses with
+    that reason rather than silently opening Goofspiel.
 
     Deliberately the same match as everywhere else: same stake path, same escrow, same
     refusal to seat both sides on one account.     The sit gate is the same live path as ranked: a connected CLI agent, or a
@@ -997,6 +1002,16 @@ def cmd_room(args: argparse.Namespace) -> int:
         print("    keep your agent connected (`pyyol play`) — it plays automatically.")
         print(f"    watch it:  pyyol watch {args.id}")
         return 0
+
+    game = (getattr(args, "game", None) or "goofspiel").strip().lower()
+    if game != "goofspiel":
+        print(
+            f"{BAD} private rooms are Goofspiel (1v1) only — Mafia needs a fixed 12-seat "
+            "roster (group queue / lobby fill with house bots) and has no invite-room "
+            "path yet. Use `pyyol queue mafia` or the Mafia lobby / sandbox.",
+            file=sys.stderr,
+        )
+        return 2
 
     body: dict[str, object] = {}
     if args.tier:
@@ -3247,10 +3262,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Rooms. Two subcommands under one noun rather than `room-create`/`room-join`, so the
     # pair reads as one feature in `pyyol --help` instead of two unrelated verbs.
-    prm = sub.add_parser("room", help="create or join a private staked table shared by its id")
+    # Goofspiel 1v1 only — see cmd_room for why --game mafia is refused.
+    prm = sub.add_parser(
+        "room", help="create or join a private staked Goofspiel table shared by its id"
+    )
     prm.add_argument("action", choices=["create", "join"])
     prm.add_argument("id", nargs="?", default="", help="the room id, when joining")
     _add_api(prm)
+    prm.add_argument(
+        "--game",
+        default="goofspiel",
+        choices=["goofspiel", "mafia"],
+        help="room game (Goofspiel only today; mafia is refused with a clear reason)",
+    )
     prm.add_argument(
         "--tier", default="", help="stake tier key (see `pyyol queue goofspiel --list`)"
     )
