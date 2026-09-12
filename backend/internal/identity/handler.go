@@ -964,7 +964,7 @@ func (h *Handler) refreshSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.svc.rejectIfBanned(r.Context(), uid); err != nil {
-		_ = h.refresh.RevokeAllForUser(r.Context(), uid)
+		_, _ = h.refresh.RevokeAllForUser(r.Context(), uid)
 		httpx.Error(w, err)
 		return
 	}
