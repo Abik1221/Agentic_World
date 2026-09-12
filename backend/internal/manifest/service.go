@@ -84,7 +84,7 @@ var (
 	ErrForbiddenOwner = httpx.NewError(http.StatusForbidden, "forbidden", "You do not own this agent.")
 	ErrVersionExists  = httpx.NewError(http.StatusConflict, "manifest_version_exists", "That agent version already has a manifest; bump agent.version to submit a new one.")
 	ErrNoManifest     = httpx.NewError(http.StatusNotFound, "manifest_not_found", "This agent has no manifest yet.")
-	ErrNotCertified   = httpx.NewError(http.StatusForbidden, "agent_not_certified", "Verify your agent's endpoint before entering ranked play.")
+	ErrNotCertified   = httpx.NewError(http.StatusForbidden, "agent_not_certified", "This agent has no hosted verified endpoint. Connect with `pyyol play` to sit ranked locally, or publish a hosted URL to play while away.")
 )
 
 // RequireCertified is the ranked-entry gate: it returns nil when the agent has an

@@ -226,6 +226,45 @@ def test_queue_certifies_a_connected_manifest_then_retries(monkeypatch, tmp_path
     assert _CertThenQueueHandler.queue_posts == 2
 
 
+def test_enqueue_ranked_retries_until_the_socket_is_up(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_post(_url, _token, _body):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 409, {"code": "agent_not_playable"}
+        return 202, {"status": "waiting"}
+
+    monkeypatch.setattr(cli, "_api_post", fake_post)
+    st, resp = cli._enqueue_ranked(
+        "http://x", "tok", "/v1/queue", {"tier": "low"}, attempts=3, pause=0
+    )
+    assert st == 202 and resp["status"] == "waiting"
+    assert calls["n"] == 2
+
+
+def test_enqueue_ranked_refuses_when_never_reachable(monkeypatch):
+    monkeypatch.setattr(cli, "_api_post", lambda *_a, **_k: (409, {"code": "agent_not_playable"}))
+    st, resp = cli._enqueue_ranked(
+        "http://x", "tok", "/v1/queue", {"tier": "low"}, attempts=3, pause=0
+    )
+    assert st == 409
+    assert resp["code"] == "agent_not_playable"
+
+
+def test_start_ranked_does_not_kick_sandbox(monkeypatch):
+    kicked = {"sandbox": False}
+    monkeypatch.setattr(cli, "_enqueue_ranked", lambda *_a, **_k: (409, {"code": "agent_not_playable"}))
+    monkeypatch.setattr(cli, "_start_sandbox", lambda *_a, **_k: kicked.__setitem__("sandbox", True))
+
+    class _Console:
+        def emit(self, *_a, **_k):
+            pass
+
+    cli._start_ranked("http://x", "tok", "goofspiel", argparse.Namespace(tier="low"), _Console())
+    assert kicked["sandbox"] is False
+
+
 def test_every_queue_flag_cmd_queue_reads_is_actually_defined(monkeypatch, tmp_path):
     """Parse REAL argv, don't hand-build the Namespace.
 

@@ -1,8 +1,8 @@
 """`pyyol init` must scaffold a usable manifest.
 
-Ranked REQUIRES a manifest, and until now the only accurate copy of its schema in the
-whole product was `_MANIFEST_TMPL` — defined and never referenced. A developer had to
-reverse-engineer it from the source or guess, then discover the requirement at a 403.
+A connected `pyyol play --ranked` does not require a manifest. The file is the
+optional hosted-away path. Until the scaffold existed, the only accurate copy of
+its schema was `_MANIFEST_TMPL` — defined and never referenced.
 """
 
 import json
@@ -23,7 +23,7 @@ def _init(tmp_path, name="scaffold-agent"):
 def test_init_writes_a_schema_valid_manifest(tmp_path):
     d = _init(tmp_path)
     mf = d / "manifest.json"
-    assert mf.exists(), "ranked needs a manifest and init did not scaffold one"
+    assert mf.exists(), "init should still scaffold the optional hosted-away manifest"
 
     m = json.loads(mf.read_text())
     assert m["manifestVersion"] == "1.0"

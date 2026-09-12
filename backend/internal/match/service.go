@@ -9,6 +9,7 @@ import (
 	"github.com/agent-arena/arena/internal/integrity"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/agent-arena/arena/internal/deadline"
@@ -77,8 +78,12 @@ type Service struct {
 	// presence; this one answers "is it answering RIGHT NOW" for one specific decision.
 	livecheck LivenessProber
 	driver    *driver // nil ⇒ paired agents self-drive (auto-drive disabled)
-	clock     platform.Clock
-	cfg       Config
+	// driving is the set of match IDs that already have a ranked driver
+	// goroutine. maybeDrive is called from more than one activation path;
+	// two loops on the same table would double-submit turns.
+	driving sync.Map // matchID → struct{}
+	clock   platform.Clock
+	cfg     Config
 	// rake, when set, supplies the LIVE platform commission for a new match, so the
 	// admin's fee control actually moves money instead of being decorative. Nil ⇒ the
 	// static config value. Read at creation only; the result is persisted on the match
@@ -756,10 +761,9 @@ func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64
 // checkPlayable is who may sit. The open lobby is ranked: it uses CheckEligible
 // (a live CLI socket, or a hosted verified endpoint for agents that are away).
 // A private room is not the ranked lobby. When the verifier exposes
-// CheckPrivateRoom, rooms use that instead — local CLI / connected-ranked /
-// autoplay-without-URL, or a hosted verified endpoint — so "verify your
-// endpoint for ranked" cannot block a friend invite. Verifiers that omit the
-// method keep the old shared gate.
+// CheckPrivateRoom, rooms use that instead — same live path as ranked (CLI
+// socket or hosted URL), not "verify your endpoint" and not auto-play-on
+// alone. Verifiers that omit the method keep the old shared gate.
 func (s *Service) checkPlayable(ctx context.Context, agentPublicID string, private bool) error {
 	if private {
 		type roomGate interface {

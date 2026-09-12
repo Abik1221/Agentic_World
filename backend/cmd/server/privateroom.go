@@ -8,17 +8,18 @@ import (
 
 // privateRoomPlayable is the sit bar for Play a friend / `pyyol room create`.
 //
-// JWT + covering stake is the money check; this is whether the sitting agent
-// can actually play. A live CLI socket is enough — rooms never required a
-// hosted URL. Hosted verify and auto-play remain alternatives.
-func privateRoomPlayable(connected, certified, autoplayOn bool) bool {
-	return connected || certified || autoplayOn
+// Same reachability as ranked: a live CLI socket, or a hosted verified URL.
+// A no-URL cert or auto-play-on is not a play path — opening a staked room
+// then hoping someone connects is how seats forfeit. Start `pyyol play` first.
+func privateRoomPlayable(connected, hostedVerified bool) bool {
+	return rankedPlayable(connected, hostedVerified)
 }
 
 func errPrivateRoomNotPlayable() error {
 	return httpx.NewError(http.StatusConflict, "agent_not_playable",
-		"Connect this agent locally (`pyyol play` or `pyyol dev`) or turn on auto-play. "+
-			"A hosted verified endpoint also works. Private rooms do not require ranked endpoint verification.")
+		"Start `pyyol play` or `pyyol dev` first so this agent is connected, then open the room. "+
+			"A hosted verified endpoint also works when you are away. Auto-play alone is not a play path. "+
+			"Private rooms do not require ranked endpoint verification.")
 }
 
 // rankedPlayable is the sit bar for paid / ranked tables and the ranked queue.

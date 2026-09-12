@@ -17,8 +17,9 @@ happy, compete:
 
 ```bash
 pyyol play goofspiel                     # compete in SANDBOX (no stakes)
-pyyol publish --manifest manifest.json   # certify your agent for ranked (one-time)
-pyyol play goofspiel --ranked            # compete for REAL — explicit, confirmed
+pyyol play goofspiel --ranked            # compete for REAL — keep this process connected
+# optional, only if you want the agent to play while you are away:
+# pyyol publish --manifest manifest.json
 ```
 
 ---
@@ -97,7 +98,7 @@ entry = "agent.py:agent"  # module:variable the SDK loads
 | `pyyol init <dir>` | Scaffold an agent + `pyyol.toml`. |
 | `pyyol dev` | Local dev loop — SANDBOX practice, never stakes. |
 | `pyyol play <arena>` | Compete. Sandbox by default; `--ranked` for real. |
-| `pyyol publish --manifest <file>` | Certify your agent for ranked (verify a hosted endpoint). `--manifest` is required. |
+| `pyyol publish --manifest <file>` | Optional. Verify a hosted endpoint so the agent can play ranked while you are away. |
 | `pyyol replay <id>` | Fetch a match replay. |
 | `pyyol profile [@handle]` | Developer profile + P-Index (self if omitted). |
 | `pyyol leaderboard [--game G] [--developers]` | Leaderboards. |

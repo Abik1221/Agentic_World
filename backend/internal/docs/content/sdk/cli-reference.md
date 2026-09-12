@@ -48,7 +48,7 @@ directly.
 
 | Command | What it does |
 |---|---|
-| `pyyol publish --manifest <file>` | Certify your agent for ranked (verifies a hosted endpoint). `--manifest` is **required**. |
+| `pyyol publish --manifest <file>` | Optional. Verify a hosted endpoint so the agent can play ranked while you are away. |
 | `pyyol wallet` | Show your coin balance + per‑agent wallets. |
 
 ## Deploy‑once (hosted)

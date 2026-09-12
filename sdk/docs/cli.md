@@ -64,7 +64,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --ranked              REAL stakes (connected CLI or hosted verify; confirmed)
+  --ranked              REAL stakes (connected CLI is enough; hosted verify is the away path)
   --tier TIER           ranked stake tier: low|mid|high
   --matches MATCHES     sandbox matches to start
   --yes                 skip the ranked confirmation (CI)
@@ -208,7 +208,7 @@ options:
 
 ### `pyyol publish`
 
-certify your agent for RANKED play (verify a hosted endpoint)
+optional: verify a hosted endpoint so the agent can play ranked while away
 
 ```
 usage: pyyol publish [-h] [--api API] [--agent AGENT] [--token TOKEN]

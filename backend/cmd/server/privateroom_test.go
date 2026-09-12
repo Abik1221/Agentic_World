@@ -10,22 +10,21 @@ import (
 
 func TestPrivateRoomPlayableAcceptsLocalOrHosted(t *testing.T) {
 	cases := []struct {
-		name                           string
-		connected, certified, autoplay bool
-		want                           bool
+		name                      string
+		connected, hostedVerified bool
+		want                      bool
 	}{
-		{"cli socket, no cert", true, false, false, true},
-		{"certified connected-ranked / hosted verified", false, true, false, true},
-		{"autoplay on, no url", false, false, true, true},
-		{"nothing reachable", false, false, false, false},
-		{"socket and cert", true, true, false, true},
+		{"cli socket, no cert", true, false, true},
+		{"hosted verified, no socket", false, true, true},
+		{"nothing reachable", false, false, false},
+		{"socket and hosted", true, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := privateRoomPlayable(tc.connected, tc.certified, tc.autoplay)
+			got := privateRoomPlayable(tc.connected, tc.hostedVerified)
 			if got != tc.want {
-				t.Fatalf("privateRoomPlayable(%v,%v,%v)=%v, want %v",
-					tc.connected, tc.certified, tc.autoplay, got, tc.want)
+				t.Fatalf("privateRoomPlayable(%v,%v)=%v, want %v",
+					tc.connected, tc.hostedVerified, got, tc.want)
 			}
 		})
 	}

@@ -966,7 +966,6 @@ func run() error {
 	mafiaSvc.SetStakeFloor(gameStakesSvc)
 	launch("mafia-sweeper", mafia.NewSweeper(mafiaSvc, log, time.Second).Run)
 
-
 	// Mafia push-play: like monopoly, ALWAYS on (not gated on DEMO_BOTS) so it works in
 	// prod with the live arena clean. The 11 filler seats are dedicated kind='house'
 	// bots (seeded by migration 0063), engine-driven in the drive loop — never LLM,
@@ -1737,7 +1736,7 @@ func run() error {
 			rankedQueueAdapter{mm: matchmakingSvc},
 			sandboxStarterAdapter{
 				throttle: autoplay.NewSandboxThrottle(5 * time.Minute),
-				goof: sandboxSvc, mafia: mafiaSvc,
+				goof:     sandboxSvc, mafia: mafiaSvc,
 			},
 			autoplay.Config{},
 			log,
@@ -2216,11 +2215,12 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 
 // CheckPrivateRoom is the sit gate for Play a friend / `pyyol room create`.
 //
-// A private room is not the ranked lobby. JWT + covering stake is the money
-// check; playability is local CLI / certified connected-ranked / autoplay-on
-// without a URL, or a hosted verified endpoint. Reusing ErrNotCertified
-// ("Verify your agent's endpoint before entering ranked play.") blocked
-// friend invites for agents that were already playable locally.
+// A private room is not the ranked lobby (JWT + covering stake is the money
+// check), but it is still a staked table. Playability is the same live path
+// as ranked: a connected CLI socket, or a hosted verified URL. A leftover
+// no-URL cert or auto-play-on without a socket used to sit the room and then
+// forfeit — "Open room before play". Reusing ErrNotCertified ("Verify your
+// agent's endpoint before entering ranked play.") is still the wrong copy.
 func (a *verifierAdapter) CheckPrivateRoom(ctx context.Context, agentPublicID string) error {
 	if a.susp != nil && a.susp.Get().IsSuspended(agentPublicID) {
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
@@ -2234,23 +2234,8 @@ func (a *verifierAdapter) CheckPrivateRoom(ctx context.Context, agentPublicID st
 			return httpx.NewError(http.StatusUnprocessableEntity, "verification_pending", "Agent flagged for review: "+e.Reason)
 		}
 	}
-	connected := a.conn != nil && a.conn(agentPublicID)
-	certified := false
-	if a.cert != nil {
-		if err := a.cert.RequireCertified(ctx, agentPublicID); err == nil {
-			certified = true
-		}
-	} else {
-		// Ranked cert gate disabled — rooms are not stricter than the lobby.
-		certified = true
-	}
-	autoplayOn := false
-	if a.autoplay != nil {
-		if s, ok, err := a.autoplay.Get(ctx, agentPublicID); err == nil && ok && s.Enabled {
-			autoplayOn = true
-		}
-	}
-	if privateRoomPlayable(connected, certified, autoplayOn) {
+	connected, hosted := sitReachable(ctx, a.cert, a.conn, agentPublicID)
+	if privateRoomPlayable(connected, hosted) {
 		return nil
 	}
 	return errPrivateRoomNotPlayable()
@@ -2409,7 +2394,6 @@ func (c mafiaTableCreator) CreateStartedTable(ctx context.Context, seats []group
 	c.svc.DriveMatchedSeats(ctx, id, real, all)
 	return id, nil
 }
-
 
 // autoplayRankedGate validates, at auto-play ENABLE time, that an agent may enter
 // ranked auto-play for the game it would play — that its manifest declares that game
@@ -2666,7 +2650,6 @@ type awarderFunc func(ctx context.Context, agentPublicID string) error
 func (f awarderFunc) AwardVerified(ctx context.Context, agentPublicID string) error {
 	return f(ctx, agentPublicID)
 }
-
 
 // mafiaActRecorder adapts the store to the shape mafia asks for, so internal/mafia does not
 // import internal/store. Same reasoning as the game services generally: the engine never imports persistence.
