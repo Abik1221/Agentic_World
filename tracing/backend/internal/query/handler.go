@@ -771,27 +771,60 @@ func (h Handler) Overview(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// Health must not count leftover error_message on a completed trace, nor
+	// superseded ReplacingMergeTree versions. traces is ReplacingMergeTree(updated_at):
+	// a fold that later succeeded still carries the earlier error_message, and
+	// count() without collapsing versions inflated "errors" into the hundreds
+	// while the pipeline was fine.
+	//
+	// `errors` is the last-24h TERMINAL failure count (status = 'error' after
+	// collapsing). That is what a health card should answer. Lifetime terminal
+	// failures and "has leftover text but did not fail" are returned separately
+	// so nobody has to guess why the headline moved.
 	row := h.Store.DB.QueryRowContext(c.UserContext(), `
 		SELECT
-			(SELECT count() FROM traces WHERE organization_id = ?),
-			(SELECT count() FROM events WHERE trace_id IN (SELECT trace_id FROM traces WHERE organization_id = ?)),
-			(SELECT count() FROM traces WHERE organization_id = ? AND (status = 'error' OR error_message != '')),
-			(SELECT coalesce(quantile(0.95)(latency_ms), 0) FROM traces WHERE organization_id = ?),
-			(SELECT coalesce(sum(total_tokens), 0) FROM traces WHERE organization_id = ?),
-			(SELECT coalesce(sum(total_cost), 0) FROM traces WHERE organization_id = ?)
-		`, orgID, orgID, orgID, orgID, orgID, orgID)
-	var traces, events, errors, totalTokens int64
+			count(),
+			countIf(status = 'error' AND started_at >= now() - INTERVAL 24 HOUR),
+			countIf(status = 'error'),
+			countIf(error_message != '' AND status != 'error'),
+			coalesce(quantile(0.95)(latency_ms), 0),
+			coalesce(sum(total_tokens), 0),
+			coalesce(sum(total_cost), 0)
+		FROM (
+			SELECT
+				argMax(status, updated_at) AS status,
+				argMax(error_message, updated_at) AS error_message,
+				min(started_at) AS started_at,
+				argMax(latency_ms, updated_at) AS latency_ms,
+				argMax(total_tokens, updated_at) AS total_tokens,
+				argMax(total_cost, updated_at) AS total_cost
+			FROM traces
+			WHERE organization_id = ?
+			GROUP BY trace_id
+		)
+		`, orgID)
+	var traces, errors24h, errorsLifetime, errorsMessageOnly, totalTokens int64
 	var p95Latency, totalCost float64
-	if err := row.Scan(&traces, &events, &errors, &p95Latency, &totalTokens, &totalCost); err != nil {
+	if err := row.Scan(&traces, &errors24h, &errorsLifetime, &errorsMessageOnly, &p95Latency, &totalTokens, &totalCost); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	eventsRow := h.Store.DB.QueryRowContext(c.UserContext(),
+		`SELECT count() FROM events WHERE trace_id IN (SELECT trace_id FROM traces WHERE organization_id = ?)`, orgID)
+	var events int64
+	if err := eventsRow.Scan(&events); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{
-		"traces_total":   traces,
-		"events_total":   events,
-		"errors":         errors,
-		"p95_latency_ms": p95Latency,
-		"total_tokens":   totalTokens,
-		"estimated_cost": totalCost,
+		"traces_total":         traces,
+		"events_total":         events,
+		"errors":               errors24h,
+		"errors_24h":           errors24h,
+		"errors_lifetime":      errorsLifetime,
+		"errors_message_only":  errorsMessageOnly,
+		"error_window":         "24h",
+		"p95_latency_ms":       p95Latency,
+		"total_tokens":         totalTokens,
+		"estimated_cost":       totalCost,
 	})
 }
 

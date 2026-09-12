@@ -32,6 +32,9 @@ type Repo interface {
 	ByRef(ctx context.Context, userPublicID, flow, ref string) ([]Event, error)
 	// RecentFailures returns the newest failed stages platform-wide (operator view).
 	RecentFailures(ctx context.Context, limit int) ([]FailureRow, error)
+	// MoneyTrace is the platform-wide deposit/withdrawal attempt picture:
+	// completed vs failed vs held, and how many distinct people failed.
+	MoneyTrace(ctx context.Context) (MoneyTrace, error)
 }
 
 // FailureRow is one broken payment, for the operator's triage list.
@@ -42,6 +45,23 @@ type FailureRow struct {
 	Stage        string    `json:"stage"`
 	Detail       string    `json:"detail,omitempty"`
 	At           time.Time `json:"at"`
+}
+
+// MoneyTrace is the operator's money-attempt scoreboard. Failed attempts come
+// from the payment log (the only place a mid-flow break is recorded). Completed
+// deposits/withdrawals and open payout holds come from the ledger tables — the
+// log is diagnostic and is never the authority on whether coins moved.
+type MoneyTrace struct {
+	FailedAttempts      int   `json:"failed_attempts"`
+	UniqueUsersFailed   int   `json:"unique_users_failed"`
+	DepositFailures     int   `json:"deposit_failures"`
+	WithdrawalFailures  int   `json:"withdrawal_failures"`
+	TopupFailures       int   `json:"topup_failures"`
+	DepositsCompleted   int64 `json:"deposits_completed"`
+	WithdrawalsPaid     int64 `json:"withdrawals_paid"`
+	WithdrawalsRejected int64 `json:"withdrawals_rejected"`
+	WithdrawalsPending  int64 `json:"withdrawals_pending"`
+	OpenPayoutHolds     int64 `json:"open_payout_holds"`
 }
 
 // Service records stages and assembles them into timelines.

@@ -170,13 +170,16 @@ type Overview struct {
 // for (someone farming practice, or someone whose real losses do not match their
 // deposits).
 type UserDetail struct {
-	PublicID  string    `json:"public_id"`
-	Username  string    `json:"username,omitempty"`
-	Email     string    `json:"email,omitempty"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	PublicID    string    `json:"public_id"`
+	Username    string    `json:"username,omitempty"`
+	DisplayName string    `json:"display_name,omitempty"`
+	Email       string    `json:"email,omitempty"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
 
-	Agents int `json:"agents"`
+	Agents   int      `json:"agents"`
+	AgentIDs []string `json:"agent_ids"`
 
 	// Play, split by mode — never summed.
 	CompetitiveMatches int `json:"competitive_matches"`

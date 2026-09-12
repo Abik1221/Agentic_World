@@ -94,8 +94,13 @@ func (h *Handler) failures(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []FailureRow{}
 	}
+	sum, err := h.svc.repo.MoneyTrace(r.Context())
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	// Never cached: an operator acting on a stale failure list re-investigates
 	// something already fixed, or misses one that just broke.
 	w.Header().Set("Cache-Control", "no-store")
-	httpx.JSON(w, http.StatusOK, map[string]any{"failures": items})
+	httpx.JSON(w, http.StatusOK, map[string]any{"failures": items, "summary": sum})
 }
