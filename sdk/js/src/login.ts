@@ -36,6 +36,67 @@ export function deviceLabel(): string {
   return name.trim().replace(/\.local$/i, "") || "pyyol cli";
 }
 
+/**
+ * Loopback pages after `pyyol login`. Keep in lockstep with
+ * sdk/python/pyyol/login.py. No network, no <img>, no xmlns (must not contain
+ * "http://"). The lockup is the /pyyol-logo.png mark — cascade + word — inline.
+ */
+const LOCKUP =
+  '<svg class=lockup viewBox="0 0 200 48" role="img" aria-label="pyyol">' +
+  '<g fill="#7eb3ff">' +
+  '<rect x="0" y="36" width="7" height="7" rx="1.5"/>' +
+  '<rect x="9.2" y="36" width="7" height="7" rx="1.5"/>' +
+  '<rect x="6.2" y="26.6" width="6.4" height="6.4" rx="1.4"/>' +
+  '<rect x="15.2" y="26.6" width="6.4" height="6.4" rx="1.4"/>' +
+  '<rect x="13" y="18.2" width="5.6" height="5.6" rx="1.3"/>' +
+  '<rect x="21" y="18.2" width="5.6" height="5.6" rx="1.3"/>' +
+  '<rect x="19.4" y="11.2" width="4.6" height="4.6" rx="1.15"/>' +
+  '<rect x="26.2" y="11.2" width="4.6" height="4.6" rx="1.15"/>' +
+  '<rect x="25.2" y="5.6" width="3.6" height="3.6" rx="1"/>' +
+  '<rect x="30.6" y="5.6" width="3.6" height="3.6" rx="1"/>' +
+  '<rect x="30.2" y="1.6" width="2.5" height="2.5" rx=".75"/>' +
+  '<rect x="34.2" y="1.6" width="2.5" height="2.5" rx=".75"/>' +
+  '<rect x="34.4" y="0" width="1.6" height="1.6" rx=".5"/>' +
+  "</g>" +
+  '<text x="46" y="40" fill="#e8e9ed" font-size="28" font-weight="500" ' +
+  'letter-spacing="-0.04em" ' +
+  "font-family=\"Space Grotesk,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif\">" +
+  "pyyol</text></svg>";
+
+function loopbackPage(title: string, heading: string, copy: string): string {
+  return (
+    "<!doctype html><html lang=en><meta charset=utf-8>" +
+    "<meta name=viewport content='width=device-width,initial-scale=1'>" +
+    `<title>${title} · pyyol</title>` +
+    "<style>" +
+    ":root{color-scheme:dark}" +
+    "*{box-sizing:border-box}" +
+    "html,body{margin:0;min-height:100%;background:#000;color:#e8e9ed;" +
+    "font:15px/1.5 'Space Grotesk',ui-sans-serif,system-ui,-apple-system," +
+    "'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}" +
+    "body{display:grid;place-items:center;padding:32px}" +
+    "main{width:min(100%,360px);text-align:center}" +
+    ".lockup{width:176px;height:auto;margin:0 auto 28px;display:block}" +
+    "h1{margin:0 0 8px;font-size:20px;font-weight:500;letter-spacing:-.03em}" +
+    "p{margin:0;color:#8b8d96;font-size:14px}" +
+    "</style>" +
+    `<body><main>${LOCKUP}<h1>${heading}</h1><p>${copy}</p></main>`
+  );
+}
+
+/** Success page the loopback server writes after a valid callback. */
+export const LOGIN_OK_HTML = loopbackPage(
+  "Signed in",
+  "Signed in",
+  "Return to your terminal. You can close this tab.",
+);
+/** Failure page — wrong state or no credential. */
+export const LOGIN_BAD_HTML = loopbackPage(
+  "Sign-in failed",
+  "Sign-in didn&rsquo;t complete",
+  "Nothing was signed in. Return to your terminal and run the command again.",
+);
+
 /** Derive the WSS connect URL from a platform API/base URL. */
 export function deriveConnectUrl(apiUrl: string): string {
   if (!apiUrl) return "";
@@ -98,13 +159,12 @@ export function runLoginFlow(opts: {
         return;
       }
       const token = u.searchParams.get("token") ?? "";
-      const ok = Boolean(token) && safeEqual(u.searchParams.get("state") ?? "", state);
+      const apiKey = u.searchParams.get("api_key") ?? "";
+      // Either credential is enough — same as the Python CLI. Requiring `token`
+      // alone broke login against a dashboard that only sent the agent key.
+      const ok = Boolean(token || apiKey) && safeEqual(u.searchParams.get("state") ?? "", state);
       res.writeHead(ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(
-        ok
-          ? "<!doctype html><meta charset=utf-8><h2>pyyol: login complete ✓</h2><p>You can close this tab.</p>"
-          : "<!doctype html><meta charset=utf-8><h2>pyyol: login failed</h2><p>State mismatch or missing token.</p>",
-      );
+      res.end(ok ? LOGIN_OK_HTML : LOGIN_BAD_HTML);
       if (!ok) return;
       clearTimeout(timer);
       server.close();
@@ -153,7 +213,8 @@ export function runLoginFlow(opts: {
       }
       process.stderr.write(
         (opened ? "opening your browser to sign in…\n" : "couldn't open a browser automatically.\n") +
-          `  if it didn't open, visit:\n  ${authUrl}\n\n`,
+          `  if it didn't open, visit:\n  ${authUrl}\n\n` +
+          `waiting for you to finish signing in… (up to ${Math.round(timeoutMs / 1000)}s; Ctrl-C to cancel)\n`,
       );
     });
   });

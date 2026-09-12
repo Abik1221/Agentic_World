@@ -29,13 +29,36 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .credentials import Credentials
 
 
-# The loopback pages are the LAST thing a developer sees in the sign-in flow, right
-# after a branded dashboard. Served as unstyled default-serif HTML they read as a
-# broken redirect or a phishing intercept rather than as the product — so they carry
-# the platform palette (see Pyyol_client/app/globals.css) and say plainly what to do
-# next. Self-contained by necessity: this is a throwaway loopback server with no
-# static assets and no network the page can rely on.
-def _page(title: str, body: str, accent: str) -> bytes:
+# Keep the markup in lockstep with sdk/js/src/login.ts — both CLIs serve this
+# same loopback page. Unstyled default-serif HTML (the JS 1.12.2 page) read as a
+# broken redirect after the branded dashboard. Self-contained: no network, no
+# <img>, no xmlns (tests forbid "http://"). The lockup is the product mark from
+# /pyyol-logo.png — pixel cascade + word — drawn inline so it cannot 404.
+_LOCKUP = (
+    '<svg class=lockup viewBox="0 0 200 48" role="img" aria-label="pyyol">'
+    '<g fill="#7eb3ff">'
+    '<rect x="0" y="36" width="7" height="7" rx="1.5"/>'
+    '<rect x="9.2" y="36" width="7" height="7" rx="1.5"/>'
+    '<rect x="6.2" y="26.6" width="6.4" height="6.4" rx="1.4"/>'
+    '<rect x="15.2" y="26.6" width="6.4" height="6.4" rx="1.4"/>'
+    '<rect x="13" y="18.2" width="5.6" height="5.6" rx="1.3"/>'
+    '<rect x="21" y="18.2" width="5.6" height="5.6" rx="1.3"/>'
+    '<rect x="19.4" y="11.2" width="4.6" height="4.6" rx="1.15"/>'
+    '<rect x="26.2" y="11.2" width="4.6" height="4.6" rx="1.15"/>'
+    '<rect x="25.2" y="5.6" width="3.6" height="3.6" rx="1"/>'
+    '<rect x="30.6" y="5.6" width="3.6" height="3.6" rx="1"/>'
+    '<rect x="30.2" y="1.6" width="2.5" height="2.5" rx=".75"/>'
+    '<rect x="34.2" y="1.6" width="2.5" height="2.5" rx=".75"/>'
+    '<rect x="34.4" y="0" width="1.6" height="1.6" rx=".5"/>'
+    "</g>"
+    '<text x="46" y="40" fill="#e8e9ed" font-size="28" font-weight="500" '
+    "letter-spacing=\"-0.04em\" "
+    "font-family=\"Space Grotesk,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif\">"
+    "pyyol</text></svg>"
+)
+
+
+def _page(title: str, heading: str, copy: str) -> bytes:
     return (
         "<!doctype html><html lang=en><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
@@ -43,36 +66,28 @@ def _page(title: str, body: str, accent: str) -> bytes:
         "<style>"
         ":root{color-scheme:dark}"
         "*{box-sizing:border-box}"
-        "body{margin:0;min-height:100vh;display:flex;align-items:center;"
-        "justify-content:center;padding:24px;background:#0b0b0f;color:#e2e2ea;"
-        "font:15px/1.6 ui-sans-serif,-apple-system,'Segoe UI',Roboto,sans-serif}"
-        ".card{width:100%;max-width:420px;background:#111118;border:1px solid #2a2a37;"
-        "border-radius:16px;padding:32px;text-align:center}"
-        ".dot{width:44px;height:44px;margin:0 auto 20px;border-radius:50%;"
-        f"display:flex;align-items:center;justify-content:center;background:{accent}22;"
-        f"border:1px solid {accent}55;font-size:20px;color:{accent}}}"
-        "h1{margin:0 0 8px;font-size:18px;font-weight:600;letter-spacing:-.01em}"
-        "p{margin:0;color:#8d8da1;font-size:13.5px}"
-        ".mark{margin-top:24px;padding-top:18px;border-top:1px solid #2a2a37;"
-        "font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;"
-        "text-transform:uppercase;color:#5a5a70}"
+        "html,body{margin:0;min-height:100%;background:#000;color:#e8e9ed;"
+        "font:15px/1.5 'Space Grotesk',ui-sans-serif,system-ui,-apple-system,"
+        "'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased}"
+        "body{display:grid;place-items:center;padding:32px}"
+        "main{width:min(100%,360px);text-align:center}"
+        ".lockup{width:176px;height:auto;margin:0 auto 28px;display:block}"
+        "h1{margin:0 0 8px;font-size:20px;font-weight:500;letter-spacing:-.03em}"
+        "p{margin:0;color:#8b8d96;font-size:14px}"
         "</style>"
-        f"<body><main class=card>{body}<div class=mark>pyyol</div></main>"
+        f"<body><main>{_LOCKUP}<h1>{heading}</h1><p>{copy}</p></main>"
     ).encode()
 
 
 _OK_PAGE = _page(
     "Signed in",
-    "<div class=dot>&#10003;</div><h1>You&rsquo;re signed in</h1>"
-    "<p>You can close this tab and return to your terminal.</p>",
-    "#34d399",
+    "Signed in",
+    "Return to your terminal. You can close this tab.",
 )
 _BAD_PAGE = _page(
     "Sign-in failed",
-    "<div class=dot>&#33;</div><h1>Sign-in didn&rsquo;t complete</h1>"
-    "<p>The request couldn&rsquo;t be verified, so nothing was signed in. "
-    "Return to your terminal and run the command again.</p>",
-    "#f59e0b",
+    "Sign-in didn&rsquo;t complete",
+    "Nothing was signed in. Return to your terminal and run the command again.",
 )
 
 

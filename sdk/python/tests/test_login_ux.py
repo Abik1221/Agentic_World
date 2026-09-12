@@ -107,8 +107,10 @@ def test_loopback_pages_are_branded_and_self_contained():
     for page in (login._OK_PAGE, login._BAD_PAGE):
         html = page.decode("utf-8")
         assert "<style>" in html, "page must carry its own styling"
-        assert "#0b0b0f" in html, "must use the platform canvas colour"
+        assert "#000" in html, "must use the black console canvas"
+        assert "aria-label=\"pyyol\"" in html, "must carry the product lockup"
         assert "viewport" in html, "must render on a phone"
+        assert "Times" not in html
         # No external fetches — nothing to break, nothing to leak the loopback URL to.
         for bad in ("http://", "https://", "<script", "<img"):
             assert bad not in html, f"loopback page must not contain {bad!r}"
