@@ -460,7 +460,7 @@ func run() error {
 	// authenticated by their manifest endpoint secret. The engine drives matches
 	// over the socket via agentgw.*Decider, falling back deterministically if an
 	// agent is absent/slow — the same guarantee the HTTP push client gives.
-	agentGateway := newAgentGateway(manifestSvc, idSvc, platformCfg, lens, log, cfg.AgentReconnectGrace)
+	agentGateway := newAgentGateway(manifestSvc, idSvc, idSvc, authn, platformCfg, lens, log, cfg.AgentReconnectGrace)
 
 	// Domain event bus (transactional outbox): producers emit facts in their own
 	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone
@@ -1500,6 +1500,7 @@ func run() error {
 	sandboxSvc.SetGateway(agentGateway)                    // play over the socket when the agent is connected
 	sandboxSvc.SetBenchmark(lens, benchPersist, benchMeta) // per-match decision-quality telemetry
 	sandboxHandler := sandbox.NewHandler(sandboxSvc, authn)
+	sandboxHandler.SetPrimaryAgentLookup(idSvc)
 
 	// Matchmaking: a server-driven, skill-banded queue replaces grabbing matches[0]
 	// from the open lobby. The matcher pairs agents within a rating band that widens
@@ -1526,6 +1527,7 @@ func run() error {
 	// stake (the auto-play-ranked money leak). Reachable = live socket OR verified endpoint.
 	matchmakingSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	matchmakingHandler := matchmaking.NewHandler(matchmakingSvc, authn)
+	matchmakingHandler.SetPrimaryAgentLookup(idSvc)
 	matchmakingHandler.SetStakeResolver(gameStakesSvc) // ranked queue by Low/Mid/High tier
 	// AND on the service itself. The handler check is not enough: autoplay and the pairing driver
 	// call Enqueue directly, so their bids never reached it — which is how 870 matches came to be
@@ -1615,6 +1617,7 @@ func run() error {
 	groupSvc.SetAffordability(walletSvc)
 	groupSvc.SetLiveness(rankedLivenessGate{gw: agentGateway, resolver: manifestSvc})
 	groupHandler := groupmatch.NewHandler(groupSvc, authn)
+	groupHandler.SetPrimaryAgentLookup(idSvc)
 	groupHandler.SetStakeResolver(gameStakesSvc)
 	groupSvc.SetStakeFloor(gameStakesSvc)
 

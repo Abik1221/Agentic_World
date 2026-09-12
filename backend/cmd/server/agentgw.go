@@ -33,18 +33,21 @@ type keyResolver interface {
 	ResolveAgentKey(ctx context.Context, rawKey string) (*auth.Principal, error)
 }
 
-// socketAuthenticator validates a register frame's (agent_id, token). It accepts
-// either credential the developer may hold:
-//   - an **agent API key** (ScopeAgent) — the primary path; issued to the CLI by
-//     the dashboard /cli-login flow and resolved to its owning agent id;
-//   - the agent's **manifest endpoint secret** — the fallback for an agent that
-//     published a hosted endpoint and reuses that secret for the socket.
+// socketAuthenticator validates a register frame's (agent_id, token). It accepts:
+//   - an **agent API key** (ScopeAgent) — issued to the CLI by /cli-login;
+//   - a **dashboard JWT** (ScopeUser) sitting the owner's primary agent — so
+//     `pyyol login` can play even when minting a persistent key fails;
+//   - the agent's **manifest endpoint secret** — hosted-endpoint fallback.
 //
 // Either must resolve to the claimed agent id.
 type socketAuthenticator struct {
 	resolver secretResolver
 	keys     keyResolver
-	log      *slog.Logger
+	owners   auth.AgentOwner
+	creds    interface {
+		ResolveCredential(ctx context.Context, raw string) (*auth.Principal, error)
+	}
+	log *slog.Logger
 }
 
 func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID string) (string, bool) {
@@ -58,7 +61,17 @@ func (a socketAuthenticator) Authenticate(ctx context.Context, token, agentID st
 			return agentID, true
 		}
 	}
-	// 2. Manifest endpoint secret (constant-time compare) — the publish fallback.
+	// 2. Dashboard JWT — `pyyol login` always has this even when key mint fails.
+	// The owner may sit only the agent /v1/me says they own.
+	if a.creds != nil && a.owners != nil {
+		if p, err := a.creds.ResolveCredential(ctx, token); err == nil && p != nil &&
+			p.Scope == auth.ScopeUser {
+			if id, err := auth.SittingAgent(ctx, p, a.owners); err == nil && id == agentID {
+				return agentID, true
+			}
+		}
+	}
+	// 3. Manifest endpoint secret (constant-time compare) — the publish fallback.
 	if target, found, err := a.resolver.PlayTarget(ctx, agentID); err == nil && found && target.Token != "" {
 		if subtle.ConstantTimeCompare([]byte(token), []byte(target.Token)) == 1 {
 			return agentID, true
@@ -104,7 +117,9 @@ func (a socketAuthenticator) AuthFailureReason(ctx context.Context, token, agent
 // (login credential) and the manifest secret store (publish fallback). When a
 // platform-config provider is supplied, the gateway learns the latest/minimum
 // SDK version per language (live) for the upgrade nudge + too-old refusal.
-func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg.Provider, em *telemetry.Client, log *slog.Logger, reconnectGrace time.Duration) *agentgw.Gateway {
+func newAgentGateway(resolver secretResolver, keys keyResolver, owners auth.AgentOwner, creds interface {
+	ResolveCredential(ctx context.Context, raw string) (*auth.Principal, error)
+}, cfg *platformcfg.Provider, em *telemetry.Client, log *slog.Logger, reconnectGrace time.Duration) *agentgw.Gateway {
 	opts := agentgw.Options{ClientIP: middleware.ClientIP, Emitter: em, ReconnectGrace: reconnectGrace}
 	if cfg != nil {
 		opts.SDKVersionInfo = func(language string) (latest, min string) {
@@ -112,7 +127,7 @@ func newAgentGateway(resolver secretResolver, keys keyResolver, cfg *platformcfg
 			return sdk.LatestSDKVersions[language], sdk.MinSDKVersions[language]
 		}
 	}
-	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, log: log}, opts, log)
+	return agentgw.New(socketAuthenticator{resolver: resolver, keys: keys, owners: owners, creds: creds, log: log}, opts, log)
 }
 
 // mountMatchUsage serves GET /v1/matches/{id}/usage?agent=… — "did my telemetry

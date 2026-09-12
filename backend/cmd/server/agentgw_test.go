@@ -40,6 +40,34 @@ func (f fakeKeys) ResolveAgentKey(_ context.Context, raw string) (*auth.Principa
 	return nil, errors.New("unknown key")
 }
 
+type fakeCreds struct {
+	p   *auth.Principal
+	err error
+}
+
+func (f fakeCreds) ResolveCredential(context.Context, string) (*auth.Principal, error) {
+	return f.p, f.err
+}
+
+type fakeOwners struct{ id string }
+
+func (f fakeOwners) PrimaryAgentOf(context.Context, string) (string, error) { return f.id, nil }
+
+func TestSocketAuthenticatorDashboardJWT(t *testing.T) {
+	a := socketAuthenticator{
+		resolver: fakeResolver{found: false},
+		creds:    fakeCreds{p: &auth.Principal{Scope: auth.ScopeUser, UserPublicID: "usr_1"}},
+		owners:   fakeOwners{id: "ag_1"},
+		log:      slog.Default(),
+	}
+	if id, ok := a.Authenticate(context.Background(), "jwt-owner", "ag_1"); !ok || id != "ag_1" {
+		t.Fatalf("owner JWT rejected: id=%q ok=%v", id, ok)
+	}
+	if _, ok := a.Authenticate(context.Background(), "jwt-owner", "ag_other"); ok {
+		t.Fatal("owner JWT sat a foreign agent")
+	}
+}
+
 func TestSocketAuthenticatorAgentKey(t *testing.T) {
 	a := socketAuthenticator{
 		resolver: fakeResolver{found: false},

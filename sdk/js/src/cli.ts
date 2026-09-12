@@ -566,18 +566,15 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
       console.log("aborted — staying safe. (Use --yes in CI to skip the prompt.)");
       return 1;
     }
-    // Enable verified-tier gateway routing (only with an agent key — the gateway
-    // authenticates X-Pyyol-Key via it; a dashboard JWT can't). Then pyyol.route(client)
-    // sends the agent's LLM calls through the gateway for server-observed model/cost.
+    // The play socket accepts the dashboard JWT. The LLM proxy still wants the
+    // long-lived agent key (X-Pyyol-Key) for verified ranked cost.
     if (usingAgentKey && token) {
       enableGateway(token, DEFAULT_GATEWAY);
       console.log(`  ${OK} verified gateway routing on (${DEFAULT_GATEWAY}) — call pyyol.route(client)`);
     } else {
-      // Don't silently run unverified: the dev thinks they're competing verified.
-      console.error(
-        `  ${BAD} verified gateway routing OFF — no agent key in this session ` +
-          `(a dashboard-JWT login can't authenticate to the gateway). Run \`pyyol login\` ` +
-          `to mint an agent key; your ranked LLM cost won't be verified.`,
+      console.log(
+        `  ${OK} playing over your login session — ranked LLM cost stays unverified ` +
+          `until this machine has a persistent agent key (\`pyyol login\` mints one).`,
       );
     }
   }
@@ -798,16 +795,7 @@ async function cmdQueue(a: Args): Promise<number> {
     for (const t of tiers) console.log(`  ${String(t.key ?? "").padEnd(8)} ${String(Number(t.coins ?? 0)).padStart(8)} coins  ${t.label ?? ""}`);
     return 0;
   }
-  // Queuing is an AGENT action, so it needs the AGENT key.
-  //
-  // /v1/queue is registered with RequireScope(ScopeAgent). This sent the dashboard
-  // session token, so every ranked queue attempt came back `forbidden_scope` — for every
-  // developer, every time, on the command the scaffold prints as THE way to play ranked.
-  //
-  // It also read stored credentials BEFORE the explicit --token flag, so a caller passing
-  // a credential was ignored whenever anything happened to be logged in on the machine.
-  // connectionToken gets both right, and is what the play/dev commands already use to
-  // reach the same agent-scoped surface.
+  // Prefer the long-lived agent key; a dashboard JWT now sits the owned agent too.
   let { token } = connectionToken(a, c);
   if (!token) {
     const got = await ensureLogin(a);

@@ -810,18 +810,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
             )
         return 0
 
-    # Queuing is an AGENT action, so it needs the AGENT key.
-    #
-    # /v1/queue is registered with RequireScope(ScopeAgent). This sent the dashboard
-    # session token instead, so every ranked queue attempt came back
-    # `forbidden_scope: This credential is not allowed to access this resource` — for
-    # every developer, every time. It is the command the scaffold prints as THE way to
-    # play ranked ("pyyol queue <game> --tier low"), so ranked matchmaking was
-    # unreachable from the CLI.
-    #
-    # _connection_token already encodes the right preference (agent key first, falling
-    # back to the dashboard JWT) and is what the play/dev commands use to reach the same
-    # agent-scoped surface.
+    # Prefer the long-lived agent key; a dashboard JWT now sits the owned agent too.
     token, _ = _connection_token(args, creds)
     if not token:
         creds = _ensure_login(args)
@@ -1982,11 +1971,9 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
             print("aborted — staying safe. (Use --yes in CI to skip the prompt.)")
             return 1
 
-    # Ranked → enable verified-tier gateway routing. Only when the connection token
-    # is an agent key (sk_arena_…): the gateway authenticates X-Pyyol-Key via that
-    # key. With this on, `pyyol.route(client)` sends the agent's LLM calls through the
-    # gateway so model/token/cost are server-observed (unfakeable). A dashboard-JWT
-    # session can't authenticate to the gateway, so routing stays off there.
+    # Ranked → enable verified-tier LLM routing when we hold an agent key.
+    # The play socket accepts the dashboard JWT (owner sits the primary agent);
+    # the LLM proxy still authenticates X-Pyyol-Key with the long-lived key.
     if m == mode.RANKED:
         if _using_key and token:
             from . import _instrument
@@ -1996,11 +1983,9 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
                 f"{OK} verified gateway routing on ({DEFAULT_GATEWAY}) — call pyyol.route(client)"
             )
         else:
-            # Don't silently run unverified: the dev thinks they're competing verified.
             print(
-                f"{BAD} verified gateway routing OFF — no agent key in this session "
-                "(a dashboard-JWT login can't authenticate to the gateway). Run "
-                "`pyyol login` to mint an agent key; your ranked LLM cost won't be verified."
+                f"{OK} playing over your login session — ranked LLM cost stays unverified "
+                "until this machine has a persistent agent key (`pyyol login` mints one)."
             )
 
     # Persist the agent id back into pyyol.toml so future runs are zero-config.
