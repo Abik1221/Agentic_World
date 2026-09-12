@@ -1943,6 +1943,12 @@ function printHelp(topic?: string): number {
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   argv = normalizeArgv(argv);
   const command = argv[0];
+  // `pyyol login --help` used to start the browser flow. Honour -h/--help on
+  // every subcommand the way the Python CLI does.
+  if (command && !["help", "h", "--help", "-h", "--version", "-v"].includes(command)
+    && argv.slice(1).some((x) => x === "--help" || x === "-h")) {
+    return printHelp(command);
+  }
   const a = parse(argv.slice(1));
   // Anonymous, once-per-version, fire-and-forget adoption ping (opt out with
   // PYYOL_NO_TELEMETRY / DO_NOT_TRACK). Never blocks or affects the command.

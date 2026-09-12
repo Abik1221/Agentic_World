@@ -643,3 +643,16 @@ test("help <command> prints that command's usage line", async () => {
   assert.match(out, /play <arena>/);
   assert.doesNotMatch(err, /unknown command/);
 });
+
+test("login --help prints usage and does not start the browser flow", async () => {
+  let fetches = 0;
+  const { code, out } = await run(["login", "--help"], {
+    fetch: (async () => {
+      fetches += 1;
+      return json({});
+    }) as unknown as typeof fetch,
+  });
+  assert.equal(code, 0);
+  assert.equal(fetches, 0);
+  assert.match(out, /login /);
+});
