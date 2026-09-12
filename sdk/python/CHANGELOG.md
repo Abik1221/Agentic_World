@@ -4,6 +4,15 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.11.5](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.4...py-v1.11.5) (2026-09-12)
+
+
+### Bug Fixes
+
+* **cli:** brand the login callback page and accept either credential ([e5acabc](https://github.com/Abik1221/Agentic_World/commit/e5acabc58e4262420ffe79b6c1e840f153865922))
+* **play:** let an owner JWT sit the agent on the socket and in queues ([99b4347](https://github.com/Abik1221/Agentic_World/commit/99b43470f7d85b2544108e83aa147433cd42cf0f))
+* **play:** sit Mafia on the owner JWT and stop minting unused signup keys ([6c7d2de](https://github.com/Abik1221/Agentic_World/commit/6c7d2de364386a2356c9449564f2f4c5856050a9))
+
 ## [1.11.4](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.3...py-v1.11.4) (2026-09-12)
 
 
