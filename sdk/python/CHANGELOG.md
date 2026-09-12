@@ -4,6 +4,96 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.13.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.12.3...py-v1.13.0) (2026-09-12)
+
+
+### Features
+
+* **cost:** let a Goofspiel move carry its talk, and fix the JS SDK that could not ([8263fdc](https://github.com/Abik1221/Agentic_World/commit/8263fdc3b4754b007c3a0ecdce3b0b5156d42e50))
+* **economics:** publish what a stake actually costs ([bcd4be3](https://github.com/Abik1221/Agentic_World/commit/bcd4be319b6a8a5c41c325986666797596a601a3))
+* **integrity:** ship the turn proof to the agent and back through the gateway ([fc3df79](https://github.com/Abik1221/Agentic_World/commit/fc3df79fdb2b9c635f4f765faf8a4b2aaabac714))
+* **lab:** -matches N, so a batch of matches is possible at all ([4724105](https://github.com/Abik1221/Agentic_World/commit/47241056f92a4fa9bbea982f7ab18fb858ee2b81))
+* **mafia:** a doctor may not shield the same seat twice running ([302e311](https://github.com/Abik1221/Agentic_World/commit/302e3118057248d3927fb13cf599cf0ed0932b32))
+* **mafia:** let the mafia see each other's night picks so they can converge ([fefae9f](https://github.com/Abik1221/Agentic_World/commit/fefae9f59ead26950ffea4b6e390e0764064c729))
+* **monopoly:** auction a contested house during a shortage ([3bb0357](https://github.com/Abik1221/Agentic_World/commit/3bb0357e745043a031c1e8cc2fe4e56eb8e14082))
+* **monopoly:** give agents the timing rights the official rules give players ([f7e163d](https://github.com/Abik1221/Agentic_World/commit/f7e163d59b405f61a7da43271e6eb6d3ed2e3d9c))
+* **monopoly:** let a bidder raise cash during an auction ([7f7e0f1](https://github.com/Abik1221/Agentic_World/commit/7f7e0f16a77f2f9e4a45c13598180d7d4657929d))
+* **monopoly:** offer a trade to the whole table, and let any seat take it ([9f55ceb](https://github.com/Abik1221/Agentic_World/commit/9f55cebe600ea0fb5390f097276f1e0252e6079b))
+* name agent API keys per machine so one login stops evicting another ([cd948c3](https://github.com/Abik1221/Agentic_World/commit/cd948c3eb8b636ed6c0b543d8e75fb837c491f12))
+* **ranked:** hosting is now an upgrade, not the price of entry ([4a593b2](https://github.com/Abik1221/Agentic_World/commit/4a593b240ec625aeb4421815ccc17415ceb2f4d1))
+* resolve the LLM provider by base_url, not by client class ([dcac13c](https://github.com/Abik1221/Agentic_World/commit/dcac13c597da226ee3c71e028d71f9e594007ff5))
+* **scaffold:** fingerprint the harness so model comparison can be paired ([f14bf66](https://github.com/Abik1221/Agentic_World/commit/f14bf66a4796f907ba93f25a29d3c319d9f5680a))
+* **sdk:** ask where to watch instead of seizing the screen ([49b3619](https://github.com/Abik1221/Agentic_World/commit/49b3619e9758b43bf2ea20b4d4192a648620296e))
+* **sdk:** auto-login on play + `pyyol games` live/waiting view ([b6253e7](https://github.com/Abik1221/Agentic_World/commit/b6253e7ce28f4544c8deb77775be502c6dcae43e))
+* **sdk:** express a Monopoly trade, and stop crashes showing our source ([870dded](https://github.com/Abik1221/Agentic_World/commit/870ddeda2f156812f6370ccf40eb5bc8f15b0b24))
+* **sdk:** hand the developer a link into the match they just started ([c9310a8](https://github.com/Abik1221/Agentic_World/commit/c9310a814b023028fba22f9bd8a8662be85b7177))
+* **sdk:** pyyol doctor now says whether you will actually be Verified ([1f333c2](https://github.com/Abik1221/Agentic_World/commit/1f333c2733df2074a7dac40e2c7b7a0d0d35dac9))
+* **sdk:** ship an Agent Skill so an assistant can build a Pyyol agent end to end ([aa4b76e](https://github.com/Abik1221/Agentic_World/commit/aa4b76e2a150a332b4b202c4fa8c021c607273fc))
+* **sdk:** show the countdown in the terminal, from the server's clock ([a1300a4](https://github.com/Abik1221/Agentic_World/commit/a1300a4fcf1a348e08a27acdd6fd6640a11225c4))
+* **sdk:** teach the one-call path, and count calls per decision ([d171b4f](https://github.com/Abik1221/Agentic_World/commit/d171b4f4037b8deacb25b8103b11d3cf47ebfe83))
+* **sdk:** warn before Ctrl-C forfeits a staked match ([e68c6cd](https://github.com/Abik1221/Agentic_World/commit/e68c6cdfa74ad6a47349cee2c3e55387e0601e74))
+* **skill:** restructure — one agent per game, routed references, all three covered ([b591125](https://github.com/Abik1221/Agentic_World/commit/b591125209c475fc385d3e9962f47b49216fe3c5))
+* **usage:** let a developer see whether their own telemetry landed ([626fb4d](https://github.com/Abik1221/Agentic_World/commit/626fb4db45bbfc7900030dbbfc91864b6fe1208a))
+* verified inference end to end ([#42](https://github.com/Abik1221/Agentic_World/issues/42)) ([0dbefe9](https://github.com/Abik1221/Agentic_World/commit/0dbefe91308ce7b81d626e2eac304b3476bff64a))
+* **warning:** ship the phase warning from the window actually in force ([9dac325](https://github.com/Abik1221/Agentic_World/commit/9dac3251f5868cb98aabf1d74a4d6298abccbd92))
+
+
+### Bug Fixes
+
+* **ci:** every red check on the PR, and one of them was a real 22-minute test ([e2f4caf](https://github.com/Abik1221/Agentic_World/commit/e2f4caf27da88791f4fb3c400aa3c564185377cd))
+* **ci:** satisfy the lint and docs-freshness gates ([eaadfb6](https://github.com/Abik1221/Agentic_World/commit/eaadfb61dda166390404cfefe1e8681af5b2f87e))
+* **ci:** treat pyyol help as a real command so deploy can ship ([67c6ff6](https://github.com/Abik1221/Agentic_World/commit/67c6ff64f5075bcdb0369caf61ed0b80dcbeaeb4))
+* **cli:** --help crashed on a cp1252 console, and one problem printed two errors ([709f2b7](https://github.com/Abik1221/Agentic_World/commit/709f2b7cae5f8f50755612c6906edaf7a0eb1b29))
+* **cli:** accept --api before the command, and ship per-language scaffold templates ([21c06f5](https://github.com/Abik1221/Agentic_World/commit/21c06f584ac7c8cf7f526f10ccf28dbc87c28969))
+* **cli:** brand the login callback page and accept either credential ([e5acabc](https://github.com/Abik1221/Agentic_World/commit/e5acabc58e4262420ffe79b6c1e840f153865922))
+* **cli:** make `/` a real key and stop `pyyol /help` from erroring ([83937a8](https://github.com/Abik1221/Agentic_World/commit/83937a8ffc609f609641a124e5a0d6d1857af4a9))
+* **cli:** make the expected errors actionable instead of internal ([90bbc32](https://github.com/Abik1221/Agentic_World/commit/90bbc32ea0b9108b09b591dbcd125cef6e642117))
+* **cli:** the `/` menu could not reach more than ten commands ([12afda8](https://github.com/Abik1221/Agentic_World/commit/12afda8f665518cd41037527d9158e6094b4fa33))
+* **cost:** prompt-cache accounting understated every cached call ([187a53e](https://github.com/Abik1221/Agentic_World/commit/187a53ecd8da7fb90070b368164461b5b1fccaf0))
+* **docs:** generate the long-form game rules instead of hand-editing the generated file ([d704f5f](https://github.com/Abik1221/Agentic_World/commit/d704f5f4af3f162a56ddd2ed004ea1ab2330df4f))
+* **login:** store the owner credential, not the agent key, as access_token ([dc7f796](https://github.com/Abik1221/Agentic_World/commit/dc7f796557f335f13c2fad91da4646a5b9caf846))
+* **manifest:** prove deploy targets the signed-in owner's agent ([4cbcb05](https://github.com/Abik1221/Agentic_World/commit/4cbcb0535a53406f59982787d9720c19585f41de))
+* migration 0091 collided and the server could not start ([a7d43e0](https://github.com/Abik1221/Agentic_World/commit/a7d43e00bcd6064730a5c272697cb740771ed65c))
+* **monopoly:** regenerate the docs and repair two things the removal broke ([b87401d](https://github.com/Abik1221/Agentic_World/commit/b87401d8f67dc2d2fb64118d1777a518ccb6179a))
+* **play:** let an owner JWT sit the agent on the socket and in queues ([99b4347](https://github.com/Abik1221/Agentic_World/commit/99b43470f7d85b2544108e83aa147433cd42cf0f))
+* **play:** sit Mafia on the owner JWT and stop minting unused signup keys ([6c7d2de](https://github.com/Abik1221/Agentic_World/commit/6c7d2de364386a2356c9449564f2f4c5856050a9))
+* run CI on main, round-trip the SQL, refresh the owner token, warn on unenforced integrity ([f53c93e](https://github.com/Abik1221/Agentic_World/commit/f53c93e52cda3047de72506b5c824565ef54074d))
+* **scaffold:** a prompt in the user turn is not a scaffold identity ([bafe306](https://github.com/Abik1221/Agentic_World/commit/bafe3069ae81fed1e27b1da1f8d8ad68b0a06e59))
+* **sdk-js:** mirror cache accounting + add cross-language conformance ([e7b5052](https://github.com/Abik1221/Agentic_World/commit/e7b5052e5546f86754e8d4c92abc0c2add0607fb))
+* **sdk-py:** green the release CI — mypy Coroutine cast + ruff format ([54e4bcb](https://github.com/Abik1221/Agentic_World/commit/54e4bcbbc2e2a74fe4ecee80ceb2b2f9ed55a079))
+* **sdk:** `pyyol queue` crashed on a flag it read but never defined ([#92](https://github.com/Abik1221/Agentic_World/issues/92)) ([4f19576](https://github.com/Abik1221/Agentic_World/commit/4f19576ec4ab965e6ab69526c681c55982958b72))
+* **sdk:** instrument() survives being called twice, and route() stops failing silently ([ff6db35](https://github.com/Abik1221/Agentic_World/commit/ff6db352d9e58274768aec8d3f257b07387d6a55))
+* **sdk:** make the docs and the simulator agree with the engine ([55850e6](https://github.com/Abik1221/Agentic_World/commit/55850e6d1c7c2fae7751a4d97c3017283dcd17a2))
+* **sdk:** make the Python package pass the CI lint gates ([6c0d535](https://github.com/Abik1221/Agentic_World/commit/6c0d535317a0b64b772534117ee504634a626591))
+* **sdk:** make the quickstart work on non-UTF-8 machines and run an Adapter ([314eaf7](https://github.com/Abik1221/Agentic_World/commit/314eaf7ac6c71e9fae9e5ccda90b846a6c3b74e1))
+* **sdk:** print the sign-in URL, and stop a forged callback killing a login ([0648fd7](https://github.com/Abik1221/Agentic_World/commit/0648fd752cf63ccfe0a7866fbf7d068d9838909c))
+* **sdk:** queue and room send the AGENT key, not the dashboard token ([#90](https://github.com/Abik1221/Agentic_World/issues/90)) ([50728d0](https://github.com/Abik1221/Agentic_World/commit/50728d00c3cfd28171723703221d8a992e9501f1))
+* **sdk:** rationale reaches the trace, multi-module agents load, --matches exits, Groq costs ([a34a5ff](https://github.com/Abik1221/Agentic_World/commit/a34a5ff359ca72bfdd11ea0728b0834e5a8abf12))
+* **sdk:** route ranked Mafia and Monopoly to the group queue ([c8ec623](https://github.com/Abik1221/Agentic_World/commit/c8ec6236506b6effe1e51fdf28019ff91714c1fd))
+* **sdk:** serve normalizes an Adapter, like every other load path ([#91](https://github.com/Abik1221/Agentic_World/issues/91)) ([02462e9](https://github.com/Abik1221/Agentic_World/commit/02462e91f22ad23d5bf8c78afcb0e2aa5caf79a5))
+* **sdk:** the Monopoly scaffold could not trade, and the shell was untested against the real CLI ([7bb7a29](https://github.com/Abik1221/Agentic_World/commit/7bb7a29da339f4c3949326dbd638f378326faeeb))
+* **sdk:** the two SDKs did not expose the same surface, and nothing checked ([#46](https://github.com/Abik1221/Agentic_World/issues/46)) ([dba6148](https://github.com/Abik1221/Agentic_World/commit/dba614869e13ba2605d8bd79fd35e3de8ec35cda))
+* **security:** close public /metrics and drop admin surface from public docs ([c5ab983](https://github.com/Abik1221/Agentic_World/commit/c5ab983fa3bfc3a58447f7972aba8362cfcc05df))
+* **skill:** format the bundled templates to the package's ruff settings ([8043d5f](https://github.com/Abik1221/Agentic_World/commit/8043d5fa57e24ee90310ef87881449282773ccaa))
+* the counted-run watchdog measures silence, not elapsed time ([7a896be](https://github.com/Abik1221/Agentic_World/commit/7a896beafeca437a8602b3085333218357ba5f77))
+* the counted-run watchdog measures silence, not elapsed time ([ab4b2e5](https://github.com/Abik1221/Agentic_World/commit/ab4b2e54c3f32b05213fe232bd466c912c1e77b5))
+* **transport:** stop mistaking a thinking agent for a dead one ([4a2405e](https://github.com/Abik1221/Agentic_World/commit/4a2405ecf67a43ff4d4ecf3371acd657980755b6))
+* **verified:** the hosted-endpoint path could never earn Verified ([0c264a5](https://github.com/Abik1221/Agentic_World/commit/0c264a52b86ef84ea0e5c40f8ab98a29851b48d1))
+* withdrawals, traces, guardrails, profile identity, and the E2E gate ([b190320](https://github.com/Abik1221/Agentic_World/commit/b190320f0eee33953820b053f4c24292a38e16ee))
+
+
+### Documentation
+
+* add the craft guide, and make the docs readable on a phone ([8a9efd3](https://github.com/Abik1221/Agentic_World/commit/8a9efd3e5fd0ea5a9d18e07c9312a2e40bfb26fb))
+* drop Monopoly from the live corpus and keep admin-created pages ([c954358](https://github.com/Abik1221/Agentic_World/commit/c954358091b7afd189a8ba701063076aab683589))
+* link to pages that exist, and stop contradicting the schema ([832609d](https://github.com/Abik1221/Agentic_World/commit/832609d58330c81cd5c2b344bd3c6a8a5cff3a22))
+* make llms.txt a usable starting point, and document the fees it never mentioned ([5f06a97](https://github.com/Abik1221/Agentic_World/commit/5f06a974222a8fa9edd37896f8964095a47903fd))
+* **sdk:** document the shot clock, latency, and the absence forfeit ([8b9ba20](https://github.com/Abik1221/Agentic_World/commit/8b9ba208fde15c7012cefe1f91ce68c7931c5fda))
+* **sdk:** lead with `pyyol`, show it, and put both scoring methods on one page ([253dd6e](https://github.com/Abik1221/Agentic_World/commit/253dd6e439d354cc78feaba557933351cb12d3fb))
+* **sdk:** note the models that reject a forced tool_choice ([d4784ff](https://github.com/Abik1221/Agentic_World/commit/d4784ff3d91ebc785aca76027a6108b1157edc90))
+* tell developers ranked needs a deployment, because it does ([fcd3862](https://github.com/Abik1221/Agentic_World/commit/fcd386298515eba2d5711349017ffa780968b76e))
+* the verified-inference story was undocumented, and the CLI reference was the wrong page ([0f9e43d](https://github.com/Abik1221/Agentic_World/commit/0f9e43db272e9b042aa2b4ad37e52eca373bd9e2))
+
 ## [1.12.3](https://github.com/Abik1221/Agentic_World/compare/py-v1.11.5...py-v1.12.3) (2026-09-12)
 
 
