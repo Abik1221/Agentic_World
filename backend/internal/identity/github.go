@@ -33,7 +33,7 @@ type GitHubUpsertResult struct {
 // GitHubLoginResult is returned after a verified GitHub sign-in.
 type GitHubLoginResult struct {
 	DashboardToken string
-	APIKey         string // the raw agent key — ONLY on a newly-created account, shown once
+	APIKey         string // empty: GitHub signup does not mint an unused key
 	AgentID        string
 	AgentName      string
 	UserPublicID   string
@@ -42,8 +42,8 @@ type GitHubLoginResult struct {
 
 // SignUpOrLoginGitHub find-or-creates an account for a verified GitHub identity and
 // returns a fresh dashboard session. `id`/`login`/`email`/`name` come from a completed
-// GitHub OAuth exchange (see auth.GitHubVerifier). A new account also gets an agent +
-// first key. Deliberately parallel to SignUpOrLoginGoogle.
+// GitHub OAuth exchange (see auth.GitHubVerifier). A new account gets an agent; no unused
+// key. Deliberately parallel to SignUpOrLoginGoogle.
 func (s *Service) SignUpOrLoginGitHub(ctx context.Context, id, login, email, name string) (GitHubLoginResult, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {

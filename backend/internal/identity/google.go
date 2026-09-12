@@ -34,7 +34,7 @@ type GoogleUpsertResult struct {
 // GoogleLoginResult is returned after a verified Google sign-in.
 type GoogleLoginResult struct {
 	DashboardToken string
-	APIKey         string // the raw agent key — ONLY on a newly-created account, shown once
+	APIKey         string // empty: Google signup does not mint an unused key
 	AgentID        string
 	AgentName      string
 	UserPublicID   string

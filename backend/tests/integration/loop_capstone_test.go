@@ -19,7 +19,6 @@ func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 	// Solo dev signs up.
 	uniq := time.Now().UnixNano()
 	var su struct {
-		APIKey         string `json:"api_key"`
 		AgentID        string `json:"agent_id"`
 		DashboardToken string `json:"dashboard_token"`
 	}
@@ -30,10 +29,21 @@ func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 	}, &su); code != http.StatusCreated {
 		t.Fatalf("signup: %d", code)
 	}
-	key := su.DashboardToken
-	if key == "" {
-		t.Fatal("signup returned no dashboard token")
+	dash := su.DashboardToken
+	if dash == "" || su.AgentID == "" {
+		t.Fatal("signup returned no dashboard token or agent")
 	}
+	// Signup no longer mints an unused key. Sit with the JWT; play moves still
+	// need an agent credential — the same split as dashboard sit vs `pyyol play`.
+	var minted struct {
+		APIKey string `json:"api_key"`
+	}
+	if code := c.do(http.MethodPost, "/v1/agent/keys", dash, map[string]any{
+		"agent_id": su.AgentID, "label": "capstone",
+	}, &minted); code != http.StatusCreated || minted.APIKey == "" {
+		t.Fatalf("mint play key: %d", code)
+	}
+	key := minted.APIKey
 
 	// Certify before playing. This test used to assert "no certification needed to
 	// practice" and start a sandbox match straight after signup — which stopped being
@@ -51,7 +61,7 @@ func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 		MatchID string `json:"match_id"`
 		Mode    string `json:"mode"`
 	}
-	if code := c.do(http.MethodPost, "/v1/sandbox/match", key, map[string]any{"difficulty": "medium"}, &start); code != http.StatusCreated {
+	if code := c.do(http.MethodPost, "/v1/sandbox/match", dash, map[string]any{"difficulty": "medium"}, &start); code != http.StatusCreated {
 		t.Fatalf("sandbox start: %d", code)
 	}
 	if start.MatchID == "" {
@@ -74,7 +84,7 @@ func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 				PlayCardFrom []int `json:"play_card_from"`
 			} `json:"legal_actions"`
 		}
-		if code := c.do(http.MethodGet, statePath, key, nil, &st); code != http.StatusOK {
+		if code := c.do(http.MethodGet, statePath, dash, nil, &st); code != http.StatusOK {
 			t.Fatalf("state: %d", code)
 		}
 		if st.Status == "finished" {

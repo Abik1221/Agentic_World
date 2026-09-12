@@ -91,6 +91,20 @@ func TestSignUpDoesNotMintAnInitialKey(t *testing.T) {
 	}
 }
 
+func TestSignUpAsStillMintsAPlayKey(t *testing.T) {
+	repo := &kindCapturingRepo{}
+	svc := newKindTestService(repo)
+
+	res, err := svc.SignUpAs(context.Background(), "harness@pyyol.test", "a-strong-lab-passphrase-2026",
+		"harness-agent", "platform benchmark seat", KindHarness)
+	if err != nil {
+		t.Fatalf("SignUpAs: %v", err)
+	}
+	if res.APIKey == "" || repo.got.KeyPrefix == "" || repo.got.KeyHash == "" {
+		t.Fatal("admin-created harness seats still need a play key")
+	}
+}
+
 func TestSignUpAsCreatesTheRequestedKind(t *testing.T) {
 	repo := &kindCapturingRepo{}
 	svc := newKindTestService(repo)

@@ -86,7 +86,12 @@ def account():
         return dt, aid, rk.get("api_key")
     st, r = req("POST", "/v1/auth/signup", body={"email": EMAIL, "password": PASSWORD, "agent_name": "MoneyE2E", "description": "e2e"})
     assert st in (200, 201), (st, r)
-    return r["dashboard_token"], r["agent_id"], r["api_key"]
+    dt, aid = r["dashboard_token"], r["agent_id"]
+    key = r.get("api_key")
+    if not key:
+        _, rk = req("POST", "/v1/agent/keys", dt, {"agent_id": aid, "label": "e2e"})
+        key = rk.get("api_key")
+    return dt, aid, key
 
 
 def ensure_manifest(dt, aid):

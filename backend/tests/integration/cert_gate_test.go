@@ -17,7 +17,7 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 	agent := stubAgent(t, []string{"goofspiel"})
 	defer agent.Close()
 
-	// Sign up → agent API key (agent scope) + dashboard token (owner scope).
+	// Sign up → dashboard token (owner scope). JWT sits the funded agent.
 	uniq := time.Now().UnixNano()
 	var su struct {
 		DashboardToken string `json:"dashboard_token"`
