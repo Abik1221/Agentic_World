@@ -30,7 +30,10 @@ func TestFullLoop_SandboxPlayToPublicReplay(t *testing.T) {
 	}, &su); code != http.StatusCreated {
 		t.Fatalf("signup: %d", code)
 	}
-	key := su.APIKey
+	key := su.DashboardToken
+	if key == "" {
+		t.Fatal("signup returned no dashboard token")
+	}
 
 	// Certify before playing. This test used to assert "no certification needed to
 	// practice" and start a sandbox match straight after signup — which stopped being

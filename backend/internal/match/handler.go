@@ -115,28 +115,7 @@ func (h *Handler) SetStakeResolver(r stakeResolver) { h.stakes = r }
 // does. That is the agent whose wallet the owner funded, and the one the
 // dashboard is sitting.
 func (h *Handler) sittingAgent(ctx context.Context, p *auth.Principal) (string, error) {
-	if p == nil {
-		return "", httpx.ErrUnauthorized
-	}
-	if p.AgentPublicID != "" {
-		return p.AgentPublicID, nil
-	}
-	if p.Scope != auth.ScopeUser || p.UserPublicID == "" {
-		return "", httpx.ErrUnauthorized
-	}
-	if h.owners == nil {
-		return "", httpx.NewError(http.StatusBadRequest, "agent_required",
-			"This account has no agent yet. Deploy an agent before opening a room.")
-	}
-	id, err := h.owners.PrimaryAgentOf(ctx, p.UserPublicID)
-	if err != nil {
-		return "", err
-	}
-	if id == "" {
-		return "", httpx.NewError(http.StatusBadRequest, "agent_required",
-			"This account has no agent yet. Deploy an agent before opening a room.")
-	}
-	return id, nil
+	return auth.SittingAgent(ctx, p, h.owners)
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {

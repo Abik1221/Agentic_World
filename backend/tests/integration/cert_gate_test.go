@@ -41,7 +41,7 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 	// goofspiel is a tiered game (migration 0038 seeds Low/Mid/High), so the queue
 	// takes a `tier`, not a free-form bid. A valid tier is sent so the ONLY reason
 	// for rejection is non-certification (the cert gate runs before affordability).
-	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, &errBody); code != http.StatusForbidden {
+	if code := c.do(http.MethodPost, "/v1/queue", su.DashboardToken, map[string]any{"tier": "low"}, &errBody); code != http.StatusForbidden {
 		t.Fatalf("uncertified enqueue: expected 403, got %d", code)
 	}
 	if errBody.Error.Code != "agent_not_certified" {
@@ -106,10 +106,10 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 			Details map[string]any `json:"details"`
 		} `json:"error"`
 	}
-	if code := c.do(http.MethodPost, "/v1/queue", su.APIKey, map[string]any{"tier": "low"}, &enqErr); code != http.StatusAccepted {
+	if code := c.do(http.MethodPost, "/v1/queue", su.DashboardToken, map[string]any{"tier": "low"}, &enqErr); code != http.StatusAccepted {
 		t.Fatalf("certified enqueue: expected 202, got %d — code=%q message=%q details=%v",
 			code, enqErr.Error.Code, enqErr.Error.Message, enqErr.Error.Details)
 	}
-	_ = c.do(http.MethodDelete, "/v1/queue", su.APIKey, nil, nil) // cleanup
+	_ = c.do(http.MethodDelete, "/v1/queue", su.DashboardToken, nil, nil) // cleanup
 	t.Logf("gate OK: uncertified blocked, certified admitted (agent=%s)", su.AgentID)
 }

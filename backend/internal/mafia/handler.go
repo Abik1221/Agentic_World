@@ -24,6 +24,7 @@ type Handler struct {
 	svc       *Service
 	authn     *auth.Authenticator
 	stakes    stakeResolver
+	owners    auth.AgentOwner
 	heartbeat time.Duration
 }
 
@@ -34,6 +35,9 @@ func NewHandler(hub *Hub, svc *Service, authn *auth.Authenticator) *Handler {
 // SetStakeResolver wires the game stake-tier resolver so table creation can accept
 // a `tier` and stake at the admin-configured amount. Nil keeps legacy free-form.
 func (h *Handler) SetStakeResolver(r stakeResolver) { h.stakes = r }
+
+// SetPrimaryAgentLookup lets a dashboard JWT sit the agent /v1/me says they own.
+func (h *Handler) SetPrimaryAgentLookup(l auth.AgentOwner) { h.owners = l }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/v1/mafia/live", h.live)
@@ -48,12 +52,13 @@ func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(h.authn.Middleware)
 		agent := auth.RequireScope(auth.ScopeAgent)
-		r.With(agent).Get("/v1/mafia/lobby", h.lobby)
-		r.With(agent).Post("/v1/mafia/lobby/create", h.create)
-		r.With(agent).Post("/v1/mafia/lobby/join", h.join)
-		r.With(agent).Post("/v1/mafia/lobby/cancel", h.cancel)
-		r.With(agent).Post("/v1/mafia/pushplay", h.pushplay)
-		r.With(agent).Get("/v1/mafia/{id}/state", h.state)
+		sit := auth.RequireScopeAny(auth.ScopeAgent, auth.ScopeUser)
+		r.With(sit).Get("/v1/mafia/lobby", h.lobby)
+		r.With(sit).Post("/v1/mafia/lobby/create", h.create)
+		r.With(sit).Post("/v1/mafia/lobby/join", h.join)
+		r.With(sit).Post("/v1/mafia/lobby/cancel", h.cancel)
+		r.With(sit).Post("/v1/mafia/pushplay", h.pushplay)
+		r.With(sit).Get("/v1/mafia/{id}/state", h.state)
 		r.With(agent).Post("/v1/mafia/{id}/action", h.action)
 		// Free-form table talk during discussion. Separate from /action: it does
 		// not consume the seat's formal statement and may be called repeatedly.
@@ -66,7 +71,12 @@ func (h *Handler) Register(r chi.Router) {
 // /v1/mafia/{id}/watch.
 func (h *Handler) pushplay(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	id, err := h.svc.StartPushPlay(r.Context(), p.AgentPublicID, p.UserPublicID)
+	agentID, err := auth.SittingAgent(r.Context(), p, h.owners)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	id, err := h.svc.StartPushPlay(r.Context(), agentID, p.UserPublicID)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -245,7 +255,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		}
 		fee = f
 	}
-	id, err := h.svc.CreateTable(r.Context(), p.AgentPublicID, p.UserPublicID, fee)
+	agentID, err := auth.SittingAgent(r.Context(), p, h.owners)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	id, err := h.svc.CreateTable(r.Context(), agentID, p.UserPublicID, fee)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -262,7 +277,12 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	view, err := h.svc.Join(r.Context(), p.AgentPublicID, p.UserPublicID, in.MatchID)
+	agentID, err := auth.SittingAgent(r.Context(), p, h.owners)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	view, err := h.svc.Join(r.Context(), agentID, p.UserPublicID, in.MatchID)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -280,7 +300,12 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	if err := h.svc.Cancel(r.Context(), p.AgentPublicID, in.MatchID); err != nil {
+	agentID, err := auth.SittingAgent(r.Context(), p, h.owners)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := h.svc.Cancel(r.Context(), agentID, in.MatchID); err != nil {
 		httpx.Error(w, err)
 		return
 	}
@@ -296,7 +321,12 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 			timeout = d
 		}
 	}
-	view, err := h.svc.State(r.Context(), chi.URLParam(r, "id"), p.AgentPublicID, wait, timeout)
+	agentID, err := auth.SittingAgent(r.Context(), p, h.owners)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	view, err := h.svc.State(r.Context(), chi.URLParam(r, "id"), agentID, wait, timeout)
 	if wait {
 		// A long-poll may have outlived the default write deadline; re-arm before
 		// writing either the state or an error.

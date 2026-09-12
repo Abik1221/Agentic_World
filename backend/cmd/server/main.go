@@ -954,6 +954,7 @@ func run() error {
 	// Monopoly were in: the check installed, the evidence never produced.
 	mafiaSvc.SetTurnMinter(turnproof.New(cfg.TurnProofSecret))
 	mafiaHandler := mafia.NewHandler(mafiaHub, mafiaSvc, authn)
+	mafiaHandler.SetPrimaryAgentLookup(idSvc)
 	mafiaHandler.SetStakeResolver(gameStakesSvc) // Low/Mid/High tier → stake, budget-checked
 	// AND on the service: the bot runner calls CreateTable directly, and mafia's own
 	// DefaultEntryFee of 100 is substituted when no fee is given — both below the 500 floor.

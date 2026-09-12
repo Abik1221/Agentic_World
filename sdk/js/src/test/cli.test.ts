@@ -561,6 +561,34 @@ test("queue sends the dashboard JWT when there is no agent key", async () => {
   assert.ok(sent.includes("dashboard-jwt-only"), `a dashboard-only login must still be able to queue. Sent: ${sent}`);
 });
 
+test("queue certifies a connected manifest then retries", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pyyol-queue-cert-"));
+  seedCreds(home, { accessToken: "dashboard-jwt-only", agentId: "ag_1" });
+  let queuePosts = 0;
+  const fetchStub = (async (url: unknown, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes("/stakes")) return json({ game: "goofspiel", tiers: [{ key: "low", label: "Low", coins: 100 }] });
+    if (u.endsWith("/manifest") && init?.method === "POST") {
+      return json({ manifest_id: "mf_1" }, 201);
+    }
+    if (u.includes("/verify")) return json({ verified: true });
+    if (u.includes("/manifest")) return json({});
+    if (u.includes("/queue")) {
+      queuePosts += 1;
+      if (queuePosts === 1) return json({ code: "agent_not_certified" }, 403);
+      return json({ status: "waiting" }, 202);
+    }
+    return json({}, 404);
+  }) as unknown as typeof fetch;
+
+  const { code } = await run(["queue", "goofspiel", "--tier", "low", "--api", "http://x"], {
+    fetch: fetchStub,
+    home,
+  });
+  assert.equal(code, 0);
+  assert.equal(queuePosts, 2);
+});
+
 test("an explicit --token beats whatever is stored on the machine", async () => {
   const home = mkdtempSync(join(tmpdir(), "pyyol-queue-tok-"));
   seedCreds(home, { apiKey: "sk_arena_stored", accessToken: "dashboard-jwt" });

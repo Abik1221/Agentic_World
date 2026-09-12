@@ -129,8 +129,9 @@ func (s *Service) VerifyClaim(ctx context.Context, token, captchaToken, remoteIP
 	return VerifyResult{APIKey: key.Raw, AgentID: agent.PublicID, DashboardToken: dash, UserPublicID: owner.PublicID}, nil
 }
 
-// SignUpResult is returned when a new email+password account is created. The API
-// key is shown exactly once, mirroring the X-claim VerifyResult.
+// SignUpResult is returned when a new email+password account is created.
+// APIKey is empty for ordinary developer signup (JWT sits the agent). A key is
+// minted only for admin-created non-external agents, or later via `pyyol login`.
 type SignUpResult struct {
 	APIKey         string
 	AgentID        string
@@ -151,7 +152,7 @@ func (s *Service) SignUp(ctx context.Context, email, password, agentName, descri
 
 // SignUpAs creates an account whose agent carries an explicit kind, and is otherwise the
 // SAME account creation the public sign-up performs — same validation, same atomic
-// CreateAccount, same one-time key, same dashboard session. A harness agent then onboards
+// CreateAccount, same dashboard session (harness seats still get a play key). A harness agent then onboards
 // through the ordinary developer surface (manifest, endpoint verification, agent key,
 // lobby/queue) because it is meant to be the same object a developer's agent is; the only
 // thing that differs is who is allowed to say what it IS.
@@ -187,9 +188,16 @@ func (s *Service) signUp(ctx context.Context, email, password, agentName, descri
 	if err != nil {
 		return SignUpResult{}, err
 	}
-	key, err := generateKey(s.pepper)
-	if err != nil {
-		return SignUpResult{}, err
+	// Developer signup does not mint an unused 'initial' key. The dashboard JWT
+	// sits the agent; `pyyol login` issues a per-machine key when the CLI needs one.
+	// Admin-created non-external agents still get a key so harness seats can play.
+	var keyPrefix, keyHash, keyRaw string
+	if kind != KindExternal {
+		key, err := generateKey(s.pepper)
+		if err != nil {
+			return SignUpResult{}, err
+		}
+		keyPrefix, keyHash, keyRaw = key.Prefix, key.Hash, key.Raw
 	}
 
 	agent, owner, err := s.repo.CreateAccount(ctx, CreateAccountInput{
@@ -200,8 +208,8 @@ func (s *Service) signUp(ctx context.Context, email, password, agentName, descri
 		AgentName:     agentName,
 		AgentSlug:     slugify(agentName),
 		Description:   strings.TrimSpace(description),
-		KeyPrefix:     key.Prefix,
-		KeyHash:       key.Hash,
+		KeyPrefix:     keyPrefix,
+		KeyHash:       keyHash,
 		Kind:          kind,
 		// Guardrails follow the kind. A harness agent differs in exactly one of them
 		// (throughput) and is otherwise created under the developer defaults — see
@@ -216,7 +224,7 @@ func (s *Service) signUp(ctx context.Context, email, password, agentName, descri
 	if err != nil {
 		return SignUpResult{}, err
 	}
-	return SignUpResult{APIKey: key.Raw, AgentID: agent.PublicID, AgentName: agent.Name, DashboardToken: dash, UserPublicID: owner.PublicID}, nil
+	return SignUpResult{APIKey: keyRaw, AgentID: agent.PublicID, AgentName: agent.Name, DashboardToken: dash, UserPublicID: owner.PublicID}, nil
 }
 
 // LoginResult is returned on a successful email + password login. No API key is

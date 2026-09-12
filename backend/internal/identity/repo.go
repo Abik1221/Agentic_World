@@ -78,7 +78,8 @@ type Repo interface {
 
 	// CreateAccount atomically (in one DB transaction) creates an email+password
 	// owner, their first agent (default limits), the owner + agent wallets, and
-	// the agent's first API key. Returns ErrEmailTaken if the email already
+	// optionally the agent's first API key. Ordinary developer signup omits the
+	// key. Returns ErrEmailTaken if the email already
 	// belongs to an account. This is the email/password analogue of CompleteClaim.
 	CreateAccount(ctx context.Context, in CreateAccountInput) (Agent, User, error)
 	// CreatePlatformAgent attaches an agent to an EXISTING owner and creates no user.
@@ -88,7 +89,7 @@ type Repo interface {
 	// UpsertGoogleAccount find-or-creates the account for a verified Google identity.
 	// Existing google_sub → returns that user + its agent (created=false). Else if a
 	// user with the (verified) email exists and is unlinked, links google_sub to it.
-	// Else creates a fresh user + agent + treasury wallet + first API key (created=true).
+	// Else creates a fresh user + agent + treasury wallet (created=true).
 	UpsertGoogleAccount(ctx context.Context, in GoogleUpsertInput) (GoogleUpsertResult, error)
 
 	// UpsertGitHubAccount is the GitHub analogue of UpsertGoogleAccount, keyed on the

@@ -237,7 +237,7 @@ func (h *Handler) verify(w http.ResponseWriter, r *http.Request) {
 }
 
 // signup creates a normal email + password account and its first agent, then
-// returns a ready-to-use dashboard session and a one-time API key.
+// returns a ready-to-use dashboard session. No unused 'initial' key is minted.
 func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Email       string `json:"email"`
@@ -254,13 +254,16 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, map[string]any{
+	out := map[string]any{
 		"dashboard_token": res.DashboardToken,
 		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
-		"api_key":         res.APIKey, // shown exactly once
 		"agent_id":        res.AgentID,
 		"agent_name":      res.AgentName,
-	})
+	}
+	if res.APIKey != "" {
+		out["api_key"] = res.APIKey
+	}
+	httpx.JSON(w, http.StatusCreated, out)
 }
 
 // adminCreateAgent creates an account whose agent carries an explicit kind.

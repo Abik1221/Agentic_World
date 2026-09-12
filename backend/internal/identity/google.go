@@ -43,7 +43,7 @@ type GoogleLoginResult struct {
 
 // SignUpOrLoginGoogle find-or-creates an account for a verified Google identity and
 // returns a fresh dashboard session. `sub`/`email`/`name` come from a verified GIS
-// ID token (see auth.GoogleVerifier). A new account also gets an agent + first key.
+// ID token (see auth.GoogleVerifier). A new account gets an agent; no unused key.
 func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name string) (GoogleLoginResult, error) {
 	sub = strings.TrimSpace(sub)
 	if sub == "" {
@@ -66,10 +66,6 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 
 	agentName := googleAgentName(name, normEmail)
 
-	key, err := generateKey(s.pepper)
-	if err != nil {
-		return GoogleLoginResult{}, err
-	}
 	res, err := s.repo.UpsertGoogleAccount(ctx, GoogleUpsertInput{
 		GoogleSub:     sub,
 		Email:         normEmail,
@@ -80,8 +76,6 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 		// values — persisting a slug that did not correspond to the stored name.
 		AgentName: agentName,
 		AgentSlug: slugify(agentName),
-		KeyPrefix: key.Prefix,
-		KeyHash:   key.Hash,
 		Limits:    DefaultLimits(),
 	})
 	if err != nil {
@@ -91,17 +85,13 @@ func (s *Service) SignUpOrLoginGoogle(ctx context.Context, sub, email, name stri
 	if err != nil {
 		return GoogleLoginResult{}, err
 	}
-	out := GoogleLoginResult{
+	return GoogleLoginResult{
 		DashboardToken: dash,
 		AgentID:        res.AgentPublicID,
 		AgentName:      res.AgentName,
 		UserPublicID:   res.UserPublicID,
 		Created:        res.Created,
-	}
-	if res.Created {
-		out.APIKey = key.Raw // the new account's first key, surfaced once
-	}
-	return out, nil
+	}, nil
 }
 
 // googleAgentName derives a valid default agent name from the Google display name or

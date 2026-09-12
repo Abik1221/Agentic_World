@@ -24,6 +24,20 @@ type IdentityRepo struct{ db *pgxpool.Pool }
 // NewIdentityRepo wires the repo to the connection pool.
 func NewIdentityRepo(db *pgxpool.Pool) *IdentityRepo { return &IdentityRepo{db: db} }
 
+// insertSignupKey writes the one-time 'initial' key only when a secret was actually
+// generated. Ordinary email/OAuth signup no longer mints one — the dashboard JWT
+// sits the agent, and `pyyol login` issues a per-machine key when the CLI needs it.
+func insertSignupKey(ctx context.Context, tx pgx.Tx, agentID int64, prefix, hash string) error {
+	if prefix == "" || hash == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
+		 VALUES ($1, $2, $3, 'agent', 'initial')`,
+		agentID, prefix, hash)
+	return err
+}
+
 var _ identity.Repo = (*IdentityRepo)(nil)
 
 func (r *IdentityRepo) CreateClaim(ctx context.Context, c identity.Claim) error {
@@ -93,11 +107,8 @@ func (r *IdentityRepo) CompleteClaim(ctx context.Context, in identity.CompleteCl
 		return identity.Agent{}, identity.User{}, err
 	}
 
-	// 3. Issue the first API key.
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
-		 VALUES ($1, $2, $3, 'agent', 'initial')`,
-		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+	// 3. Optional first API key (empty prefix ⇒ dashboard-only account).
+	if err = insertSignupKey(ctx, tx, agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.Agent{}, identity.User{}, err
 	}
 
@@ -447,11 +458,8 @@ func (r *IdentityRepo) CreateAccount(ctx context.Context, in identity.CreateAcco
 		return identity.Agent{}, identity.User{}, err
 	}
 
-	// 3. Issue the first API key.
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
-		 VALUES ($1, $2, $3, 'agent', 'initial')`,
-		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+	// 3. Optional first API key (empty prefix ⇒ dashboard-only account).
+	if err = insertSignupKey(ctx, tx, agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.Agent{}, identity.User{}, err
 	}
 
@@ -548,10 +556,7 @@ func (r *IdentityRepo) UpsertGoogleAccount(ctx context.Context, in identity.Goog
 	if err != nil {
 		return identity.GoogleUpsertResult{}, err
 	}
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
-		 VALUES ($1, $2, $3, 'agent', 'initial')`,
-		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+	if err = insertSignupKey(ctx, tx, agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.GoogleUpsertResult{}, err
 	}
 	if _, err = tx.Exec(ctx,
@@ -640,10 +645,7 @@ func (r *IdentityRepo) UpsertGitHubAccount(ctx context.Context, in identity.GitH
 	if err != nil {
 		return identity.GitHubUpsertResult{}, err
 	}
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO agent_keys (agent_id, key_prefix, key_hash, scope, label)
-		 VALUES ($1, $2, $3, 'agent', 'initial')`,
-		agentID, in.KeyPrefix, in.KeyHash); err != nil {
+	if err = insertSignupKey(ctx, tx, agentID, in.KeyPrefix, in.KeyHash); err != nil {
 		return identity.GitHubUpsertResult{}, err
 	}
 	if _, err = tx.Exec(ctx,

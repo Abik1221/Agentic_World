@@ -419,6 +419,42 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _certify_connected(api: str, agent: str, owner_token: str, games: list[str]) -> bool:
+    """Certify a connected-ranked manifest (no hosted URL) so queue/play can sit."""
+    if not (api and agent and owner_token):
+        return False
+    import urllib.parse
+
+    ag = urllib.parse.quote(agent, safe="")
+    st, current = _api_get(f"{api}/v1/agents/{ag}/manifest", owner_token)
+    if st == 200 and (current or {}).get("status") == "verified":
+        return True
+    mid = (current or {}).get("manifest_id")
+    if not mid:
+        st, m = _api_post(
+            f"{api}/v1/agents/{ag}/manifest",
+            owner_token,
+            {
+                "manifestVersion": "1.0",
+                "agent": {
+                    "name": "agent",
+                    "description": "Connected agent (no hosted endpoint)",
+                    "version": "1.0.0",
+                    "visibility": "public",
+                },
+                "games": games or ["goofspiel"],
+                "runtime": {"timeout": 5000},
+                "sdk": {"language": "python"},
+            },
+        )
+        if st != 201:
+            return False
+        mid = m.get("manifest_id")
+    mid_q = urllib.parse.quote(str(mid), safe="")
+    st, report = _api_post(f"{api}/v1/agents/{ag}/manifest/{mid_q}/verify", owner_token, {})
+    return st == 200 and bool((report or {}).get("verified") or (report or {}).get("status") == "verified")
+
+
 # --- publish (submit -> set secret -> verify) ----------------------------------
 
 
@@ -833,6 +869,11 @@ def cmd_queue(args: argparse.Namespace) -> int:
 
     queue_path = queue_path_for(game)
     st, resp = _api_post(f"{base}{queue_path}", token, body)
+    if st in (400, 403) and "certified" in str(resp.get("code") or resp.get("error") or ""):
+        owner = _owner_token(creds, getattr(args, "token", "") or "")
+        agent = (creds.agent_id if creds else "") or getattr(args, "agent", "") or ""
+        if owner and agent and _certify_connected(base, agent, owner, [game]):
+            st, resp = _api_post(f"{base}{queue_path}", token, body)
     if st not in (200, 202):
         code = str(resp.get("code") or resp.get("error") or "")
         msg = resp.get("message") or ""
@@ -891,9 +932,7 @@ def cmd_room(args: argparse.Namespace) -> int:
         print(f"{BAD} no arena to talk to — run `pyyol login`, or pass --api.", file=sys.stderr)
         return 2
 
-    # Rooms are AGENT actions, like the queue: /v1/room/create and /v1/lobby/join are
-    # both registered with RequireScope(ScopeAgent). Sending the dashboard session token
-    # here fails with `forbidden_scope` for the same reason queueing did.
+    # Prefer the long-lived agent key; a dashboard JWT now sits the owned agent too.
     token, _ = _connection_token(args, creds)
     if not token:
         creds = _ensure_login(args)
@@ -2047,7 +2086,7 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         # drive the just-connected agent; retry briefly while it comes online.
         matches = max(1, getattr(args, "matches", 1))
         if m == mode.RANKED:
-            _start_ranked(base, token, arena, args, console)
+            _start_ranked(base, token, arena, args, console, agent_id=agent_id, owner_token=_owner_token(creds))
             return
         for i in range(matches):
             if stop.is_set():
@@ -2217,11 +2256,14 @@ def _start_sandbox(base, token, arena, console, attempt_label="", args=None) -> 
     console.emit("error", f"could not start {arena} match: {last}")
 
 
-def _start_ranked(base, token, arena, args, console) -> None:
+def _start_ranked(base, token, arena, args, console, agent_id="", owner_token="") -> None:
     body: dict[str, object] = {"game": arena}
     tier = getattr(args, "tier", "") or "low"
     body["tier"] = tier
     st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
+    if st in (400, 403) and "certified" in str(resp.get("code") or resp.get("error") or ""):
+        if owner_token and agent_id and _certify_connected(base, agent_id, owner_token, [arena]):
+            st, resp = _api_post(f"{base}{queue_path_for(arena)}", token, body)
     if st in (200, 202):
         # The queue can pair instantly, in which case the response already names the
         # match — link it, exactly like sandbox. Ranked is where real coins are on the

@@ -73,6 +73,24 @@ func TestSignUpAlwaysCreatesAnExternalAgent(t *testing.T) {
 	}
 }
 
+func TestSignUpDoesNotMintAnInitialKey(t *testing.T) {
+	repo := &kindCapturingRepo{}
+	svc := newKindTestService(repo)
+
+	res, err := svc.SignUp(context.Background(), "dev@example.com", "a-strong-lab-passphrase-2026",
+		"dev-agent", "")
+	if err != nil {
+		t.Fatalf("SignUp: %v", err)
+	}
+	if res.APIKey != "" || repo.got.KeyPrefix != "" || repo.got.KeyHash != "" {
+		t.Fatalf("developer signup must not mint an unused initial key: api_key=%q prefix=%q",
+			res.APIKey, repo.got.KeyPrefix)
+	}
+	if res.DashboardToken == "" || res.AgentID == "" {
+		t.Fatal("signup must still return a dashboard session and agent")
+	}
+}
+
 func TestSignUpAsCreatesTheRequestedKind(t *testing.T) {
 	repo := &kindCapturingRepo{}
 	svc := newKindTestService(repo)

@@ -609,7 +609,13 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
   setTimeout(async () => {
     if (m === mode.RANKED) {
       const tier = str(a, "tier") || "low";
-      const [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
+      let [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
+      if ((st === 403 || st === 400) && String(resp.code ?? "").includes("certified")) {
+        const owner = c?.accessToken || "";
+        if (owner && agentId && (await certifyConnected(base, agentId, owner, [arena]))) {
+          [st, resp] = await apiPost(`${base}${queuePathFor(arena)}`, token, { game: arena, tier });
+        }
+      }
       if (st === 200 || st === 202) console.log(`  ${OK} queued for RANKED ${arena} (tier ${tier})`);
       else if (String(resp.code ?? "").includes("certified"))
         console.log(`  ${BAD} agent not certified for ranked — run \`pyyol publish\` first.`);
@@ -809,7 +815,14 @@ async function cmdQueue(a: Args): Promise<number> {
     console.error(`${BAD} choose a stake: --tier <low|mid|high> (see \`pyyol queue ${game} --list\`) or --bid <coins>`);
     return 2;
   }
-  const [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
+  let [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
+  if ((st === 403 || st === 400) && String(resp.code ?? resp.error ?? "").includes("certified")) {
+    const owner = c?.accessToken || str(a, "token") || "";
+    const agent = c?.agentId || str(a, "agent") || "";
+    if (owner && agent && (await certifyConnected(base, agent, owner, [game]))) {
+      [st, resp] = await apiPost(`${base}${queuePathFor(game)}`, token, body);
+    }
+  }
   if (st !== 200 && st !== 202) {
     const code = String(resp.code ?? resp.error ?? "");
     if (code.includes("certified")) console.error(`${BAD} agent not certified — run \`pyyol publish --manifest <file>\` first.`);
@@ -845,8 +858,7 @@ async function cmdRoom(a: Args): Promise<number> {
     console.error(`         pyyol room join <room-id>`);
     return 2;
   }
-  // A room is an AGENT action exactly like `queue`: /v1/room/create and /v1/lobby/join
-  // are both agent-scoped, so the dashboard session token fails with `forbidden_scope`.
+  // Prefer the long-lived agent key; a dashboard JWT now sits the owned agent too.
   let { token } = connectionToken(a, c);
   if (!token) {
     const got = await ensureLogin(a);
@@ -1198,6 +1210,32 @@ async function cmdUpdate(): Promise<number> {
     console.log("  run:  npm install -g pyyol@latest");
   }
   return 0;
+}
+
+/** Certify a connected-ranked manifest (no hosted URL) so queue/play can sit. */
+async function certifyConnected(api: string, agent: string, ownerToken: string, games: string[]): Promise<boolean> {
+  if (!api || !agent || !ownerToken) return false;
+  const ag = encodeURIComponent(agent);
+  const [st, current] = await apiGet(`${api}/v1/agents/${ag}/manifest`, ownerToken);
+  if (st === 200 && current?.status === "verified") return true;
+  let mid = current?.manifest_id;
+  if (!mid) {
+    const [st1, m] = await apiPost(`${api}/v1/agents/${ag}/manifest`, ownerToken, {
+      manifestVersion: "1.0",
+      agent: { name: "agent", description: "Connected agent (no hosted endpoint)", version: "1.0.0", visibility: "public" },
+      games: games.length ? games : ["goofspiel"],
+      runtime: { timeout: 5000 },
+      sdk: { language: "javascript" },
+    });
+    if (st1 !== 201) return false;
+    mid = m.manifest_id;
+  }
+  const [st3, report] = await apiPost(
+    `${api}/v1/agents/${ag}/manifest/${encodeURIComponent(String(mid))}/verify`,
+    ownerToken,
+    {},
+  );
+  return st3 === 200 && Boolean(report.verified || report.status === "verified");
 }
 
 async function cmdPublish(a: Args): Promise<number> {

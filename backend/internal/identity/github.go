@@ -62,10 +62,6 @@ func (s *Service) SignUpOrLoginGitHub(ctx context.Context, id, login, email, nam
 	// login, which is already a valid handle in the common case.
 	agentName := githubAgentName(login, name, normEmail)
 
-	key, err := generateKey(s.pepper)
-	if err != nil {
-		return GitHubLoginResult{}, err
-	}
 	res, err := s.repo.UpsertGitHubAccount(ctx, GitHubUpsertInput{
 		GitHubID:      id,
 		Email:         normEmail,
@@ -73,8 +69,6 @@ func (s *Service) SignUpOrLoginGitHub(ctx context.Context, id, login, email, nam
 		AgentPublicID: platform.NewID(platform.PrefixAgent),
 		AgentName:     agentName,
 		AgentSlug:     slugify(agentName),
-		KeyPrefix:     key.Prefix,
-		KeyHash:       key.Hash,
 		Limits:        DefaultLimits(),
 	})
 	if err != nil {
@@ -84,17 +78,13 @@ func (s *Service) SignUpOrLoginGitHub(ctx context.Context, id, login, email, nam
 	if err != nil {
 		return GitHubLoginResult{}, err
 	}
-	out := GitHubLoginResult{
+	return GitHubLoginResult{
 		DashboardToken: dash,
 		AgentID:        res.AgentPublicID,
 		AgentName:      res.AgentName,
 		UserPublicID:   res.UserPublicID,
 		Created:        res.Created,
-	}
-	if res.Created {
-		out.APIKey = key.Raw // the new account's first key, surfaced once
-	}
-	return out, nil
+	}, nil
 }
 
 // githubAgentName derives a valid default agent name, preferring the GitHub login,

@@ -181,6 +181,51 @@ def test_queue_still_honours_an_explicit_token(monkeypatch, tmp_path):
     assert "sk_arena_explicit" in sent and "sk_arena_stored" not in sent
 
 
+class _CertThenQueueHandler(_Handler):
+    queue_posts = 0
+
+    def do_GET(self):
+        if "/manifest" in self.path:
+            self._json(200, {})
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(n)
+        if self.path.endswith("/manifest"):
+            self._json(201, {"manifest_id": "mf_1"})
+            return
+        if self.path.endswith("/verify"):
+            self._json(200, {"verified": True})
+            return
+        if self.path == "/v1/queue":
+            _CertThenQueueHandler.queue_posts += 1
+            if _CertThenQueueHandler.queue_posts == 1:
+                self._json(403, {"code": "agent_not_certified"})
+                return
+            self._json(202, {"status": "waiting"})
+            return
+        self._json(404, {})
+
+
+def test_queue_certifies_a_connected_manifest_then_retries(monkeypatch, tmp_path):
+    _no_keyring(monkeypatch, tmp_path)
+    _CertThenQueueHandler.queue_posts = 0
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _CertThenQueueHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    credentials.save(
+        credentials.Credentials(url=base, agent_id="ag_1", access_token="dashboard-jwt-only")
+    )
+    try:
+        rc = cli.cmd_queue(_args(api=base, tier="mid"))
+    finally:
+        srv.shutdown()
+    assert rc == 0
+    assert _CertThenQueueHandler.queue_posts == 2
+
+
 def test_every_queue_flag_cmd_queue_reads_is_actually_defined(monkeypatch, tmp_path):
     """Parse REAL argv, don't hand-build the Namespace.
 
