@@ -4,6 +4,16 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.12.3](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.2...js-v1.12.3) (2026-09-12)
+
+
+### Bug Fixes
+
+* **cli:** brand the login callback page and accept either credential ([e5acabc](https://github.com/Abik1221/Agentic_World/commit/e5acabc58e4262420ffe79b6c1e840f153865922))
+* **cli:** make `pyyol login --help` print usage instead of opening the browser ([2f563c7](https://github.com/Abik1221/Agentic_World/commit/2f563c71ebf95217bfa42e0682d5df94775cf1dc))
+* **play:** let an owner JWT sit the agent on the socket and in queues ([99b4347](https://github.com/Abik1221/Agentic_World/commit/99b43470f7d85b2544108e83aa147433cd42cf0f))
+* **play:** sit Mafia on the owner JWT and stop minting unused signup keys ([6c7d2de](https://github.com/Abik1221/Agentic_World/commit/6c7d2de364386a2356c9449564f2f4c5856050a9))
+
 ## [1.12.2](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.1...js-v1.12.2) (2026-09-12)
 
 
