@@ -101,6 +101,22 @@ type Repo interface {
 	// or ErrNotFound if the email is unknown or has no password set.
 	CredentialsByEmail(ctx context.Context, email string) (AuthRecord, error)
 
+	// UserStatus is the account lifecycle (active|suspended|banned). Empty / not
+	// found is treated as active by callers that fail open on a missing row.
+	UserStatus(ctx context.Context, userPublicID string) (string, error)
+
+	// SetUserStatus writes the lifecycle and returns the status it actually held
+	// before. Used by Super Admin ban/unban so the arena — not the admin mirror —
+	// is what login and session middleware consult.
+	SetUserStatus(ctx context.Context, userPublicID, next string) (prev string, err error)
+
+	// ListBannedUserIDs warms the in-process ban index after a restart.
+	ListBannedUserIDs(ctx context.Context) ([]string, error)
+
+	// AgentIDsByOwner lists every agent the user owns, so a ban can kick live
+	// sockets instead of leaving them playing until the next heartbeat.
+	AgentIDsByOwner(ctx context.Context, userPublicID string) ([]string, error)
+
 	// UpdateAgentProfile writes the owner's agent display identity (nil fields are
 	// left unchanged) and returns the saved profile. Returns ErrForbiddenOwner if
 	// the caller owns no agent.

@@ -279,6 +279,10 @@ func run() error {
 		return err
 	}
 	authn := auth.NewAuthenticator(idSvc, jwt, platformAuth, log)
+	authn.SetAccountGate(idSvc)
+	if err := idSvc.LoadBanned(ctx); err != nil {
+		log.Warn("identity: warming ban index failed; login will still check users.status", "error", err)
+	}
 
 	// Privy is the Beta login front door (social/email/wallet). Its ES256 access
 	// token is verified here and exchanged for a dashboard JWT at /v1/auth/privy.
@@ -461,6 +465,7 @@ func run() error {
 	// over the socket via agentgw.*Decider, falling back deterministically if an
 	// agent is absent/slow — the same guarantee the HTTP push client gives.
 	agentGateway := newAgentGateway(manifestSvc, idSvc, idSvc, authn, platformCfg, lens, log, cfg.AgentReconnectGrace)
+	idHandler.SetKicker(agentGateway)
 
 	// Domain event bus (transactional outbox): producers emit facts in their own
 	// tx; this dispatcher fans them out to idempotent handlers. It is the backbone

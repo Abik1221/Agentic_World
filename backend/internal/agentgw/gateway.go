@@ -274,6 +274,22 @@ func (g *Gateway) ConnectionStatus(agentID string) (AgentStatus, bool) {
 	}, true
 }
 
+// Kick closes a live agent socket immediately. A ban that only flips a row
+// leaves the agent playing until the next heartbeat; this is the logout.
+func (g *Gateway) Kick(agentID, reason string) {
+	if g == nil || agentID == "" {
+		return
+	}
+	c := g.lookup(agentID)
+	if c == nil {
+		return
+	}
+	if reason == "" {
+		reason = "kicked"
+	}
+	c.close(websocket.StatusPolicyViolation, reason)
+}
+
 func (g *Gateway) lookup(agentID string) *conn {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

@@ -2,11 +2,54 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/agent-arena/arena/internal/httpx"
 )
+
+type bannedGate struct{}
+
+func (bannedGate) Blocked(_ context.Context, userPublicID string) error {
+	if userPublicID == "usr_banned" {
+		return httpx.NewError(http.StatusForbidden, "account_banned",
+			"This account cannot access the dashboard due to suspicious activity.")
+	}
+	return nil
+}
+
+func TestMiddlewareRejectsBannedUser(t *testing.T) {
+	jwt := NewJWT("test-signing-key-at-least-32-bytes-long!!", time.Hour)
+	tok, err := jwt.Issue("usr_banned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewAuthenticator(nil, jwt, nil, slog.Default())
+	a.SetAccountGate(bannedGate{})
+
+	reached := false
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if reached {
+		t.Fatal("banned user must never reach the handler")
+	}
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "account_banned") {
+		t.Fatalf("body %q missing account_banned", rr.Body.String())
+	}
+}
 
 func TestRequireScope(t *testing.T) {
 	final := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

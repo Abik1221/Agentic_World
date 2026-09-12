@@ -72,6 +72,11 @@ func (s *Service) UpsertFromPrivy(ctx context.Context, privyUserID string, p Pri
 	if err != nil {
 		return PrivyLoginResult{}, err
 	}
+	if !created {
+		if err := s.rejectIfBanned(ctx, userPublicID); err != nil {
+			return PrivyLoginResult{}, err
+		}
+	}
 	dash, err := s.jwt.Issue(userPublicID)
 	if err != nil {
 		return PrivyLoginResult{}, err

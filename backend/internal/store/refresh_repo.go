@@ -55,3 +55,13 @@ func (r *RefreshRepo) RevokeFamily(ctx context.Context, familyID string, at time
 		`UPDATE refresh_tokens SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL`, familyID, at)
 	return err
 }
+
+func (r *RefreshRepo) RevokeAllForUser(ctx context.Context, userPublicID string, at time.Time) (int, error) {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = $2
+		  WHERE user_public_id = $1 AND revoked_at IS NULL`, userPublicID, at)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}

@@ -6,6 +6,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -41,12 +42,19 @@ type KeyResolver interface {
 	ResolveAgentKey(ctx context.Context, rawKey string) (*Principal, error)
 }
 
+// AccountGate is the post-auth check that a resolved user is still allowed in.
+// Implemented by identity.Service (ban index + users.status). Nil ⇒ no check.
+type AccountGate interface {
+	Blocked(ctx context.Context, userPublicID string) error
+}
+
 // Authenticator authenticates requests; route guards (RequireScope) authorize them.
 type Authenticator struct {
 	keys     KeyResolver
 	jwt      *JWT
 	platform *PlatformVerifier // service-to-service "Platform" tokens; nil ⇒ disabled
 	log      *slog.Logger
+	gate     AccountGate
 }
 
 // NewAuthenticator wires the credential resolvers. platform may be nil (no
@@ -54,6 +62,13 @@ type Authenticator struct {
 // rejected while the existing Bearer paths (agent key / user JWT) are unaffected.
 func NewAuthenticator(keys KeyResolver, jwt *JWT, platform *PlatformVerifier, log *slog.Logger) *Authenticator {
 	return &Authenticator{keys: keys, jwt: jwt, platform: platform, log: log}
+}
+
+// SetAccountGate installs the ban/suspend check run after a credential resolves.
+func (a *Authenticator) SetAccountGate(g AccountGate) {
+	if a != nil {
+		a.gate = g
+	}
 }
 
 type ctxKey int
@@ -89,7 +104,18 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 		p, err := a.resolve(r.Context(), raw)
 		if err != nil {
 			a.log.Debug("authentication failed", "error", err, "path", r.URL.Path)
+			// A banned owner is a 403 with a stable code the client keys the
+			// branded lockout on. Every other resolve failure stays a 401 so a
+			// bad guess cannot tell "banned" from "wrong key".
+			if bannedErr(err) {
+				httpx.Error(w, err)
+				return
+			}
 			httpx.Error(w, httpx.ErrUnauthorized)
+			return
+		}
+		if err := a.rejectBanned(r.Context(), p); err != nil {
+			httpx.Error(w, err)
 			return
 		}
 		denySharedCaching(w)
@@ -235,7 +261,26 @@ func RequirePlatformOrAdmin(allowlist map[string]bool) func(http.Handler) http.H
 // untouched. So Pyyol's own identity travels in X-Pyyol-Key, and the gateway resolves it
 // itself rather than having Middleware consume a header that belongs to someone else.
 func (a *Authenticator) ResolveCredential(ctx context.Context, raw string) (*Principal, error) {
-	return a.resolve(ctx, raw)
+	p, err := a.resolve(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.rejectBanned(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (a *Authenticator) rejectBanned(ctx context.Context, p *Principal) error {
+	if a == nil || a.gate == nil || p == nil || p.UserPublicID == "" || p.Scope == ScopePlatform {
+		return nil
+	}
+	return a.gate.Blocked(ctx, p.UserPublicID)
+}
+
+func bannedErr(err error) bool {
+	var api *httpx.APIError
+	return errors.As(err, &api) && api.Code == "account_banned"
 }
 
 // ContextWithPrincipal attaches an already-resolved Principal, so a caller doing its own

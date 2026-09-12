@@ -62,6 +62,10 @@ type RefreshRepo interface {
 	Get(ctx context.Context, id string) (RefreshRow, error)
 	MarkUsed(ctx context.Context, id string, at time.Time) error
 	RevokeFamily(ctx context.Context, familyID string, at time.Time) error
+	// RevokeAllForUser kills every live refresh family for one owner. A ban that
+	// leaves refresh tokens intact is a logout that does not log anyone out: the
+	// access JWT dies in an hour, and the next navigation quietly mints a new one.
+	RevokeAllForUser(ctx context.Context, userPublicID string, at time.Time) (int, error)
 }
 
 // RefreshService issues + rotates refresh tokens and mints the paired access JWT.
@@ -196,4 +200,13 @@ func (s *RefreshService) Revoke(ctx context.Context, raw string) error {
 		return nil // unknown token → nothing to revoke
 	}
 	return s.repo.RevokeFamily(ctx, row.FamilyID, s.now())
+}
+
+// RevokeAllForUser kills every live refresh family for one owner. Used by ban
+// so an existing dashboard or CLI session cannot mint a new access JWT.
+func (s *RefreshService) RevokeAllForUser(ctx context.Context, userPublicID string) (int, error) {
+	if s == nil || s.repo == nil || userPublicID == "" {
+		return 0, nil
+	}
+	return s.repo.RevokeAllForUser(ctx, userPublicID, s.now())
 }

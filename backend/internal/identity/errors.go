@@ -20,6 +20,11 @@ var (
 	ErrEmailTaken         = httpx.NewError(http.StatusConflict, "email_taken", "That email is already registered. Try signing in instead.")
 	ErrInvalidCredentials = httpx.NewError(http.StatusUnauthorized, "invalid_credentials", "Incorrect email or password.")
 	ErrInvalidMagicLink   = httpx.NewError(http.StatusUnauthorized, "invalid_magic_link", "This sign-in link is invalid, expired, or already used.")
+	// ErrAccountBanned is the hard lock: no login, no refresh, no dashboard. The
+	// client renders this as a branded "suspicious activity" block rather than a
+	// generic 403 — do not reuse forbidden, or the popup never fires.
+	ErrAccountBanned = httpx.NewError(http.StatusForbidden, "account_banned",
+		"This account cannot access the dashboard due to suspicious activity.")
 )
 
 // Key-management errors. Kept in their own block because their messages are too long
