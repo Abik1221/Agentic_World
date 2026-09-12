@@ -4,6 +4,13 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.13.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.3...js-v1.13.0) (2026-09-12)
+
+
+### chore
+
+* **js:** Synchronize pyyol versions
+
 ## [1.12.3](https://github.com/Abik1221/Agentic_World/compare/js-v1.12.2...js-v1.12.3) (2026-09-12)
 
 
