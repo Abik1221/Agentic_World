@@ -47,6 +47,45 @@ func TestCreateRoomRefusesZeroStake(t *testing.T) {
 	}
 }
 
+// Paid open tables (agent console / ranked CreateTable) must use covering stake
+// — wallet covers the entry fee only; no reserve stacked. 500+500 sits; short fails
+// at the wallet layer (covered by wallet tests).
+func TestCreateTableUsesCoveringStake(t *testing.T) {
+	lim := &coveringSeatLimits{}
+	svc := newSeatingSvc(&recordingCreateRepo{}, &recordingWallet{}, lim, nil, nil)
+	if _, err := svc.CreateTable(context.Background(), "ag_host", "usr_host", 500); err != nil {
+		t.Fatalf("CreateTable: %v", err)
+	}
+	if lim.covering != 1 {
+		t.Fatalf("CreateTable consulted CheckJoinCoveringStake %d times, want 1", lim.covering)
+	}
+	if lim.ranked != 0 {
+		t.Fatalf("CreateTable used CheckJoin (%d) — sit is stake-only", lim.ranked)
+	}
+}
+
+func TestCreateRoomUsesCoveringStake(t *testing.T) {
+	lim := &coveringSeatLimits{}
+	svc := newSeatingSvc(&recordingCreateRepo{}, &recordingWallet{}, lim, nil, nil)
+	if _, err := svc.CreateRoom(context.Background(), "ag_host", "usr_host", 500); err != nil {
+		t.Fatalf("CreateRoom: %v", err)
+	}
+	if lim.covering != 1 {
+		t.Fatalf("CreateRoom consulted CheckJoinCoveringStake %d times, want 1", lim.covering)
+	}
+}
+
+type coveringSeatLimits struct{ covering, ranked int }
+
+func (c *coveringSeatLimits) CheckJoin(context.Context, string, int64) error {
+	c.ranked++
+	return nil
+}
+func (c *coveringSeatLimits) CheckJoinCoveringStake(context.Context, string, int64) error {
+	c.covering++
+	return nil
+}
+
 func TestPrivateRoomStaysWaitingUntilRosterFull(t *testing.T) {
 	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
 	repo := newSeatingRepo(500, creator)

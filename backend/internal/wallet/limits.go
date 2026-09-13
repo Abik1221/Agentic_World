@@ -32,23 +32,21 @@ func (s *Service) NetToday(ctx context.Context, agentPublicID string) (int64, er
 	return s.repo.NetSince(ctx, agentPublicID, dayStart)
 }
 
+// CheckJoin enforces spending limits for sitting a paid table. The agent's
+// wallet must cover the stake only — platform fee is taken after the match
+// from the winner, never as a pre-game reserve stacked on the bid.
 func (s *Service) CheckJoin(ctx context.Context, agentPublicID string, bid int64) error {
-	return s.checkJoin(ctx, agentPublicID, bid, false)
+	return s.checkJoin(ctx, agentPublicID, bid)
 }
 
-// CheckJoinCoveringStake is the private-room money check: the sitting agent's
-// wallet must cover the stake. It does not require leftover owner-treasury
-// coins, and it does not add min_wallet_balance on top of the bid.
-//
-// Ranked CheckJoin keeps the reserve so an agent cannot empty itself at a
-// public table. A play-a-friend host who just moved exactly the stake onto
-// the agent that will sit (leaving the rest on the account) must still be
-// able to open the room — that leftover is not the sitting wallet.
+// CheckJoinCoveringStake is the same money check as CheckJoin: the sitting
+// agent's wallet must cover the stake. Kept as a named alias so room / lobby
+// call sites stay explicit about "stake only, no reserve".
 func (s *Service) CheckJoinCoveringStake(ctx context.Context, agentPublicID string, bid int64) error {
-	return s.checkJoin(ctx, agentPublicID, bid, true)
+	return s.checkJoin(ctx, agentPublicID, bid)
 }
 
-func (s *Service) checkJoin(ctx context.Context, agentPublicID string, bid int64, coveringStake bool) error {
+func (s *Service) checkJoin(ctx context.Context, agentPublicID string, bid int64) error {
 	if bid <= 0 {
 		return ErrInvalidBid
 	}
@@ -65,21 +63,12 @@ func (s *Service) checkJoin(ctx context.Context, agentPublicID string, bid int64
 	}
 	now := s.clock.Now()
 
-	// 1. the sitting agent can pay the stake
-	need := bid
-	if !coveringStake {
-		need = bid + lim.MinWalletBalance
-	}
-	if bal < need {
+	// 1. the sitting agent can pay the stake (fee is post-game from the winner)
+	if bal < bid {
 		s.m.limitBlock.WithLabelValues(limitMinBalance).Inc()
-		if coveringStake {
-			return blockBalance(
-				fmt.Sprintf("This agent has %d coins and the table stakes %d. Move at least %d coins onto the agent that will sit.", bal, bid, bid),
-				map[string]any{"balance": bal, "bid": bid, "wallet": "agent"})
-		}
 		return blockBalance(
-			fmt.Sprintf("Balance %d is below the required %d (bid %d + reserve %d).", bal, need, bid, lim.MinWalletBalance),
-			map[string]any{"balance": bal, "bid": bid, "min_wallet_balance": lim.MinWalletBalance})
+			fmt.Sprintf("This agent has %d coins and the table stakes %d. Move at least %d coins onto the agent that will sit.", bal, bid, bid),
+			map[string]any{"balance": bal, "bid": bid, "wallet": "agent"})
 	}
 	// 2. bid ≤ coin_limit_per_match
 	if bid > lim.CoinLimitPerMatch {

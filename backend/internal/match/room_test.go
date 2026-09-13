@@ -134,9 +134,7 @@ func TestRoomCanBeCancelledByItsCreator(t *testing.T) {
 
 // Somebody who is not the creator cannot cancel the room out from under them.
 // A host who funded the sitting agent with exactly the stake must be able to
-// open the room. Ranked CheckJoin still wants a leftover reserve; rooms must
-// not inherit that, or leftover owner-treasury coins look like the thing that
-// failed.
+// open the room. Sit eligibility is covering stake only (no reserve stacked).
 func TestCreateRoomAcceptsAnAgentThatHoldsExactlyTheStake(t *testing.T) {
 	lim := &coveringLimits{}
 	svc := svcWithLimits(lim)
@@ -147,21 +145,21 @@ func TestCreateRoomAcceptsAnAgentThatHoldsExactlyTheStake(t *testing.T) {
 		t.Fatalf("room consulted CheckJoinCoveringStake %d times, want 1", lim.covering)
 	}
 	if lim.ranked != 0 {
-		t.Fatalf("room used ranked CheckJoin (%d) — that is the reserve that blocked a funded agent", lim.ranked)
+		t.Fatalf("room used CheckJoin (%d) — prefer covering-stake when available", lim.ranked)
 	}
 }
 
-func TestCreateOpenStillUsesTheRankedReserveCheck(t *testing.T) {
+func TestCreateOpenUsesCoveringStake(t *testing.T) {
 	lim := &coveringLimits{}
 	svc := svcWithLimits(lim)
 	if _, err := svc.CreateOpen(context.Background(), "ag_a", "usr_a", 500); err != nil {
 		t.Fatalf("CreateOpen: %v", err)
 	}
-	if lim.ranked != 1 {
-		t.Fatalf("open lobby consulted CheckJoin %d times, want 1", lim.ranked)
+	if lim.covering != 1 {
+		t.Fatalf("open lobby consulted CheckJoinCoveringStake %d times, want 1", lim.covering)
 	}
-	if lim.covering != 0 {
-		t.Fatalf("open lobby used the room money check")
+	if lim.ranked != 0 {
+		t.Fatalf("open lobby used CheckJoin (%d) — sit is stake-only, no reserve", lim.ranked)
 	}
 }
 

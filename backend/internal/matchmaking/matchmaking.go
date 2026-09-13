@@ -162,9 +162,10 @@ type Eligibility interface {
 }
 
 // Affordability preflights the stake against the agent's balance + owner limits,
-// using the SAME check escrow runs at pairing (wallet.CheckJoin). Enforcing it at
-// enqueue makes a broke or over-limit agent fail fast with a specific error
-// instead of sitting in `waiting` forever for a match that could never escrow.
+// using the SAME check escrow runs at pairing (wallet.CheckJoin — stake only;
+// platform fee is post-game from the winner). Enforcing it at enqueue makes a
+// broke or over-limit agent fail fast with a specific error instead of sitting
+// in `waiting` forever for a match that could never escrow.
 // Satisfied by wallet.Service. Injected via SetAffordability so New stays unchanged.
 type Affordability interface {
 	CheckJoin(ctx context.Context, agentPublicID string, bid int64) error

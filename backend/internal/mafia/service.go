@@ -321,11 +321,11 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 		return "", err
 	}
 	// A zero-fee table is a no-stakes practice/sandbox table (nothing staked, no
-	// payout, no rating change): skip the spending-limit and certification gates,
-	// matching the Goofspiel sandbox and Monopoly's zero-fee tables. Paid tables
-	// enforce both.
+	// payout, no rating change): skip the spending-limit gate, matching the
+	// Goofspiel sandbox. Paid tables require the agent wallet to cover the
+	// stake only (platform fee is post-game from the winner).
 	if entryFee > 0 {
-		if err := s.limits.CheckJoin(ctx, agentPublicID, entryFee); err != nil {
+		if err := s.checkSeat(ctx, agentPublicID, entryFee, false); err != nil {
 			return "", err
 		}
 	}
@@ -396,20 +396,19 @@ func (s *Service) CreateRoom(ctx context.Context, agentPublicID, ownerPublicID s
 	return m.PublicID, nil
 }
 
-// checkSeat runs spending limits. Private rooms use covering-stake when the
-// limiter knows it (wallet covers the bid; no stacked reserve) — same rule as
-// Goofspiel Play-a-friend.
-func (s *Service) checkSeat(ctx context.Context, agentPublicID string, entryFee int64, private bool) error {
+// checkSeat runs spending limits for the agent that will sit. Paid Mafia
+// (ranked, open lobby, rooms, agent console) uses covering stake only —
+// wallet must cover the entry fee; no min_wallet_balance stacked on top.
+// Platform fee is taken after the match from the winner.
+func (s *Service) checkSeat(ctx context.Context, agentPublicID string, entryFee int64, _ bool) error {
 	if entryFee <= 0 {
 		return nil
 	}
-	if private {
-		type covering interface {
-			CheckJoinCoveringStake(context.Context, string, int64) error
-		}
-		if c, ok := s.limits.(covering); ok {
-			return c.CheckJoinCoveringStake(ctx, agentPublicID, entryFee)
-		}
+	type covering interface {
+		CheckJoinCoveringStake(context.Context, string, int64) error
+	}
+	if c, ok := s.limits.(covering); ok {
+		return c.CheckJoinCoveringStake(ctx, agentPublicID, entryFee)
 	}
 	return s.limits.CheckJoin(ctx, agentPublicID, entryFee)
 }

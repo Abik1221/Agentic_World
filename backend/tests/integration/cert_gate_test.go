@@ -81,13 +81,8 @@ func TestCertificationGate_RankedQueue(t *testing.T) {
 	// Fund it FIRST, because enqueue runs an affordability preflight. The amount is
 	// deliberately far above any tier rather than matched to one: this test is about the
 	// CERTIFICATION gate, and affordability must never be able to be the reason it fails.
-	//
-	// It used to mint exactly 500 with the comment "Low = 100", and both halves were wrong
-	// by the time it ran. Migration 0038 seeds goofspiel Low at 100 coins, but the live $5
-	// minimum-stake floor (gamestakes.DefaultMinStakeUSDCents, 500 cents at a 1¢ peg) lifts
-	// it to 500 — so the stake was 500, the agent's default reserve is 50, and 500 < 550
-	// refused the join. A test that pins its funding to a policy number it does not control
-	// breaks the moment an operator moves that policy; this one cannot.
+	// Sit eligibility is stake-only (no reserve stacked); still fund generously so an
+	// operator moving tier floors cannot flake this gate test.
 	//
 	// Platform token, not the developer's own — see platformToken(). Sent with the PLATFORM
 	// scheme via doPlatform: as a Bearer it is parsed as a user JWT and rejected 401, which

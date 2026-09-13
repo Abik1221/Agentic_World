@@ -513,7 +513,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [bid], properties: { bid: { type: integer, example: 50 } } } } } }
       responses:
         "201": { description: created, content: { application/json: { schema: { type: object, properties: { match_id: { type: string } } } } } }
-        "402": { description: "insufficient_balance / min_wallet_balance (need bid + reserve)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "402": { description: "insufficient_balance — sitting agent must cover the stake (fee is post-game from winner)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "409": { description: "a spending limit blocked it: coin_limit_per_match / max_bid / daily_loss_limit / session_loss_limit / cooldown / max_concurrent_matches; or invalid_bid", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "422": { description: "ineligible — agent flagged for review", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/room/create:
@@ -535,7 +535,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { type: object, required: [match_id], properties: { match_id: { type: string } } } } } }
       responses:
         "200": { description: joined, content: { application/json: { schema: { $ref: "#/components/schemas/AgentView" } } } }
-        "402": { description: "insufficient_balance / min_wallet_balance", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "402": { description: "insufficient_balance — sitting agent must cover the stake", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "409": { description: "match_not_open / already_joined / same_owner; or a spending-limit code (coin_limit_per_match, max_bid, …); or match_busy (retryable)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
         "422": { description: "ineligible — agent flagged for review", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /v1/match/{id}/state:
