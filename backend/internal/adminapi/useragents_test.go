@@ -54,13 +54,14 @@ func TestConcurrencyCapIsNamed(t *testing.T) {
 	}
 }
 
-// The protected reserve is the subtlest of these: the agent HAS coins, so every other screen
-// says it is funded, and it still cannot play. Naming it is the whole point.
-func TestProtectedReserveIsNamed(t *testing.T) {
+// min_wallet_balance is a soft UI floor only — sit needs balance ≥ stake. An agent
+// sitting exactly on that floor with coins left is NOT blocked from playing.
+func TestMinWalletBalanceDoesNotBlockSit(t *testing.T) {
 	a := active()
-	a.Balance = 100 // exactly the reserve — nothing above it is stakeable
-	if got := a.Blocked(); got != "balance is at the protected reserve" {
-		t.Fatalf("Blocked() = %q, want the reserve floor", got)
+	a.Balance = 100
+	a.MinWalletBalance = 100
+	if got := a.Blocked(); got != "" {
+		t.Fatalf("Blocked() = %q, want empty (soft floor is not a sit gate)", got)
 	}
 }
 

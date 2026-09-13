@@ -25,6 +25,7 @@ type Handler struct {
 	privy        *auth.PrivyVerifier  // nil ⇒ Privy login disabled (503)
 	google       *auth.GoogleVerifier // nil/unconfigured ⇒ Google login disabled (503)
 	github       *auth.GitHubVerifier // nil/unconfigured ⇒ GitHub login disabled (503)
+	apple        *auth.AppleVerifier  // nil/unconfigured ⇒ Apple login disabled (503)
 	registerRL   func(http.Handler) http.Handler
 	loginRL      func(http.Handler) http.Handler
 	keysRL       func(http.Handler) http.Handler
@@ -143,6 +144,7 @@ func (h *Handler) Register(r chi.Router) {
 		r.Post("/v1/auth/privy", h.privyLogin)
 		r.Post("/v1/auth/google", h.googleLogin)
 		r.Post("/v1/auth/github", h.githubLogin)
+		r.Post("/v1/auth/apple", h.appleLogin)
 	})
 	// Magic-link verify consumes a single-use token (public; the token is the
 	// credential), so it is not IP-rate-limited.
@@ -444,6 +446,9 @@ func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 // SetGitHub wires the GitHub OAuth verifier (enables POST /v1/auth/github).
 func (h *Handler) SetGitHub(v *auth.GitHubVerifier) { h.github = v }
 
+// SetApple wires the Sign in with Apple verifier (enables POST /v1/auth/apple).
+func (h *Handler) SetApple(v *auth.AppleVerifier) { h.apple = v }
+
 // githubLogin completes the GitHub OAuth code exchange (the `code` the browser came
 // back with), find-or-creates the account, and returns a dashboard session — the same
 // response shape as googleLogin, so the frontend session handling is identical.
@@ -490,6 +495,63 @@ func (h *Handler) githubLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.APIKey != "" {
 		out["api_key"] = res.APIKey // new account's first key, shown once
+	}
+	httpx.JSON(w, http.StatusOK, out)
+}
+
+// appleLogin completes Sign in with Apple: exchanges the authorization `code` (and
+// optional PKCE verifier) for an id_token, verifies it against Apple JWKS, then
+// find-or-creates the account. Same response shape as googleLogin / githubLogin.
+// `name` is the display name Apple only sends on the FIRST authorization — the
+// client forwards it from the form_post `user` field when present.
+func (h *Handler) appleLogin(w http.ResponseWriter, r *http.Request) {
+	if h.apple == nil || !h.apple.Enabled() {
+		httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "apple_unavailable",
+			"Apple login is not configured here. Use Google or GitHub sign-in."))
+		return
+	}
+	var in struct {
+		Code         string `json:"code"`
+		RedirectURI  string `json:"redirect_uri"`
+		CodeVerifier string `json:"code_verifier"`
+		Nonce        string `json:"nonce"`
+		Name         string `json:"name"` // first-login only; empty on return visits
+	}
+	if err := httpx.DecodeJSON(w, r, &in); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if in.Code == "" {
+		httpx.Error(w, errInvalid("code is required"))
+		return
+	}
+	claims, err := h.apple.Exchange(r.Context(), in.Code, in.RedirectURI, in.CodeVerifier, in.Nonce)
+	if err != nil {
+		httpx.Error(w, httpx.NewError(http.StatusUnauthorized, "invalid_apple_code", "Apple sign-in verification failed."))
+		return
+	}
+	// Same trust boundary as Google/GitHub: only a VERIFIED email may link this Apple
+	// login onto an existing local account. Hide My Email relays are fine when
+	// email_verified is true — they are real Apple-operated addresses. The immutable
+	// `sub` keys the account either way.
+	email := claims.Email
+	if !claims.EmailVerified {
+		email = ""
+	}
+	res, err := h.svc.SignUpOrLoginApple(r.Context(), claims.Sub, email, in.Name)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	out := map[string]any{
+		"dashboard_token": res.DashboardToken,
+		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
+		"agent_id":        res.AgentID,
+		"agent_name":      res.AgentName,
+		"created":         res.Created,
+	}
+	if res.APIKey != "" {
+		out["api_key"] = res.APIKey
 	}
 	httpx.JSON(w, http.StatusOK, out)
 }

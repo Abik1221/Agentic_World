@@ -1,6 +1,6 @@
 # CLI reference
 
-Generated from `pyyol` v1.13.0. Every command below is real — this page is
+Generated from `pyyol` v1.14.0. Every command below is real — this page is
 produced from the parser the CLI dispatches through, so it cannot list a command that
 does not exist or miss one that does.
 
@@ -53,7 +53,8 @@ Get a game going.
 compete in an arena. SANDBOX by default; --ranked = real stakes
 
 ```
-usage: pyyol play [-h] [--ranked] [--tier TIER] [--matches MATCHES] [--yes] [--url URL]
+usage: pyyol play [-h] [--ranked] [--tier TIER] [--matches MATCHES] [--yes]
+                  [--mode {queue,invite,ask}] [--queue] [--invite] [--url URL]
                   [--agent AGENT] [--token TOKEN] [--quiet] [--no-color]
                   [--open {auto,always,never}] [--api API]
                   [--watch {ask,browser,terminal}]
@@ -69,6 +70,11 @@ options:
   --tier TIER           ranked stake tier: low|mid|high
   --matches MATCHES     sandbox matches to start (0 = connect only)
   --yes                 skip the ranked confirmation (CI)
+  --mode {queue,invite,ask}
+                        after connect: queue (join), invite (friends, no queue), or ask
+                        (TTY)
+  --queue               join a game (skip Join/Invite prompt; same as --mode=queue)
+  --invite              invite a friend: connect only + open /friends (no queue)
   --url URL
   --agent AGENT
   --token TOKEN

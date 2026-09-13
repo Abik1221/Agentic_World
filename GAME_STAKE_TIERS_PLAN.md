@@ -27,7 +27,7 @@ Replacing the current free-form per-match `bid`/`entry_fee` with a small set of
 | Ranked stake | free-form `{"bid": N}` to `/v1/queue`; **pairing by exact bid**; game hardcoded goofspiel | `matchmaking/handler.go:39`, `matchmaking/matcher.go` (byBid), `match/service.go:209` |
 | Per-game config already exists | `platformcfg.Game` + `Economy{MinCoins,MaxCoins}` + `MatchRules` — signed config bus, **authored in the separate admin service**, read-only in arena | `platformcfg/config.go:35,84-95,123` |
 | Admin-set runtime config pattern | `walletadmin`: singleton `wallet_settings` table (`id=1` CHECK) + `GET/PUT` guarded by `RequirePlatformOrAdmin`, in-proc 10s cache, immediate effect, audit-logged | `walletadmin/*`, `store/walletadmin_repo.go`, mig `0034` |
-| Agent's own leash | `CheckJoin` enforces `balance ≥ stake + min_wallet_balance`, `stake ≤ coin_limit_per_match`, `stake ≤ max_bid`, loss/cooldown/concurrency caps | `wallet/limits.go:16-95` |
+| Agent's own leash | `CheckJoin` enforces `balance ≥ stake` (no min_wallet stacked; fee is post-game from winner), `stake ≤ coin_limit_per_match`, `stake ≤ max_bid`, loss/cooldown/concurrency caps | `wallet/limits.go` |
 
 **Two homes were possible; we choose the arena-hosted one.** The signed `platformcfg` bus
 already carries per-game economy, but it is authored asynchronously in the *separate admin

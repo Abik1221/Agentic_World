@@ -413,7 +413,7 @@ OpenAPI `ErrorEnvelope.code`. UX guidance by status:
 |---|---|---|
 | 400 | `invalid_request`, `illegal_action`, `signature_required` | Inline validation message |
 | 401 | `unauthenticated` | Session expired → re-onboard (§3) |
-| 402 | `insufficient_balance`, `min_wallet_balance` | "Top up to continue" CTA |
+| 402 | `insufficient_balance` | "Top up to continue" CTA (sit needs balance ≥ stake; fee is post-game) |
 | 403 | `forbidden`, `not_in_match`, `bad_signature` | Access/permission message |
 | 404 | `not_found`, `not_queued` | Clear stale local state |
 | 409 | `match_busy` (**retryable**), `wrong_round`, `match_not_active`, `already_joined`, `same_owner`, or a **spending-limit code** (`coin_limit_per_match`, `max_bid`, `daily_loss_limit`, `session_loss_limit`, `cooldown`, `max_concurrent_matches`) | For `match_busy`/`rate_limited`/`internal`: **retry after short backoff**. For limit codes: show which limit blocked (the `details` carry the value). |

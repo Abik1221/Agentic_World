@@ -4,6 +4,20 @@ All notable changes to the `pyyol` Python SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.14.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.13.0...py-v1.14.0) (2026-09-13)
+
+
+### Features
+
+* **play:** Add Join vs Invite on `pyyol play` ([541f760](https://github.com/Abik1221/Agentic_World/commit/541f760e5d460cfcd08227958362df8a7bb04618))
+* **mafia:** Enable private invite rooms from the CLI ([c73b8ac](https://github.com/Abik1221/Agentic_World/commit/c73b8ac))
+
+
+### Bug Fixes
+
+* **mafia:** Make invite rooms humans-only with no house-bot fill ([b987b63](https://github.com/Abik1221/Agentic_World/commit/b987b63))
+* **mafia:** Refuse Mafia on private room create with a clear reason ([c717287](https://github.com/Abik1221/Agentic_World/commit/c717287))
+
 ## [1.13.0](https://github.com/Abik1221/Agentic_World/compare/py-v1.12.3...py-v1.13.0) (2026-09-12)
 
 

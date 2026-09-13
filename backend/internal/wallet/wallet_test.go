@@ -3,6 +3,7 @@ package wallet_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -370,12 +371,19 @@ func TestCheckJoinLimits(t *testing.T) {
 	}{
 		{name: "allowed", bid: 50, balance: 1000, wantCode: ""},
 		{name: "invalid bid", bid: 0, balance: 1000, wantCode: "invalid_bid"},
-		{name: "min wallet balance", bid: 50, balance: 80, wantCode: "insufficient_balance"}, // need 100
-		{name: "exact stake blocked by reserve", bid: 500, balance: 500, wantCode: "insufficient_balance",
+		{name: "short of stake", bid: 50, balance: 49, wantCode: "insufficient_balance"},
+		{name: "exact stake allowed", bid: 500, balance: 500, wantCode: "",
 			tweak: func(r *fakeRepo) {
 				r.limits.CoinLimitPerMatch = 500
 				r.limits.MaxBid = 500
 			}},
+		{name: "one below stake blocked", bid: 500, balance: 499, wantCode: "insufficient_balance",
+			tweak: func(r *fakeRepo) {
+				r.limits.CoinLimitPerMatch = 500
+				r.limits.MaxBid = 500
+			}},
+		// min_wallet_balance no longer stacks on the bid (fee is post-game from winner)
+		{name: "reserve ignored for sit", bid: 50, balance: 50, wantCode: ""},
 		{
 			name: "per match limit", bid: 150, balance: 1000, wantCode: "limit_coin_limit_per_match",
 		},
@@ -416,29 +424,67 @@ func TestCheckJoinLimits(t *testing.T) {
 }
 
 func TestCheckJoinCoveringStakeUsesTheSittingAgent(t *testing.T) {
-	// The play-a-friend failure: 500 on the agent, 450 leftover on the account,
-	// 500-coin table, default 50-coin reserve. Ranked CheckJoin refuses (needs 550).
-	// The room check must accept — leftover treasury is not the sitting wallet.
+	// 500 on the agent, 450 leftover on the account, 500-coin table.
+	// Sit eligibility is stake-only (fee is post-game from the winner), so both
+	// CheckJoin and CheckJoinCoveringStake accept an agent that holds exactly
+	// the stake — leftover treasury is not the sitting wallet.
 	repo := &fakeRepo{limits: baseLimits()}
 	repo.limits.CoinLimitPerMatch = 500
 	repo.limits.MaxBid = 500
 	fl := &fakeLedger{balance: 500, userBalance: 450}
 	svc := newSvc(fl, repo)
 
-	if err := svc.CheckJoin(context.Background(), "ag_a", 500); err == nil {
-		t.Fatal("ranked CheckJoin allowed an exact-stake agent; the reserve should still block public tables")
-	} else if codeOf(err) != "insufficient_balance" {
-		t.Fatalf("ranked code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+	if err := svc.CheckJoin(context.Background(), "ag_a", 500); err != nil {
+		t.Fatalf("CheckJoin refused a sitting agent that holds the stake: %v", err)
 	}
-
 	if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", 500); err != nil {
-		t.Fatalf("room check refused a sitting agent that holds the stake: %v", err)
+		t.Fatalf("covering check refused a sitting agent that holds the stake: %v", err)
 	}
 
 	fl.balance = 499
-	if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", 500); err == nil {
-		t.Fatal("room check accepted an agent that cannot cover the stake")
+	if err := svc.CheckJoin(context.Background(), "ag_a", 500); err == nil {
+		t.Fatal("CheckJoin accepted an agent that cannot cover the stake")
 	} else if codeOf(err) != "insufficient_balance" {
 		t.Fatalf("short agent code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+	}
+	if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", 500); err == nil {
+		t.Fatal("covering check accepted an agent that cannot cover the stake")
+	} else if codeOf(err) != "insufficient_balance" {
+		t.Fatalf("short agent covering code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+	}
+}
+
+// Low / mid / high / private-room ladders: sit OK at exact stake, fail at stake-1.
+// A configured min_wallet_balance must not stack on top of any of these stakes.
+func TestCheckJoinStakeLaddersExactAndShort(t *testing.T) {
+	stakes := []int64{100, 500, 1000, 2000, 5000}
+	for _, stake := range stakes {
+		t.Run(fmt.Sprintf("stake_%d", stake), func(t *testing.T) {
+			repo := &fakeRepo{limits: baseLimits()}
+			repo.limits.CoinLimitPerMatch = stake
+			repo.limits.MaxBid = stake
+			repo.limits.MinWalletBalance = 50 // soft UI floor only — must not block exact-stake sit
+			fl := &fakeLedger{balance: stake}
+			svc := newSvc(fl, repo)
+
+			if err := svc.CheckJoin(context.Background(), "ag_a", stake); err != nil {
+				t.Fatalf("exact stake %d refused: %v", stake, err)
+			}
+			if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", stake); err != nil {
+				t.Fatalf("covering exact stake %d refused: %v", stake, err)
+			}
+
+			fl.balance = stake - 1
+			if err := svc.CheckJoin(context.Background(), "ag_a", stake); err == nil {
+				t.Fatalf("stake-1 (%d) accepted for stake %d", stake-1, stake)
+			} else if codeOf(err) != "insufficient_balance" {
+				t.Fatalf("stake-1 code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+			}
+			if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", stake); err == nil {
+				t.Fatalf("covering stake-1 (%d) accepted for stake %d", stake-1, stake)
+			} else if codeOf(err) != "insufficient_balance" {
+				t.Fatalf("covering stake-1 code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+			}
+		})
 	}
 }

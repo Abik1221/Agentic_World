@@ -130,6 +130,13 @@ jobs:
           # actually reads (config.go). Both empty ⇒ the route 503s, Google still works.
           GH_OAUTH_CLIENT_ID: ${{ secrets.GH_OAUTH_CLIENT_ID }}
           GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+          # Sign in with Apple (Services ID). All four required together; empty ⇒ Apple
+          # login disabled. APPLE_PRIVATE_KEY is the AuthKey_XXX.p8 PEM (use literal
+          # newlines or \n escapes). Never expose these as NEXT_PUBLIC_*.
+          APPLE_CLIENT_ID: ${{ secrets.APPLE_CLIENT_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_PRIVATE_KEY: ${{ secrets.APPLE_PRIVATE_KEY }}
           # Solana USDC deposits (all four required to enable real deposits)
           # SOLANA_CLUSTER is the network switch: "devnet" or "mainnet-beta". The
           # backend refuses to boot if it disagrees with the RPC URL or the mint, so
@@ -372,6 +379,11 @@ jobs:
           # GITHUB_ secret prefix is reserved). Both empty ⇒ GitHub login disabled.
           GITHUB_CLIENT_ID=${GH_OAUTH_CLIENT_ID:-}
           GITHUB_CLIENT_SECRET=${GH_OAUTH_CLIENT_SECRET:-}
+          # Sign in with Apple. All empty ⇒ Apple login disabled.
+          APPLE_CLIENT_ID=${APPLE_CLIENT_ID:-}
+          APPLE_TEAM_ID=${APPLE_TEAM_ID:-}
+          APPLE_KEY_ID=${APPLE_KEY_ID:-}
+          APPLE_PRIVATE_KEY=${APPLE_PRIVATE_KEY:-}
 
           # ── Solana USDC deposits (need RPC + mint + owner + ATA to enable) ──
           SOLANA_CLUSTER=${SOLANA_CLUSTER:-}

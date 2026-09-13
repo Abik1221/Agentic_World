@@ -741,19 +741,16 @@ func (s *Service) checkStake(ctx context.Context, bid int64) error {
 
 // checkSeat runs the spending limits for the agent that will sit.
 //
-// A private room uses CheckJoinCoveringStake when the limiter knows it: the
-// sitting agent's wallet must cover the bid, without a leftover owner-treasury
-// balance or a min_wallet_reserve stacked on top. Ranked / open lobby still
-// use the full CheckJoin (bid + reserve). Stake floor and same-owner
-// refusal stay shared. Playability does not — see checkPlayable.
-func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64, private bool) error {
-	if private {
-		type covering interface {
-			CheckJoinCoveringStake(context.Context, string, int64) error
-		}
-		if c, ok := s.limits.(covering); ok {
-			return c.CheckJoinCoveringStake(ctx, agentPublicID, bid)
-		}
+// Paid Goofspiel (ranked, open lobby, rooms) uses covering stake only: the
+// sitting agent's wallet must cover the bid — no min_wallet_balance stacked
+// on top. Platform fee is taken after the match from the winner. Stake floor
+// and same-owner refusal stay shared. Playability does not — see checkPlayable.
+func (s *Service) checkSeat(ctx context.Context, agentPublicID string, bid int64, _ bool) error {
+	type covering interface {
+		CheckJoinCoveringStake(context.Context, string, int64) error
+	}
+	if c, ok := s.limits.(covering); ok {
+		return c.CheckJoinCoveringStake(ctx, agentPublicID, bid)
 	}
 	return s.limits.CheckJoin(ctx, agentPublicID, bid)
 }
@@ -802,9 +799,10 @@ func (s *Service) CreateOpen(ctx context.Context, agentPublicID, ownerPublicID s
 
 // createWaiting is the one implementation behind both the open lobby and rooms.
 //
-// `private` is the listing bit, plus the room money check (see checkSeat) and
-// the room playability gate (see checkPlayable). Stake floor, escrow on join,
-// and the refusal to join your own match stay shared so they cannot drift.
+// `private` is the listing bit plus the room playability gate (see
+// checkPlayable). Money check is covering stake for every paid sit (see
+// checkSeat). Stake floor, escrow on join, and the refusal to join your own
+// match stay shared so they cannot drift.
 func (s *Service) createWaiting(ctx context.Context, agentPublicID, ownerPublicID string, bid int64, private bool) (string, error) {
 	if err := s.checkStake(ctx, bid); err != nil {
 		return "", err
@@ -877,11 +875,11 @@ func (s *Service) CreatePaired(ctx context.Context, aAgent, aOwner, bAgent, bOwn
 	if bid <= 0 {
 		return "", httpx.NewError(400, "invalid_request", "bid must be > 0")
 	}
-	// Both seats must clear the spending limits and verification gate.
-	if err := s.limits.CheckJoin(ctx, aAgent, bid); err != nil {
+	// Both seats must clear the spending limits (stake only) and verification gate.
+	if err := s.checkSeat(ctx, aAgent, bid, false); err != nil {
 		return "", err
 	}
-	if err := s.limits.CheckJoin(ctx, bAgent, bid); err != nil {
+	if err := s.checkSeat(ctx, bAgent, bid, false); err != nil {
 		return "", err
 	}
 	if err := s.ver.CheckEligible(ctx, aAgent); err != nil {
@@ -1016,9 +1014,9 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
 	// Serialize an agent's joins so it can't race concurrent joins into DIFFERENT
 	// matches and slip past the per-agent limits (CheckJoin, e.g. max-concurrent /
-	// reserve) via TOCTOU — the per-match lock only serializes joins to the SAME
-	// match. Agent lock FIRST, then match lock: a consistent global order that can't
-	// deadlock. (M6)
+	// balance / loss caps) via TOCTOU — the per-match lock only serializes joins to
+	// the SAME match. Agent lock FIRST, then match lock: a consistent global order
+	// that can't deadlock. (M6)
 	relAgent, okA, err := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err

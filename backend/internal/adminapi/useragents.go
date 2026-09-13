@@ -13,14 +13,15 @@ import (
 //
 // Nothing showed these. UserDetail counts agents and totals their money; the wallet view
 // shows where the coins sit. But the limits — how much one match may risk, the daily and
-// session loss stops, the protected reserve, how many matches may run at once, the cooldown
-// after a losing run — existed only on the agents row and were readable only by the owner.
+// session loss stops, how many matches may run at once, the cooldown after a losing run —
+// existed only on the agents row and were readable only by the owner.
 //
 // That gap turned every support conversation about behaviour into guesswork. "Why did my
-// agent stop playing?" is almost always a guardrail doing its job (a daily loss stop hit, a
-// reserve floor reached, a cooldown running), and an operator with no way to see the limits
-// cannot say so. Worse, the answer they CAN see — a balance, sitting there unspent — points
-// the wrong way entirely and invites them to look for a fault that does not exist.
+// agent stop playing?" is almost always a guardrail doing its job (a daily loss stop hit,
+// a cooldown running, no coins left to cover a stake), and an operator with no way to see
+// the limits cannot say so. Worse, the answer they CAN see — a balance, sitting there
+// unspent — points the wrong way entirely and invites them to look for a fault that does
+// not exist. (min_wallet_balance is a soft UI floor only — sit needs balance ≥ stake.)
 //
 // READ ONLY, deliberately. An operator seeing a developer's risk settings is support; an
 // operator CHANGING them is deciding how much of someone else's money to stake. The Super
@@ -81,8 +82,6 @@ func (a AgentGuardrails) Blocked() string {
 		return "session loss limit reached"
 	case a.MaxConcurrentMatches > 0 && a.ActiveMatches >= a.MaxConcurrentMatches:
 		return "already at its concurrent-match limit"
-	case a.MinWalletBalance > 0 && a.Balance <= a.MinWalletBalance:
-		return "balance is at the protected reserve"
 	case a.Balance <= 0:
 		return "no coins allocated to this agent"
 	}

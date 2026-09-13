@@ -931,7 +931,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
             print(f"{BAD} {msg or code} — see `pyyol queue --list`", file=sys.stderr)
         elif "balance" in code or "insufficient" in code:
             print(
-                f"{BAD} not enough coins to stake this tier (or below your min balance).",
+                f"{BAD} not enough coins to stake this tier — fund the agent so balance ≥ stake.",
                 file=sys.stderr,
             )
         else:
@@ -2106,6 +2106,40 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     )
     stop = threading.Event()
 
+    # Join vs Invite — only on `pyyol play` (not `dev`). Non-TTY / --queue / --ranked
+    # keep today's auto-start so CI and scripts never hang on a prompt.
+    startup = "queue"
+    if not dev_locked:
+        from .console import INTENT_INVITE, friends_url, resolve_startup_intent
+
+        tty = False
+        try:
+            tty = bool(sys.stdin.isatty() and sys.stdout.isatty())
+        except Exception:  # noqa: BLE001
+            tty = False
+        startup = resolve_startup_intent(
+            ranked=m == mode.RANKED or bool(getattr(args, "ranked", False)),
+            mode=getattr(args, "startup_mode", None),
+            queue_flag=bool(getattr(args, "queue_flag", False)),
+            invite_flag=bool(getattr(args, "invite_flag", False)),
+            is_tty=tty,
+        )
+        if startup == INTENT_INVITE:
+            dash = (getattr(args, "dashboard", "") or DEFAULT_DASHBOARD).rstrip("/")
+            url = friends_url(dash)
+            console.emit("match", "invite mode — connected; not queueing a match")
+            if url:
+                console.emit("match", f"invite a friend: {url}")
+                open_mode = getattr(args, "open_browser", "auto")
+                if open_mode != "never" and tty:
+                    try:
+                        import webbrowser
+
+                        if webbrowser.open(url):
+                            console.emit("match", "opened Play a friend in your browser")
+                    except Exception:  # noqa: BLE001
+                        pass
+
     # Stop after the requested number of matches.
     #
     # `--matches N` started N matches and then sat in "waiting for a match…" forever,
@@ -2140,6 +2174,9 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
     def kicker():
         # Give the socket a moment to register, then start match(es). pushplay/queue
         # drive the just-connected agent; retry briefly while it comes online.
+        # Invite mode stays connected only — the developer hosts from /friends.
+        if not dev_locked and startup == "invite":
+            return
         if m == mode.RANKED:
             _start_ranked(base, token, arena, args, console, agent_id=agent_id, owner_token=_owner_token(creds))
             return
@@ -3063,6 +3100,26 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
     pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start (0 = connect only)")
     pp.add_argument("--yes", action="store_true", help="skip the ranked confirmation (CI)")
+    # Join vs Invite: TTY asks once; non-TTY / --queue / --ranked keep auto-start.
+    pp.add_argument(
+        "--mode",
+        dest="startup_mode",
+        choices=["queue", "invite", "ask"],
+        default=None,
+        help="after connect: queue (join), invite (friends, no queue), or ask (TTY)",
+    )
+    pp.add_argument(
+        "--queue",
+        dest="queue_flag",
+        action="store_true",
+        help="join a game (skip Join/Invite prompt; same as --mode=queue)",
+    )
+    pp.add_argument(
+        "--invite",
+        dest="invite_flag",
+        action="store_true",
+        help="invite a friend: connect only + open /friends (no queue)",
+    )
     pp.add_argument("--url", default="")
     pp.add_argument("--agent", default="")
     pp.add_argument("--token", default="")

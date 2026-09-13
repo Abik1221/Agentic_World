@@ -19,7 +19,7 @@ import re
 import sys
 import threading
 import time
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 # kind → (symbol, ANSI color). Colors: green ok, amber idle, cyan match, dim
 # event, magenta decision, red error.
@@ -126,6 +126,9 @@ class JsonConsole(Console):
 #: What ``ask_watch`` returns. Deliberately two words rather than a bool — a caller
 #: reading ``if watch:`` would have to guess which way round it went.
 WATCH_BROWSER, WATCH_TERMINAL = "browser", "terminal"
+
+#: What ``ask_intent`` / ``resolve_startup_intent`` return for ``pyyol play``.
+INTENT_QUEUE, INTENT_INVITE = "queue", "invite"
 
 #: Default dashboard, read once. Mirrors cli.DEFAULT_DASHBOARD.
 DEFAULT_DASHBOARD = os.environ.get("PYYOL_DASHBOARD", "").rstrip("/") or "https://pyyol.com"
@@ -238,6 +241,94 @@ def ask_watch(
         stream.flush()
         return WATCH_TERMINAL
     return WATCH_BROWSER if answer.strip().lower().startswith("b") else WATCH_TERMINAL
+
+
+def friends_url(dashboard: str | None = None) -> str:
+    """Absolute Play-a-friend URL. Empty dashboard → no invented public link."""
+    base = (DEFAULT_DASHBOARD if dashboard is None else dashboard).rstrip("/")
+    return f"{base}/friends" if base else ""
+
+
+def ask_intent(
+    timeout: float = 10.0,
+    stream: TextIO | None = None,
+    color: bool | None = None,
+    stdin: TextIO | None = None,
+) -> str:
+    """Ask Join a game vs Invite a friend. Returns ``INTENT_QUEUE`` or ``INTENT_INVITE``.
+
+    Same three rules as ``ask_watch``: never blocks a machine, never outlives the
+    countdown, never eats the agent's turn. Timeout defaults to **Join** so TTY
+    muscle memory and scripts that somehow hit a TTY still queue.
+    """
+    stream = stream or sys.stdout
+    stdin = stdin or sys.stdin
+
+    if not (_isatty(stream) and _isatty(stdin)):
+        return INTENT_QUEUE
+
+    if color is None:
+        color = os.environ.get("NO_COLOR") is None
+
+    def c(text: str, code: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if color else text
+
+    rows = [
+        c("how should this agent play?", "36"),
+        "",
+        f"{c('[j]', '1')} Join a game                   {c('· default', '90')}",
+        f"{c('[i]', '1')} Invite a friend",
+    ]
+    width = max(_visible_len(r) for r in rows) + 2
+    stream.write("\n" + c("╭─ pyyol play " + "─" * max(0, width - 12) + "╮", "90") + "\n")
+    for r in rows:
+        stream.write(c("│", "90") + " " + r + " " * (width - _visible_len(r)) + c("│", "90") + "\n")
+    stream.write(c("╰" + "─" * (width + 1) + "╯", "90") + "\n")
+    stream.write("  " + c("›", "36") + " ")
+    stream.flush()
+
+    answer = _read_line(stdin, timeout)
+    if answer is None:
+        stream.write("\n  " + c(f"no answer in {int(timeout)}s — joining a game", "90") + "\n")
+        stream.flush()
+        return INTENT_QUEUE
+    return INTENT_INVITE if answer.strip().lower().startswith("i") else INTENT_QUEUE
+
+
+def resolve_startup_intent(
+    *,
+    ranked: bool = False,
+    mode: str | None = None,
+    queue_flag: bool = False,
+    invite_flag: bool = False,
+    env: dict[str, str] | None = None,
+    is_tty: bool = False,
+    ask: Callable[..., str] | None = None,
+    ask_timeout: float = 10.0,
+) -> str:
+    """Decide queue vs invite for ``pyyol play`` (not ``dev`` / ``run``).
+
+    Precedence: ``--ranked`` / ``--queue`` / ``--invite`` / ``--mode`` →
+    ``$PYYOL_STARTUP`` → TTY ask (default Join) → non-TTY queue.
+    """
+    if ranked or queue_flag:
+        return INTENT_QUEUE
+    if invite_flag:
+        return INTENT_INVITE
+    m = (mode or "").strip().lower()
+    if m == "queue":
+        return INTENT_QUEUE
+    if m == "invite":
+        return INTENT_INVITE
+    env_map = env if env is not None else os.environ
+    env_v = (env_map.get("PYYOL_STARTUP") or "").strip().lower()
+    if env_v in (INTENT_QUEUE, INTENT_INVITE):
+        return env_v
+    # mode ask / unset: TTY prompts; CI / pipes keep today's auto-start.
+    if not is_tty:
+        return INTENT_QUEUE
+    asker = ask or ask_intent
+    return asker(timeout=ask_timeout)
 
 
 def _isatty(f: TextIO) -> bool:

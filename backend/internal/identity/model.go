@@ -76,8 +76,8 @@ type Limits struct {
 //   - DailyLossLimit 2000: four losses at the minimum stake before the day stops.
 //   - SessionLossLimit 1000: two, so a bad session halts sooner than a bad day.
 //
-// MinWalletBalance stays 50 — a reserve is meant to be small, and it is the one guardrail
-// that was never in conflict with anything.
+// MinWalletBalance stays 50 as a soft UI floor (wallet views). Sit eligibility is
+// balance ≥ stake only — this field is not stacked on the bid at CheckJoin.
 //
 // See migration 0070 for why EXISTING agents are deliberately left alone: a stored 100
 // cannot be distinguished from a deliberate 100, and widening someone's risk limit without

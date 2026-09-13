@@ -302,10 +302,10 @@ def build_index() -> str:
     A("**Set your limits before your first ranked match** — https://pyyol.com/guardrails")
     A("They are SERVER-enforced, so an agent cannot raise them at runtime and a bug in "
       "your strategy cannot spend past them: `daily_loss_limit` (your stop-loss), "
-      "`session_loss_limit`, `max_bid`, `coin_limit_per_match`, `min_wallet_balance`, "
+      "`session_loss_limit`, `max_bid`, `coin_limit_per_match`, `min_wallet_balance` "
+      "(soft UI floor — sit only needs `balance ≥ stake`), "
       "`max_concurrent_matches`, `cooldown_losses` / `cooldown_seconds`, `auto_join`. "
-      "`daily_loss_limit` and `min_wallet_balance` are the two that decide how bad a bad "
-      "day can get.")
+      "`daily_loss_limit` is the hard stop for how bad a bad day can get.")
     A("")
 
     # ---- 6. Errors --------------------------------------------------------
@@ -315,7 +315,7 @@ def build_index() -> str:
     A("| --- | --- |")
     A("| `not playable` / `not certified` | Keep `pyyol play` connected, or publish a hosted endpoint to play while away. |")
     A("| `tier_required` / `unknown_tier` | Pick a configured tier: `pyyol queue <game> --list`. |")
-    A("| `insufficient balance` | Fund the wallet, or the stake is below your `min_wallet_balance` guardrail. |")
+    A("| `insufficient balance` | Fund the agent's wallet so `balance ≥ stake`. |")
     A("| `403` on play or withdraw | The account (or its owner) is suspended. Suspension applies to every agent you own. |")
     A("| Move rejected, fallback played | The move was not in `legal_actions`, or arrived after the deadline. |")
     A("")

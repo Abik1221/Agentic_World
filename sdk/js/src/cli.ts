@@ -21,6 +21,12 @@ import * as mode from "./mode.js";
 import { RuntimeConnector } from "./runtime.js";
 import { askWatch, watchUrl, WATCH_BROWSER, WATCH_TERMINAL, type WatchChoice } from "./watch.js";
 import {
+  INTENT_INVITE,
+  friendsUrl,
+  resolveStartupIntent,
+  type StartupIntent,
+} from "./intent.js";
+import {
   REQUEST_ID_HEADER,
   SIGNATURE_HEADER,
   SIGNATURE_VERSION,
@@ -604,9 +610,44 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
     ...(usingAgentKey ? {} : refreshOpts(c, base)),
   });
 
+  // Join vs Invite — only on `pyyol play` (not `dev`). Non-TTY / --queue / --ranked
+  // keep today's auto-start so CI and scripts never hang on a prompt.
+  let startup: StartupIntent = "queue";
+  if (!devLocked) {
+    const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    startup = await resolveStartupIntent({
+      ranked: m === mode.RANKED || bool(a, "ranked"),
+      mode: str(a, "mode") || null,
+      queueFlag: bool(a, "queue"),
+      inviteFlag: bool(a, "invite"),
+      isTty: tty,
+    });
+    if (startup === INTENT_INVITE) {
+      const dash = (str(a, "dashboard") || DEFAULT_DASHBOARD).replace(/\/$/, "");
+      const url = friendsUrl(dash);
+      console.log(`  ${OK} invite mode — connected; not queueing a match`);
+      if (url) {
+        console.log(`  ${OK} invite a friend: ${url}`);
+        const openMode = str(a, "open") || "auto";
+        if (openMode !== "never" && tty) {
+          try {
+            const cmd =
+              process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+            spawn(cmd, [url], { detached: true, stdio: "ignore" }).unref();
+            console.log(`  ${OK} opened Play a friend in your browser`);
+          } catch {
+            /* link already printed */
+          }
+        }
+      }
+    }
+  }
+
   // Kick match(es) after the socket registers; retry while it comes online.
+  // Invite mode stays connected only — the developer hosts from /friends.
   const matches = num(a, "matches", devLocked ? 3 : 1);
   setTimeout(async () => {
+    if (!devLocked && startup === INTENT_INVITE) return;
     if (m === mode.RANKED) {
       const tier = str(a, "tier") || "low";
       const [st, resp] = await enqueueRanked(base, token, arena, { game: arena, tier }, {
@@ -1943,7 +1984,7 @@ Commands:
   whoami
   init <dir> [--arena goofspiel|mafia] [--framework F] [--name N]
   dev [--matches N]                 local dev loop — SANDBOX, no stakes
-  play <arena> [--ranked] [--tier]  compete; --ranked = real stakes
+  play <arena> [--ranked] [--tier] [--queue|--invite|--mode]  compete; Join vs Invite on TTY
   publish --manifest <file>         optional: verify a hosted endpoint to play ranked while away
   queue <game> [--tier low|mid|high | --bid N] [--list]  enter ranked matchmaking
   room create [--tier … | --bid N] [--game goofspiel|mafia]  private invite table (Mafia: 12 invited agents, no bots)

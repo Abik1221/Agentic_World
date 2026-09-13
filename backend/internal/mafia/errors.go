@@ -18,6 +18,11 @@ var (
 	// allowlist. Not reachable from any HTTP route — it means a server-side caller
 	// tried to fill a seat with something that is not a seeded house bot.
 	ErrNotHouseAgent = httpx.NewError(http.StatusInternalServerError, "not_house_agent", "Only seeded house bots may fill a table seat.")
+	// ErrPrivateNoHouseFill seals Play-a-friend rooms: invited humans only. A
+	// programming error that routes JoinHouseSeat at an mf_* private room must
+	// refuse rather than quietly bot-fill a staked invite table.
+	ErrPrivateNoHouseFill = httpx.NewError(http.StatusInternalServerError, "private_no_house_fill",
+		"Private invite rooms seat invited agents only; house bots cannot fill them.")
 	ErrNotActive     = httpx.NewError(http.StatusConflict, "match_not_active", "This match is not active.")
 	ErrBusy          = httpx.NewError(http.StatusConflict, "match_busy", "The match is being updated; retry shortly.")
 	// ErrConcurrentUpdate: a racing writer advanced the match first (the

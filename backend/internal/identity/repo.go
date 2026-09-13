@@ -97,6 +97,10 @@ type Repo interface {
 	// in; verified-email match on an unlinked account → link; else create fresh.
 	UpsertGitHubAccount(ctx context.Context, in GitHubUpsertInput) (GitHubUpsertResult, error)
 
+	// UpsertAppleAccount is the Apple analogue of UpsertGoogleAccount, keyed on
+	// apple_sub (Apple's immutable id_token subject). Same three-step logic.
+	UpsertAppleAccount(ctx context.Context, in AppleUpsertInput) (AppleUpsertResult, error)
+
 	// CredentialsByEmail returns the auth record for a password-enabled account,
 	// or ErrNotFound if the email is unknown or has no password set.
 	CredentialsByEmail(ctx context.Context, email string) (AuthRecord, error)
