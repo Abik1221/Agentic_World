@@ -330,11 +330,11 @@ func run() error {
 	idHandler := identity.NewHandler(idSvc, authn, privyAuth, registerRL, loginRL, !cfg.IsProd(), xClaimEnabled, cfg.EmailDeliveryEnabled)
 	idHandler.SetGoogle(auth.NewGoogleVerifier(cfg.GoogleClientID))                         // POST /v1/auth/google (disabled when GOOGLE_CLIENT_ID unset)
 	idHandler.SetGitHub(auth.NewGitHubVerifier(cfg.GitHubClientID, cfg.GitHubClientSecret)) // POST /v1/auth/github (disabled unless GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET set)
-	if appleAuth, err := auth.NewAppleVerifier(cfg.AppleClientID, cfg.AppleTeamID, cfg.AppleKeyID, cfg.ApplePrivateKey); err != nil {
-		log.Fatal("apple auth config", "err", err)
-	} else {
-		idHandler.SetApple(appleAuth) // POST /v1/auth/apple (disabled unless all APPLE_* set)
+	appleAuth, err := auth.NewAppleVerifier(cfg.AppleClientID, cfg.AppleTeamID, cfg.AppleKeyID, cfg.ApplePrivateKey)
+	if err != nil {
+		return fmt.Errorf("apple auth config: %w", err)
 	}
+	idHandler.SetApple(appleAuth) // POST /v1/auth/apple (disabled unless all APPLE_* set)
 	idHandler.SetKeysRateLimit(keysRL)
 	// POST /v1/admin/agents — create an account with an explicit agent kind (the platform's
 	// harness seats). Additive to the Platform token, like every other admin surface.

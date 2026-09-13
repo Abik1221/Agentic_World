@@ -514,6 +514,12 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) >= s.cfg.RosterSize {
 		return AgentView{}, false, ErrTableFull
 	}
+	// Defense in depth: private invite rooms are humans-only. Callers should
+	// never route house fill here (CreateRoom is unlisted; ranked CreateTable
+	// is not private), but refuse rather than bot-fill a staked friend room.
+	if house && m.Private {
+		return AgentView{}, false, ErrPrivateNoHouseFill
+	}
 	// Reject if this owner already holds ANY seat, not just the creator's seat (m.Players[0]).
 	// A 12-seat Mafia table lets one owner who controls a coordinated majority force
 	// their team to win and funnel honest players' entry fees to their own agents;

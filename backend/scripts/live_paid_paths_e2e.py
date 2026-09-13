@@ -346,7 +346,9 @@ def main() -> int:
     results = {
         "local_ranked": False,
         "local_room": False,
+        "local_mafia_room": False,
         "hosted": False,
+        "hosted_room": False,
         "neither_refuses": False,
     }
     notes = []
@@ -404,6 +406,35 @@ def main() -> int:
     sock_a.close()
     sock_b.close()
 
+    # Local Mafia invite room on fresh seats (avoid concurrency with the goofspiel table).
+    dash_m1, key_m1, ag_m1 = signup("LocalMafiaHost")
+    dash_m2, key_m2, ag_m2 = signup("LocalMafiaGuest")
+    mint(ag_m1, 100_000, plat)
+    mint(ag_m2, 100_000, plat)
+    sock_m1 = AgentSocket(ag_m1, key_m1)
+    sock_m2 = AgentSocket(ag_m2, key_m2)
+    sock_m1.start()
+    sock_m2.start()
+    time.sleep(0.5)
+    st, body = _http("POST", "/v1/room/create", dash_m1, {"tier": "low", "game": "mafia"})
+    if st in (200, 201):
+        mfid = body.get("room_id") or body.get("match_id") or ""
+        if not str(mfid).startswith("mf_"):
+            notes.append(f"FAIL mafia room id prefix: {mfid!r}")
+        else:
+            st2, body2 = _http("POST", "/v1/lobby/join", dash_m2, {"match_id": mfid})
+            if st2 == 200:
+                results["local_mafia_room"] = True
+                status = (body2.get("status") or "")
+                if status and status not in ("waiting", "Waiting"):
+                    notes.append(f"WARN mafia room status after 2 joins: {status!r} (expected waiting)")
+            else:
+                notes.append(f"FAIL mafia room join: {st2} {err_code(body2)} {err_msg(body2)[:160]}")
+    else:
+        notes.append(f"FAIL mafia room create: {st} {err_code(body)} {err_msg(body)[:160]}")
+    sock_m1.close()
+    sock_m2.close()
+
     # ── Path B: hosted verify, no local socket ────────────────────────────
     stub = ThreadingHTTPServer(("0.0.0.0", 0), StubAgent)
     port = stub.server_address[1]
@@ -424,14 +455,21 @@ def main() -> int:
             # Fallback: if host.docker.internal failed, try 127.0.0.1 (host-run server)
             if HOSTED_HOST != "127.0.0.1":
                 notes.append("hint: hosted stub may be unreachable from container; set HOSTED_STUB_HOST")
+        st, body = _http("POST", "/v1/room/create", dash_h, {"tier": "low"})
+        if st in (200, 201):
+            results["hosted_room"] = True
+        else:
+            notes.append(f"FAIL hosted room create: {st} {err_code(body)} {err_msg(body)[:160]}")
     except Exception as e:
         notes.append(f"FAIL hosted certify: {e}")
     finally:
         stub.shutdown()
 
     print("YES" if results["local_ranked"] else "NO", "- local SDK paid ranked without deploy")
-    print("YES" if results["local_room"] else "NO", "- local SDK invite-friend money rooms without deploy")
-    print("YES" if results["hosted"] else "NO", "- hosted deploy path still works")
+    print("YES" if results["local_room"] else "NO", "- local SDK invite-friend Goofspiel rooms without deploy")
+    print("YES" if results["local_mafia_room"] else "NO", "- local SDK invite-friend Mafia rooms without deploy")
+    print("YES" if results["hosted"] else "NO", "- hosted deploy ranked path still works")
+    print("YES" if results["hosted_room"] else "NO", "- hosted deploy friend-room path still works")
     print("YES" if results["neither_refuses"] else "NO", "- neither connected nor hosted refuses")
     for n in notes:
         print(n)

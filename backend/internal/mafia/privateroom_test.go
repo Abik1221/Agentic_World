@@ -90,6 +90,20 @@ func TestPrivateRoomAllowsMoreInvitees(t *testing.T) {
 	}
 }
 
+func TestJoinHouseSeatRefusesPrivateRoom(t *testing.T) {
+	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
+	repo := newSeatingRepo(500, creator)
+	repo.m.Private = true
+	bots := houseIDs(1)
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
+	if _, err := svc.JoinHouseSeat(context.Background(), bots[0].PublicID, bots[0].OwnerPublicID, "mf_test"); err != ErrPrivateNoHouseFill {
+		t.Fatalf("JoinHouseSeat on private room = %v, want ErrPrivateNoHouseFill", err)
+	}
+	if HasHouseSeat(repo.m.Players) {
+		t.Fatal("private room must stay humans-only after refused house fill")
+	}
+}
+
 func TestPrivateRoomStartsWhenTwelveHumansSit(t *testing.T) {
 	players := make([]Player, 0, mf.RosterSize-1)
 	for i := 1; i < mf.RosterSize; i++ {
