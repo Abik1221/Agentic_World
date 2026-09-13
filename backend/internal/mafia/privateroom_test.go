@@ -119,6 +119,42 @@ func TestPrivateRoomFillFailureCancelsWaiting(t *testing.T) {
 	}
 }
 
+// A third human must not sit while the invite is waiting for (or filling) bots.
+func TestPrivateRoomRefusesThirdHuman(t *testing.T) {
+	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
+	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
+	friend := Player{AgentPublicID: "ag_friend", OwnerPublicID: "usr_friend", Seat: 2}
+	repo := newSeatingRepo(500, creator)
+	repo.m.Private = true
+	repo.m.Players = []Player{creator, friend}
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
+
+	_, err := svc.Join(context.Background(), "ag_third", "usr_third", "mf_test")
+	if err != ErrPrivateRoomSealed {
+		t.Fatalf("third human join = %v, want ErrPrivateRoomSealed", err)
+	}
+	if len(HumanPlayers(repo.m.Players)) != 2 {
+		t.Fatalf("humans = %d, want 2", len(HumanPlayers(repo.m.Players)))
+	}
+}
+
+// Host cancel while fill runs must not look like a successful friend join.
+func TestPrivateRoomFillAfterAbortIsNotSuccess(t *testing.T) {
+	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
+	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
+	friend := Player{AgentPublicID: "ag_friend", OwnerPublicID: "usr_friend", Seat: 2}
+	repo := newSeatingRepo(500, creator)
+	repo.m.Private = true
+	repo.m.Players = []Player{creator, friend}
+	repo.m.Status = StatusAborted
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
+
+	err := svc.fillPrivateRoom(context.Background(), "mf_test")
+	if err != ErrNotWaiting {
+		t.Fatalf("fill after abort = %v, want ErrNotWaiting (not silent success)", err)
+	}
+}
+
 // recordingCreateRepo captures CreateWaiting input for CreateRoom assertions.
 type recordingCreateRepo struct {
 	fakeRepo

@@ -466,6 +466,9 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		if err != nil {
 			return AgentView{}, ErrNotFound
 		}
+		if m.Status != StatusActive && m.Status != StatusWaiting {
+			return AgentView{}, ErrNotWaiting
+		}
 		return s.viewFor(ctx, m, agentPublicID), nil
 	}
 	return view, nil
@@ -534,6 +537,12 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) >= s.cfg.RosterSize {
 		return AgentView{}, false, ErrTableFull
 	}
+	// Private invite: host + friend only. Fill runs after the join lock is released
+	// (JoinHouseSeat takes its own locks), so without this gate a third human could
+	// sit during that window and change the stake count / bot fill.
+	if !house && m.Private && len(HumanPlayers(m.Players)) >= PrivateRoomMinHumans {
+		return AgentView{}, false, ErrPrivateRoomSealed
+	}
 	// Reject if this owner already holds ANY seat, not just the creator's seat (m.Players[0]).
 	// A 12-seat Mafia table lets one owner who controls a coordinated majority force
 	// their team to win and funnel honest players' entry fees to their own agents;
@@ -601,8 +610,16 @@ func (s *Service) fillPrivateRoom(ctx context.Context, matchPublicID string) err
 	if err != nil {
 		return ErrNotFound
 	}
-	if m.Status != StatusWaiting {
-		return nil // already started (or aborted) — join race, not an error
+	switch m.Status {
+	case StatusWaiting:
+		// continue — still need bots (or a concurrent fill is about to finish)
+	case StatusActive:
+		return nil // another fill already started the table
+	default:
+		// Host cancelled (or the lobby was aborted) while we held no lock.
+		// Must NOT look like a successful join — the friend would otherwise get
+		// an "active" sit on a dead room.
+		return ErrNotWaiting
 	}
 	need := s.cfg.RosterSize - len(m.Players)
 	if need <= 0 {
@@ -613,16 +630,30 @@ func (s *Service) fillPrivateRoom(ctx context.Context, matchPublicID string) err
 			"Mafia private rooms need house bots to fill the remaining seats. They are not configured on this server.")
 	}
 	real := make([]string, 0, len(m.Players))
+	seated := make(map[string]bool, len(m.Players))
+	for _, p := range m.Players {
+		seated[p.AgentPublicID] = true
+	}
 	for _, p := range HumanPlayers(m.Players) {
 		real = append(real, p.AgentPublicID)
 	}
 	filled := make([]string, 0, need)
-	for i := 0; i < need; i++ {
-		b := s.pusher.bots[i]
+	for _, b := range s.pusher.bots {
+		if len(filled) >= need {
+			break
+		}
+		if seated[b.PublicID] {
+			continue // partial prior fill / retry — do not re-seat
+		}
 		if _, err := s.JoinHouseSeat(ctx, b.PublicID, b.OwnerPublicID, matchPublicID); err != nil {
 			return err
 		}
+		seated[b.PublicID] = true
 		filled = append(filled, b.PublicID)
+	}
+	if len(filled) < need {
+		return httpx.NewError(http.StatusServiceUnavailable, "room_fill_unavailable",
+			"Mafia private rooms need house bots to fill the remaining seats. They are not configured on this server.")
 	}
 	all := append(append([]string{}, real...), filled...)
 	s.DriveHouseSeats(matchPublicID, filled)

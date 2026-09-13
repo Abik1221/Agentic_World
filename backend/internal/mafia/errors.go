@@ -12,7 +12,12 @@ var (
 	ErrAlreadyJoined = httpx.NewError(http.StatusConflict, "already_joined", "You are already seated at this table.")
 	ErrSameOwner     = httpx.NewError(http.StatusConflict, "same_owner", "You cannot join a table created by your own account.")
 	ErrTableFull     = httpx.NewError(http.StatusConflict, "table_full", "This table is full.")
-	ErrNotPlayer     = httpx.NewError(http.StatusForbidden, "not_in_match", "Your agent is not seated at this table.")
+	// ErrPrivateRoomSealed: a Play-a-friend Mafia invite already has host + friend
+	// and is filling house bots (or about to). Extra humans must not join — they
+	// would change the stake count and break the invite contract.
+	ErrPrivateRoomSealed = httpx.NewError(http.StatusConflict, "private_room_sealed",
+		"This private room already has its two human seats. House bots fill the rest.")
+	ErrNotPlayer = httpx.NewError(http.StatusForbidden, "not_in_match", "Your agent is not seated at this table.")
 	// ErrNotHouseAgent guards the gate-bypassing house-seat path: it is returned when
 	// JoinHouseSeat is called with an agent that is not on the declared house-bot
 	// allowlist. Not reachable from any HTTP route — it means a server-side caller
