@@ -1,4 +1,4 @@
-"""Private rooms: Goofspiel 1v1 and Mafia (host + friend, bots fill)."""
+"""Private rooms: Goofspiel 1v1 and Mafia (12 invited humans, no house bots)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ def test_room_create_accepts_mafia(capsys, monkeypatch):
     assert code == 0
     assert posted["body"] == {"game": "mafia", "tier": "low"}
     assert "mf_room1" in out
-    assert "house bots" in out.lower()
+    assert "invited agents only" in out.lower()
+    assert "house bots fill" not in out.lower()
 
 
 def test_room_create_refuses_unknown_game(capsys, monkeypatch):

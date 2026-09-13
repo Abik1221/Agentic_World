@@ -356,20 +356,13 @@ func (s *Service) CreateTable(ctx context.Context, agentPublicID, ownerPublicID 
 	return m.PublicID, nil
 }
 
-// PrivateRoomMinHumans is how many distinct-owner human seats a Play-a-friend
-// Mafia room needs before the house fills the rest and the table starts.
-//
-// Host + one friend is the invite product; the engine still deals a fixed
-// 12-seat roster, so the remaining seats are house bots (same spirit as a
-// thin ranked queue). More friends can join an open public lobby table; a
-// private room starts as soon as the second human sits.
-const PrivateRoomMinHumans = 2
-
 // CreateRoom opens a PRIVATE staked Mafia table: unlisted, invite-by-id.
 //
-// The host takes seat 1. When a second distinct-owner human joins, house bots
-// fill the remaining seats and the match starts (see Join). Local CLI socket
-// or hosted verify is enough to sit — same playable gate as Goofspiel rooms.
+// Play-a-friend is a real-money path: only agents seated via human invitation
+// sit. No house-bot fill. The host takes seat 1; distinct-owner invitees join
+// until the 12-seat roster is full, then the match starts (see Join). Local
+// CLI socket or hosted verify is enough to sit — same playable gate as
+// Goofspiel rooms.
 func (s *Service) CreateRoom(ctx context.Context, agentPublicID, ownerPublicID string, entryFee int64) (string, error) {
 	if entryFee <= 0 {
 		return "", httpx.NewError(http.StatusBadRequest, "invalid_request", "bid must be > 0")
@@ -382,11 +375,6 @@ func (s *Service) CreateRoom(ctx context.Context, agentPublicID, ownerPublicID s
 	}
 	if err := s.checkPlayable(ctx, agentPublicID, entryFee, true); err != nil {
 		return "", err
-	}
-	needBots := s.cfg.RosterSize - PrivateRoomMinHumans
-	if s.pusher == nil || len(s.pusher.bots) < needBots {
-		return "", httpx.NewError(http.StatusServiceUnavailable, "room_fill_unavailable",
-			"Mafia private rooms need house bots to fill the remaining seats after your friend joins. They are not configured on this server.")
 	}
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
@@ -444,30 +432,19 @@ func (s *Service) checkPlayable(ctx context.Context, agentPublicID string, fee i
 // Join seats a developer's agent at a waiting table, enforcing every competitive and
 // money gate (distinct owner, spending limit, certification).
 //
-// A private invite room starts once PrivateRoomMinHumans distinct owners are seated:
-// house bots fill the remaining roster (outside the join lock — JoinHouseSeat takes
-// its own locks) and the matched-seat / house drivers are kicked off.
+// A private invite room starts only when the full 12-seat roster is filled by
+// invited humans — no house-bot fill. When this join starts the table, push
+// drivers are kicked off for every seated agent.
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
-	view, fill, err := s.join(ctx, agentPublicID, ownerPublicID, matchPublicID, false)
+	view, started, err := s.join(ctx, agentPublicID, ownerPublicID, matchPublicID, false)
 	if err != nil {
 		return view, err
 	}
-	if fill {
-		if err := s.fillPrivateRoom(ctx, matchPublicID); err != nil {
-			// Friend is already seated; bots did not finish. Abort the waiting
-			// invite so escrow never starts on a half-filled room and the host
-			// can recreate rather than sitting on a wedged lobby until TTL.
-			if m, gerr := s.repo.Get(ctx, matchPublicID); gerr == nil && m.Status == StatusWaiting && len(m.Players) > 0 {
-				_ = s.repo.CancelWaiting(ctx, matchPublicID, m.Players[0].AgentPublicID)
-			}
-			return AgentView{}, err
-		}
+	if started {
+		s.driveStartedTable(ctx, matchPublicID)
 		m, err := s.repo.Get(ctx, matchPublicID)
 		if err != nil {
 			return AgentView{}, ErrNotFound
-		}
-		if m.Status != StatusActive && m.Status != StatusWaiting {
-			return AgentView{}, ErrNotWaiting
 		}
 		return s.viewFor(ctx, m, agentPublicID), nil
 	}
@@ -537,12 +514,6 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if len(m.Players) >= s.cfg.RosterSize {
 		return AgentView{}, false, ErrTableFull
 	}
-	// Private invite: host + friend only. Fill runs after the join lock is released
-	// (JoinHouseSeat takes its own locks), so without this gate a third human could
-	// sit during that window and change the stake count / bot fill.
-	if !house && m.Private && len(HumanPlayers(m.Players)) >= PrivateRoomMinHumans {
-		return AgentView{}, false, ErrPrivateRoomSealed
-	}
 	// Reject if this owner already holds ANY seat, not just the creator's seat (m.Players[0]).
 	// A 12-seat Mafia table lets one owner who controls a coordinated majority force
 	// their team to win and funnel honest players' entry fees to their own agents;
@@ -552,6 +523,8 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	// `usr_system`, they never stake and can never be paid, so seating several of them
 	// cannot funnel anybody's entry fee anywhere. The exemption is keyed on the
 	// server-side call path, never on anything a request can set.
+	//
+	// Private invite rooms never use house fillers — only invited humans sit.
 	if !house {
 		for i := range m.Players {
 			if m.Players[i].OwnerPublicID == ownerPublicID {
@@ -586,11 +559,6 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 		return AgentView{}, false, err
 	}
 	if len(m.Players) < s.cfg.RosterSize {
-		// Private invite room: host + friend is enough — ask the caller to fill
-		// bots after releasing these locks (JoinHouseSeat takes its own).
-		if m.Private && !house && len(HumanPlayers(m.Players)) >= PrivateRoomMinHumans {
-			return s.viewFor(ctx, m, agentPublicID), true, nil
-		}
 		return s.viewFor(ctx, m, agentPublicID), false, nil
 	}
 	if err := s.startMatch(ctx, m); err != nil {
@@ -600,65 +568,35 @@ func (s *Service) join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	if err != nil {
 		return AgentView{}, false, err
 	}
-	return s.viewFor(ctx, m, agentPublicID), false, nil
+	// Signal the caller to start push drivers after releasing locks.
+	return s.viewFor(ctx, m, agentPublicID), true, nil
 }
 
-// fillPrivateRoom seats house bots into the remaining seats of an invite room
-// and starts play drivers. Called after Join releases its locks.
-func (s *Service) fillPrivateRoom(ctx context.Context, matchPublicID string) error {
+// driveStartedTable kicks off push drivers for a table that just went active
+// via Join (full human roster). Private invite rooms never have house seats.
+func (s *Service) driveStartedTable(ctx context.Context, matchPublicID string) {
 	m, err := s.repo.Get(ctx, matchPublicID)
-	if err != nil {
-		return ErrNotFound
+	if err != nil || m.Status != StatusActive {
+		return
 	}
-	switch m.Status {
-	case StatusWaiting:
-		// continue — still need bots (or a concurrent fill is about to finish)
-	case StatusActive:
-		return nil // another fill already started the table
-	default:
-		// Host cancelled (or the lobby was aborted) while we held no lock.
-		// Must NOT look like a successful join — the friend would otherwise get
-		// an "active" sit on a dead room.
-		return ErrNotWaiting
-	}
-	need := s.cfg.RosterSize - len(m.Players)
-	if need <= 0 {
-		return nil
-	}
-	if s.pusher == nil || len(s.pusher.bots) < need {
-		return httpx.NewError(http.StatusServiceUnavailable, "room_fill_unavailable",
-			"Mafia private rooms need house bots to fill the remaining seats. They are not configured on this server.")
+	all := make([]string, 0, len(m.Players))
+	for _, p := range m.Players {
+		all = append(all, p.AgentPublicID)
 	}
 	real := make([]string, 0, len(m.Players))
-	seated := make(map[string]bool, len(m.Players))
-	for _, p := range m.Players {
-		seated[p.AgentPublicID] = true
-	}
 	for _, p := range HumanPlayers(m.Players) {
 		real = append(real, p.AgentPublicID)
 	}
-	filled := make([]string, 0, need)
-	for _, b := range s.pusher.bots {
-		if len(filled) >= need {
-			break
+	house := make([]string, 0)
+	for _, p := range m.Players {
+		if playerIsHouse(p) {
+			house = append(house, p.AgentPublicID)
 		}
-		if seated[b.PublicID] {
-			continue // partial prior fill / retry — do not re-seat
-		}
-		if _, err := s.JoinHouseSeat(ctx, b.PublicID, b.OwnerPublicID, matchPublicID); err != nil {
-			return err
-		}
-		seated[b.PublicID] = true
-		filled = append(filled, b.PublicID)
 	}
-	if len(filled) < need {
-		return httpx.NewError(http.StatusServiceUnavailable, "room_fill_unavailable",
-			"Mafia private rooms need house bots to fill the remaining seats. They are not configured on this server.")
-	}
-	all := append(append([]string{}, real...), filled...)
-	s.DriveHouseSeats(matchPublicID, filled)
 	s.DriveMatchedSeats(ctx, matchPublicID, real, all)
-	return nil
+	if len(house) > 0 {
+		s.DriveHouseSeats(matchPublicID, house)
+	}
 }
 
 func (s *Service) startMatch(ctx context.Context, m Match) error {

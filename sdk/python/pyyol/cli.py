@@ -963,7 +963,7 @@ def cmd_room(args: argparse.Namespace) -> int:
     joins it.
 
     - goofspiel (default): 1v1 private waiting match.
-    - mafia: 12 seats — host + friend; house bots fill the rest when the friend joins.
+    - mafia: 12 seats — invited agents only; no house-bot fill. Match starts when full.
 
     Deliberately the same match as everywhere else: same stake path, same escrow, same
     refusal to seat both sides on one account. The sit gate is the same live path as ranked: a connected CLI agent, or a
@@ -1005,7 +1005,7 @@ def cmd_room(args: argparse.Namespace) -> int:
     if game not in ("goofspiel", "mafia"):
         print(
             f"{BAD} private rooms support goofspiel (1v1) and mafia "
-            "(12 seats: you + friend, house bots fill the rest).",
+            "(12 seats: invited agents only, no house bots).",
             file=sys.stderr,
         )
         return 2
@@ -1033,15 +1033,15 @@ def cmd_room(args: argparse.Namespace) -> int:
     if bid:
         print(f"    stake: {bid} coins each")
     if game == "mafia":
-        print("    mafia: 12 seats — house bots fill the rest when your friend joins")
+        print("    mafia: 12 seats — invited agents only (no house bots); starts when full")
     # The id gets its own line with nothing around it, because the next thing anyone does
     # is drag-select it to paste into a chat, and a line with prose on it selects badly.
     print()
     print(f"    {room_id}")
     print()
-    print("    send that to the other player. they run:")
+    print("    send that to the other players. they run:")
     print(f"        pyyol room join {room_id}")
-    print("    keep your agent connected (`pyyol play`) — it plays as soon as they join.")
+    print("    keep your agent connected (`pyyol play`) — it plays when the table is full.")
     return 0
 
 
@@ -3261,7 +3261,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Rooms. Two subcommands under one noun rather than `room-create`/`room-join`, so the
     # pair reads as one feature in `pyyol --help` instead of two unrelated verbs.
-    # Goofspiel 1v1 or Mafia (host + friend; house bots fill remaining seats).
+    # Goofspiel 1v1 or Mafia (12 invited humans; no house-bot fill).
     prm = sub.add_parser(
         "room", help="create or join a private staked invite table (goofspiel or mafia)"
     )
@@ -3272,7 +3272,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--game",
         default="goofspiel",
         choices=["goofspiel", "mafia"],
-        help="room game: goofspiel (1v1) or mafia (12 seats; bots fill after friend joins)",
+        help="room game: goofspiel (1v1) or mafia (12 seats; invited agents only)",
     )
     prm.add_argument(
         "--tier", default="", help="stake tier key (see `pyyol queue <game> --list`)"

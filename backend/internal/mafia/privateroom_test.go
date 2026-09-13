@@ -2,19 +2,18 @@ package mafia
 
 import (
 	"context"
-	"strings"
+	"strconv"
 	"testing"
 
 	mf "github.com/agent-arena/arena/internal/engine/mafia"
 )
 
-// Private invite rooms: host opens an unlisted table; the second distinct-owner
-// human triggers house-bot fill and the match starts.
+// Private invite rooms: host opens an unlisted table; invited humans join until
+// the 12-seat roster is full. No house-bot fill — real-money path only.
 
 func TestCreateRoomMarksPrivateAndIsNotListed(t *testing.T) {
 	repo := &recordingCreateRepo{}
-	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
-	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, nil)
 
 	id, err := svc.CreateRoom(context.Background(), "ag_host", "usr_host", 500)
 	if err != nil {
@@ -31,127 +30,95 @@ func TestCreateRoomMarksPrivateAndIsNotListed(t *testing.T) {
 	}
 }
 
-func TestCreateRoomRefusesWithoutHouseBots(t *testing.T) {
+func TestCreateRoomDoesNotNeedHouseBots(t *testing.T) {
 	repo := &recordingCreateRepo{}
 	svc := NewService(repo, fakeLock{}, nil, &recordingWallet{}, fakeBcast{}, nil, nil,
 		fakeClock{}, Config{})
-	// No EnablePushPlay → no bots.
-	_, err := svc.CreateRoom(context.Background(), "ag_host", "usr_host", 500)
-	if err == nil {
-		t.Fatal("CreateRoom must refuse when house bots cannot fill the roster")
-	}
-	if !strings.Contains(err.Error(), "house bots") && !strings.Contains(err.Error(), "room_fill_unavailable") {
-		t.Fatalf("err = %v, want room_fill_unavailable / house bots", err)
+	// No EnablePushPlay → no bots. Invite rooms must still open.
+	if _, err := svc.CreateRoom(context.Background(), "ag_host", "usr_host", 500); err != nil {
+		t.Fatalf("CreateRoom without house bots: %v", err)
 	}
 }
 
 func TestCreateRoomRefusesZeroStake(t *testing.T) {
-	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
-	svc := newSeatingSvc(&recordingCreateRepo{}, &recordingWallet{}, nil, nil, bots)
+	svc := newSeatingSvc(&recordingCreateRepo{}, &recordingWallet{}, nil, nil, nil)
 	if _, err := svc.CreateRoom(context.Background(), "ag_host", "usr_host", 0); err == nil {
 		t.Fatal("a room is staked — zero fee must be refused")
 	}
 }
 
-func TestPrivateRoomJoinFillsBotsWhenSecondHumanSits(t *testing.T) {
-	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
+func TestPrivateRoomStaysWaitingUntilRosterFull(t *testing.T) {
 	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
 	repo := newSeatingRepo(500, creator)
 	repo.m.Private = true
-	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, nil)
 
 	view, err := svc.Join(context.Background(), "ag_friend", "usr_friend", "mf_test")
 	if err != nil {
 		t.Fatalf("Join: %v", err)
 	}
+	if repo.started {
+		t.Fatal("second human must not start the table — need a full human roster")
+	}
+	if len(repo.m.Players) != 2 {
+		t.Fatalf("players = %d, want 2", len(repo.m.Players))
+	}
+	if view.Status != StatusWaiting {
+		t.Fatalf("view status = %s, want waiting", view.Status)
+	}
+	if HasHouseSeat(repo.m.Players) {
+		t.Fatal("private invite rooms must never seat house bots")
+	}
+}
+
+func TestPrivateRoomAllowsMoreInvitees(t *testing.T) {
+	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
+	friend := Player{AgentPublicID: "ag_friend", OwnerPublicID: "usr_friend", Seat: 2}
+	repo := newSeatingRepo(500, creator)
+	repo.m.Private = true
+	repo.m.Players = []Player{creator, friend}
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, nil)
+
+	if _, err := svc.Join(context.Background(), "ag_third", "usr_third", "mf_test"); err != nil {
+		t.Fatalf("third invitee join = %v, want success", err)
+	}
+	if len(HumanPlayers(repo.m.Players)) != 3 {
+		t.Fatalf("humans = %d, want 3", len(HumanPlayers(repo.m.Players)))
+	}
+	if repo.started {
+		t.Fatal("table must stay waiting until all 12 seats are human")
+	}
+}
+
+func TestPrivateRoomStartsWhenTwelveHumansSit(t *testing.T) {
+	players := make([]Player, 0, mf.RosterSize-1)
+	for i := 1; i < mf.RosterSize; i++ {
+		players = append(players, Player{
+			AgentPublicID: "ag_seat_" + strconv.Itoa(i),
+			OwnerPublicID: "usr_seat_" + strconv.Itoa(i),
+			Seat:          i,
+		})
+	}
+	repo := newSeatingRepo(500, players[0])
+	repo.m.Private = true
+	repo.m.Players = append([]Player{}, players...)
+	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, nil)
+
+	view, err := svc.Join(context.Background(), "ag_seat_12", "usr_seat_12", "mf_test")
+	if err != nil {
+		t.Fatalf("12th join: %v", err)
+	}
 	if !repo.started {
-		t.Fatal("second human join must fill bots and start the match")
+		t.Fatal("full human roster must start the match")
 	}
 	if len(repo.m.Players) != mf.RosterSize {
 		t.Fatalf("roster = %d, want %d", len(repo.m.Players), mf.RosterSize)
 	}
-	humans := HumanPlayers(repo.m.Players)
-	if len(humans) != 2 {
-		t.Fatalf("humans = %d, want 2 (host + friend)", len(humans))
+	if HasHouseSeat(repo.m.Players) {
+		t.Fatal("private room must not have house bots after start")
 	}
 	if view.Status != StatusActive {
 		t.Fatalf("view status = %s, want active", view.Status)
-	}
-}
-
-func TestPrivateRoomStaysWaitingWithOnlyHost(t *testing.T) {
-	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
-	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
-	repo := newSeatingRepo(500, creator)
-	repo.m.Private = true
-	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
-
-	// CreateRoom already seated the host; nothing else joins.
-	if repo.started {
-		t.Fatal("host alone must not start the table")
-	}
-	if len(repo.m.Players) != 1 {
-		t.Fatalf("players = %d, want host only", len(repo.m.Players))
-	}
-	_ = svc
-}
-
-// If bot fill fails after the friend sits, the waiting invite must be cancelled
-// so the room is not left half-filled until WaitingTTL.
-func TestPrivateRoomFillFailureCancelsWaiting(t *testing.T) {
-	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
-	repo := newSeatingRepo(500, creator)
-	repo.m.Private = true
-	// Enough bots to pass CreateRoom's count check is N/A here — Join uses an
-	// already-private waiting row. EnablePushPlay with ZERO bots so fill fails.
-	svc := NewService(repo, fakeLock{}, nil, &recordingWallet{}, fakeBcast{}, nil, nil,
-		fakeClock{}, Config{})
-	svc.EnablePushPlay(nil, nil, nil, nil)
-
-	_, err := svc.Join(context.Background(), "ag_friend", "usr_friend", "mf_test")
-	if err == nil {
-		t.Fatal("join must fail when house bots cannot fill")
-	}
-	if repo.m.Status != StatusAborted && repo.cancelled == 0 {
-		// seatingRepo tracks cancel via cancelled counter if Status not updated.
-		t.Fatalf("after fill failure status=%s cancelled=%d — waiting invite must be aborted",
-			repo.m.Status, repo.cancelled)
-	}
-}
-
-// A third human must not sit while the invite is waiting for (or filling) bots.
-func TestPrivateRoomRefusesThirdHuman(t *testing.T) {
-	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
-	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
-	friend := Player{AgentPublicID: "ag_friend", OwnerPublicID: "usr_friend", Seat: 2}
-	repo := newSeatingRepo(500, creator)
-	repo.m.Private = true
-	repo.m.Players = []Player{creator, friend}
-	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
-
-	_, err := svc.Join(context.Background(), "ag_third", "usr_third", "mf_test")
-	if err != ErrPrivateRoomSealed {
-		t.Fatalf("third human join = %v, want ErrPrivateRoomSealed", err)
-	}
-	if len(HumanPlayers(repo.m.Players)) != 2 {
-		t.Fatalf("humans = %d, want 2", len(HumanPlayers(repo.m.Players)))
-	}
-}
-
-// Host cancel while fill runs must not look like a successful friend join.
-func TestPrivateRoomFillAfterAbortIsNotSuccess(t *testing.T) {
-	bots := houseIDs(mf.RosterSize - PrivateRoomMinHumans)
-	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
-	friend := Player{AgentPublicID: "ag_friend", OwnerPublicID: "usr_friend", Seat: 2}
-	repo := newSeatingRepo(500, creator)
-	repo.m.Private = true
-	repo.m.Players = []Player{creator, friend}
-	repo.m.Status = StatusAborted
-	svc := newSeatingSvc(repo, &recordingWallet{}, nil, nil, bots)
-
-	err := svc.fillPrivateRoom(context.Background(), "mf_test")
-	if err != ErrNotWaiting {
-		t.Fatalf("fill after abort = %v, want ErrNotWaiting (not silent success)", err)
 	}
 }
 

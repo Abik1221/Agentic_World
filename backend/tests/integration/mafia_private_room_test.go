@@ -13,8 +13,8 @@ import (
 // e2e stack (and still refuses unknown games), without requiring a host-reachable
 // certify stub from inside Docker.
 //
-// Full create→join→bot-fill is covered by internal/mafia privateroom unit tests
-// (CreateRoom + Join fills roster). When the harness can sit a playable agent
+// Full create→join→start (12 humans, no house bots) is covered by internal/mafia
+// privateroom unit tests. When the harness can sit a playable agent
 // (local `pyyol play` against this BASE_URL, or certify with a container-reachable
 // stub), the create path returns 201 with an mf_* id.
 func TestMafiaPrivateRoomWired(t *testing.T) {
@@ -75,10 +75,10 @@ func TestMafiaPrivateRoomWired(t *testing.T) {
 		}
 		t.Logf("mafia room path wired; sit refused with %s (start pyyol play to create)", body.Error.Code)
 	case http.StatusServiceUnavailable:
-		if body.Error.Code != "room_fill_unavailable" && body.Error.Code != "room_game_unavailable" {
+		if body.Error.Code != "room_game_unavailable" {
 			t.Fatalf("unexpected 503 code=%q", body.Error.Code)
 		}
-		t.Logf("mafia rooms need house bots: %s", body.Error.Code)
+		t.Logf("mafia rooms not configured: %s", body.Error.Code)
 	case http.StatusBadRequest:
 		t.Fatalf("mafia still refused as unsupported (%q) — server image is stale", body.Error.Code)
 	default:

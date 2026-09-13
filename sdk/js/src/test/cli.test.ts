@@ -466,7 +466,8 @@ test("room create accepts Mafia and posts game=mafia", async () => {
   assert.equal(code, 0);
   assert.deepEqual(posted, { game: "mafia", tier: "low" });
   assert.match(out, /mf_room1/);
-  assert.match(out, /house bots/i);
+  assert.match(out, /invited agents only/i);
+  assert.doesNotMatch(out, /house bots fill/i);
 });
 
 test("room create refuses an unknown game", async () => {

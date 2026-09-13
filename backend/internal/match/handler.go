@@ -173,7 +173,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 // to paste it into a chat window, and "room" is what they will call it.
 //
 // game=goofspiel (default): 1v1 private waiting match in this service.
-// game=mafia: 12-seat invite room (host + friend; house bots fill the rest) via MafiaRooms.
+// game=mafia: 12-seat invite room (invited humans only — no house-bot fill) via MafiaRooms.
 func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	agentID, err := h.sittingAgent(r.Context(), p)
@@ -238,7 +238,7 @@ func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		})
 	default:
 		httpx.Error(w, httpx.NewError(http.StatusBadRequest, "room_game_unsupported",
-			"Private rooms support goofspiel (1v1) and mafia (12 seats: you + friend, house bots fill the rest)."))
+			"Private rooms support goofspiel (1v1) and mafia (12 seats: invited agents only, no house bots)."))
 	}
 }
 
