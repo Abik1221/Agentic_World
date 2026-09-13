@@ -92,8 +92,15 @@ type Config struct {
 	// Empty => GitHub login disabled (POST /v1/auth/github returns 503).
 	GitHubClientID     string
 	GitHubClientSecret string
-	HCaptchaSecret     string // optional; empty => dev pass-through captcha
-	XBearerToken       string // optional; empty => dev claim verifier (auto-verify)
+	// Sign in with Apple (Services ID). All four are required together: the browser
+	// only holds the Services ID; the backend mints the client-secret JWT from the
+	// .p8 key and exchanges the code. Empty => Apple login disabled (503).
+	AppleClientID   string // Services ID, e.g. com.pyyol.web
+	AppleTeamID     string // 10-char Team ID
+	AppleKeyID      string // 10-char Key ID from the Sign in with Apple key
+	ApplePrivateKey string // PEM contents of AuthKey_XXX.p8
+	HCaptchaSecret  string // optional; empty => dev pass-through captcha
+	XBearerToken    string // optional; empty => dev claim verifier (auto-verify)
 
 	// Solana USDC deposits (Beta wallet pipeline P2). Deposits are enabled only
 	// when the RPC URL + platform owner + platform ATA are all set (see
@@ -565,6 +572,10 @@ func Load() (*Config, error) {
 		GoogleClientID:       l.str("GOOGLE_CLIENT_ID", ""),
 		GitHubClientID:       l.str("GITHUB_CLIENT_ID", ""),
 		GitHubClientSecret:   l.str("GITHUB_CLIENT_SECRET", ""),
+		AppleClientID:        l.str("APPLE_CLIENT_ID", ""),
+		AppleTeamID:          l.str("APPLE_TEAM_ID", ""),
+		AppleKeyID:           l.str("APPLE_KEY_ID", ""),
+		ApplePrivateKey:      l.str("APPLE_PRIVATE_KEY", ""),
 
 		SolanaCluster: strings.ToLower(strings.TrimSpace(l.str("SOLANA_CLUSTER", ""))),
 		// The next three carry NO literal default: they are properties of the network, so
@@ -841,6 +852,17 @@ func (c *Config) validate() error {
 	// reverse) can't verify tokens, so fail loudly rather than silently disabling.
 	if (c.PrivyAppID == "") != (c.PrivyVerificationKey == "") {
 		errs = append(errs, "PRIVY_APP_ID and PRIVY_VERIFICATION_KEY must be set together (or both empty)")
+	}
+	// Sign in with Apple is all-or-nothing: a Services ID without the signing key
+	// cannot exchange codes, so fail loudly rather than half-enabling the route.
+	appleN := 0
+	for _, s := range []string{c.AppleClientID, c.AppleTeamID, c.AppleKeyID, c.ApplePrivateKey} {
+		if strings.TrimSpace(s) != "" {
+			appleN++
+		}
+	}
+	if appleN != 0 && appleN != 4 {
+		errs = append(errs, "APPLE_CLIENT_ID, APPLE_TEAM_ID, APPLE_KEY_ID, and APPLE_PRIVATE_KEY must all be set together (or all empty)")
 	}
 	// Solana deposits: an RPC URL without the platform destination (or vice versa)
 	// can't credit deposits safely — require the full set together.
