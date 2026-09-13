@@ -36,6 +36,10 @@ type MafiaRooms interface {
 	Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (any, error)
 	Cancel(ctx context.Context, agentPublicID, matchPublicID string) error
 	State(ctx context.Context, matchPublicID, viewerAgent string, wait bool, timeout time.Duration) (any, error)
+	// Roster and Replay share /v1/match/{id}/… with Goofspiel so Lens and shared
+	// spectators can use one URL shape for mf_* private-room ids.
+	Roster(ctx context.Context, matchPublicID string) (any, error)
+	Replay(ctx context.Context, matchPublicID string) (any, error)
 }
 
 // SetMafiaRooms enables game=mafia on private rooms and routes mf_* join/cancel/state.
@@ -444,9 +448,25 @@ func (h *Handler) ready(w http.ResponseWriter, r *http.Request) {
 }
 
 // roster returns the public identity of both seats. No hidden state: a sealed card
-// never appears here.
+// never appears here. mf_* private rooms route to Mafia so Lens / shared spectators
+// do not get a goofspiel NotFound for a live Mafia invite id.
 func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
-	seats, err := h.svc.Roster(r.Context(), chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	if isMafiaRoomID(id) {
+		if h.mafia == nil {
+			httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "room_game_unavailable",
+				"Mafia private rooms are not configured on this server."))
+			return
+		}
+		body, err := h.mafia.Roster(r.Context(), id)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, body)
+		return
+	}
+	seats, err := h.svc.Roster(r.Context(), id)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -455,7 +475,22 @@ func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) replay(w http.ResponseWriter, r *http.Request) {
-	doc, err := h.svc.Replay(r.Context(), chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	if isMafiaRoomID(id) {
+		if h.mafia == nil {
+			httpx.Error(w, httpx.NewError(http.StatusServiceUnavailable, "room_game_unavailable",
+				"Mafia private rooms are not configured on this server."))
+			return
+		}
+		body, err := h.mafia.Replay(r.Context(), id)
+		if err != nil {
+			httpx.Error(w, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, body)
+		return
+	}
+	doc, err := h.svc.Replay(r.Context(), id)
 	if err != nil {
 		httpx.Error(w, err)
 		return

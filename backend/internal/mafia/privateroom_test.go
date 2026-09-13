@@ -96,6 +96,29 @@ func TestPrivateRoomStaysWaitingWithOnlyHost(t *testing.T) {
 	_ = svc
 }
 
+// If bot fill fails after the friend sits, the waiting invite must be cancelled
+// so the room is not left half-filled until WaitingTTL.
+func TestPrivateRoomFillFailureCancelsWaiting(t *testing.T) {
+	creator := Player{AgentPublicID: "ag_host", OwnerPublicID: "usr_host", Seat: 1}
+	repo := newSeatingRepo(500, creator)
+	repo.m.Private = true
+	// Enough bots to pass CreateRoom's count check is N/A here — Join uses an
+	// already-private waiting row. EnablePushPlay with ZERO bots so fill fails.
+	svc := NewService(repo, fakeLock{}, nil, &recordingWallet{}, fakeBcast{}, nil, nil,
+		fakeClock{}, Config{})
+	svc.EnablePushPlay(nil, nil, nil, nil)
+
+	_, err := svc.Join(context.Background(), "ag_friend", "usr_friend", "mf_test")
+	if err == nil {
+		t.Fatal("join must fail when house bots cannot fill")
+	}
+	if repo.m.Status != StatusAborted && repo.cancelled == 0 {
+		// seatingRepo tracks cancel via cancelled counter if Status not updated.
+		t.Fatalf("after fill failure status=%s cancelled=%d — waiting invite must be aborted",
+			repo.m.Status, repo.cancelled)
+	}
+}
+
 // recordingCreateRepo captures CreateWaiting input for CreateRoom assertions.
 type recordingCreateRepo struct {
 	fakeRepo

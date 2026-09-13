@@ -68,7 +68,9 @@ func roomRouterWithMafia(t *testing.T, owners matchPrimary, mafia match.MafiaRoo
 }
 
 type stubMafiaRooms struct {
-	joined string
+	joined  string
+	rosters string
+	replay  string
 }
 
 func (s *stubMafiaRooms) CreateRoom(context.Context, string, string, int64) (string, error) {
@@ -81,6 +83,14 @@ func (s *stubMafiaRooms) Join(_ context.Context, _, _, matchID string) (any, err
 func (s *stubMafiaRooms) Cancel(context.Context, string, string) error { return nil }
 func (s *stubMafiaRooms) State(context.Context, string, string, bool, time.Duration) (any, error) {
 	return map[string]any{"status": "waiting"}, nil
+}
+func (s *stubMafiaRooms) Roster(_ context.Context, matchID string) (any, error) {
+	s.rosters = matchID
+	return map[string]any{"seats": []any{}, "players": 0}, nil
+}
+func (s *stubMafiaRooms) Replay(_ context.Context, matchID string) (any, error) {
+	s.replay = matchID
+	return map[string]any{"events": []any{}, "roster": []any{}}, nil
 }
 
 // matchPrimary is the lookup the handler accepts. Declared here so the test
@@ -214,5 +224,30 @@ func TestReadyStillRejectsADashboardJWT(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("dashboard JWT ready = %d, want 403. Playing stays agent-scoped.", rec.Code)
+	}
+}
+
+func TestMatchRosterAndReplayRouteMafiaIds(t *testing.T) {
+	mafia := &stubMafiaRooms{}
+	r, _, _ := roomRouterWithMafia(t, stubOwners{agent: "ag_owned"}, mafia)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/match/mf_room1/roster", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mafia roster via /v1/match = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if mafia.rosters != "mf_room1" {
+		t.Fatalf("roster routed = %q, want mf_room1", mafia.rosters)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/match/mf_room1/replay", nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mafia replay via /v1/match = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if mafia.replay != "mf_room1" {
+		t.Fatalf("replay routed = %q, want mf_room1", mafia.replay)
 	}
 }

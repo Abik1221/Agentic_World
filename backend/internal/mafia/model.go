@@ -63,10 +63,14 @@ type Player struct {
 // seats that stake, settle, or rate. Use this anywhere a count of "how many agents
 // are in this game" feeds money or ranking, because len(Match.Players) now includes
 // house fillers.
+//
+// Uses playerIsHouse (kind flag OR ag_house* public id), not IsHouse alone: money
+// and rating must agree with the roster's house markers even if agents.kind failed
+// to hydrate on a read path.
 func HumanPlayers(players []Player) []Player {
 	out := make([]Player, 0, len(players))
 	for _, p := range players {
-		if !p.IsHouse {
+		if !playerIsHouse(p) {
 			out = append(out, p)
 		}
 	}
@@ -77,7 +81,7 @@ func HumanPlayers(players []Player) []Player {
 // makes a table unrated.
 func HasHouseSeat(players []Player) bool {
 	for _, p := range players {
-		if p.IsHouse {
+		if playerIsHouse(p) {
 			return true
 		}
 	}

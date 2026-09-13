@@ -111,3 +111,19 @@ func TestHumanPlayersAndHasHouseSeat(t *testing.T) {
 		t.Error("HumanPlayers(nil) should be empty, not nil-panic")
 	}
 }
+
+// Money paths must treat ag_house* as house even when IsHouse was not hydrated
+// (same inference Roster already used for spectate labels).
+func TestHumanPlayersInfersHouseFromPublicID(t *testing.T) {
+	players := []mafia.Player{
+		{AgentPublicID: "ag_real", Seat: 1},
+		{AgentPublicID: "ag_house_mafia_01", Seat: 2}, // IsHouse unset
+	}
+	humans := mafia.HumanPlayers(players)
+	if len(humans) != 1 || humans[0].AgentPublicID != "ag_real" {
+		t.Fatalf("HumanPlayers = %+v, want only ag_real (prefix inference)", humans)
+	}
+	if !mafia.HasHouseSeat(players) {
+		t.Fatal("HasHouseSeat must see ag_house* without IsHouse")
+	}
+}

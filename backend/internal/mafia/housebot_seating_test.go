@@ -19,10 +19,11 @@ import (
 // where it comes from agents.kind rather than from anything the caller passes.
 type seatingRepo struct {
 	*fakeRepo
-	m       Match
-	started bool
-	unrated []string
-	roles   map[int]string
+	m         Match
+	started   bool
+	unrated   []string
+	roles     map[int]string
+	cancelled int
 	// The start countdown, captured so a test can prove the first phase window opens when
 	// PLAY does rather than when the table filled. See startcountdown_test.go.
 	startsAt time.Time
@@ -57,6 +58,12 @@ func (r *seatingRepo) Start(_ context.Context, _ string, roles map[int]string, s
 
 func (r *seatingRepo) MarkUnrated(_ context.Context, id string) error {
 	r.unrated = append(r.unrated, id)
+	return nil
+}
+
+func (r *seatingRepo) CancelWaiting(_ context.Context, _, _ string) error {
+	r.cancelled++
+	r.m.Status = StatusAborted
 	return nil
 }
 

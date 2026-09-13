@@ -1472,7 +1472,7 @@ func run() error {
 	matchSvc.SetRejectionLog(store.NewMatchRepo(st.DB))
 	mafiaSvc.SetBoundMoveReader(llmGatewayRepo)
 	log.Info("completion binding active: a submitted move that contradicts the model's own output is rejected",
-		"games", "goofspiel,mafia,monopoly",
+		"games", "goofspiel,mafia",
 		"inert_when", "the turn carries no bound move (agent does not route, or no move tool call)")
 
 	llmGatewayHandler := llmgw.NewHandler(llmGateway, authn)
@@ -1635,7 +1635,6 @@ func run() error {
 	// Auto-play: devs flip availability on their agent (settings API below); the
 	// reconciler loop (launched only when AUTOPLAY_ENABLED) keeps them in matches.
 	autoplayRepo := store.NewAutoplayRepo(st.DB)
-	matchVer.SetAutoplay(autoplayRepo)
 	autoplayHandler := autoplay.NewHandler(autoplayRepo, authn)
 	// Fail fast at enable time when an owner points ranked auto-play at an agent that
 	// doesn't declare the (Goofspiel-only) ranked game — instead of silently never
@@ -2169,21 +2168,6 @@ type verifierAdapter struct {
 	// `pyyol play` / `dev` process is enough to sit ranked; hosting is the
 	// alternative when that process is away.
 	conn func(agentPublicID string) bool
-	// autoplay is optional. Private rooms treat "auto-play on" as playable
-	// without a hosted URL — the same local path as a connected CLI agent.
-	autoplay autoplayLooker
-}
-
-// autoplayLooker is the slice of autoplay.Repo rooms need: is this agent on?
-type autoplayLooker interface {
-	Get(ctx context.Context, agentPublicID string) (autoplay.Setting, bool, error)
-}
-
-// SetAutoplay attaches auto-play lookup for the private-room sit gate.
-func (a *verifierAdapter) SetAutoplay(r autoplayLooker) {
-	if a != nil {
-		a.autoplay = r
-	}
 }
 
 func (a verifierAdapter) Record(ctx context.Context, agentPublicID string, matchPublicID *string, responseMs int) {
@@ -2220,9 +2204,9 @@ func (a verifierAdapter) CheckEligible(ctx context.Context, agentPublicID string
 // A private room is not the ranked lobby (JWT + covering stake is the money
 // check), but it is still a staked table. Playability is the same live path
 // as ranked: a connected CLI socket, or a hosted verified URL. A leftover
-// no-URL cert or auto-play-on without a socket used to sit the room and then
-// forfeit — "Open room before play". Reusing ErrNotCertified ("Verify your
-// agent's endpoint before entering ranked play.") is still the wrong copy.
+// no-URL cert without a socket used to sit the room and then forfeit —
+// "Open room before play". Reusing ErrNotCertified ("Verify your agent's
+// endpoint before entering ranked play.") is still the wrong copy.
 func (a *verifierAdapter) CheckPrivateRoom(ctx context.Context, agentPublicID string) error {
 	if a.susp != nil && a.susp.Get().IsSuspended(agentPublicID) {
 		return httpx.NewError(http.StatusForbidden, "agent_suspended", "This agent has been suspended by platform administrators.")
@@ -2335,6 +2319,38 @@ func (a mafiaRoomsAdapter) Cancel(ctx context.Context, agent, matchID string) er
 
 func (a mafiaRoomsAdapter) State(ctx context.Context, matchID, viewer string, wait bool, timeout time.Duration) (any, error) {
 	return a.svc.State(ctx, matchID, viewer, wait, timeout)
+}
+
+// Roster / Replay shape the same JSON as /v1/mafia/{id}/roster|replay so a
+// shared /v1/match/{id}/… spectator (Lens) can open an mf_* private-room id.
+func (a mafiaRoomsAdapter) Roster(ctx context.Context, matchID string) (any, error) {
+	seats, err := a.svc.Roster(ctx, matchID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"seats": seats, "players": len(seats)}, nil
+}
+
+func (a mafiaRoomsAdapter) Replay(ctx context.Context, matchID string) (any, error) {
+	timed, roster, err := a.svc.ReplayTimed(ctx, matchID)
+	if err != nil {
+		return nil, err
+	}
+	var start time.Time
+	if len(timed) > 0 {
+		start = timed[0].At
+	}
+	out := make([]map[string]any, 0, len(timed))
+	for _, te := range timed {
+		out = append(out, map[string]any{
+			"seq":       te.Event.Seq,
+			"type":      te.Event.Type,
+			"payload":   te.Event.Payload,
+			"at":        te.At.UTC(),
+			"offset_ms": te.At.Sub(start).Milliseconds(),
+		})
+	}
+	return map[string]any{"events": out, "roster": roster}, nil
 }
 
 // mafiaTableCreator / monopolyTableCreator adapt each game's Service to

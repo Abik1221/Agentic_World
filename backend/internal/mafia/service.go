@@ -454,6 +454,12 @@ func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchP
 	}
 	if fill {
 		if err := s.fillPrivateRoom(ctx, matchPublicID); err != nil {
+			// Friend is already seated; bots did not finish. Abort the waiting
+			// invite so escrow never starts on a half-filled room and the host
+			// can recreate rather than sitting on a wedged lobby until TTL.
+			if m, gerr := s.repo.Get(ctx, matchPublicID); gerr == nil && m.Status == StatusWaiting && len(m.Players) > 0 {
+				_ = s.repo.CancelWaiting(ctx, matchPublicID, m.Players[0].AgentPublicID)
+			}
 			return AgentView{}, err
 		}
 		m, err := s.repo.Get(ctx, matchPublicID)
@@ -1616,7 +1622,7 @@ func seatsFromPlayers(players []Player, st mf.State) []SeatInfo {
 		out[i] = SeatInfo{
 			Seat: p.Seat, AgentPublicID: p.AgentPublicID, OwnerPublicID: p.OwnerPublicID,
 			Role: st.Roles[p.Seat], Team: mf.TeamOf(st.Roles[p.Seat]), Alive: st.Alive[p.Seat],
-			IsHouse: p.IsHouse,
+			IsHouse: playerIsHouse(p),
 		}
 	}
 	return out
@@ -1634,7 +1640,7 @@ func finalizePlayers(players []Player, st mf.State, rewards []RewardRow, entryFe
 		out[i].Team = mf.TeamOf(out[i].Role)
 		out[i].Alive = st.Alive[out[i].Seat]
 		switch {
-		case out[i].IsHouse:
+		case playerIsHouse(out[i]):
 			// A house filler neither paid an entry fee nor can be paid, so its coin
 			// movement is exactly zero. Writing -entryFee here would persist a
 			// fabricated loss to match_players.coins_delta, which is read back as fact
