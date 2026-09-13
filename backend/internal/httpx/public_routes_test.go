@@ -104,6 +104,9 @@ var publicRoutes = []string{
 	"Get /v1/stats/live",
 	"Get /v1/tournaments",
 	"Get /v1/tournaments/{id}",
+	// Login exchanges: the credential is the provider token itself (ID token / OAuth
+	// code), not a dashboard JWT. Public for the same reason email/password login is.
+	"Post /v1/auth/apple",
 	"Post /v1/auth/github",
 	"Post /v1/auth/google",
 	"Post /v1/auth/login",
