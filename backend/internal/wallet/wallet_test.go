@@ -3,6 +3,7 @@ package wallet_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -450,5 +451,40 @@ func TestCheckJoinCoveringStakeUsesTheSittingAgent(t *testing.T) {
 		t.Fatal("covering check accepted an agent that cannot cover the stake")
 	} else if codeOf(err) != "insufficient_balance" {
 		t.Fatalf("short agent covering code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+	}
+}
+
+// Low / mid / high / private-room ladders: sit OK at exact stake, fail at stake-1.
+// A configured min_wallet_balance must not stack on top of any of these stakes.
+func TestCheckJoinStakeLaddersExactAndShort(t *testing.T) {
+	stakes := []int64{100, 500, 1000, 2000, 5000}
+	for _, stake := range stakes {
+		t.Run(fmt.Sprintf("stake_%d", stake), func(t *testing.T) {
+			repo := &fakeRepo{limits: baseLimits()}
+			repo.limits.CoinLimitPerMatch = stake
+			repo.limits.MaxBid = stake
+			repo.limits.MinWalletBalance = 50 // soft UI floor only — must not block exact-stake sit
+			fl := &fakeLedger{balance: stake}
+			svc := newSvc(fl, repo)
+
+			if err := svc.CheckJoin(context.Background(), "ag_a", stake); err != nil {
+				t.Fatalf("exact stake %d refused: %v", stake, err)
+			}
+			if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", stake); err != nil {
+				t.Fatalf("covering exact stake %d refused: %v", stake, err)
+			}
+
+			fl.balance = stake - 1
+			if err := svc.CheckJoin(context.Background(), "ag_a", stake); err == nil {
+				t.Fatalf("stake-1 (%d) accepted for stake %d", stake-1, stake)
+			} else if codeOf(err) != "insufficient_balance" {
+				t.Fatalf("stake-1 code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+			}
+			if err := svc.CheckJoinCoveringStake(context.Background(), "ag_a", stake); err == nil {
+				t.Fatalf("covering stake-1 (%d) accepted for stake %d", stake-1, stake)
+			} else if codeOf(err) != "insufficient_balance" {
+				t.Fatalf("covering stake-1 code = %q, want insufficient_balance (err=%v)", codeOf(err), err)
+			}
+		})
 	}
 }

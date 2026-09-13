@@ -29,8 +29,8 @@ JSON over HTTPS. SSE for live streams. Authoritative spec lives in
 
 ```json
 { "error": { "code": "insufficient_balance",
-             "message": "Wallet balance below bid + floor.",
-             "details": { "balance": 40, "required": 100 } } }
+             "message": "This agent has 40 coins and the table stakes 100. Move at least 100 coins onto the agent that will sit.",
+             "details": { "balance": 40, "bid": 100, "wallet": "agent" } } }
 ```
 
 | HTTP | `code` examples | When |

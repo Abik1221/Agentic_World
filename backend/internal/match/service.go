@@ -1014,9 +1014,9 @@ func (s *Service) CreateSandbox(ctx context.Context, humanAgent, humanOwner, hou
 func (s *Service) Join(ctx context.Context, agentPublicID, ownerPublicID, matchPublicID string) (AgentView, error) {
 	// Serialize an agent's joins so it can't race concurrent joins into DIFFERENT
 	// matches and slip past the per-agent limits (CheckJoin, e.g. max-concurrent /
-	// reserve) via TOCTOU — the per-match lock only serializes joins to the SAME
-	// match. Agent lock FIRST, then match lock: a consistent global order that can't
-	// deadlock. (M6)
+	// balance / loss caps) via TOCTOU — the per-match lock only serializes joins to
+	// the SAME match. Agent lock FIRST, then match lock: a consistent global order
+	// that can't deadlock. (M6)
 	relAgent, okA, err := s.lock.Lock(ctx, agentJoinLockKey(agentPublicID), s.cfg.LockTTL)
 	if err != nil {
 		return AgentView{}, err

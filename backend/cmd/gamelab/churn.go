@@ -68,9 +68,9 @@ func runChurn(a *api, lg *log.Logger, agents []*labAgent, tier string, rounds in
 		latecomer = &churnAgent{ag: agents[4], role: roleLatecomer}
 	}
 
-	// Funding is per role. The underfunded seat gets enough for exactly one stake plus its
-	// minimum wallet reserve, so it runs itself broke by playing — rather than being blocked
-	// on the first attempt, which would prove nothing about removal DURING churn.
+	// Funding is per role. The underfunded seat gets enough for exactly one stake,
+	// so it runs itself broke by playing — rather than being blocked on the first
+	// attempt, which would prove nothing about removal DURING churn.
 	for _, c := range pop {
 		coins := int64(20000)
 		if c.role == roleUnderfund {
@@ -79,7 +79,7 @@ func runChurn(a *api, lg *log.Logger, agents []*labAgent, tier string, rounds in
 		// TWO steps, and both are required: fundAgent credits the OWNER's treasury, and
 		// allocateToAgent moves it into the agent's own wallet. Skipping the second leaves the
 		// agent at balance 0 while the owner looks funded — which is exactly the state that
-		// produced "Balance 0 is below the required 550" on the first run of this harness.
+		// produced insufficient_balance (agent balance 0 < stake) on the first run of this harness.
 		if err := a.fundAgent(c.ag.DashToken, c.ag.AgentID, coins); err != nil {
 			return fmt.Errorf("funding %s: %w", c.ag.Persona.Name, err)
 		}

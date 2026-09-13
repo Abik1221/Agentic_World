@@ -21,7 +21,7 @@ mint until Stage 5 wires payments.
 - [api-surface.md](../../architecture/api-surface.md) (`/v1/wallet`, history)
 
 ## The seven server-enforced limits (all checked at join, in order)
-1. balance ≥ bid + `min_wallet_balance`
+1. balance ≥ bid (stake only — platform fee is post-game from the winner; `min_wallet_balance` is a soft UI floor, not stacked)
 2. bid ≤ `coin_limit_per_match`
 3. today's losses < `daily_loss_limit`
 4. session losses < `session_loss_limit`

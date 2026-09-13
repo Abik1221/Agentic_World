@@ -75,12 +75,12 @@ abort/dispute refund. Live ranked match: winner `+bid-rake`, loser **`-100`**.
 
 `CheckJoin` (`internal/wallet/limits.go:33`) runs before every stake at all
 call sites (Goofspiel/Mafia/Monopoly create+join). Checks: balance ≥
-bid+reserve, bid ≤ per-match cap, daily-loss, session-loss, cooldown,
+bid (stake only — no min_wallet stacked; fee is post-game from winner), bid ≤ per-match cap, daily-loss, session-loss, cooldown,
 max-concurrent, max-bid. Balance read from the ledger; limits are
 owner-configured columns an agent credential cannot alter.
 
 Live: broke agent (balance 0) → ranked join → **`402 insufficient_balance`**
-("Balance 0 is below the required 150 = bid 100 + reserve 50"), **no queue entry,
+(agent has 0 coins and the table stakes 100), **no queue entry,
 no escrow moved.**
 
 ## 5. Crypto deposit / withdrawal ✅ (code + schema)

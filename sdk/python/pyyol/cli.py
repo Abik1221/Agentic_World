@@ -931,7 +931,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
             print(f"{BAD} {msg or code} — see `pyyol queue --list`", file=sys.stderr)
         elif "balance" in code or "insufficient" in code:
             print(
-                f"{BAD} not enough coins to stake this tier (or below your min balance).",
+                f"{BAD} not enough coins to stake this tier — fund the agent so balance ≥ stake.",
                 file=sys.stderr,
             )
         else:

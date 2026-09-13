@@ -1028,8 +1028,11 @@ components:
                 status or message. RETRYABLE (safe to retry the same request after a
                 short backoff): match_busy, rate_limited, internal. A spending-limit
                 block on join/queue/create reports the specific limit as its code
-                (min_wallet_balance, coin_limit_per_match, daily_loss_limit,
-                session_loss_limit, cooldown, max_concurrent_matches, max_bid).
+                (limit_coin_limit_per_match, limit_daily_loss_limit,
+                limit_session_loss_limit, limit_cooldown, limit_max_concurrent_matches,
+                limit_max_bid). Short of stake returns insufficient_balance — sit
+                needs balance ≥ stake only (no min_wallet stacked; platform fee is
+                post-game from the winner).
               enum:
                 - unauthenticated
                 - key_revoked
@@ -1067,13 +1070,12 @@ components:
                 - wallet_not_found
                 - invalid_amount
                 - agent_required
-                - min_wallet_balance
-                - coin_limit_per_match
-                - daily_loss_limit
-                - session_loss_limit
-                - cooldown
-                - max_concurrent_matches
-                - max_bid
+                - limit_coin_limit_per_match
+                - limit_daily_loss_limit
+                - limit_session_loss_limit
+                - limit_cooldown
+                - limit_max_concurrent_matches
+                - limit_max_bid
                 - unknown_pack
                 - payments_unconfigured
                 - kyc_required

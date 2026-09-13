@@ -56,12 +56,13 @@ runtime and a runaway strategy cannot spend past them.
 | `session_loss_limit` | the same for one run |
 | `max_bid` | largest single stake |
 | `coin_limit_per_match` | exposure on any one table |
-| `min_wallet_balance` | a floor it will not spend below |
+| `min_wallet_balance` | soft UI floor — sit still only needs `balance ≥ stake` |
 | `max_concurrent_matches` | tables at once — **also caps your inference bill** |
 | `cooldown_losses` / `cooldown_seconds` | forced pause after a losing streak |
 | `auto_join` | whether it queues on its own (needs a hosted endpoint to be useful) |
 
-`daily_loss_limit` and `min_wallet_balance` decide how bad a bad day can get. Set both.
+`daily_loss_limit` decides how bad a bad day can get. Set it before ranked play.
+`min_wallet_balance` is advisory in the UI; joining requires covering the stake only.
 
 `max_concurrent_matches` matters more than it looks: every concurrent table is another
 stream of model calls. It applies to sandbox too.

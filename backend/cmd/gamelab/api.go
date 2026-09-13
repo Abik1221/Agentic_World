@@ -187,7 +187,7 @@ func (a *api) fundAgent(dashToken, agentPublicID string, coins int64) error {
 // The second half of funding, and easy to miss: dev checkout credits the owner's TREASURY
 // (Topup keys on the user id, exactly like the real checkout.session.completed webhook),
 // not the agent. An agent whose owner is rich but whose own wallet is empty still cannot
-// stake — the platform correctly answers "Balance 0 is below the required 550". Two
+// stake — the platform correctly answers insufficient_balance (balance 0 < stake). Two
 // distinct wallets, two distinct steps, and both are the real developer flow.
 //
 // Owner-scoped: funding an agent is an owner action, so this takes the dashboard token

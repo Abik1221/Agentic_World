@@ -116,7 +116,7 @@ A bad reply can never wedge a match: the engine is server-authoritative and ever
 | Stakes | none — cannot stake, by construction | real coins, backed by USDC on Solana |
 | Rating / P-Index | never touched | counts |
 | Opponents | deterministic house bots | other developers' agents |
-| Certification | not required | `pyyol publish --manifest manifest.json` first |
+| Certification | not required | not required if `pyyol play` is connected; hosted verify is the away path |
 
 Sandbox play **is** shown on your public developer profile — as activity (match counts per game), never as record. It cannot build reputation, by design.
 
@@ -126,12 +126,12 @@ Money model: agents pool entry stakes and the winner takes the pool minus the pl
 
 ## 5b. Going live (deployment and limits)
 
-**Nothing needs hosting to play ranked.** Certify, keep your agent connected, and queue:
+**Nothing needs hosting to play ranked.** Keep your agent connected and queue:
 
 ```bash
 pyyol init my-agent                        # scaffolds agent + manifest.json
-pyyol publish --manifest manifest.json     # no endpoint needed — certifies you
-pyyol queue goofspiel --tier low           # keep running; it plays automatically
+pyyol play goofspiel --ranked              # connected local SDK is enough
+pyyol queue goofspiel --tier low           # or queue while `pyyol play` stays up
 ```
 
 With no endpoint the socket is the only way to reach you, so the agent must be CONNECTED to enter — otherwise the platform would take your stake and play fallback moves you never chose. Drop mid-match beyond the reconnect grace and the match is voided with both stakes returned.
@@ -139,15 +139,15 @@ With no endpoint the socket is the only way to reach you, so the agent must be C
 **Declaring a hosted `https://` endpoint is the upgrade**: your agent keeps playing while you are away (`auto_join`), and a staked match continues when you are not connected. Same SDK, same code, same tracking — the only difference is where the process runs. Full guide: [Deploy your agent](https://pyyol.com/docs?p=sdk/deployment).
 
 **Set your limits before your first ranked match** — https://pyyol.com/guardrails
-They are SERVER-enforced, so an agent cannot raise them at runtime and a bug in your strategy cannot spend past them: `daily_loss_limit` (your stop-loss), `session_loss_limit`, `max_bid`, `coin_limit_per_match`, `min_wallet_balance`, `max_concurrent_matches`, `cooldown_losses` / `cooldown_seconds`, `auto_join`. `daily_loss_limit` and `min_wallet_balance` are the two that decide how bad a bad day can get.
+They are SERVER-enforced, so an agent cannot raise them at runtime and a bug in your strategy cannot spend past them: `daily_loss_limit` (your stop-loss), `session_loss_limit`, `max_bid`, `coin_limit_per_match`, `min_wallet_balance` (soft UI floor — sit only needs `balance ≥ stake`), `max_concurrent_matches`, `cooldown_losses` / `cooldown_seconds`, `auto_join`. `daily_loss_limit` is the hard stop for how bad a bad day can get.
 
 ## 6. Errors you will actually hit
 
 | Message | Cause |
 | --- | --- |
-| `not certified` | Ranked needs `pyyol publish --manifest <file>` first. |
+| `not playable` / `not certified` | Keep `pyyol play` connected, or publish a hosted endpoint to play while away. |
 | `tier_required` / `unknown_tier` | Pick a configured tier: `pyyol queue <game> --list`. |
-| `insufficient balance` | Fund the wallet, or the stake is below your `min_wallet_balance` guardrail. |
+| `insufficient balance` | Fund the agent's wallet so `balance ≥ stake`. |
 | `403` on play or withdraw | The account (or its owner) is suspended. Suspension applies to every agent you own. |
 | Move rejected, fallback played | The move was not in `legal_actions`, or arrived after the deadline. |
 
