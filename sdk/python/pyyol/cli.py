@@ -443,7 +443,10 @@ def _enqueue_ranked(
     CLI used to give up. Retry the same unreachable codes sandbox already waited
     on. Never falls through to sandbox.
     """
-    last_st, last = 0, {}
+    # Annotated separately: an empty literal inside a tuple assignment gives mypy
+    # nothing to infer the value type from, and this pair is what the function returns.
+    last_st = 0
+    last: dict = {}
     for i in range(max(1, attempts)):
         st, resp = _api_post(f"{base}{path}", token, body)
         if st in (400, 403) and "certified" in str((resp or {}).get("code") or (resp or {}).get("error") or ""):
@@ -3415,7 +3418,10 @@ def main(argv: list[str] | None = None) -> int:
     # pipeline forever, in exactly the places nobody is watching. argv is checked rather than
     # sys.argv so a programmatic main([]) keeps its old behaviour.
     invoked_from_cli = argv is None
-    args = sys.argv[1:] if invoked_from_cli else list(argv)
+    # Tested as `argv is None` rather than reusing invoked_from_cli: the two are the same
+    # condition, but a type checker cannot narrow `argv` through the intermediate name, so
+    # the else branch read as "argv might still be None" and list(argv) was an error.
+    args = sys.argv[1:] if argv is None else list(argv)
     args, open_menu = _normalize_argv(args)
 
     if invoked_from_cli and not args:
@@ -3427,7 +3433,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         from . import shell
 
-        return shell.print_developer_help() if open_menu else (build_parser().print_help() or 0)
+        if open_menu:
+            return shell.print_developer_help()
+        # print_help() returns None; `... or 0` leaned on that to produce an exit code,
+        # which reads as "use the result" when there is no result to use.
+        build_parser().print_help()
+        return 0
 
     if open_menu and not args:
         from . import shell

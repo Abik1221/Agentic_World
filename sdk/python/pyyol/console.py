@@ -19,7 +19,8 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Callable, TextIO
+from collections.abc import Callable
+from typing import Any, TextIO
 
 # kind → (symbol, ANSI color). Colors: green ok, amber idle, cyan match, dim
 # event, magenta decision, red error.

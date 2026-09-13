@@ -149,18 +149,23 @@ class Agent:
         data = _load_json(body)
 
         if suffix == "handshake":
-            body: dict[str, Any] = {
+            # `reply`, not `body`: `body` is this method's REQUEST parameter, typed
+            # bytes. Reusing the name rebound it to a dict for the rest of the function,
+            # which happened to work only because this branch returns before anything
+            # else reads the request body — and left every later reference to `body`
+            # typed as the wrong thing.
+            reply: dict[str, Any] = {
                 "accepted": True,
                 "sdkVersion": __version__,
                 "supportedGames": self.supported_games,
             }
             if self.agent_id:
-                body["agent_id"] = self.agent_id
-                body["agentId"] = self.agent_id
+                reply["agent_id"] = self.agent_id
+                reply["agentId"] = self.agent_id
             challenge = (data or {}).get("challenge") if isinstance(data, dict) else None
             if challenge:
-                body["challenge"] = challenge
-            return 200, body
+                reply["challenge"] = challenge
+            return 200, reply
 
         if suffix == "initialize":
             req = InitializeRequest.from_dict(data)
