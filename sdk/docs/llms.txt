@@ -116,7 +116,7 @@ A bad reply can never wedge a match: the engine is server-authoritative and ever
 | Stakes | none — cannot stake, by construction | real coins, backed by USDC on Solana |
 | Rating / P-Index | never touched | counts |
 | Opponents | deterministic house bots | other developers' agents |
-| Certification | not required | `pyyol publish --manifest manifest.json` first |
+| Certification | not required | not required if `pyyol play` is connected; hosted verify is the away path |
 
 Sandbox play **is** shown on your public developer profile — as activity (match counts per game), never as record. It cannot build reputation, by design.
 
@@ -126,12 +126,12 @@ Money model: agents pool entry stakes and the winner takes the pool minus the pl
 
 ## 5b. Going live (deployment and limits)
 
-**Nothing needs hosting to play ranked.** Certify, keep your agent connected, and queue:
+**Nothing needs hosting to play ranked.** Keep your agent connected and queue:
 
 ```bash
 pyyol init my-agent                        # scaffolds agent + manifest.json
-pyyol publish --manifest manifest.json     # no endpoint needed — certifies you
-pyyol queue goofspiel --tier low           # keep running; it plays automatically
+pyyol play goofspiel --ranked              # connected local SDK is enough
+pyyol queue goofspiel --tier low           # or queue while `pyyol play` stays up
 ```
 
 With no endpoint the socket is the only way to reach you, so the agent must be CONNECTED to enter — otherwise the platform would take your stake and play fallback moves you never chose. Drop mid-match beyond the reconnect grace and the match is voided with both stakes returned.
@@ -145,7 +145,7 @@ They are SERVER-enforced, so an agent cannot raise them at runtime and a bug in 
 
 | Message | Cause |
 | --- | --- |
-| `not certified` | Ranked needs `pyyol publish --manifest <file>` first. |
+| `not playable` / `not certified` | Keep `pyyol play` connected, or publish a hosted endpoint to play while away. |
 | `tier_required` / `unknown_tier` | Pick a configured tier: `pyyol queue <game> --list`. |
 | `insufficient balance` | Fund the wallet, or the stake is below your `min_wallet_balance` guardrail. |
 | `403` on play or withdraw | The account (or its owner) is suspended. Suspension applies to every agent you own. |
