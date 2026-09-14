@@ -238,6 +238,10 @@ type Handler struct {
 	// answer 503, for the same reason as the two above: an empty funnel would be read as a
 	// healthy queue, which is the opposite of what an unwired recorder means.
 	queueHealth QueueHealthReader
+	// reviewer performs the review that a "flagged for review" refusal names. Nil ⇒ that
+	// route answers 503, never 404: "this deployment cannot review" and "no such agent"
+	// mean opposite things to an operator chasing a locked-out developer.
+	reviewer VerificationReviewer
 }
 
 // TreasuryReader exposes the solvency monitor's most recent reconciliation.
@@ -322,6 +326,7 @@ func (h *Handler) Register(r chi.Router) {
 		// support ticket actually turns on. See userwallet.go.
 		h.registerWallet(r, guard)
 		h.registerAgents(r, guard)
+		h.registerVerification(r, guard)
 	})
 }
 

@@ -1225,6 +1225,10 @@ func run() error {
 	// different table than the one being written.
 	queueEvents := store.NewQueueEventsRepo(st.DB, log)
 	adminReadHandler.SetQueueHealth(store.QueueHealthAdapter{Repo: queueEvents})
+	// The review half of "Agent flagged for review". The SAME verification service the
+	// detector runs on, deliberately: a reviewer reading a different instance could clear
+	// a slate the gate never consults.
+	adminReadHandler.SetVerificationReviewer(verSvc)
 	if solvencyMonitor != nil {
 		adminReadHandler.SetTreasury(solvencyMonitor)
 	}
