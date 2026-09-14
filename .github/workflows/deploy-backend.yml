@@ -108,6 +108,10 @@ jobs:
           SEED_ADMIN_OPERATORS: ${{ secrets.SEED_ADMIN_OPERATORS }}
           PLATFORM_ENGINE_PRIVATE_KEY: ${{ secrets.PLATFORM_ENGINE_PRIVATE_KEY }}
           PLATFORM_ADMIN_PUBLIC_KEY: ${{ secrets.PLATFORM_ADMIN_PUBLIC_KEY }}
+          # Growth unique visitors (optional — Analytics:Read on pyyol.com zone).
+          # Empty ⇒ /v1/admin/analytics/growth/visitors returns available=false.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
           STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
           STRIPE_ARENA_PASS_PRICE_ID: ${{ secrets.STRIPE_ARENA_PASS_PRICE_ID }}
@@ -340,6 +344,10 @@ jobs:
           # ── Platform bus (Super Admin) ──
           PLATFORM_ENGINE_PRIVATE_KEY=${PLATFORM_ENGINE_PRIVATE_KEY:-}
           PLATFORM_ADMIN_PUBLIC_KEY=${PLATFORM_ADMIN_PUBLIC_KEY:-}
+
+          # ── Growth visitors (Cloudflare zone Analytics; Super Admin reads via bus) ──
+          CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+          CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID:-}
 
           # ── Payments (empty STRIPE_SECRET_KEY ⇒ offline dev gateway) ──
           STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}

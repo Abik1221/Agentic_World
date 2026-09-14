@@ -33,6 +33,7 @@ func (h *Handler) Register(r chi.Router) {
 		r.With(guard).Get("/v1/admin/analytics/growth/funnel", h.funnel)
 		r.With(guard).Get("/v1/admin/analytics/growth/auth", h.authMix)
 		r.With(guard).Get("/v1/admin/analytics/growth/countries", h.countries)
+		r.With(guard).Get("/v1/admin/analytics/growth/visitors", h.visitors)
 	})
 }
 
@@ -86,6 +87,10 @@ func (h *Handler) countries(w http.ResponseWriter, r *http.Request) {
 		"range": label, "countries": rows, "total": total, "page": p, "page_size": size,
 		"note": "Prefers signup GeoIP country; falls back to self-reported profile country.",
 	})
+}
+
+func (h *Handler) visitors(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, h.svc.Visitors(r.Context(), r.URL.Query().Get("range")))
 }
 
 func atoiDefault(s string, def int) int {
