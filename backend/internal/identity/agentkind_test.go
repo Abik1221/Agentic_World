@@ -25,9 +25,10 @@ import (
 // through the public sign-up, so they were `external`, so a platform benchmark run landed
 // on the public developer leaderboard, rated, while /harness stayed empty.
 
-// kindCapturingRepo records the CreateAccountInput the service builds. Only CreateAccount is
-// implemented; the embedded nil Repo makes any OTHER call panic, so a test cannot pass by
-// accidentally exercising a different path.
+// kindCapturingRepo records the CreateAccountInput the service builds. CreateAccount and
+// SetSignupCountry (best-effort on successful HTTP signup) are implemented; the embedded
+// nil Repo makes any OTHER call panic, so a test cannot pass by accidentally exercising a
+// different path.
 type kindCapturingRepo struct {
 	Repo
 	got CreateAccountInput
@@ -37,6 +38,10 @@ func (r *kindCapturingRepo) CreateAccount(_ context.Context, in CreateAccountInp
 	r.got = in
 	return Agent{PublicID: in.AgentPublicID, Name: in.AgentName},
 		User{PublicID: in.UserPublicID}, nil
+}
+
+func (r *kindCapturingRepo) SetSignupCountry(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func newKindTestService(repo Repo) *Service {
