@@ -1,6 +1,15 @@
 package verification
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrAgentNotFound is returned when a review names an agent that does not exist. It is a
+// distinct error rather than a silent no-op because the two outcomes look identical to an
+// operator and mean opposite things: one released a flagged agent, the other mistyped an
+// id and released nobody.
+var ErrAgentNotFound = errors.New("verification: no such agent")
 
 // Verification levels / badges (scaffold; promotion logic deepens in Stage 9).
 const (
@@ -23,8 +32,20 @@ type Repo interface {
 	// InsertSample records one action's response time. matchPublicID may be nil
 	// in contexts without a match (it is set from Stage 3 onward).
 	InsertSample(ctx context.Context, agentPublicID string, matchPublicID *string, responseMs int) error
-	// RecentSamples returns up to `limit` most-recent response times (ms).
+	// RecentSamples returns up to `limit` most-recent response times (ms), counting only
+	// what the agent has done SINCE its last review (see Review).
 	RecentSamples(ctx context.Context, agentPublicID string, limit int) ([]int, error)
+	// Review records an operator's decision to judge this agent afresh, and is what makes
+	// the "flagged for review" refusal reviewable at all.
+	//
+	// It clears nothing and exempts nothing — it marks an instant, after which the timing
+	// detector considers only newer samples. That distinction is the whole design: an
+	// exemption would be a hole in a fraud control, while a clean slate leaves the control
+	// in force and simply stops judging an agent forever on evidence it can no longer
+	// outrun. A flagged agent cannot play (not ranked, not a room, not even sandbox) and
+	// so cannot produce the faster samples that would clear it; without a review the
+	// refusal is permanent, including when it is wrong.
+	Review(ctx context.Context, agentPublicID, reviewedBy, reason string) error
 }
 
 // ProvenShare is how much of an agent's play is cryptographically proven LLM-backed.
@@ -132,4 +153,26 @@ func badgeFor(p TimingProfile) string {
 		return BadgeVerifiedBot
 	}
 	return BadgeNew
+}
+
+// Review clears an agent's slate: the timing detector will judge it only on what it does
+// from this moment, and the samples that flagged it are kept but no longer counted.
+//
+// This is the missing half of "Agent flagged for review". The refusal names a review that,
+// until now, nothing in the system could perform — no endpoint, no command, and no code
+// anywhere that deleted a timing sample. That made every flag final, including the ones
+// the detector got wrong, and it gets them wrong cheaply: a provider outage, a rate limit
+// or an unset API key produces twenty slow, erratic turns, which is exactly the shape it
+// looks for.
+//
+// Deliberately NOT an exemption. An agent released here is judged by the same rule as
+// everyone else on its next twenty moves, so a human genuinely playing by hand is flagged
+// again almost immediately. Nothing about the detector is softened, and there is no
+// per-agent bypass for a later change to widen.
+//
+// `reviewedBy` and `reason` are required by the caller, not defaulted here: a clean slate
+// with no attributed decision is indistinguishable from an accident when someone reads the
+// table months later.
+func (s *Service) Review(ctx context.Context, agentPublicID, reviewedBy, reason string) error {
+	return s.repo.Review(ctx, agentPublicID, reviewedBy, reason)
 }

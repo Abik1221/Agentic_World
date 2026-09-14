@@ -15,6 +15,7 @@ func (f fakeSamples) InsertSample(context.Context, string, *string, int) error {
 func (f fakeSamples) RecentSamples(context.Context, string, int) ([]int, error) {
 	return f.ms, nil
 }
+func (f fakeSamples) Review(context.Context, string, string, string) error { return nil }
 
 type fakeProven struct {
 	bound, decisions int

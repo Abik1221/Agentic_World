@@ -42,12 +42,33 @@ func (r *VerificationRepo) InsertSample(ctx context.Context, agentPublicID strin
 	return err
 }
 
+// RecentSamples returns the agent's most recent response times, EXCLUDING anything from
+// before its last verification review.
+//
+// The exclusion is what makes "flagged for review" reviewable. The verdict is computed
+// from an agent's own samples, samples are only produced by playing, and a flagged agent
+// may not play — so without this a flag is permanent and a false positive (a provider
+// outage, a rate limit, an unset API key: twenty slow, erratic turns) ends the agent.
+//
+// A review does not exempt the agent. It marks an instant and the detector starts again
+// from there, so an agent that really is a person at a keyboard is flagged again twenty
+// moves later by the same rule. The samples themselves are kept — the review is recorded
+// beside the evidence, not instead of it.
+//
+// No review, no subquery effect: the NOT EXISTS is false for every agent that has never
+// been reviewed, which is almost all of them, and the plan is the same index scan as
+// before.
 func (r *VerificationRepo) RecentSamples(ctx context.Context, agentPublicID string, limit int) ([]int, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT ats.response_ms
 		 FROM agent_timing_samples ats
 		 JOIN agents a ON a.id = ats.agent_id
 		 WHERE a.public_id = $1
+		   AND ats.created_at > COALESCE(
+		         (SELECT max(vr.created_at)
+		            FROM agent_verification_reviews vr
+		           WHERE vr.agent_id = a.id),
+		         '-infinity'::timestamptz)
 		 ORDER BY ats.created_at DESC
 		 LIMIT $2`, agentPublicID, limit)
 	if err != nil {
@@ -64,4 +85,28 @@ func (r *VerificationRepo) RecentSamples(ctx context.Context, agentPublicID stri
 		out = append(out, ms)
 	}
 	return out, rows.Err()
+}
+
+// Review records an operator's decision to judge this agent from now on.
+//
+// Append-only and deliberately so. Erasing agent_timing_samples would destroy the record
+// of why the agent was ever flagged, which is the evidence a later dispute needs; this
+// writes the decision beside it instead. Reviewing twice is harmless — RecentSamples reads
+// the newest row — so an operator who clicks again after a second false positive gets the
+// obvious behaviour rather than an error.
+func (r *VerificationRepo) Review(ctx context.Context, agentPublicID, reviewedBy, reason string) error {
+	tag, err := r.db.Exec(ctx,
+		`INSERT INTO agent_verification_reviews (agent_id, reviewed_by, reason)
+		 SELECT a.id, $2, $3 FROM agents a WHERE a.public_id = $1`,
+		agentPublicID, reviewedBy, reason)
+	if err != nil {
+		return err
+	}
+	// An unknown agent inserts nothing. Reported rather than swallowed: a silent success
+	// would tell an operator the agent was cleared when the id was simply wrong, and they
+	// would go on believing a flagged agent had been released.
+	if tag.RowsAffected() == 0 {
+		return verification.ErrAgentNotFound
+	}
+	return nil
 }
