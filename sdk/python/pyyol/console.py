@@ -249,6 +249,101 @@ def friends_url(dashboard: str | None = None) -> str:
     return f"{base}/friends" if base else ""
 
 
+def wallet_buy_url(dashboard: str | None = None) -> str:
+    """Absolute Buy-coins wallet URL (``/wallet?tab=buy``). Empty dashboard → no link."""
+    base = (DEFAULT_DASHBOARD if dashboard is None else dashboard).rstrip("/")
+    return f"{base}/wallet?tab=buy" if base else ""
+
+
+def api_error_code(resp: object) -> str:
+    """Normalize arena error envelopes to a lowercase code string."""
+    if not isinstance(resp, dict):
+        return str(resp or "").lower()
+    code = resp.get("code")
+    if isinstance(code, str) and code.strip():
+        return code.strip().lower()
+    err = resp.get("error")
+    if isinstance(err, dict):
+        nested = err.get("code")
+        return str(nested or "").strip().lower()
+    if isinstance(err, str):
+        return err.strip().lower()
+    return ""
+
+
+def is_insufficient_balance(
+    resp: object = None,
+    *,
+    status: int | None = None,
+    code: str | None = None,
+) -> bool:
+    """True for HTTP 402 / ``insufficient_balance`` from CheckJoin and stake sits.
+
+    Used only on paid paths (ranked queue, private rooms). Sandbox never hits this.
+    """
+    if status == 402:
+        return True
+    c = (code or "").strip().lower() or (api_error_code(resp) if resp is not None else "")
+    if not c:
+        return False
+    return c == "insufficient_balance" or (
+        "insufficient" in c and "balance" in c
+    )
+
+
+def offer_buy_coins(
+    dashboard: str | None = None,
+    *,
+    open_browser: bool = True,
+    stream: TextIO | None = None,
+    color: bool | None = None,
+    is_tty: bool | None = None,
+    opener: Callable[[str], bool] | None = None,
+) -> str:
+    """Print a professional funds prompt for a refused paid sit; optionally open Buy coins.
+
+    Never waits for input — non-TTY / CI only print the URL. Returns the URL (may be empty).
+    """
+    stream = stream or sys.stderr
+    url = wallet_buy_url(dashboard)
+    tty = _isatty(stream) if is_tty is None else is_tty
+
+    if color is None:
+        color = os.environ.get("NO_COLOR") is None and tty
+
+    def c(text: str, code: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if color else text
+
+    rows = [
+        c("not enough coins to cover this stake", "1"),
+        "",
+        c("Buy coins (or allocate to this agent), then retry.", "90"),
+    ]
+    width = max(_visible_len(r) for r in rows) + 2
+    stream.write("\n" + c("╭─ pyyol " + "─" * max(0, width - 7) + "╮", "90") + "\n")
+    for r in rows:
+        stream.write(c("│", "90") + " " + r + " " * (width - _visible_len(r)) + c("│", "90") + "\n")
+    stream.write(c("╰" + "─" * (width + 1) + "╯", "90") + "\n")
+    if url:
+        stream.write("  " + c(url, "36") + "\n")
+    stream.flush()
+
+    if url and open_browser and tty:
+        try:
+            if opener is not None:
+                opened = bool(opener(url))
+            else:
+                import webbrowser
+
+                opened = bool(webbrowser.open(url))
+            if opened:
+                stream.write("  " + c("opened Buy coins in your browser", "32") + "\n")
+                stream.flush()
+        except Exception:  # noqa: BLE001 — URL already printed; opening is a bonus
+            pass
+    return url
+
+
 def ask_intent(
     timeout: float = 10.0,
     stream: TextIO | None = None,

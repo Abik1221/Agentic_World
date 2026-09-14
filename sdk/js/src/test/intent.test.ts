@@ -6,7 +6,10 @@ import {
   INTENT_QUEUE,
   askIntent,
   friendsUrl,
+  isInsufficientBalance,
+  offerBuyCoins,
   resolveStartupIntent,
+  walletBuyUrl,
 } from "../intent.js";
 
 function source(data: string, tty = true): NodeJS.ReadableStream & { isTTY?: boolean } {
@@ -33,6 +36,53 @@ describe("friendsUrl", () => {
     assert.equal(friendsUrl("https://pyyol.com"), "https://pyyol.com/friends");
     assert.equal(friendsUrl("https://pyyol.com/"), "https://pyyol.com/friends");
     assert.equal(friendsUrl(""), "");
+  });
+});
+
+describe("walletBuyUrl / insufficient balance", () => {
+  it("joins the buy-coins wallet path", () => {
+    assert.equal(walletBuyUrl("https://pyyol.com"), "https://pyyol.com/wallet?tab=buy");
+    assert.equal(walletBuyUrl("https://pyyol.com/"), "https://pyyol.com/wallet?tab=buy");
+    assert.equal(walletBuyUrl(""), "");
+  });
+
+  it("detects 402 and insufficient_balance codes", () => {
+    assert.equal(isInsufficientBalance({ code: "insufficient_balance" }), true);
+    assert.equal(isInsufficientBalance({ error: { code: "insufficient_balance" } }), true);
+    assert.equal(isInsufficientBalance({}, { status: 402 }), true);
+    assert.equal(isInsufficientBalance({ code: "agent_not_connected" }), false);
+  });
+
+  it("prints the URL on non-TTY without opening a browser", () => {
+    const out = sink(false);
+    const opened: string[] = [];
+    const url = offerBuyCoins("https://pyyol.com", {
+      stdout: out,
+      isTty: false,
+      opener: (u) => {
+        opened.push(u);
+        return true;
+      },
+    });
+    assert.equal(url, "https://pyyol.com/wallet?tab=buy");
+    assert.match(out.chunks.join(""), /wallet\?tab=buy/);
+    assert.match(out.chunks.join(""), /not enough coins/);
+    assert.deepEqual(opened, []);
+  });
+
+  it("opens the browser on TTY", () => {
+    const out = sink(true);
+    const opened: string[] = [];
+    offerBuyCoins("https://pyyol.com", {
+      stdout: out,
+      isTty: true,
+      opener: (u) => {
+        opened.push(u);
+        return true;
+      },
+    });
+    assert.deepEqual(opened, ["https://pyyol.com/wallet?tab=buy"]);
+    assert.match(out.chunks.join(""), /opened Buy coins/);
   });
 });
 

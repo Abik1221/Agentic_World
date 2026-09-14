@@ -919,6 +919,8 @@ def cmd_queue(args: argparse.Namespace) -> int:
         games=[game],
     )
     if st not in (200, 202):
+        from .console import is_insufficient_balance, offer_buy_coins
+
         code = str(resp.get("code") or resp.get("error") or "")
         msg = resp.get("message") or ""
         if "certified" in code or "playable" in code or "not_connected" in code:
@@ -929,11 +931,9 @@ def cmd_queue(args: argparse.Namespace) -> int:
             )
         elif "tier" in code:
             print(f"{BAD} {msg or code} — see `pyyol queue --list`", file=sys.stderr)
-        elif "balance" in code or "insufficient" in code:
-            print(
-                f"{BAD} not enough coins to stake this tier — fund the agent so balance ≥ stake.",
-                file=sys.stderr,
-            )
+        elif is_insufficient_balance(resp, status=st, code=code):
+            dash = (getattr(args, "dashboard", "") or DEFAULT_DASHBOARD).rstrip("/")
+            offer_buy_coins(dash)
         else:
             print(f"{BAD} could not queue{_status(st)}: {resp}", file=sys.stderr)
         return 1
@@ -995,7 +995,7 @@ def cmd_room(args: argparse.Namespace) -> int:
             return 2
         st, resp = _api_post(f"{base}/v1/lobby/join", token, {"match_id": args.id})
         if st != 200:
-            return _room_error(st, resp, "join")
+            return _room_error(st, resp, "join", getattr(args, "dashboard", "") or "")
         print(f"{OK} joined room {args.id}")
         print("    keep your agent connected (`pyyol play`) — it plays automatically.")
         print(f"    watch it:  pyyol watch {args.id}")
@@ -1025,7 +1025,7 @@ def cmd_room(args: argparse.Namespace) -> int:
 
     st, resp = _api_post(f"{base}/v1/room/create", token, body)
     if st not in (200, 201):
-        return _room_error(st, resp, "create")
+        return _room_error(st, resp, "create", getattr(args, "dashboard", "") or "")
 
     room_id = resp.get("room_id") or resp.get("match_id") or ""
     bid = resp.get("bid")
@@ -1045,13 +1045,15 @@ def cmd_room(args: argparse.Namespace) -> int:
     return 0
 
 
-def _room_error(st: int, resp: dict, what: str) -> int:
+def _room_error(st: int, resp: dict, what: str, dashboard: str = "") -> int:
     """Turn the arena's refusal codes into something a developer can act on.
 
     Every branch here is a real first-try failure. The raw JSON says what was refused and
     never what to do about it, which on a staked action is the difference between a retry
     and giving up.
     """
+    from .console import is_insufficient_balance, offer_buy_coins
+
     code = str(resp.get("code") or resp.get("error") or "")
     msg = resp.get("message") or ""
     if "same_owner" in code:
@@ -1067,8 +1069,8 @@ def _room_error(st: int, resp: dict, what: str) -> int:
             "Private rooms do not need ranked endpoint verification.",
             file=sys.stderr,
         )
-    elif "balance" in code or "insufficient" in code:
-        print(f"{BAD} not enough coins to stake this room.", file=sys.stderr)
+    elif is_insufficient_balance(resp, status=st, code=code):
+        offer_buy_coins((dashboard or DEFAULT_DASHBOARD).rstrip("/"))
     elif "not_found" in code:
         print(f"{BAD} no such room — check the id, or it may have been cancelled.", file=sys.stderr)
     elif "not_waiting" in code:
@@ -2379,6 +2381,8 @@ def _start_ranked(base, token, arena, args, console, agent_id="", owner_token=""
                 "match", f"queued for RANKED {arena} (tier {tier}) — you play when matched"
             )
         return
+    from .console import is_insufficient_balance, offer_buy_coins
+
     code = str(resp.get("code") or resp.get("error") or "")
     if "certified" in code or "playable" in code or "not_connected" in code:
         console.emit(
@@ -2386,6 +2390,9 @@ def _start_ranked(base, token, arena, args, console, agent_id="", owner_token=""
             "this agent is not reachable for ranked — keep `pyyol play` / `pyyol dev` connected, "
             "or publish a hosted endpoint to play while away.",
         )
+    elif is_insufficient_balance(resp, status=st, code=code):
+        dash = (getattr(args, "dashboard", "") or DEFAULT_DASHBOARD).rstrip("/")
+        offer_buy_coins(dash)
     else:
         console.emit("error", f"could not queue ranked{_status(st)}: {resp}")
 

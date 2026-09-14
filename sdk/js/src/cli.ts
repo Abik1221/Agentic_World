@@ -23,6 +23,8 @@ import { askWatch, watchUrl, WATCH_BROWSER, WATCH_TERMINAL, type WatchChoice } f
 import {
   INTENT_INVITE,
   friendsUrl,
+  isInsufficientBalance,
+  offerBuyCoins,
   resolveStartupIntent,
   type StartupIntent,
 } from "./intent.js";
@@ -659,7 +661,10 @@ async function orchestrate(a: Args, devLocked: boolean): Promise<number> {
         console.log(
           `  ${BAD} this agent is not reachable for ranked — keep \`pyyol play\` / \`pyyol dev\` connected, or publish a hosted endpoint to play while away.`,
         );
-      else console.log(`  ${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
+      else if (isInsufficientBalance(resp, { status: st })) {
+        const dash = (str(a, "dashboard") || DEFAULT_DASHBOARD).replace(/\/$/, "");
+        offerBuyCoins(dash);
+      } else console.log(`  ${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
       return;
     }
     if (matches <= 0) {
@@ -869,8 +874,10 @@ async function cmdQueue(a: Args): Promise<number> {
       console.error(
         `${BAD} this agent is not reachable for ranked. Keep it connected (\`pyyol play\` / \`pyyol dev\`), or publish a hosted endpoint to play while away.`,
       );
-    else if (code.includes("balance") || code.includes("insufficient")) console.error(`${BAD} not enough coins — fund your wallet (see \`pyyol wallet\`).`);
-    else console.error(`${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
+    else if (isInsufficientBalance(resp, { status: st, code })) {
+      const dash = (str(a, "dashboard") || DEFAULT_DASHBOARD).replace(/\/$/, "");
+      offerBuyCoins(dash);
+    } else console.error(`${BAD} could not queue ranked (${st}): ${JSON.stringify(resp)}`);
     return 1;
   }
   console.log(`  ${OK} queued for ${game}${body.tier ? ` (tier ${body.tier})` : ""} — keep your agent connected; it plays when matched.`);
@@ -921,7 +928,7 @@ async function cmdRoom(a: Args): Promise<number> {
       return 2;
     }
     const [st, resp] = await apiPost(`${base}/v1/lobby/join`, token, { match_id: id });
-    if (st !== 200) return roomError(st, resp, "join");
+    if (st !== 200) return roomError(st, resp, "join", str(a, "dashboard") || "");
     console.log(`${OK} joined room ${id}`);
     console.log("    keep your agent connected (`pyyol play`) — it plays automatically.");
     console.log(`    watch it:  pyyol watch ${id}`);
@@ -947,7 +954,7 @@ async function cmdRoom(a: Args): Promise<number> {
     return 2;
   }
   const [st, resp] = await apiPost(`${base}/v1/room/create`, token, body);
-  if (st !== 200 && st !== 201) return roomError(st, resp, "create");
+  if (st !== 200 && st !== 201) return roomError(st, resp, "create", str(a, "dashboard") || "");
 
   const roomId = String(resp.room_id ?? resp.match_id ?? "");
   console.log(`${OK} room created`);
@@ -972,7 +979,7 @@ async function cmdRoom(a: Args): Promise<number> {
  * never what to do about it, which on a staked action is the difference between a retry and
  * giving up.
  */
-function roomError(st: number, resp: Record<string, unknown>, what: string): number {
+function roomError(st: number, resp: Record<string, unknown>, what: string, dashboard = ""): number {
   const code = String(resp.code ?? resp.error ?? "");
   const msg = resp.message ?? "";
   if (code.includes("same_owner")) {
@@ -986,8 +993,8 @@ function roomError(st: number, resp: Record<string, unknown>, what: string): num
         `then open the room. A hosted deploy also works. Auto-play alone is not a play path. ` +
         `Private rooms do not need ranked endpoint verification.`,
     );
-  } else if (code.includes("balance") || code.includes("insufficient")) {
-    console.error(`${BAD} not enough coins to stake this room.`);
+  } else if (isInsufficientBalance(resp, { status: st, code })) {
+    offerBuyCoins((dashboard || DEFAULT_DASHBOARD).replace(/\/$/, ""));
   } else if (code.includes("not_found")) {
     console.error(`${BAD} no such room — check the id, or it may have been cancelled.`);
   } else if (code.includes("not_waiting")) {
