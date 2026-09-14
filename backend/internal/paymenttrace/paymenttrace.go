@@ -177,14 +177,32 @@ func nowUTC() time.Time { return time.Now().UTC() }
 
 // Timelines assembles a user's recent payment attempts, newest first.
 func (s *Service) Timelines(ctx context.Context, userPublicID string, limit int) ([]Timeline, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 25
+	return s.TimelinesSince(ctx, userPublicID, limit, 0)
+}
+
+// TimelinesSince is Timelines with an optional day window (0 = no day filter).
+// The day filter is applied after assembly so a partial flow near the boundary
+// is never sliced mid-timeline.
+func (s *Service) TimelinesSince(ctx context.Context, userPublicID string, limit, days int) ([]Timeline, error) {
+	if limit <= 0 || limit > 250 {
+		limit = 50
 	}
 	events, err := s.repo.ByUser(ctx, userPublicID, limit)
 	if err != nil {
 		return nil, err
 	}
-	return Assemble(events, nowUTC()), nil
+	out := Assemble(events, nowUTC())
+	if days > 0 && days <= 365 {
+		cutoff := nowUTC().Add(-time.Duration(days) * 24 * time.Hour)
+		filtered := out[:0]
+		for _, t := range out {
+			if t.UpdatedAt.After(cutoff) || t.UpdatedAt.Equal(cutoff) {
+				filtered = append(filtered, t)
+			}
+		}
+		out = filtered
+	}
+	return out, nil
 }
 
 // Assemble groups raw events by flow+ref and renders each against its spec. Pure,

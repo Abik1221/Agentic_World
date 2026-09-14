@@ -55,7 +55,8 @@ func (h *Handler) flows(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) timeline(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items, err := h.svc.Timelines(r.Context(), p.UserPublicID, limit)
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	items, err := h.svc.TimelinesSince(r.Context(), p.UserPublicID, limit, days)
 	if err != nil {
 		httpx.Error(w, err)
 		return

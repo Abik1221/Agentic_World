@@ -12,7 +12,10 @@ from pyyol.console import (
     INTENT_QUEUE,
     ask_intent,
     friends_url,
+    is_insufficient_balance,
+    offer_buy_coins,
     resolve_startup_intent,
+    wallet_buy_url,
 )
 
 
@@ -29,6 +32,48 @@ def test_friends_url_joins_dashboard():
     assert friends_url("https://pyyol.com") == "https://pyyol.com/friends"
     assert friends_url("https://pyyol.com/") == "https://pyyol.com/friends"
     assert friends_url("") == ""
+
+
+def test_wallet_buy_url_joins_dashboard():
+    assert wallet_buy_url("https://pyyol.com") == "https://pyyol.com/wallet?tab=buy"
+    assert wallet_buy_url("https://pyyol.com/") == "https://pyyol.com/wallet?tab=buy"
+    assert wallet_buy_url("") == ""
+
+
+def test_is_insufficient_balance_by_code_and_status():
+    assert is_insufficient_balance({"code": "insufficient_balance"})
+    assert is_insufficient_balance({"error": {"code": "insufficient_balance"}})
+    assert is_insufficient_balance({}, status=402)
+    assert not is_insufficient_balance({"code": "agent_not_connected"})
+    assert not is_insufficient_balance({"code": "limit_max_bid"})
+
+
+def test_offer_buy_coins_prints_url_without_opening_on_non_tty():
+    out = FakeTTY(tty=False)
+    opened: list[str] = []
+    url = offer_buy_coins(
+        "https://pyyol.com",
+        stream=out,
+        is_tty=False,
+        opener=lambda u: opened.append(u) or True,
+    )
+    assert url == "https://pyyol.com/wallet?tab=buy"
+    assert "wallet?tab=buy" in out.getvalue()
+    assert "not enough coins" in out.getvalue()
+    assert opened == []
+
+
+def test_offer_buy_coins_opens_on_tty():
+    out = FakeTTY(tty=True)
+    opened: list[str] = []
+    offer_buy_coins(
+        "https://pyyol.com",
+        stream=out,
+        is_tty=True,
+        opener=lambda u: opened.append(u) or True,
+    )
+    assert opened == ["https://pyyol.com/wallet?tab=buy"]
+    assert "opened Buy coins" in out.getvalue()
 
 
 def test_non_tty_returns_queue_without_prompt():

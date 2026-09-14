@@ -11,6 +11,7 @@ import (
 	"github.com/agent-arena/arena/internal/auth"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/middleware"
+	"github.com/agent-arena/arena/internal/sdkstats"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -265,6 +266,7 @@ func (h *Handler) signup(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	h.recordSignupCountry(r, res.UserPublicID)
 	out := map[string]any{
 		"dashboard_token": res.DashboardToken,
 		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
@@ -430,6 +432,9 @@ func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if res.Created {
+		h.recordSignupCountry(r, res.UserPublicID)
+	}
 	out := map[string]any{
 		"dashboard_token": res.DashboardToken,
 		"refresh_token":   h.issueRefresh(r.Context(), res.UserPublicID),
@@ -485,6 +490,9 @@ func (h *Handler) githubLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	if res.Created {
+		h.recordSignupCountry(r, res.UserPublicID)
 	}
 	out := map[string]any{
 		"dashboard_token": res.DashboardToken,
@@ -542,6 +550,9 @@ func (h *Handler) appleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.Error(w, err)
 		return
+	}
+	if res.Created {
+		h.recordSignupCountry(r, res.UserPublicID)
 	}
 	out := map[string]any{
 		"dashboard_token": res.DashboardToken,
@@ -1101,4 +1112,13 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		_ = h.refresh.Revoke(r.Context(), in.RefreshToken)
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// recordSignupCountry best-effort GeoIP at account creation for growth analytics.
+// Failures are ignored — signup must never fail because country resolution did.
+func (h *Handler) recordSignupCountry(r *http.Request, userPublicID string) {
+	if userPublicID == "" {
+		return
+	}
+	_ = h.svc.RecordSignupCountry(r.Context(), userPublicID, sdkstats.CountryFromRequest(r))
 }

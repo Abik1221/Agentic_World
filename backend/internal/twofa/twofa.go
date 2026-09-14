@@ -60,9 +60,22 @@ type Service struct {
 
 func New(repo Repo, enc *secretbox.Cipher, clock platform.Clock, issuer, recoveryPepper string) *Service {
 	if issuer == "" {
-		issuer = "pyyol"
+		issuer = "Pyyol"
 	}
 	return &Service{repo: repo, enc: enc, clock: clock, issuer: issuer, skew: 1, recPepper: recoveryPepper}
+}
+
+// PickAccountLabel chooses the authenticator-app account name shown next to the
+// issuer. Prefer the public username, then email, then the opaque public id as a
+// last resort so enrollment never invents a label the account does not own.
+func PickAccountLabel(username, email, userPublicID string) string {
+	if u := strings.TrimPrefix(strings.TrimSpace(username), "@"); u != "" {
+		return u
+	}
+	if e := strings.TrimSpace(email); e != "" {
+		return e
+	}
+	return strings.TrimSpace(userPublicID)
 }
 
 var recB32 = base32.StdEncoding.WithPadding(base32.NoPadding)

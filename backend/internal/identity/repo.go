@@ -114,6 +114,11 @@ type Repo interface {
 	// is what login and session middleware consult.
 	SetUserStatus(ctx context.Context, userPublicID, next string) (prev string, err error)
 
+	// SetSignupCountry records the GeoIP/CDN country at account creation (ISO-3166
+	// alpha-2, or XX). Idempotent for already-set non-XX values so a later login
+	// cannot overwrite the first signal. Used by growth analytics.
+	SetSignupCountry(ctx context.Context, userPublicID, country string) error
+
 	// ListBannedUserIDs warms the in-process ban index after a restart.
 	ListBannedUserIDs(ctx context.Context) ([]string, error)
 

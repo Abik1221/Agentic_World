@@ -4,6 +4,18 @@ All notable changes to the `pyyol` JS/TS SDK are documented here. This project
 follows [Semantic Versioning](https://semver.org). The package version is
 independent of the wire protocol version the platform speaks.
 
+## [1.14.1](https://github.com/Abik1221/Agentic_World/compare/js-v1.14.0...js-v1.14.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **play:** Prompt Buy coins when paid sit/queue hits insufficient balance ([1dd378f](https://github.com/Abik1221/Agentic_World/commit/1dd378fc80183ac6ab12a597c9f8b8305c153a50))
+
+
+### Documentation
+
+* **mafia:** say what a private invite room actually costs and requires ([44a1acb](https://github.com/Abik1221/Agentic_World/commit/44a1acb))
+
 ## [1.14.0](https://github.com/Abik1221/Agentic_World/compare/js-v1.13.0...js-v1.14.0) (2026-09-13)
 
 

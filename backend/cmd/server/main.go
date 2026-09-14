@@ -29,6 +29,7 @@ import (
 	"github.com/agent-arena/arena/internal/blockchain"
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
+	"github.com/agent-arena/arena/internal/cloudflare"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/deadline"
 	"github.com/agent-arena/arena/internal/deception"
@@ -41,6 +42,7 @@ import (
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/groupmatch"
+	"github.com/agent-arena/arena/internal/growthstats"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
@@ -591,8 +593,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	twofaSvc := twofa.New(store.NewTwoFARepo(st.DB), totpCipher, clock, "pyyol", cfg.APIKeyPepper)
+	twoFARepo := store.NewTwoFARepo(st.DB)
+	twofaSvc := twofa.New(twoFARepo, totpCipher, clock, "Pyyol", cfg.APIKeyPepper)
 	twofaHandler := twofa.NewHandler(twofaSvc, authn)
+	// Authenticator QR label: @username, else email — not the opaque usr_… public id.
+	twofaHandler.SetAccountLabeler(twoFARepo.AccountLabel)
 	// 2FA (when the user has enabled it) is required on the money-sensitive steps:
 	// verifying/changing the payout wallet AND cashing out. Both are step-up gated.
 	walletVerifyHandler.SetStepUp(twofaSvc)
@@ -1887,6 +1892,14 @@ func run() error {
 	sdkStatsHandler := sdkstats.NewHandler(sdkstats.New(sdkStatsRepo), authn, cfg.AdminUserIDs)
 	launch("sdk-download-poller", sdkstats.NewPoller(sdkStatsRepo, log, "pyyol", 12*time.Hour).Run)
 
+	// Growth analytics for Super Admin (signups, funnel, auth mix, countries, CF visitors).
+	cfAnalytics := cloudflare.New(cfg.CloudflareAPIToken, cfg.CloudflareZoneID)
+	if !cfAnalytics.Enabled() {
+		log.Warn("growth: Cloudflare Analytics disabled (no CLOUDFLARE_API_TOKEN/ZONE_ID) — visitors show as not configured")
+	}
+	growthHandler := growthstats.NewHandler(
+		growthstats.New(store.NewGrowthStatsRepo(st.DB), cfAnalytics), authn, cfg.AdminUserIDs)
+
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{
 		healthH.Register,
@@ -1958,6 +1971,7 @@ func run() error {
 		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
 		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)
 		sdkStatsHandler.Register,    // public install-ping ingest + admin SDK download analytics
+		growthHandler.Register,      // Super Admin growth analytics (funnel / auth / countries)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,

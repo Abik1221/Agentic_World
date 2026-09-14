@@ -54,8 +54,8 @@ func (r *PaymentTraceRepo) Record(ctx context.Context, userPublicID string, e pa
 // half at the boundary and render a payment as missing its last two stages — the
 // exact false alarm this feature exists to remove.
 func (r *PaymentTraceRepo) ByUser(ctx context.Context, userPublicID string, limit int) ([]paymenttrace.Event, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 25
+	if limit <= 0 || limit > 250 {
+		limit = 50
 	}
 	rows, err := r.db.Query(ctx,
 		`WITH recent AS (
