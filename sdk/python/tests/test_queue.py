@@ -254,8 +254,12 @@ def test_enqueue_ranked_refuses_when_never_reachable(monkeypatch):
 
 def test_start_ranked_does_not_kick_sandbox(monkeypatch):
     kicked = {"sandbox": False}
-    monkeypatch.setattr(cli, "_enqueue_ranked", lambda *_a, **_k: (409, {"code": "agent_not_playable"}))
-    monkeypatch.setattr(cli, "_start_sandbox", lambda *_a, **_k: kicked.__setitem__("sandbox", True))
+    monkeypatch.setattr(
+        cli, "_enqueue_ranked", lambda *_a, **_k: (409, {"code": "agent_not_playable"})
+    )
+    monkeypatch.setattr(
+        cli, "_start_sandbox", lambda *_a, **_k: kicked.__setitem__("sandbox", True)
+    )
 
     class _Console:
         def emit(self, *_a, **_k):

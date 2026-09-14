@@ -52,7 +52,7 @@ _LOCKUP = (
     '<rect x="34.4" y="0" width="1.6" height="1.6" rx=".5"/>'
     "</g>"
     '<text x="46" y="40" fill="#e8e9ed" font-size="28" font-weight="500" '
-    "letter-spacing=\"-0.04em\" "
+    'letter-spacing="-0.04em" '
     "font-family=\"Space Grotesk,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif\">"
     "pyyol</text></svg>"
 )

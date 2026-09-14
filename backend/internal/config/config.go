@@ -501,6 +501,12 @@ type Config struct {
 	// docs/architecture/platform-config-bus.md.
 	PlatformEnginePrivateKey string // base64 32-byte seed; signs outbound events
 	PlatformAdminPublicKey   string // base64 32-byte key; verifies inbound config
+
+	// Cloudflare Analytics (Growth unique visitors). Owned here so Super Admin
+	// never needs the token — it reads visitors over the signed platform bus.
+	// Empty token or zone ⇒ growth visitors report available=false honestly.
+	CloudflareAPIToken string
+	CloudflareZoneID   string
 }
 
 // IsProd reports whether the service runs in a production-like environment.
@@ -717,6 +723,9 @@ func Load() (*Config, error) {
 
 		PlatformEnginePrivateKey: l.str("PLATFORM_ENGINE_PRIVATE_KEY", ""),
 		PlatformAdminPublicKey:   l.str("PLATFORM_ADMIN_PUBLIC_KEY", ""),
+
+		CloudflareAPIToken: l.str("CLOUDFLARE_API_TOKEN", ""),
+		CloudflareZoneID:   l.str("CLOUDFLARE_ZONE_ID", ""),
 	}
 
 	// The read plane's key falls back to the ingest key, so a single-key stack needs

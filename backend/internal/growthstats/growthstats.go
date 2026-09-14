@@ -1,10 +1,10 @@
 // Package growthstats powers Super-Admin growth analytics: signup rates, conversion
 // funnel, auth-provider mix, and country breakdown — all from the arena Postgres as
-// the source of truth.
+// the source of truth — plus optional Cloudflare zone visitor time-series.
 //
 // Honesty rules baked into the API responses:
-//   - Visitors: not tracked (no first-party pageview pipeline). The field is present
-//     with available=false so the UI never invents a number.
+//   - Visitors: Cloudflare Analytics when CLOUDFLARE_API_TOKEN + ZONE_ID are set on
+//     this service; otherwise available=false so the UI never invents a number.
 //   - Growth rate: WoW / MoM change in new signups (clear windows, documented).
 //   - Built agent: users with ≥1 non-house agent (most accounts get one at signup).
 //   - Ran SDK: users whose agent API key was used OR who sat in ≥1 match.
@@ -15,8 +15,11 @@ package growthstats
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/agent-arena/arena/internal/cloudflare"
 )
 
 // Range windows the admin UI offers.
@@ -30,12 +33,12 @@ const (
 type Summary struct {
 	Range       string            `json:"range"`
 	Definitions map[string]string `json:"definitions"`
-	Signups     SignupMetrics     `json:"signups"`
-	Visitors    VisitorMetrics    `json:"visitors"`
-	Funnel      FunnelCounts      `json:"funnel"`
-	Conversion  ConversionRates   `json:"conversion"`
-	AuthMix     []AuthCount       `json:"auth_mix"`
-	GeneratedAt time.Time         `json:"generated_at"`
+	Signups     SignupMetrics       `json:"signups"`
+	Visitors    cloudflare.Visitors `json:"visitors"`
+	Funnel      FunnelCounts        `json:"funnel"`
+	Conversion  ConversionRates     `json:"conversion"`
+	AuthMix     []AuthCount         `json:"auth_mix"`
+	GeneratedAt time.Time           `json:"generated_at"`
 }
 
 type SignupMetrics struct {
@@ -49,12 +52,6 @@ type SignupMetrics struct {
 	Signups30d   int64   `json:"signups_30d"`
 	SignupsPrior7d  int64 `json:"signups_prior_7d"`
 	SignupsPrior30d int64 `json:"signups_prior_30d"`
-}
-
-type VisitorMetrics struct {
-	Available bool   `json:"available"`
-	Label     string `json:"label"`
-	Note      string `json:"note"`
 }
 
 type FunnelCounts struct {
@@ -103,13 +100,16 @@ type Store interface {
 	Countries(ctx context.Context, since, until time.Time, limit, offset int) (rows []CountryCount, total int, err error)
 }
 
-// Service holds window math; SQL lives in Store.
+// Service holds window math; SQL lives in Store. Cloudflare is optional.
 type Service struct {
 	store Store
+	cf    *cloudflare.Client
 	now   func() time.Time
 }
 
-func New(store Store) *Service { return &Service{store: store, now: time.Now} }
+func New(store Store, cf *cloudflare.Client) *Service {
+	return &Service{store: store, cf: cf, now: time.Now}
+}
 
 func ParseRange(r string) (label string, lookback time.Duration) {
 	switch strings.ToLower(strings.TrimSpace(r)) {
@@ -141,15 +141,36 @@ func rate(num, den int64) float64 {
 
 func definitions() map[string]string {
 	return map[string]string{
-		"growth_rate":  "Change in new signups vs the prior equal-length window. WoW = latest 7d vs previous 7d; MoM = latest 30d vs previous 30d.",
-		"visitors":     "Unique site visitors are not tracked yet (no first-party pageviews; privacy policy excludes third-party analytics).",
-		"signups":      "New user accounts created in the selected window (users.created_at).",
-		"built_agent":  "Signups in-window who own ≥1 non-house agent. Most accounts receive an agent at signup.",
-		"ran_sdk":      "Signups in-window whose agent API key was used (last_used_at) or who sat in ≥1 match.",
-		"paid":         "Signups in-window with ≥1 successful coin deposit (ledger topup credit).",
-		"auth":         "Primary auth method on the account: Google / Apple / GitHub / email-password / Privy / other. A user may later link more; we count the first identity present.",
-		"country":      "Prefers signup_country (GeoIP/CDN at account creation). Falls back to self-reported profile country. Never stores raw IP.",
+		"growth_rate": "Change in new signups vs the prior equal-length window. WoW = latest 7d vs previous 7d; MoM = latest 30d vs previous 30d.",
+		"visitors":    "Unique site visitors from Cloudflare zone Analytics (sum of daily uniques). Configured only on the arena via CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID.",
+		"signups":     "New user accounts created in the selected window (users.created_at).",
+		"built_agent": "Signups in-window who own ≥1 non-house agent. Most accounts receive an agent at signup.",
+		"ran_sdk":     "Signups in-window whose agent API key was used (last_used_at) or who sat in ≥1 match.",
+		"paid":        "Signups in-window with ≥1 successful coin deposit (ledger topup credit).",
+		"auth":        "Primary auth method on the account: Google / Apple / GitHub / email-password / Privy / other. A user may later link more; we count the first identity present.",
+		"country":     "Prefers signup_country (GeoIP/CDN at account creation). Falls back to self-reported profile country. Never stores raw IP.",
 	}
+}
+
+func (s *Service) visitors(ctx context.Context, rangeKey string) cloudflare.Visitors {
+	if s.cf == nil || !s.cf.Enabled() {
+		return cloudflare.Unavailable("Set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID on Agentic_World (Analytics:Read on the pyyol.com zone) to show site visitors.")
+	}
+	v, err := s.cf.Summary(ctx, rangeKey)
+	if err != nil {
+		slog.Warn("growthstats: cloudflare visitors unavailable", "err", err)
+		return cloudflare.Visitors{
+			Available: false,
+			Label:     "Cloudflare error",
+			Note:      "Could not load zone analytics — signup funnel below is still from arena Postgres.",
+		}
+	}
+	return v
+}
+
+// Visitors is the dedicated visitors endpoint payload.
+func (s *Service) Visitors(ctx context.Context, rangeKey string) cloudflare.Visitors {
+	return s.visitors(ctx, rangeKey)
 }
 
 func (s *Service) Summary(ctx context.Context, rangeKey string) (Summary, error) {
@@ -210,12 +231,8 @@ func (s *Service) Summary(ctx context.Context, rangeKey string) (Summary, error)
 			SignupsPrior7d:  s7p,
 			SignupsPrior30d: s30p,
 		},
-		Visitors: VisitorMetrics{
-			Available: false,
-			Label:     "Not tracked",
-			Note:      "No first-party visitor counters yet. Conversion below is signup→activation, not visitor→signup.",
-		},
-		Funnel: funnel,
+		Visitors: s.visitors(ctx, label),
+		Funnel:   funnel,
 		Conversion: ConversionRates{
 			SignupToAgentPct: rate(funnel.BuiltAgent, funnel.Signups),
 			SignupToSDKPct:   rate(funnel.RanSDK, funnel.Signups),

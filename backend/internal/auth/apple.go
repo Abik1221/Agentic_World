@@ -31,7 +31,16 @@ import (
 // keeps its client secret server-side.
 
 const (
-	appleTokenURL = "https://appleid.apple.com/auth/token"
+	// G101 fires on the NAME, not the value: gosec's default pattern matches any
+	// identifier containing "token" that is assigned a string literal. This is Apple's
+	// published token ENDPOINT — the same URL in their public documentation — and the
+	// secret that gets sent to it is the client-secret JWT minted at request time from
+	// the .p8 key, which is never a literal anywhere in this repo.
+	//
+	// Suppressed inline rather than adding G101 to the gosec excludes in .golangci.yml:
+	// a global exclude would also stop the check catching a real hardcoded credential
+	// somewhere else, which is the whole reason the rule is on.
+	appleTokenURL = "https://appleid.apple.com/auth/token" //nolint:gosec // G101: public token endpoint URL, not a credential
 	appleCertsURL = "https://appleid.apple.com/auth/keys"
 	appleIssuer   = "https://appleid.apple.com"
 	// Apple allows client-secret JWTs up to 6 months; we mint fresh ones for ~20 minutes

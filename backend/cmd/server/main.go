@@ -29,6 +29,7 @@ import (
 	"github.com/agent-arena/arena/internal/blockchain"
 	"github.com/agent-arena/arena/internal/bot"
 	"github.com/agent-arena/arena/internal/clips"
+	"github.com/agent-arena/arena/internal/cloudflare"
 	"github.com/agent-arena/arena/internal/config"
 	"github.com/agent-arena/arena/internal/deadline"
 	"github.com/agent-arena/arena/internal/deception"
@@ -1895,9 +1896,13 @@ func run() error {
 	sdkStatsHandler := sdkstats.NewHandler(sdkstats.New(sdkStatsRepo), authn, cfg.AdminUserIDs)
 	launch("sdk-download-poller", sdkstats.NewPoller(sdkStatsRepo, log, "pyyol", 12*time.Hour).Run)
 
-	// Growth analytics for Super Admin (signups, funnel, auth mix, countries).
+	// Growth analytics for Super Admin (signups, funnel, auth mix, countries, CF visitors).
+	cfAnalytics := cloudflare.New(cfg.CloudflareAPIToken, cfg.CloudflareZoneID)
+	if !cfAnalytics.Enabled() {
+		log.Warn("growth: Cloudflare Analytics disabled (no CLOUDFLARE_API_TOKEN/ZONE_ID) — visitors show as not configured")
+	}
 	growthHandler := growthstats.NewHandler(
-		growthstats.New(store.NewGrowthStatsRepo(st.DB)), authn, cfg.AdminUserIDs)
+		growthstats.New(store.NewGrowthStatsRepo(st.DB), cfAnalytics), authn, cfg.AdminUserIDs)
 
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{

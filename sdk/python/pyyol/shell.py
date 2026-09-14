@@ -412,7 +412,9 @@ def _print_help(
             "q": "leave the shell",
         }
         if topic in builtins:
-            stream.write("\n  " + s("/" + (topic or "/"), _BRAND) + "  " + s(builtins[topic], _DIM) + "\n\n")
+            stream.write(
+                "\n  " + s("/" + (topic or "/"), _BRAND) + "  " + s(builtins[topic], _DIM) + "\n\n"
+            )
             return
         subs = _subparsers(parser) if parser is not None else {}
         if topic in subs:
@@ -420,28 +422,18 @@ def _print_help(
             subs[topic].print_help(stream)
             stream.write("\n")
             return
-        stream.write(
-            s(f"  unknown command: {topic}", _ERR) + s("   /help lists them all\n", _DIM)
-        )
+        stream.write(s(f"  unknown command: {topic}", _ERR) + s("   /help lists them all\n", _DIM))
         return
 
     stream.write("\n")
     stream.write("  " + s("START HERE", _DIM) + "\n")
     stream.write(
-        "    "
-        + s("login".ljust(12), _BRAND)
-        + s("sign in once (opens a browser)\n", _DIM)
+        "    " + s("login".ljust(12), _BRAND) + s("sign in once (opens a browser)\n", _DIM)
     )
     stream.write(
-        "    "
-        + s("init <dir>".ljust(12), _BRAND)
-        + s("scaffold an agent + pyyol.toml\n", _DIM)
+        "    " + s("init <dir>".ljust(12), _BRAND) + s("scaffold an agent + pyyol.toml\n", _DIM)
     )
-    stream.write(
-        "    "
-        + s("dev".ljust(12), _BRAND)
-        + s("practice in SANDBOX — no stakes\n", _DIM)
-    )
+    stream.write("    " + s("dev".ljust(12), _BRAND) + s("practice in SANDBOX — no stakes\n", _DIM))
     stream.write("\n")
 
     shown: set[str] = set()

@@ -443,11 +443,20 @@ def _enqueue_ranked(
     CLI used to give up. Retry the same unreachable codes sandbox already waited
     on. Never falls through to sandbox.
     """
-    last_st, last = 0, {}
+    # Annotated separately: an empty literal inside a tuple assignment gives mypy
+    # nothing to infer the value type from, and this pair is what the function returns.
+    last_st = 0
+    last: dict = {}
     for i in range(max(1, attempts)):
         st, resp = _api_post(f"{base}{path}", token, body)
-        if st in (400, 403) and "certified" in str((resp or {}).get("code") or (resp or {}).get("error") or ""):
-            if owner_token and agent_id and _certify_connected(base, agent_id, owner_token, games or []):
+        if st in (400, 403) and "certified" in str(
+            (resp or {}).get("code") or (resp or {}).get("error") or ""
+        ):
+            if (
+                owner_token
+                and agent_id
+                and _certify_connected(base, agent_id, owner_token, games or [])
+            ):
                 st, resp = _api_post(f"{base}{path}", token, body)
         if st in (200, 202):
             return st, resp
@@ -493,7 +502,9 @@ def _certify_connected(api: str, agent: str, owner_token: str, games: list[str])
         mid = m.get("manifest_id")
     mid_q = urllib.parse.quote(str(mid), safe="")
     st, report = _api_post(f"{api}/v1/agents/{ag}/manifest/{mid_q}/verify", owner_token, {})
-    return st == 200 and bool((report or {}).get("verified") or (report or {}).get("status") == "verified")
+    return st == 200 and bool(
+        (report or {}).get("verified") or (report or {}).get("status") == "verified"
+    )
 
 
 # --- publish (submit -> set secret -> verify) ----------------------------------
@@ -2180,7 +2191,15 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         if not dev_locked and startup == "invite":
             return
         if m == mode.RANKED:
-            _start_ranked(base, token, arena, args, console, agent_id=agent_id, owner_token=_owner_token(creds))
+            _start_ranked(
+                base,
+                token,
+                arena,
+                args,
+                console,
+                agent_id=agent_id,
+                owner_token=_owner_token(creds),
+            )
             return
         matches = getattr(args, "matches", 1)
         if matches is None:
@@ -3102,10 +3121,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pp.add_argument("arena", choices=["goofspiel", "mafia"])
     pp.add_argument(
-        "--ranked", action="store_true", help="REAL stakes (connected CLI is enough; hosted verify is the away path)"
+        "--ranked",
+        action="store_true",
+        help="REAL stakes (connected CLI is enough; hosted verify is the away path)",
     )
     pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
-    pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start (0 = connect only)")
+    pp.add_argument(
+        "--matches", type=int, default=1, help="sandbox matches to start (0 = connect only)"
+    )
     pp.add_argument("--yes", action="store_true", help="skip the ranked confirmation (CI)")
     # Join vs Invite: TTY asks once; non-TTY / --queue / --ranked keep auto-start.
     pp.add_argument(
@@ -3338,9 +3361,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["goofspiel", "mafia"],
         help="room game: goofspiel (1v1) or mafia (12 seats; invited agents only)",
     )
-    prm.add_argument(
-        "--tier", default="", help="stake tier key (see `pyyol queue <game> --list`)"
-    )
+    prm.add_argument("--tier", default="", help="stake tier key (see `pyyol queue <game> --list`)")
     prm.add_argument("--bid", type=int, default=0, help="explicit coin stake")
     prm.add_argument("--token", default="")
     prm.set_defaults(func=cmd_room)
@@ -3422,7 +3443,10 @@ def main(argv: list[str] | None = None) -> int:
     # pipeline forever, in exactly the places nobody is watching. argv is checked rather than
     # sys.argv so a programmatic main([]) keeps its old behaviour.
     invoked_from_cli = argv is None
-    args = sys.argv[1:] if invoked_from_cli else list(argv)
+    # Tested as `argv is None` rather than reusing invoked_from_cli: the two are the same
+    # condition, but a type checker cannot narrow `argv` through the intermediate name, so
+    # the else branch read as "argv might still be None" and list(argv) was an error.
+    args = sys.argv[1:] if argv is None else list(argv)
     args, open_menu = _normalize_argv(args)
 
     if invoked_from_cli and not args:
@@ -3434,7 +3458,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         from . import shell
 
-        return shell.print_developer_help() if open_menu else (build_parser().print_help() or 0)
+        if open_menu:
+            return shell.print_developer_help()
+        # print_help() returns None; `... or 0` leaned on that to produce an exit code,
+        # which reads as "use the result" when there is no result to use.
+        build_parser().print_help()
+        return 0
 
     if open_menu and not args:
         from . import shell
