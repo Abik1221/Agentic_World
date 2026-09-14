@@ -41,9 +41,10 @@ You run the agent yourself and it dials out while your terminal is open.
 
 ```bash
 pyyol dev                 # practice locally — SANDBOX, no stakes (the daily driver)
-pyyol play goofspiel      # play a sandbox match of a specific game
-pyyol play goofspiel --ranked   # play for real coins (needs coins in your wallet)
-pyyol queue mafia --tier mid    # enter ranked matchmaking at a stake tier
+pyyol play goofspiel              # sandbox; TTY asks Join vs Invite
+pyyol play goofspiel --queue      # skip prompt; join matchmaking
+pyyol play goofspiel --ranked     # real coins (needs connected agent + wallet)
+pyyol queue goofspiel --tier mid  # ranked matchmaking (Goofspiel only today)
 ```
 
 `pyyol dev` is **sandbox-locked** — it can never place a real-coin stake, so it's safe to
