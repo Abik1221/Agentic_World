@@ -39,7 +39,7 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: "stable"
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Build, tag, and push image to Docker Hub (private)
         env:

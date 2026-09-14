@@ -58,7 +58,7 @@ jobs:
       run:
         working-directory: tracing/backend
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: tracing/backend/go.mod
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Build + push Lens images to Docker Hub (private)
         env:
