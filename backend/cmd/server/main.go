@@ -41,6 +41,7 @@ import (
 	"github.com/agent-arena/arena/internal/events"
 	"github.com/agent-arena/arena/internal/gamestakes"
 	"github.com/agent-arena/arena/internal/groupmatch"
+	"github.com/agent-arena/arena/internal/growthstats"
 	"github.com/agent-arena/arena/internal/health"
 	"github.com/agent-arena/arena/internal/httpx"
 	"github.com/agent-arena/arena/internal/identity"
@@ -1890,6 +1891,10 @@ func run() error {
 	sdkStatsHandler := sdkstats.NewHandler(sdkstats.New(sdkStatsRepo), authn, cfg.AdminUserIDs)
 	launch("sdk-download-poller", sdkstats.NewPoller(sdkStatsRepo, log, "pyyol", 12*time.Hour).Run)
 
+	// Growth analytics for Super Admin (signups, funnel, auth mix, countries).
+	growthHandler := growthstats.NewHandler(
+		growthstats.New(store.NewGrowthStatsRepo(st.DB)), authn, cfg.AdminUserIDs)
+
 	// 8. HTTP server with the standard middleware chain.
 	mounts := []httpx.Mount{
 		healthH.Register,
@@ -1961,6 +1966,7 @@ func run() error {
 		docsHandler.Register,        // public GET /v1/docs (versioned docs-as-data)
 		docsAdminHandler.Register,   // super-admin CRUD /v1/admin/docs (edit/publish versions)
 		sdkStatsHandler.Register,    // public install-ping ingest + admin SDK download analytics
+		growthHandler.Register,      // Super Admin growth analytics (funnel / auth / countries)
 		clipsHandler.Register,
 		socialHandler.Register,
 		antifraudHandler.Register,

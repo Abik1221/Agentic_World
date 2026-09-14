@@ -45,6 +45,12 @@ func New(repo Repo, verifier ClaimVerifier, captcha Captcha, jwt *auth.JWT, cloc
 	return &Service{repo: repo, verifier: verifier, captcha: captcha, jwt: jwt, clock: clock, pepper: pepper, claimTTL: claimTTL, bans: NewBanIndex()}
 }
 
+// RecordSignupCountry persists the GeoIP country for a newly created account.
+// Best-effort for growth analytics; callers should ignore the error.
+func (s *Service) RecordSignupCountry(ctx context.Context, userPublicID, country string) error {
+	return s.repo.SetSignupCountry(ctx, userPublicID, country)
+}
+
 // Register starts onboarding: it issues a claim token the human posts publicly.
 func (s *Service) Register(ctx context.Context, name, description string) (Claim, error) {
 	name = strings.TrimSpace(name)
