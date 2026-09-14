@@ -287,9 +287,7 @@ def is_insufficient_balance(
     c = (code or "").strip().lower() or (api_error_code(resp) if resp is not None else "")
     if not c:
         return False
-    return c == "insufficient_balance" or (
-        "insufficient" in c and "balance" in c
-    )
+    return c == "insufficient_balance" or ("insufficient" in c and "balance" in c)
 
 
 def offer_buy_coins(

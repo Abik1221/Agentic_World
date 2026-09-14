@@ -449,8 +449,14 @@ def _enqueue_ranked(
     last: dict = {}
     for i in range(max(1, attempts)):
         st, resp = _api_post(f"{base}{path}", token, body)
-        if st in (400, 403) and "certified" in str((resp or {}).get("code") or (resp or {}).get("error") or ""):
-            if owner_token and agent_id and _certify_connected(base, agent_id, owner_token, games or []):
+        if st in (400, 403) and "certified" in str(
+            (resp or {}).get("code") or (resp or {}).get("error") or ""
+        ):
+            if (
+                owner_token
+                and agent_id
+                and _certify_connected(base, agent_id, owner_token, games or [])
+            ):
                 st, resp = _api_post(f"{base}{path}", token, body)
         if st in (200, 202):
             return st, resp
@@ -496,7 +502,9 @@ def _certify_connected(api: str, agent: str, owner_token: str, games: list[str])
         mid = m.get("manifest_id")
     mid_q = urllib.parse.quote(str(mid), safe="")
     st, report = _api_post(f"{api}/v1/agents/{ag}/manifest/{mid_q}/verify", owner_token, {})
-    return st == 200 and bool((report or {}).get("verified") or (report or {}).get("status") == "verified")
+    return st == 200 and bool(
+        (report or {}).get("verified") or (report or {}).get("status") == "verified"
+    )
 
 
 # --- publish (submit -> set secret -> verify) ----------------------------------
@@ -2183,7 +2191,15 @@ def _orchestrate(args: argparse.Namespace, *, dev_locked: bool) -> int:
         if not dev_locked and startup == "invite":
             return
         if m == mode.RANKED:
-            _start_ranked(base, token, arena, args, console, agent_id=agent_id, owner_token=_owner_token(creds))
+            _start_ranked(
+                base,
+                token,
+                arena,
+                args,
+                console,
+                agent_id=agent_id,
+                owner_token=_owner_token(creds),
+            )
             return
         matches = getattr(args, "matches", 1)
         if matches is None:
@@ -3105,10 +3121,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pp.add_argument("arena", choices=["goofspiel", "mafia"])
     pp.add_argument(
-        "--ranked", action="store_true", help="REAL stakes (connected CLI is enough; hosted verify is the away path)"
+        "--ranked",
+        action="store_true",
+        help="REAL stakes (connected CLI is enough; hosted verify is the away path)",
     )
     pp.add_argument("--tier", default="low", help="ranked stake tier: low|mid|high")
-    pp.add_argument("--matches", type=int, default=1, help="sandbox matches to start (0 = connect only)")
+    pp.add_argument(
+        "--matches", type=int, default=1, help="sandbox matches to start (0 = connect only)"
+    )
     pp.add_argument("--yes", action="store_true", help="skip the ranked confirmation (CI)")
     # Join vs Invite: TTY asks once; non-TTY / --queue / --ranked keep auto-start.
     pp.add_argument(
@@ -3341,9 +3361,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["goofspiel", "mafia"],
         help="room game: goofspiel (1v1) or mafia (12 seats; invited agents only)",
     )
-    prm.add_argument(
-        "--tier", default="", help="stake tier key (see `pyyol queue <game> --list`)"
-    )
+    prm.add_argument("--tier", default="", help="stake tier key (see `pyyol queue <game> --list`)")
     prm.add_argument("--bid", type=int, default=0, help="explicit coin stake")
     prm.add_argument("--token", default="")
     prm.set_defaults(func=cmd_room)
