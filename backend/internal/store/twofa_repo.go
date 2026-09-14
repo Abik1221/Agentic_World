@@ -86,3 +86,17 @@ func (r *TwoFARepo) RecoveryRemaining(ctx context.Context, userPublicID string) 
 		userPublicID).Scan(&n)
 	return n, err
 }
+
+// AccountLabel is the authenticator-app account name for enrollment QRs.
+// Prefer the public @username; fall back to email; never a raw public id when a
+// human label exists (usr_… in an authenticator list looks like an internet id).
+func (r *TwoFARepo) AccountLabel(ctx context.Context, userPublicID string) string {
+	var username, email string
+	err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(username::text, ''), COALESCE(email, '') FROM users WHERE public_id = $1`,
+		userPublicID).Scan(&username, &email)
+	if err != nil {
+		return userPublicID
+	}
+	return twofa.PickAccountLabel(username, email, userPublicID)
+}

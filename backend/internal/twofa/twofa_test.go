@@ -2,6 +2,7 @@ package twofa
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,7 @@ func TestEnrollStepUpAndDisable(t *testing.T) {
 	}
 	repo := &fakeRepo{}
 	now := time.Unix(1_700_000_000, 0)
-	svc := New(repo, cipher, platform.FixedClock{T: now}, "pyyol", "recovery-pepper-secret")
+	svc := New(repo, cipher, platform.FixedClock{T: now}, "Pyyol", "recovery-pepper-secret")
 	ctx := context.Background()
 
 	// Not enrolled ⇒ step-up is a no-op (money flows normally).
@@ -63,9 +64,12 @@ func TestEnrollStepUpAndDisable(t *testing.T) {
 		t.Fatalf("Require before enrollment = %v, want nil", err)
 	}
 
-	secret, uri, err := svc.Setup(ctx, "usr_a", "usr_a")
+	secret, uri, err := svc.Setup(ctx, "usr_a", "alice")
 	if err != nil || secret == "" || uri == "" {
 		t.Fatalf("Setup failed: secret=%q uri=%q err=%v", secret, uri, err)
+	}
+	if !strings.Contains(uri, "alice") || !strings.Contains(uri, "Pyyol") {
+		t.Fatalf("otpauth URI should use username + Pyyol issuer, got %s", uri)
 	}
 	// Pending (not confirmed) ⇒ still a no-op.
 	if err := svc.Require(ctx, "usr_a", ""); err != nil {
@@ -97,7 +101,7 @@ func TestEnrollStepUpAndDisable(t *testing.T) {
 	}
 
 	// Re-setup while enabled is refused.
-	if _, _, err := svc.Setup(ctx, "usr_a", "usr_a"); err != ErrAlreadyEnabled {
+	if _, _, err := svc.Setup(ctx, "usr_a", "alice"); err != ErrAlreadyEnabled {
 		t.Fatalf("Setup while enabled = %v, want ErrAlreadyEnabled", err)
 	}
 
@@ -152,5 +156,22 @@ func TestRecoveryCodeStepUp(t *testing.T) {
 	}
 	if svc.Require(ctx, "usr_a", rc) != ErrInvalidCode {
 		t.Fatal("old recovery codes must be invalid after regeneration")
+	}
+}
+
+func TestPickAccountLabel(t *testing.T) {
+	cases := []struct {
+		user, email, id, want string
+	}{
+		{"alice", "a@x.com", "usr_1", "alice"},
+		{"@alice", "a@x.com", "usr_1", "alice"},
+		{"", "a@x.com", "usr_1", "a@x.com"},
+		{"", "", "usr_1", "usr_1"},
+		{"  ", "  ", "usr_1", "usr_1"},
+	}
+	for _, c := range cases {
+		if got := PickAccountLabel(c.user, c.email, c.id); got != c.want {
+			t.Fatalf("PickAccountLabel(%q,%q,%q)=%q want %q", c.user, c.email, c.id, got, c.want)
+		}
 	}
 }

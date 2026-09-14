@@ -1,6 +1,7 @@
 package twofa
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/agent-arena/arena/internal/auth"
@@ -8,17 +9,25 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// AccountLabeler resolves the authenticator-app account name for a user.
+// Prefer username, then email — never an opaque public id when a human label exists.
+type AccountLabeler func(ctx context.Context, userPublicID string) string
+
 // Handler exposes TOTP enrollment + status (user scope). Identity is taken from the
 // token, never the body. Step-up verification for money movement lives in the
 // withdrawal / wallet-verify paths (they call Service.Require), not here.
 type Handler struct {
 	svc   *Service
 	authn *auth.Authenticator
+	label AccountLabeler
 }
 
 func NewHandler(svc *Service, authn *auth.Authenticator) *Handler {
 	return &Handler{svc: svc, authn: authn}
 }
+
+// SetAccountLabeler wires the username/email lookup used in otpauth URIs.
+func (h *Handler) SetAccountLabeler(fn AccountLabeler) { h.label = fn }
 
 func (h *Handler) Register(r chi.Router) {
 	r.Group(func(r chi.Router) {
@@ -50,7 +59,15 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) setup(w http.ResponseWriter, r *http.Request) {
 	p := auth.PrincipalFromContext(r.Context())
-	secret, uri, err := h.svc.Setup(r.Context(), p.UserPublicID, p.UserPublicID)
+	// Authenticator apps show issuer + account name. Using the opaque public id
+	// (usr_…) made Pyyol look like an "internet id" entry; prefer @username, then email.
+	account := p.UserPublicID
+	if h.label != nil {
+		if label := h.label(r.Context(), p.UserPublicID); label != "" {
+			account = label
+		}
+	}
+	secret, uri, err := h.svc.Setup(r.Context(), p.UserPublicID, account)
 	if err != nil {
 		httpx.Error(w, err)
 		return

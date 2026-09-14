@@ -1,6 +1,7 @@
 package totp
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,8 +48,11 @@ func TestValidateWindowAndSkew(t *testing.T) {
 }
 
 func TestURIContainsSecret(t *testing.T) {
-	u := URI("JBSWY3DPEHPK3PXP", "pyyol", "user@example.com")
-	if u == "" || u[:16] != "otpauth://totp/p" {
+	u := URI("JBSWY3DPEHPK3PXP", "Pyyol", "alice")
+	if u == "" || !strings.Contains(u, "otpauth://totp/") || !strings.Contains(u, "alice") {
 		t.Fatalf("unexpected uri: %s", u)
+	}
+	if !strings.Contains(u, "issuer=Pyyol") {
+		t.Fatalf("issuer missing from uri: %s", u)
 	}
 }

@@ -591,8 +591,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	twofaSvc := twofa.New(store.NewTwoFARepo(st.DB), totpCipher, clock, "pyyol", cfg.APIKeyPepper)
+	twoFARepo := store.NewTwoFARepo(st.DB)
+	twofaSvc := twofa.New(twoFARepo, totpCipher, clock, "Pyyol", cfg.APIKeyPepper)
 	twofaHandler := twofa.NewHandler(twofaSvc, authn)
+	// Authenticator QR label: @username, else email — not the opaque usr_… public id.
+	twofaHandler.SetAccountLabeler(twoFARepo.AccountLabel)
 	// 2FA (when the user has enabled it) is required on the money-sensitive steps:
 	// verifying/changing the payout wallet AND cashing out. Both are step-up gated.
 	walletVerifyHandler.SetStepUp(twofaSvc)
