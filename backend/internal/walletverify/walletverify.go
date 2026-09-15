@@ -60,8 +60,13 @@ type Repo interface {
 	MarkVerified(ctx context.Context, userPublicID, walletAddress string, at time.Time) error
 	ClearChallenge(ctx context.Context, userPublicID string) error
 	// ClearVerified removes the user's verified wallet AND the payout destination
-	// hint, returning them to the "no wallet on file" state.
-	ClearVerified(ctx context.Context, userPublicID string) error
+	// hint, returning them to the "no wallet on file" state — and records WHAT was
+	// removed, by whom, in the same transaction. The account looks wallet-less to the
+	// developer; the address it used to be paid to survives for audit.
+	ClearVerified(ctx context.Context, userPublicID, actor string) error
+	// RecordLinked appends the other half of that trail, so a removal is not a record
+	// with no beginning.
+	RecordLinked(ctx context.Context, userPublicID, actor string) error
 }
 
 // Service issues + verifies wallet-ownership challenges.
@@ -103,8 +108,12 @@ func (s *Service) StartChallenge(ctx context.Context, userPublicID, walletAddres
 // hint) and drops any pending challenge. Withdrawals already in flight are
 // unaffected: each withdrawal row persists its own dest_wallet_address, so this
 // only means a future withdrawal must prove a wallet again.
-func (s *Service) Unlink(ctx context.Context, userPublicID string) error {
-	if err := s.repo.ClearVerified(ctx, userPublicID); err != nil {
+// Unlink removes the payout wallet. `actor` is who did it — the developer's own public
+// id for a self-service removal, an operator's when support acted on their behalf. It is
+// a parameter rather than assumed to be the user, because those are different facts and
+// the history row is the only place the difference survives.
+func (s *Service) Unlink(ctx context.Context, userPublicID, actor string) error {
+	if err := s.repo.ClearVerified(ctx, userPublicID, actor); err != nil {
 		return err
 	}
 	_ = s.repo.ClearChallenge(ctx, userPublicID)
@@ -142,6 +151,12 @@ func (s *Service) Verify(ctx context.Context, userPublicID, walletAddress, signa
 	if err := s.repo.MarkVerified(ctx, userPublicID, walletAddress, s.clock.Now()); err != nil {
 		return err
 	}
+	// The beginning of the trail. Best-effort and never fatal: a proven wallet must not be
+	// refused because the audit append failed, and the wallet IS verified at this point —
+	// returning an error here would tell the developer their signature was rejected when
+	// it was accepted. A gap in the history is recoverable; a wallet that will not link is
+	// the developer stuck.
+	_ = s.repo.RecordLinked(ctx, userPublicID, userPublicID)
 	_ = s.repo.ClearChallenge(ctx, userPublicID)
 	return nil
 }

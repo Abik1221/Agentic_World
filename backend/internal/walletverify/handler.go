@@ -111,7 +111,9 @@ func (h *Handler) unlink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := h.svc.Unlink(r.Context(), p.UserPublicID); err != nil {
+	// The developer removing their own wallet. An operator-initiated removal would name
+	// the operator here instead — the history row is where that distinction survives.
+	if err := h.svc.Unlink(r.Context(), p.UserPublicID, p.UserPublicID); err != nil {
 		httpx.Error(w, err)
 		return
 	}

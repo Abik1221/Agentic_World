@@ -15,6 +15,7 @@ import (
 type fakeRepo struct {
 	ch       map[string]walletverify.Challenge
 	verified map[string]string // user → verified wallet
+	history []histRow
 }
 
 func newRepo() *fakeRepo {
@@ -36,10 +37,21 @@ func (r *fakeRepo) ClearChallenge(_ context.Context, user string) error {
 	delete(r.ch, user)
 	return nil
 }
-func (r *fakeRepo) ClearVerified(_ context.Context, user string) error {
+// ClearVerified mirrors the real repo's contract: the account stops showing a wallet, and
+// what was removed is appended to an audit trail that is never rewritten.
+func (r *fakeRepo) ClearVerified(_ context.Context, user, actor string) error {
+	if w, ok := r.verified[user]; ok {
+		r.history = append(r.history, histRow{user: user, action: "unlinked", addr: w, actor: actor})
+	}
 	delete(r.verified, user)
 	return nil
 }
+func (r *fakeRepo) RecordLinked(_ context.Context, user, actor string) error {
+	r.history = append(r.history, histRow{user: user, action: "linked", addr: r.verified[user], actor: actor})
+	return nil
+}
+
+type histRow struct{ user, action, addr, actor string }
 
 // newWallet returns a fresh Solana keypair as (base58 address, signer).
 func newWallet(t *testing.T) (string, ed25519.PrivateKey) {
@@ -135,7 +147,7 @@ func TestUnlinkRemovesVerifiedWallet(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 
-	if err := svc.Unlink(ctx, "usr_a"); err != nil {
+	if err := svc.Unlink(ctx, "usr_a", "usr_a"); err != nil {
 		t.Fatalf("unlink: %v", err)
 	}
 	if w, ok := repo.verified["usr_a"]; ok {
@@ -150,7 +162,7 @@ func TestUnlinkRemovesVerifiedWallet(t *testing.T) {
 // without first proving a wallet exists.
 func TestUnlinkWithoutLinkedWalletIsNoop(t *testing.T) {
 	repo := newRepo()
-	if err := newSvc(repo).Unlink(context.Background(), "usr_a"); err != nil {
+	if err := newSvc(repo).Unlink(context.Background(), "usr_a", "usr_a"); err != nil {
 		t.Fatalf("unlink on empty account: %v", err)
 	}
 }
