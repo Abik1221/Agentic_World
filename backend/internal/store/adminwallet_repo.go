@@ -109,12 +109,62 @@ func (r *AdminWalletRepo) UserWallet(ctx context.Context, userPublicID string) (
 		d.Wallets = []adminapi.ConnectedWallet{}
 	}
 
+	hist, err := r.walletHistory(ctx, userPublicID)
+	if err != nil {
+		return adminapi.UserWalletDetail{}, false, err
+	}
+	d.WalletHistory = hist
+
 	agents, err := r.userAgents(ctx, userPublicID)
 	if err != nil {
 		return adminapi.UserWalletDetail{}, false, err
 	}
 	d.Agents = agents
 	return d, true, nil
+}
+
+// walletHistory reads every wallet this account has attached or removed, newest first.
+//
+// This is the half of the soft delete an operator can actually see. The users columns go
+// NULL on removal — that is what makes the wallet gone for the developer — so without
+// this read the admin panel would show the same emptiness the developer does, and the
+// audit trail would sit in a table nothing queries.
+//
+// Capped at 50. An account with more wallet churn than that has a problem the newest 50
+// rows will already show, and an unbounded read behind a support screen is how one
+// pathological account makes the panel time out for everybody.
+func (r *AdminWalletRepo) walletHistory(ctx context.Context, userPublicID string) ([]adminapi.WalletHistoryEntry, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT h.action, COALESCE(h.verified_address, ''), COALESCE(h.wallet_address, ''),
+		        COALESCE(h.provider, ''), h.actor, h.created_at
+		   FROM user_wallet_history h
+		   JOIN users u ON u.id = h.user_id
+		  WHERE u.public_id = $1
+		  ORDER BY h.created_at DESC
+		  LIMIT 50`, userPublicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []adminapi.WalletHistoryEntry{}
+	for rows.Next() {
+		var e adminapi.WalletHistoryEntry
+		var verified, hint string
+		if err := rows.Scan(&e.Action, &verified, &hint, &e.Provider, &e.Actor, &e.At); err != nil {
+			return nil, err
+		}
+		// The proven address wins. Falling back to the hint means a row is never blank,
+		// and Verified is what tells the operator which one they are looking at — a hint
+		// shown as though it were a payout destination is how somebody gets told to
+		// expect money at an address that could never receive it.
+		if verified != "" {
+			e.Address, e.Verified = verified, true
+		} else {
+			e.Address = hint
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (r *AdminWalletRepo) userAgents(ctx context.Context, userPublicID string) ([]adminapi.AgentBalance, error) {

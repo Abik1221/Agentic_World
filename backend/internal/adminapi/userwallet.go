@@ -39,6 +39,22 @@ type ConnectedWallet struct {
 	VerifiedAt *time.Time `json:"verified_at,omitempty"`
 }
 
+// WalletHistoryEntry is one attach or removal in an account's wallet history.
+type WalletHistoryEntry struct {
+	// Action is "linked" or "unlinked".
+	Action string `json:"action"`
+	// Address is the PROVEN address when there was one, falling back to the unverified
+	// login hint. Verified says which of the two this is, because only a proven address
+	// could ever have received money and an operator must not confuse them.
+	Address  string `json:"address,omitempty"`
+	Verified bool   `json:"verified"`
+	Provider string `json:"provider,omitempty"`
+	// Actor is who did it: the developer's own id for a self-service removal, an
+	// operator's when support acted for them.
+	Actor string    `json:"actor"`
+	At    time.Time `json:"at"`
+}
+
 // AgentBalance is one of the user's agents and the coins allocated to it.
 type AgentBalance struct {
 	Agent            string `json:"agent"`
@@ -58,6 +74,19 @@ type UserWalletDetail struct {
 	Frozen bool `json:"frozen"`
 
 	Wallets []ConnectedWallet `json:"wallets"`
+
+	// WalletHistory is every wallet this account has attached or removed, newest first.
+	//
+	// Surfaced because removal is a SOFT delete: the columns on users go NULL so the
+	// developer sees the wallet gone, and the address survives here. Without this the
+	// admin panel would show exactly what the developer sees — nothing — and the audit
+	// trail would exist in a table no operator screen reads, which is the same as not
+	// having it.
+	//
+	// The questions it answers are the ones a money ticket actually asks: which address
+	// was this account paid to before, when was it removed, who removed it, and has the
+	// same address been attached to another account.
+	WalletHistory []WalletHistoryEntry `json:"wallet_history"`
 
 	// Balances, all in coins. Treasury is the owner's own pot; the agent figures
 	// are money already pushed out to agents and are NOT part of it.
